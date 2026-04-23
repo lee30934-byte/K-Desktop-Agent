@@ -95,13 +95,11 @@ export default function App() {
     const gap = now - lastAlive;
     const alreadyShown = localStorage.getItem(SHOWN_KEY);
 
-    let toastTimer: number | undefined;
     // 이미 표시했으면 다시 표시하지 않음 (HMR 중복 방지)
     if (lastAlive > 0 && gap >= 2000 && gap <= 120000 && alreadyShown !== String(lastAlive)) {
       const secs = Math.round(gap / 1000);
       setRecentRestartInfo(`재빌드로 ${secs}초간 재기동 — 복구됨`);
       localStorage.setItem(SHOWN_KEY, String(lastAlive));
-      toastTimer = window.setTimeout(() => setRecentRestartInfo(null), 5000);
     }
 
     localStorage.setItem(KEY, String(now));
@@ -111,9 +109,15 @@ export default function App() {
 
     return () => {
       window.clearInterval(hb);
-      if (toastTimer !== undefined) window.clearTimeout(toastTimer);
     };
   }, []);
+
+  // ─── 재기동 토스트 자동 닫힘 ─────────────────────────────
+  useEffect(() => {
+    if (!recentRestartInfo) return;
+    const timer = window.setTimeout(() => setRecentRestartInfo(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [recentRestartInfo]);
 
   // ─── DB 초기화 및 대화 목록 로드 ─────────────────────
   useEffect(() => {
