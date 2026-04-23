@@ -58,27 +58,69 @@
 
 ## 남은 Phase
 
-### ⬜ Phase 5 — 마크다운 렌더링 + 인스톨러
+### ✅ Phase 5 — 마크다운 렌더링 + 인스톨러 (2026-04-23)
 
-**왜 필요한가**:
-- 응답의 `**볼드**`, 코드블록이 raw 로 보임 (가독성↓)
-- 지인 배포용 MSI 없음
-
-**구현 포인트**:
-1. `react-markdown` + `remark-gfm` + `rehype-highlight`
-2. 코드블록 신택스 하이라이팅
-3. 링크 → `tauri-plugin-shell` open()
-4. MSI 빌드 (sidecar 번들링 전략 결정 필요)
-5. Windows SmartScreen 대응
-
-**예상**: 3~4시간. 상세: `docs/PHASE-5-POLISH.md`
+구현 및 적용 완료:
+- `react-markdown` + `remark-gfm` + `rehype-highlight` 적용
+- **볼드**, *이탤릭*, ~~취소선~~ 렌더링
+- 코드블록 신택스 하이라이팅 (highlight.js)
+- 인라인 코드 `code` 스타일링
+- 링크 클릭 → 기본 브라우저로 열기 (`@tauri-apps/plugin-shell`)
+- 테이블(GFM) 렌더링
+- MSI/NSIS 인스톨러 빌드 (`scripts/build-msi.ps1`)
+- 컨텍스트 모니터링 + 80% 임계치 자동 세션 리프레시
+- `computed_usage` 기반 정확한 토큰 카운팅 (modelUsage에서 계산)
 
 ---
 
-## 장기 아이디어 (선택)
+### ⬜ Phase 6 — 전역 단축키 + UX 개선
 
-- **Phase 6**: 전역 단축키 (`tauri-plugin-global-shortcut`)
-- **Phase 7**: 음성 입력 (한국어 STT)
-- **Phase 8**: 프리셋/빠른 명령 버튼화
-- **Phase 9**: 자가 학습 (사용 패턴 기반 선제 제안)
-- **Phase 10**: 추가 MCP (Notion, Slack, GitHub)
+**왜 필요한가**:
+- 다른 앱 작업 중에도 빠르게 K Desktop Agent 호출
+- 자주 쓰는 명령 원클릭 실행
+
+**구현 포인트**:
+1. `tauri-plugin-global-shortcut` 설치 및 설정
+2. 기본 단축키: `Ctrl+Shift+K` → 창 토글
+3. `Ctrl+Shift+S` → 스크린샷 캡처 후 분석 요청
+4. 설정에서 단축키 커스터마이즈 UI
+5. 빠른 명령 팔레트 (Ctrl+K 스타일)
+
+**예상**: 2~3시간
+
+---
+
+### ⬜ Phase 7 — 음성 입력 (한국어 STT)
+
+**구현 포인트**:
+1. Web Speech API 또는 외부 STT 서비스
+2. 마이크 버튼 UI
+3. 실시간 음성→텍스트 변환
+4. 한국어 최적화
+
+---
+
+### ⬜ Phase 8 — 프리셋/빠른 명령 버튼화
+
+**구현 포인트**:
+1. 자주 쓰는 프롬프트 버튼으로 표시
+2. 커스텀 프리셋 추가/편집
+3. 키보드 단축키 바인딩
+
+---
+
+### ⬜ Phase 9 — 자가 학습 (사용 패턴 기반 선제 제안)
+
+**구현 포인트**:
+1. 사용 패턴 분석
+2. 시간대/상황별 제안
+3. 자주 쓰는 명령 우선 표시
+
+---
+
+### ⬜ Phase 10 — 추가 MCP (Notion, Slack, GitHub)
+
+**구현 포인트**:
+1. MCP 서버 다중 연결
+2. 서비스별 인증 관리
+3. 통합 명령 팔레트
