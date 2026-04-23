@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import Sidebar from "./components/Sidebar";
 import MainChat from "./components/MainChat";
 import MetricsPanel from "./components/MetricsPanel";
@@ -62,6 +63,8 @@ export default function App() {
   const CONTEXT_THRESHOLD = 0.8; // 80% (이전: 90%)
   const [sessionSummary, setSessionSummary] = useState<string | null>(null);
   const [sessionRefreshToast, setSessionRefreshToast] = useState(false);
+  // dev rebuild 등으로 앱이 순간 종료됐다 복구된 경우를 감지해 표시
+  const [recentRestartInfo, setRecentRestartInfo] = useState<string | null>(null);
   const isRefreshingSessionRef = useRef(false);
 
   // 메시지 저장 디바운스용 ref
@@ -78,6 +81,38 @@ export default function App() {
   useEffect(() => {
     const h = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(h);
+  }, []);
+
+  // ─── 재기동 감지 (dev rebuild 등) ────────────────────
+  // 주기적으로 localStorage 에 heartbeat 를 찍고, 기동 시 마지막 heartbeat 와의 갭을 본다.
+  // 갭이 2~120초면 "방금 꺼졌다 복구" 로 해석 (HMR 이 아닌 Rust rebuild 가 대표 원인).
+  useEffect(() => {
+    const KEY = "kda_last_alive";
+    const SHOWN_KEY = "kda_restart_shown";
+    const now = Date.now();
+    const raw = localStorage.getItem(KEY);
+    const lastAlive = raw ? parseInt(raw, 10) : 0;
+    const gap = now - lastAlive;
+    const alreadyShown = localStorage.getItem(SHOWN_KEY);
+
+    let toastTimer: number | undefined;
+    // 이미 표시했으면 다시 표시하지 않음 (HMR 중복 방지)
+    if (lastAlive > 0 && gap >= 2000 && gap <= 120000 && alreadyShown !== String(lastAlive)) {
+      const secs = Math.round(gap / 1000);
+      setRecentRestartInfo(`재빌드로 ${secs}초간 재기동 — 복구됨`);
+      localStorage.setItem(SHOWN_KEY, String(lastAlive));
+      toastTimer = window.setTimeout(() => setRecentRestartInfo(null), 5000);
+    }
+
+    localStorage.setItem(KEY, String(now));
+    const hb = window.setInterval(() => {
+      localStorage.setItem(KEY, String(Date.now()));
+    }, 5000);
+
+    return () => {
+      window.clearInterval(hb);
+      if (toastTimer !== undefined) window.clearTimeout(toastTimer);
+    };
   }, []);
 
   // ─── DB 초기화 및 대화 목록 로드 ─────────────────────
@@ -711,6 +746,39 @@ export default function App() {
     };
   }, []);
 
+  // ─── 전역 단축키 등록 (Phase 6) ────────────────────────
+  useEffect(() => {
+    let registered = false;
+
+    const setupShortcuts = async () => {
+      try {
+        // Ctrl+Shift+K: 창 토글
+        await register("Ctrl+Shift+K", async () => {
+          console.log("[Shortcut] Ctrl+Shift+K triggered");
+          try {
+            // 현재 창 상태 확인하고 토글
+            await invoke("show_main_window");
+          } catch (err) {
+            console.error("[Shortcut] 창 토글 실패:", err);
+          }
+        });
+        console.log("[Shortcut] Ctrl+Shift+K 등록 완료");
+
+        registered = true;
+      } catch (err) {
+        console.error("[Shortcut] 전역 단축키 등록 실패:", err);
+      }
+    };
+
+    setupShortcuts();
+
+    return () => {
+      if (registered) {
+        unregister("Ctrl+Shift+K").catch(console.error);
+      }
+    };
+  }, []);
+
   return (
     <div className="app">
       <Sidebar
@@ -753,6 +821,14 @@ export default function App() {
         <div className="session-refresh-toast">
           <span className="toast-icon">🔄</span>
           <span className="toast-text">세션이 자동 갱신되었습니다</span>
+        </div>
+      )}
+
+      {/* dev rebuild 재기동 토스트 */}
+      {recentRestartInfo && (
+        <div className="session-refresh-toast restart-toast">
+          <span className="toast-icon">⟳</span>
+          <span className="toast-text">{recentRestartInfo}</span>
         </div>
       )}
     </div>

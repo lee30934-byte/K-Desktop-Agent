@@ -2256,6 +2256,18 @@
   animation: toastSlideIn 300ms ease, toastPulse 2s ease infinite;
 }
 
+/* dev rebuild 재기동 토스트: 경고색(오렌지) 계열 */
+.session-refresh-toast.restart-toast {
+  bottom: 150px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 176, 64, 0.2) 0%,
+    rgba(255, 176, 64, 0.08) 100%
+  );
+  border-color: rgba(255, 176, 64, 0.5);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 176, 64, 0.35);
+}
+
 @keyframes toastSlideIn {
   from {
     opacity: 0;
