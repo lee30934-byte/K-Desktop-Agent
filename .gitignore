@@ -1,0 +1,43 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Dependencies
+node_modules
+sidecar/node_modules
+# sidecar/dist는 Tauri 빌드에 필요하므로 포함
+
+# Build
+dist
+dist-ssr
+*.local
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# App data (user-specific runtime files)
+data/
+*.db
+*.db-journal

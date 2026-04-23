@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/windows-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-focus",
+    "core:app:allow-version",
+    "core:event:default",
+    "shell:allow-open",
+    "sql:default",
+    "sql:allow-execute",
+    "sql:allow-load",
+    "sql:allow-select",
+    "autostart:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
+  ]
+}

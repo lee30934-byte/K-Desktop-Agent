@@ -1,0 +1,166 @@
+import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import { open } from "@tauri-apps/plugin-shell";
+import type { ChatMessage } from "../types";
+
+interface MessageProps {
+  message: ChatMessage;
+}
+
+export default function Message({ message }: MessageProps) {
+  const [copied, setCopied] = useState(false);
+
+  if (message.role === "tool") {
+    return <ToolMessageView message={message} />;
+  }
+
+  const isAssistant = message.role === "assistant";
+  const isStreaming = isAssistant && (message as any).streaming;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+    }
+  };
+
+  return (
+    <div className={`msg msg-${message.role}`}>
+      <div className="msg-head">
+        <span className="eyebrow msg-role">{roleLabel(message.role)}</span>
+        <span className="mono msg-time">
+          {new Date(message.timestamp).toLocaleTimeString("ko-KR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          })}
+        </span>
+        <button
+          className={`msg-copy-btn ${copied ? "copied" : ""}`}
+          onClick={handleCopy}
+          title="메시지 복사"
+        >
+          {copied ? "✓" : "📋"}
+        </button>
+      </div>
+      <div className="msg-body markdown-content">
+        {isAssistant ? (
+          <>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
+              components={{
+                // 링크 클릭 시 기본 브라우저에서 열기
+                a: ({ href, children }) => (
+                  <a
+                    href={href}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      if (href) {
+                        open(href).catch(console.error);
+                      }
+                    }}
+                    className="md-link"
+                  >
+                    {children}
+                  </a>
+                ),
+                // 코드 블록 스타일링
+                code: ({ className, children, ...props }) => {
+                  const isInline = !className;
+                  return isInline ? (
+                    <code className="md-inline-code" {...props}>
+                      {children}
+                    </code>
+                  ) : (
+                    <code className={className} {...props}>
+                      {children}
+                    </code>
+                  );
+                },
+                // pre 태그 스타일링
+                pre: ({ children }) => (
+                  <pre className="md-code-block">{children}</pre>
+                ),
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+            {isStreaming && <span className="msg-cursor">▊</span>}
+          </>
+        ) : (
+          // user/system 메시지는 plain text
+          message.content
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ToolMessageView({ message }: { message: Extract<ChatMessage, { role: "tool" }> }) {
+  // 컴팩트 모드: 한 줄로 표시, 클릭 시 펼침
+  return (
+    <details className={`msg-tool-compact msg-tool-${message.status}`}>
+      <summary className="msg-tool-summary">
+        <span className={`tool-pill tool-pill-${message.status}`}>
+          {statusLabel(message.status)}
+        </span>
+        <span className="mono msg-tool-name">{message.toolName}</span>
+        <span className="mono msg-time">
+          {new Date(message.timestamp).toLocaleTimeString("ko-KR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          })}
+        </span>
+      </summary>
+      <div className="msg-tool-expanded">
+        {message.toolInput != null && (
+          <div className="msg-tool-section">
+            <span className="eyebrow">Arguments</span>
+            <pre className="mono msg-tool-json">
+              {JSON.stringify(message.toolInput, null, 2)}
+            </pre>
+          </div>
+        )}
+        {message.toolOutput && (
+          <div className="msg-tool-section">
+            <span className="eyebrow">Output</span>
+            <pre className="mono msg-tool-json">{message.toolOutput}</pre>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function roleLabel(role: string): string {
+  switch (role) {
+    case "user":
+      return "You";
+    case "assistant":
+      return "Assistant";
+    case "system":
+      return "System";
+    default:
+      return role;
+  }
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "pending":
+      return "RUNNING";
+    case "success":
+      return "DONE";
+    case "error":
+      return "FAILED";
+    default:
+      return status.toUpperCase();
+  }
+}

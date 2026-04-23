@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell *)",
+      "Bash(npm install *)",
+      "Bash(tasklist)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(Write-Host \"VBS 실행 시도...\"; & wscript.exe \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\\\\scripts\\\\launch.vbs\"; Write-Host \"VBS 호출 완료, 8초 대기...\"; Start-Sleep -Seconds 8; \"---logs 폴더---\"; Get-ChildItem \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\\\\logs\\\\\" -ErrorAction SilentlyContinue | Format-Table Name, Length, LastWriteTime; \"---launch.log 마지막 50줄---\"; if \\(Test-Path \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\\\\logs\\\\launch.log\"\\) { Get-Content \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\\\\logs\\\\launch.log\" -Tail 50 } else { \"launch.log 없음\" }; \"---관련 프로세스---\"; Get-Process | Where-Object { $_.ProcessName -match 'node|tauri|wscript|cargo' } | Select-Object ProcessName, Id, StartTime | Format-Table)",
+      "PowerShell(Write-Host \"--- VBS의 cmd 라인 그대로 직접 실행 ---\"; cmd.exe /c 'cd /d \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\" && npm run tauri:dev > \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\\\\logs\\\\launch.log\" 2>&1' ; Write-Host \"\\(이 명령은 npm run tauri:dev가 떠 있는 동안 블로킹됩니다. 5초 후 별도 확인\\)\")",
+      "PowerShell(Start-Sleep -Seconds 10; \"--- launch.log 존재? ---\"; Test-Path \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\\\\logs\\\\launch.log\"; \"--- launch.log 처음 80줄 ---\"; if \\(Test-Path \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\\\\logs\\\\launch.log\"\\) { Get-Content \"C:\\\\Users\\\\user\\\\Documents\\\\K-Desktop-Agent\\\\logs\\\\launch.log\" -Head 80 } ; \"--- 관련 프로세스 ---\"; Get-Process | Where-Object { $_.ProcessName -match 'node|tauri|cargo|app' } | Select-Object ProcessName, Id | Format-Table)",
+      "Read(//c/Users/user/AppData/Roaming/**)",
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash([ \"$ts\" = \"0\" ])",
+      "Read(//c/Users/user/AppData/Local/Temp/claude/C--Users-user-Documents-K-Desktop-Agent/5aa9d938-3116-4478-86d1-ca597b951927/tasks/**)",
+      "Bash(sqlite3 \"C:/Users/user/AppData/Roaming/com.k.desktop-agent/conversations.db\" \"SELECT id, title, message_count FROM conversations c LEFT JOIN \\(SELECT conversation_id, COUNT\\(*\\) as message_count FROM messages GROUP BY conversation_id\\) m ON m.conversation_id = c.id ORDER BY updated_at DESC LIMIT 10;\")",
+      "Bash(python *)",
+      "Bash(taskkill /PID 31836 /F)",
+      "Bash(node test-history.mjs)"
+    ]
+  }
+}
