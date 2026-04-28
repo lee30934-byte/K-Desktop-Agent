@@ -146,12 +146,12 @@ export default function Sidebar({
       {/* 새 대화 버튼 */}
       <button className="new-chat-btn" onClick={onNewConversation}>
         <span className="plus">+</span>
-        <span>New Chat</span>
+        <span>새 대화</span>
       </button>
 
       {/* 대화 목록 */}
       <div className="sidebar-section">
-        <div className="eyebrow section-label">Conversations</div>
+        <div className="eyebrow section-label">대화 목록</div>
         <div className="conv-list">
           {conversations.length === 0 ? (
             <div className="conv-empty">대화 없음</div>
@@ -191,29 +191,29 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* 백업/복구 섹션 */}
+      {/* 툴 섹션 - 백업/복구 */}
       <div className="sidebar-section">
-        <div className="eyebrow section-label">Backup</div>
+        <div className="eyebrow section-label">백업</div>
         <button className="tool-item" onClick={handleExportCurrent} title="현재 대화 내보내기">
           <span className="tool-icon">📤</span>
-          <span>Export Chat</span>
+          <span>대화 내보내기</span>
         </button>
         <button className="tool-item" onClick={handleExportAll} title="전체 백업">
           <span className="tool-icon">💾</span>
-          <span>Backup All</span>
+          <span>전체 백업</span>
         </button>
         <button className="tool-item" onClick={handleImport} title="가져오기">
           <span className="tool-icon">📥</span>
-          <span>Import</span>
+          <span>가져오기</span>
         </button>
       </div>
 
-      {/* 툴 섹션 */}
+      {/* 설정 섹션 (맨 아래) */}
       <div className="sidebar-section sidebar-bottom">
-        <div className="eyebrow section-label">Tools</div>
+        <div className="eyebrow section-label">설정</div>
         <button className="tool-item" onClick={onOpenSettings}>
           <span className="tool-icon">⚙</span>
-          <span>Settings</span>
+          <span>환경설정</span>
         </button>
       </div>
 

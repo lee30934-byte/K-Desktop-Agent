@@ -601,16 +601,26 @@ fn find_sidecar_dir(
     }
 
     if let Some(exe) = exe_dir {
+        // 1) exe 옆에 sidecar 폴더 (새 빌드)
         let candidate = exe.join("sidecar");
-        if candidate.exists() {
+        if candidate.join("dist").join("index.js").exists()
+            || candidate.join("src").join("index.ts").exists()
+        {
             return Some(candidate);
         }
-        // 프로덕션: exe 위치 근처에 sidecar 폴더 있는지
+        // 2) exe 부모 폴더에 sidecar (이전 방식)
         if let Some(parent) = exe.parent() {
             let candidate2 = parent.join("sidecar");
-            if candidate2.exists() {
+            if candidate2.join("dist").join("index.js").exists()
+                || candidate2.join("src").join("index.ts").exists()
+            {
                 return Some(candidate2);
             }
+        }
+        // 3) _up_/sidecar (Tauri 리소스 기본 배치)
+        let candidate3 = exe.join("_up_").join("sidecar");
+        if candidate3.join("dist").join("index.js").exists() {
+            return Some(candidate3);
         }
     }
 

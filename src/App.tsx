@@ -32,6 +32,8 @@ import {
   generateTitleFromMessage,
   generateSummaryPrompt,
   createCompressedConversation,
+  updateConversationMetrics,
+  getConversationMetrics,
 } from "./db";
 import "./App.css";
 import logger from "./utils/logger";
@@ -262,7 +264,20 @@ export default function App() {
             timestamp: Date.now(),
           },
         ]);
-        setMetrics((m) => ({ ...m, toolCallCount: m.toolCallCount + 1 }));
+        setMetrics((m) => {
+          const updated = { ...m, toolCallCount: m.toolCallCount + 1 };
+          // DB에도 저장
+          const convId = activeConversationIdRef.current;
+          if (convId && dbReadyRef.current) {
+            updateConversationMetrics(convId, {
+              totalInputTokens: updated.totalInputTokens,
+              totalOutputTokens: updated.totalOutputTokens,
+              turnCount: updated.turnCount,
+              toolCallCount: updated.toolCallCount,
+            }).catch(() => {});
+          }
+          return updated;
+        });
         break;
       }
 
@@ -336,6 +351,17 @@ export default function App() {
             totalInputTokens: m.totalInputTokens + newInputTokens,
             totalOutputTokens: m.totalOutputTokens + newOutputTokens,
           };
+
+          // DB에 메트릭 저장 (비동기)
+          const convIdForMetrics = activeConversationIdRef.current;
+          if (convIdForMetrics && dbReadyRef.current) {
+            updateConversationMetrics(convIdForMetrics, {
+              totalInputTokens: updatedMetrics.totalInputTokens,
+              totalOutputTokens: updatedMetrics.totalOutputTokens,
+              turnCount: updatedMetrics.turnCount,
+              toolCallCount: updatedMetrics.toolCallCount,
+            }).catch((err) => console.error("[App] 메트릭 저장 실패:", err));
+          }
 
           // 90% 임계치 도달 시 자동 세션 갱신 트리거
           const contextUsage = updatedMetrics.totalInputTokens / MAX_CONTEXT_TOKENS;
@@ -570,8 +596,26 @@ export default function App() {
     if (!currentTurnId) return;
     try {
       await invoke("interrupt", { id: currentTurnId });
+
+      // 🔧 FIX: interrupt 후 UI 상태 즉시 정리 (done 이벤트가 안 올 수 있음)
+      // 짧은 딜레이 후 강제 정리 (sidecar가 done을 보내면 중복 호출되어도 무해)
+      setTimeout(() => {
+        setIsStreaming(false);
+        setCurrentTurnId(null);
+        // 스트리밍 중인 메시지의 커서 제거
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.role === "assistant" && (m as any).streaming
+              ? { ...m, streaming: false }
+              : m
+          )
+        );
+      }, 500);
     } catch (err) {
       console.error("interrupt failed:", err);
+      // 에러 시에도 UI 상태 정리
+      setIsStreaming(false);
+      setCurrentTurnId(null);
     }
   }
 
@@ -607,11 +651,42 @@ export default function App() {
     setActiveConversationId(id);
     activeConversationIdRef.current = id;
 
-    // DB에서 메시지 로드
+    // DB에서 메시지와 메트릭 로드
     try {
-      const msgs = await getMessages(id);
+      const [msgs, savedMetrics] = await Promise.all([
+        getMessages(id),
+        getConversationMetrics(id),
+      ]);
       setMessages(msgs);
-      // 메트릭 초기화 (새 세션 시작)
+
+      // 저장된 메트릭이 있으면 복원, 없으면 메시지 기반으로 추정
+      if (savedMetrics && savedMetrics.totalInputTokens > 0) {
+        setMetrics({
+          totalInputTokens: savedMetrics.totalInputTokens,
+          totalOutputTokens: savedMetrics.totalOutputTokens,
+          turnCount: savedMetrics.turnCount,
+          toolCallCount: savedMetrics.toolCallCount,
+          startedAt: Date.now(),
+        });
+        logger.log(`[App] 메트릭 복원: IN ${savedMetrics.totalInputTokens}, OUT ${savedMetrics.totalOutputTokens}`);
+      } else {
+        // 저장된 메트릭이 없으면 메시지 기반으로 추정 (4자당 1토큰)
+        const estimatedTokens = msgs.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0);
+        const userMessages = msgs.filter(m => m.role === "user").length;
+        const toolMessages = msgs.filter(m => m.role === "tool").length;
+
+        setMetrics({
+          totalInputTokens: estimatedTokens,
+          totalOutputTokens: Math.ceil(estimatedTokens * 0.6), // 대략 출력은 입력의 60%
+          turnCount: userMessages,
+          toolCallCount: toolMessages,
+          startedAt: Date.now(),
+        });
+        logger.log(`[App] 메트릭 추정: ${estimatedTokens} tokens (${msgs.length} messages)`);
+      }
+    } catch (err) {
+      console.error("[App] 메시지 로드 실패:", err);
+      setMessages([]);
       setMetrics({
         totalInputTokens: 0,
         totalOutputTokens: 0,
@@ -619,9 +694,6 @@ export default function App() {
         toolCallCount: 0,
         startedAt: Date.now(),
       });
-    } catch (err) {
-      console.error("[App] 메시지 로드 실패:", err);
-      setMessages([]);
       pushSystem("메시지를 불러오지 못했습니다.", "error");
     }
   }

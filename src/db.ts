@@ -27,9 +27,27 @@ export async function initDB(): Promise<Database> {
       title TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      agent_id TEXT
+      agent_id TEXT,
+      total_input_tokens INTEGER DEFAULT 0,
+      total_output_tokens INTEGER DEFAULT 0,
+      turn_count INTEGER DEFAULT 0,
+      tool_call_count INTEGER DEFAULT 0
     )
   `);
+
+  // 기존 테이블에 컬럼 추가 (마이그레이션)
+  try {
+    await db.execute(`ALTER TABLE conversations ADD COLUMN total_input_tokens INTEGER DEFAULT 0`);
+  } catch { /* 이미 존재하면 무시 */ }
+  try {
+    await db.execute(`ALTER TABLE conversations ADD COLUMN total_output_tokens INTEGER DEFAULT 0`);
+  } catch { /* 이미 존재하면 무시 */ }
+  try {
+    await db.execute(`ALTER TABLE conversations ADD COLUMN turn_count INTEGER DEFAULT 0`);
+  } catch { /* 이미 존재하면 무시 */ }
+  try {
+    await db.execute(`ALTER TABLE conversations ADD COLUMN tool_call_count INTEGER DEFAULT 0`);
+  } catch { /* 이미 존재하면 무시 */ }
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS messages (
@@ -74,6 +92,10 @@ export interface DBConversation {
   created_at: number;
   updated_at: number;
   agent_id: string | null;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  turn_count: number;
+  tool_call_count: number;
 }
 
 /**
@@ -95,6 +117,10 @@ export async function getAllConversations(): Promise<Conversation[]> {
     lastActive: row.updated_at,
     messageCount: row.message_count ?? 0,
     agentId: row.agent_id,
+    totalInputTokens: row.total_input_tokens ?? 0,
+    totalOutputTokens: row.total_output_tokens ?? 0,
+    turnCount: row.turn_count ?? 0,
+    toolCallCount: row.tool_call_count ?? 0,
   }));
 }
 
@@ -181,6 +207,65 @@ export async function getConversationAgentId(id: string): Promise<string | null>
     [id]
   );
   return rows[0]?.agent_id ?? null;
+}
+
+/**
+ * 대화의 메트릭 업데이트 (컨텍스트 추적용)
+ */
+export async function updateConversationMetrics(
+  id: string,
+  metrics: {
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    turnCount: number;
+    toolCallCount: number;
+  }
+): Promise<void> {
+  const database = await initDB();
+  await database.execute(
+    `UPDATE conversations SET
+      total_input_tokens = ?,
+      total_output_tokens = ?,
+      turn_count = ?,
+      tool_call_count = ?,
+      updated_at = ?
+     WHERE id = ?`,
+    [
+      metrics.totalInputTokens,
+      metrics.totalOutputTokens,
+      metrics.turnCount,
+      metrics.toolCallCount,
+      Date.now(),
+      id,
+    ]
+  );
+}
+
+/**
+ * 대화의 메트릭 가져오기
+ */
+export async function getConversationMetrics(id: string): Promise<{
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  turnCount: number;
+  toolCallCount: number;
+} | null> {
+  const database = await initDB();
+  const rows = await database.select<DBConversation[]>(
+    `SELECT total_input_tokens, total_output_tokens, turn_count, tool_call_count
+     FROM conversations WHERE id = ?`,
+    [id]
+  );
+
+  if (rows.length === 0) return null;
+
+  const row = rows[0];
+  return {
+    totalInputTokens: row.total_input_tokens ?? 0,
+    totalOutputTokens: row.total_output_tokens ?? 0,
+    turnCount: row.turn_count ?? 0,
+    toolCallCount: row.tool_call_count ?? 0,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────

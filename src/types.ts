@@ -104,6 +104,11 @@ export interface Conversation {
   lastActive: number;
   messageCount: number;
   agentId?: string | null;  // Claude Agent SDK resume용
+  // 대화별 메트릭 (컨텍스트 추적용)
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  turnCount?: number;
+  toolCallCount?: number;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
