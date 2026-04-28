@@ -128,6 +128,8 @@ async fn send_message(
     id: String,
     agent_id: Option<String>,
     history: Option<serde_json::Value>,
+    api_key: Option<String>,
+    provider: Option<String>,
 ) -> Result<(), String> {
     let mut payload = serde_json::json!({
         "type": "user_message",
@@ -141,6 +143,13 @@ async fn send_message(
     // history 가 있으면 sidecar 에 그대로 전달 (이전 턴 컨텍스트용)
     if let Some(h) = history {
         payload["history"] = h;
+    }
+    // API 키와 프로바이더 정보 추가
+    if let Some(key) = api_key {
+        payload["api_key"] = serde_json::Value::String(key);
+    }
+    if let Some(prov) = provider {
+        payload["provider"] = serde_json::Value::String(prov);
     }
     let line = format!("{}\n", payload);
     let tx_holder = get_tx_holder().clone();
@@ -395,13 +404,42 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
         }
     };
 
-    let (cmd_name, args): (&str, Vec<String>) = match chosen {
-        Some((true, path)) => (
-            if cfg!(windows) { "node.exe" } else { "node" },
-            vec![path.to_string_lossy().to_string()],
-        ),
+    // 번들된 Node.js 경로 찾기 (release 모드에서 사용)
+    let bundled_node = exe_dir.as_ref().and_then(|exe| {
+        // 1) exe 옆에 node-bundle/node.exe
+        let node1 = exe.join("node-bundle").join("node.exe");
+        if node1.exists() {
+            return Some(node1);
+        }
+        // 2) _up_/node-bundle/node.exe (Tauri 리소스 배치)
+        let node2 = exe.join("_up_").join("node-bundle").join("node.exe");
+        if node2.exists() {
+            return Some(node2);
+        }
+        // 3) 부모 폴더에서 찾기
+        if let Some(parent) = exe.parent() {
+            let node3 = parent.join("node-bundle").join("node.exe");
+            if node3.exists() {
+                return Some(node3);
+            }
+        }
+        None
+    });
+
+    let (cmd_name, args): (String, Vec<String>) = match chosen {
+        Some((true, path)) => {
+            // release 모드: 번들된 Node.js 우선 사용
+            let node_cmd = if cfg!(windows) {
+                bundled_node
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "node.exe".to_string())
+            } else {
+                "node".to_string()
+            };
+            (node_cmd, vec![path.to_string_lossy().to_string()])
+        },
         Some((false, path)) => (
-            if cfg!(windows) { "npx.cmd" } else { "npx" },
+            if cfg!(windows) { "npx.cmd".to_string() } else { "npx".to_string() },
             vec![
                 "--yes".to_string(),
                 "tsx".to_string(),
@@ -426,7 +464,7 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
     eprintln!("{}", spawn_msg);
     log_lifecycle("runtime.log", &spawn_msg);
 
-    let mut command = Command::new(cmd_name);
+    let mut command = Command::new(&cmd_name);
     command
         .args(&args)
         .current_dir(&sidecar_dir)

@@ -297,6 +297,9 @@ type UserMessage = {
   content: string;
   agent_id?: string;  // resume 지원용 (기존 대화 이어가기)
   history?: Array<{ role: "user" | "assistant"; content: string }>;
+  // API 키 (설정에서 입력한 값)
+  api_key?: string;
+  provider?: "anthropic" | "openai" | "google";
 };
 
 function buildPromptWithHistory(
@@ -327,13 +330,30 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
   const abort = new AbortController();
   activeTurns.set(msg.id, abort);
 
+  // API 키가 메시지에 포함되어 있으면 환경변수로 설정
+  if (msg.api_key) {
+    const provider = msg.provider ?? "anthropic";
+    switch (provider) {
+      case "anthropic":
+        process.env.ANTHROPIC_API_KEY = msg.api_key;
+        break;
+      case "openai":
+        process.env.OPENAI_API_KEY = msg.api_key;
+        break;
+      case "google":
+        process.env.GOOGLE_API_KEY = msg.api_key;
+        break;
+    }
+    logToFile("info", `API key set for provider: ${provider}`);
+  }
+
   const mcpServers = buildMCPServers(cachedMCPHealth);
 
   try {
     const promptWithHistory = buildPromptWithHistory(msg.content, msg.history);
     logToFile(
       "info",
-      `query start id=${msg.id} len=${msg.content.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpServers).length}`
+      `query start id=${msg.id} len=${msg.content.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpServers).length} provider=${msg.provider ?? "anthropic"}`
     );
     const stream = query({
       prompt: promptWithHistory,

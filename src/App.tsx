@@ -579,12 +579,37 @@ export default function App() {
         base64: f.base64,
       }));
 
+      // API 키 가져오기 (localStorage에서)
+      let apiKey: string | undefined;
+      let provider: string | undefined;
+      try {
+        const storedKeys = localStorage.getItem("kda_api_keys");
+        if (storedKeys) {
+          const keys = JSON.parse(storedKeys);
+          // 활성 프로바이더 순서: anthropic > openai > google
+          if (keys.anthropic) {
+            apiKey = keys.anthropic;
+            provider = "anthropic";
+          } else if (keys.openai) {
+            apiKey = keys.openai;
+            provider = "openai";
+          } else if (keys.google) {
+            apiKey = keys.google;
+            provider = "google";
+          }
+        }
+      } catch (e) {
+        console.warn("API 키 로드 실패:", e);
+      }
+
       await invoke("send_message", {
         message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
         agentId,
         history: history.length > 0 ? history : undefined,
         attachments,
+        apiKey,
+        provider,
       });
     } catch (err) {
       setIsStreaming(false);

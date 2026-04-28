@@ -43,6 +43,32 @@ jobs:
           npm ci
           npm run build
 
+      - name: Bundle Node.js
+        shell: pwsh
+        run: |
+          # Node.js 번들링 (완전 독립 실행을 위해)
+          $NodeVersion = "20.18.0"
+          $NodeDir = "node-bundle"
+          $NodeUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip"
+
+          # 다운로드 및 압축 해제
+          New-Item -ItemType Directory -Path $NodeDir -Force
+          Invoke-WebRequest -Uri $NodeUrl -OutFile "node.zip"
+          Expand-Archive -Path "node.zip" -DestinationPath $NodeDir -Force
+
+          # 파일 이동
+          $ExtractedDir = "$NodeDir/node-v$NodeVersion-win-x64"
+          Get-ChildItem $ExtractedDir | ForEach-Object { Move-Item $_.FullName $NodeDir -Force }
+          Remove-Item $ExtractedDir -Force -Recurse
+          Remove-Item "node.zip" -Force
+
+          # 불필요한 파일 제거
+          Remove-Item "$NodeDir/CHANGELOG.md" -Force -ErrorAction SilentlyContinue
+          Remove-Item "$NodeDir/LICENSE" -Force -ErrorAction SilentlyContinue
+          Remove-Item "$NodeDir/README.md" -Force -ErrorAction SilentlyContinue
+
+          Write-Host "Node.js 번들 완료: $(Get-ChildItem $NodeDir -Recurse | Measure-Object -Property Length -Sum | Select-Object -ExpandProperty Sum) bytes"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

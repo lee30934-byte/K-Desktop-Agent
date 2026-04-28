@@ -43,7 +43,8 @@
     "resources": [
       "../sidecar/dist/**/*",
       "../sidecar/node_modules/**/*",
-      "../sidecar/package.json"
+      "../sidecar/package.json",
+      "../node-bundle/**/*"
     ],
     "externalBin": [],
     "copyright": "",
