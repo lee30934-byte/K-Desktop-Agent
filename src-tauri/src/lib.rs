@@ -6,7 +6,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -373,42 +373,78 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
     let dev_entry = sidecar_dir.join("src").join("index.ts");
     let prod_entry = sidecar_dir.join("dist").join("index.js");
 
-    let (cmd_name, args): (&str, Vec<String>) = if dev_entry.exists() {
-        (
+    // 빌드 모드에 따라 우선순위 반대로.
+    // - debug 빌드(dev): dev_entry 우선 (tsx 로 소스 바로 실행 → 재시작 없이 수정 반영)
+    // - release 빌드:    prod_entry 우선 (node 로 dist/index.js 직접 실행 → 빠르고 cmd 창 안 뜸)
+    let prefer_prod = !cfg!(debug_assertions);
+    let chosen = if prefer_prod {
+        if prod_entry.exists() {
+            Some((true, prod_entry.clone()))
+        } else if dev_entry.exists() {
+            Some((false, dev_entry.clone()))
+        } else {
+            None
+        }
+    } else {
+        if dev_entry.exists() {
+            Some((false, dev_entry.clone()))
+        } else if prod_entry.exists() {
+            Some((true, prod_entry.clone()))
+        } else {
+            None
+        }
+    };
+
+    let (cmd_name, args): (&str, Vec<String>) = match chosen {
+        Some((true, path)) => (
+            if cfg!(windows) { "node.exe" } else { "node" },
+            vec![path.to_string_lossy().to_string()],
+        ),
+        Some((false, path)) => (
             if cfg!(windows) { "npx.cmd" } else { "npx" },
             vec![
                 "--yes".to_string(),
                 "tsx".to_string(),
-                dev_entry.to_string_lossy().to_string(),
+                path.to_string_lossy().to_string(),
             ],
-        )
-    } else if prod_entry.exists() {
-        (
-            if cfg!(windows) { "node.exe" } else { "node" },
-            vec![prod_entry.to_string_lossy().to_string()],
-        )
-    } else {
-        return Err(format!(
-            "sidecar 엔트리 없음: {} 또는 {}",
-            dev_entry.display(),
-            prod_entry.display()
-        ));
+        ),
+        None => {
+            return Err(format!(
+                "sidecar 엔트리 없음: {} 또는 {}",
+                dev_entry.display(),
+                prod_entry.display()
+            ));
+        }
     };
 
-    eprintln!(
+    let spawn_msg = format!(
         "[sidecar] spawn cmd={} args={:?} cwd={}",
         cmd_name,
         args,
         sidecar_dir.display()
     );
+    eprintln!("{}", spawn_msg);
+    log_lifecycle("runtime.log", &spawn_msg);
 
-    let mut child = Command::new(cmd_name)
+    let mut command = Command::new(cmd_name);
+    command
         .args(&args)
         .current_dir(&sidecar_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+
+    // Windows: 콘솔 창 숨기기 (CREATE_NO_WINDOW = 0x08000000).
+    // 기본 spawn 은 npx.cmd/node.exe 실행 시 cmd 창이 깜빡이거나 남는다.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command
         .spawn()
         .map_err(|e| format!("사이드카 기동 실패: {}", e))?;
 
@@ -421,11 +457,15 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
     tokio::spawn(async move {
         while let Some(line) = rx.recv().await {
             if let Err(e) = stdin.write_all(line.as_bytes()).await {
-                eprintln!("[sidecar] stdin write 실패: {}", e);
+                let m = format!("[sidecar] stdin write 실패: {}", e);
+                eprintln!("{}", m);
+                log_lifecycle("runtime.log", &m);
                 break;
             }
             if let Err(e) = stdin.flush().await {
-                eprintln!("[sidecar] stdin flush 실패: {}", e);
+                let m = format!("[sidecar] stdin flush 실패: {}", e);
+                eprintln!("{}", m);
+                log_lifecycle("runtime.log", &m);
                 break;
             }
         }
@@ -450,7 +490,11 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
                         }
                         let _ = app_for_stdout.emit("sidecar-event", v);
                     }
-                    Err(e) => eprintln!("[sidecar] stdout JSON parse 실패: {} line={}", e, line),
+                    Err(e) => {
+                        let m = format!("[sidecar] stdout JSON parse 실패: {} line={}", e, line);
+                        eprintln!("{}", m);
+                        log_lifecycle("runtime.log", &m);
+                    }
                 },
                 Ok(None) => {
                     eprintln!("[sidecar] stdout EOF");
@@ -515,12 +559,13 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
         }
     });
 
-    // stderr → 로그만
+    // stderr → 콘솔 + logs/runtime.log (release 모드는 콘솔이 없어서 파일이 유일한 단서)
     tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
             eprintln!("[sidecar:stderr] {}", line);
+            log_lifecycle("runtime.log", &format!("[sidecar:stderr] {}", line));
         }
     });
 
@@ -688,6 +733,7 @@ pub fn run_with_options(start_minimized: bool) {
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),

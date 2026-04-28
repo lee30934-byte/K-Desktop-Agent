@@ -209,6 +209,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           <section className="settings-section">
+            <div className="eyebrow">Shortcuts</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">전역 단축키</div>
+                <div className="settings-row-desc">
+                  어떤 앱에서든 사용할 수 있는 시스템 단축키
+                </div>
+              </div>
+              <div className="shortcuts-list">
+                <div className="shortcut-item">
+                  <span className="shortcut-key mono">Ctrl+Shift+Space</span>
+                  <span className="shortcut-desc">창 표시/숨김 토글</span>
+                </div>
+                <div className="shortcut-item">
+                  <span className="shortcut-key mono">Ctrl+Shift+S</span>
+                  <span className="shortcut-desc">스크린샷 캡처 후 분석</span>
+                </div>
+                <div className="shortcut-item">
+                  <span className="shortcut-key mono">Ctrl+Shift+P</span>
+                  <span className="shortcut-desc">빠른 명령 팔레트</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-section">
             <div className="eyebrow">Application</div>
             <div className="settings-row">
               <div className="settings-row-info">

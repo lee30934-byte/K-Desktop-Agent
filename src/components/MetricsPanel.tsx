@@ -8,6 +8,8 @@ interface MetricsPanelProps {
   currentModel?: string;
   maxContextTokens?: number;
   onManualRefresh?: () => void;
+  onCompressContext?: () => void;
+  isCompressing?: boolean;
 }
 
 export default function MetricsPanel({
@@ -16,6 +18,8 @@ export default function MetricsPanel({
   currentModel = "claude-opus-4.6",
   maxContextTokens = 200000,
   onManualRefresh,
+  onCompressContext,
+  isCompressing = false,
 }: MetricsPanelProps) {
   const [showContextDetails, setShowContextDetails] = useState(false);
 
@@ -81,6 +85,19 @@ export default function MetricsPanel({
                   ? "주의: 컨텍스트 70% 이상"
                   : "✓ 정상 범위"}
             </div>
+            {onCompressContext && contextUsage >= 50 && (
+              <button
+                className="context-compress-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCompressContext();
+                }}
+                disabled={isCompressing}
+                title="대화를 요약하고 새 세션으로 이어서 진행"
+              >
+                {isCompressing ? "⏳ 압축 중..." : "📦 대화 압축 & 이어하기"}
+              </button>
+            )}
             {onManualRefresh && (
               <button
                 className="context-refresh-btn"
@@ -88,9 +105,9 @@ export default function MetricsPanel({
                   e.stopPropagation();
                   onManualRefresh();
                 }}
-                title="세션 수동 갱신"
+                title="세션 수동 갱신 (대화 초기화)"
               >
-                🔄 세션 갱신
+                🔄 세션 초기화
               </button>
             )}
           </div>

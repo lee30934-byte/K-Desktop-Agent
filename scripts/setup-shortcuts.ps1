@@ -4,24 +4,38 @@
   옵션으로 Windows 시작 시 자동 실행 등록도 가능.
 
 .USAGE
-  .\scripts\setup-shortcuts.ps1
-  .\scripts\setup-shortcuts.ps1 -AutoStart
-  .\scripts\setup-shortcuts.ps1 -Remove      # 제거
+  .\scripts\setup-shortcuts.ps1                # dev 모드 (launch.vbs → npm run tauri:dev)
+  .\scripts\setup-shortcuts.ps1 -Release       # release 모드 (k-desktop-agent.exe 직접 실행) — 권장
+  .\scripts\setup-shortcuts.ps1 -Release -AutoStart
+  .\scripts\setup-shortcuts.ps1 -Remove        # 제거
+
+.NOTES
+  -Release 모드를 쓰려면 먼저 `npm run tauri build -- --no-bundle` 로 바이너리를 빌드해야 합니다.
+  release 바이너리는 dev watcher 가 없어서 코드 변경에도 꺼지지 않습니다.
 #>
 
 param(
     [switch]$AutoStart,
-    [switch]$Remove
+    [switch]$Remove,
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $launcher = Join-Path $projectRoot "scripts\launch.vbs"
+$releaseExe = Join-Path $projectRoot "src-tauri\target\release\k-desktop-agent.exe"
 $iconPath = Join-Path $projectRoot "src-tauri\icons\icon.ico"
 
-if (-not (Test-Path $launcher)) {
-    Write-Error "launcher 없음: $launcher"
-    exit 1
+if ($Release) {
+    if (-not (Test-Path $releaseExe)) {
+        Write-Error "release 바이너리 없음: $releaseExe`n먼저 빌드 필요: npm run tauri build -- --no-bundle"
+        exit 1
+    }
+} else {
+    if (-not (Test-Path $launcher)) {
+        Write-Error "launcher 없음: $launcher"
+        exit 1
+    }
 }
 
 # 바로가기 대상 경로들
@@ -67,18 +81,28 @@ if ($Remove) {
     exit 0
 }
 
+$modeLabel = if ($Release) { "RELEASE (production .exe)" } else { "DEV (launch.vbs → npm tauri:dev)" }
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  K Desktop Agent - 바로가기 설치" -ForegroundColor Cyan
+Write-Host "  모드: $modeLabel" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
-# wscript.exe 가 .vbs 를 실행. 이게 타겟.
-$wscript = "$env:SystemRoot\System32\wscript.exe"
+# 타겟 결정: release 면 .exe 직접, 아니면 wscript → vbs
+if ($Release) {
+    $linkTarget = $releaseExe
+    $linkArgs = ""
+    $autoStartArgs = "--minimized"
+} else {
+    $linkTarget = "$env:SystemRoot\System32\wscript.exe"
+    $linkArgs = "`"$launcher`""
+    $autoStartArgs = "`"$launcher`" --minimized"
+}
 
 # 1. 바탕화면
 Write-Host "`n▶ 바탕화면 바로가기 생성..."
 New-Shortcut -Path $desktopLink `
-    -Target $wscript `
-    -Arguments "`"$launcher`"" `
+    -Target $linkTarget `
+    -Arguments $linkArgs `
     -WorkingDirectory $projectRoot `
     -IconLocation "$iconPath,0" `
     -Description "K Desktop Agent - Personal Automation"
@@ -87,8 +111,8 @@ Write-Host "  ✓ $desktopLink" -ForegroundColor Green
 # 2. 시작 메뉴
 Write-Host "`n▶ 시작 메뉴 바로가기 생성..."
 New-Shortcut -Path $startMenuLink `
-    -Target $wscript `
-    -Arguments "`"$launcher`"" `
+    -Target $linkTarget `
+    -Arguments $linkArgs `
     -WorkingDirectory $projectRoot `
     -IconLocation "$iconPath,0" `
     -Description "K Desktop Agent - Personal Automation"
@@ -98,14 +122,14 @@ Write-Host "  ✓ $startMenuLink" -ForegroundColor Green
 if ($AutoStart) {
     Write-Host "`n▶ Windows 시작 시 자동 실행 등록 (숨김 모드)..."
     New-Shortcut -Path $startupLink `
-        -Target $wscript `
-        -Arguments "`"$launcher`" --minimized" `
+        -Target $linkTarget `
+        -Arguments $autoStartArgs `
         -WorkingDirectory $projectRoot `
         -IconLocation "$iconPath,0" `
         -Description "K Desktop Agent (background)"
     Write-Host "  ✓ $startupLink" -ForegroundColor Green
 } else {
-    Write-Host "`n💡 Windows 시작 시 자동 실행도 원하시면: .\scripts\setup-shortcuts.ps1 -AutoStart" -ForegroundColor Gray
+    Write-Host "`n💡 Windows 시작 시 자동 실행도 원하시면: -AutoStart 추가" -ForegroundColor Gray
 }
 
 Write-Host "`n==========================================" -ForegroundColor Green

@@ -1,5 +1,14 @@
+import { save, open } from "@tauri-apps/plugin-dialog";
 import CornerBrackets from "./CornerBrackets";
 import type { Conversation } from "../types";
+import {
+  exportConversation,
+  exportAllConversations,
+  importConversation,
+  importAllConversations,
+  type ExportedConversation,
+  type ExportedBackup,
+} from "../db";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -7,6 +16,7 @@ interface SidebarProps {
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onDeleteConversation?: (id: string) => void;
+  onRefreshConversations?: () => void;
   mcpConnected?: boolean;
   onOpenSettings?: () => void;
 }
@@ -17,9 +27,89 @@ export default function Sidebar({
   onSelectConversation,
   onNewConversation,
   onDeleteConversation,
+  onRefreshConversations,
   mcpConnected = false,
   onOpenSettings,
 }: SidebarProps) {
+  // 현재 대화 내보내기
+  const handleExportCurrent = async () => {
+    if (!activeConversationId) {
+      alert("내보낼 대화를 선택하세요.");
+      return;
+    }
+
+    const data = await exportConversation(activeConversationId);
+    if (!data) {
+      alert("대화를 찾을 수 없습니다.");
+      return;
+    }
+
+    const filePath = await save({
+      defaultPath: `conversation_${data.conversation.title.replace(/[^a-zA-Z0-9가-힣]/g, "_")}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+
+    if (filePath) {
+      const fs = await import("@tauri-apps/plugin-fs");
+      await fs.writeTextFile(filePath, JSON.stringify(data, null, 2));
+      alert(`내보내기 완료: ${filePath}`);
+    }
+  };
+
+  // 전체 백업 내보내기
+  const handleExportAll = async () => {
+    const data = await exportAllConversations();
+
+    const filePath = await save({
+      defaultPath: `k_agent_backup_${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+
+    if (filePath) {
+      const fs = await import("@tauri-apps/plugin-fs");
+      await fs.writeTextFile(filePath, JSON.stringify(data, null, 2));
+      alert(`전체 백업 완료: ${data.conversations.length}개 대화`);
+    }
+  };
+
+  // 대화 가져오기
+  const handleImport = async () => {
+    const filePath = await open({
+      filters: [{ name: "JSON", extensions: ["json"] }],
+      multiple: false,
+    });
+
+    if (!filePath) return;
+
+    try {
+      const fs = await import("@tauri-apps/plugin-fs");
+      const content = await fs.readTextFile(filePath as string);
+      const data = JSON.parse(content);
+
+      // 전체 백업인지 단일 대화인지 판별
+      if (data.conversations && Array.isArray(data.conversations)) {
+        // 전체 백업
+        const backup = data as ExportedBackup;
+        const imported = await importAllConversations(backup);
+        alert(`${imported}개 대화 가져오기 완료!`);
+      } else if (data.conversation && data.messages) {
+        // 단일 대화
+        const conv = data as ExportedConversation;
+        await importConversation(conv, true);
+        alert(`"${conv.conversation.title}" 가져오기 완료!`);
+      } else {
+        alert("유효하지 않은 백업 파일입니다.");
+        return;
+      }
+
+      // 대화 목록 새로고침
+      onRefreshConversations?.();
+    } catch (e) {
+      console.error("Import error:", e);
+      alert("가져오기 실패: " + (e as Error).message);
+    }
+  };
+
   return (
     <aside className="sidebar">
       {/* 브랜드 헤더 */}
@@ -101,16 +191,29 @@ export default function Sidebar({
         </div>
       </div>
 
+      {/* 백업/복구 섹션 */}
+      <div className="sidebar-section">
+        <div className="eyebrow section-label">Backup</div>
+        <button className="tool-item" onClick={handleExportCurrent} title="현재 대화 내보내기">
+          <span className="tool-icon">📤</span>
+          <span>Export Chat</span>
+        </button>
+        <button className="tool-item" onClick={handleExportAll} title="전체 백업">
+          <span className="tool-icon">💾</span>
+          <span>Backup All</span>
+        </button>
+        <button className="tool-item" onClick={handleImport} title="가져오기">
+          <span className="tool-icon">📥</span>
+          <span>Import</span>
+        </button>
+      </div>
+
       {/* 툴 섹션 */}
       <div className="sidebar-section sidebar-bottom">
         <div className="eyebrow section-label">Tools</div>
         <button className="tool-item" onClick={onOpenSettings}>
           <span className="tool-icon">⚙</span>
           <span>Settings</span>
-        </button>
-        <button className="tool-item" title="Coming soon">
-          <span className="tool-icon">⌘</span>
-          <span>Shortcuts</span>
         </button>
       </div>
 

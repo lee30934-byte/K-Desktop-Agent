@@ -21,4 +21,18 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  // 번들 최적화: 큰 라이브러리 분리
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "react-vendor": ["react", "react-dom"],
+          "markdown": ["react-markdown", "remark-gfm", "rehype-highlight"],
+          "highlight": ["highlight.js"],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 600, // 경고 임계치 상향
+  },
 }));

@@ -18,6 +18,7 @@ import type {
   ElicitationResponse,
 } from "./types";
 import ElicitationDialog from "./components/ElicitationDialog";
+import CommandPalette from "./components/CommandPalette";
 import {
   initDB,
   getAllConversations,
@@ -29,8 +30,11 @@ import {
   saveMessage,
   getConversationAgentId,
   generateTitleFromMessage,
+  generateSummaryPrompt,
+  createCompressedConversation,
 } from "./db";
 import "./App.css";
+import logger from "./utils/logger";
 
 export default function App() {
   // ─── 상태 ───────────────────────────────────────────
@@ -56,6 +60,7 @@ export default function App() {
   const [dbReady, setDbReady] = useState(false);
   const [elicitationRequest, setElicitationRequest] = useState<ElicitationRequest | null>(null);
   const elicitationResolveRef = useRef<((response: ElicitationResponse) => void) | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // ─── Auto Session Continuity ────────────────────────────
   // Claude Max 기준 약 200K 토큰, 80%에서 갱신 (더 여유있게)
@@ -66,6 +71,7 @@ export default function App() {
   // dev rebuild 등으로 앱이 순간 종료됐다 복구된 경우를 감지해 표시
   const [recentRestartInfo, setRecentRestartInfo] = useState<string | null>(null);
   const isRefreshingSessionRef = useRef(false);
+  const [isCompressing, setIsCompressing] = useState(false);
 
   // 메시지 저장 디바운스용 ref
   const pendingSaveRef = useRef<Map<string, ChatMessage>>(new Map());
@@ -119,6 +125,24 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [recentRestartInfo]);
 
+  // ─── 앱 내 단축키 (Ctrl+P: 명령 팔레트) ─────────────────
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+P: 명령 팔레트 열기/닫기
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+      }
+      // Escape: 닫기
+      if (e.key === "Escape" && commandPaletteOpen) {
+        setCommandPaletteOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [commandPaletteOpen]);
+
   // ─── DB 초기화 및 대화 목록 로드 ─────────────────────
   useEffect(() => {
     (async () => {
@@ -127,7 +151,7 @@ export default function App() {
         const convs = await getAllConversations();
         setConversations(convs);
         setDbReady(true);
-        console.log("[App] DB 초기화 완료, 대화 수:", convs.length);
+        logger.log("[App] DB 초기화 완료, 대화 수:", convs.length);
       } catch (err) {
         console.error("[App] DB 초기화 실패:", err);
         setDbReady(true); // 실패해도 앱은 동작하게
@@ -173,10 +197,10 @@ export default function App() {
     switch (ev.type) {
       case "ready": {
         setStatus("connected");
-        console.log(`[sidecar] ready v${ev.version}`);
+        logger.log(`[sidecar] ready v${ev.version}`);
         // MCP 상태 재확인 요청 (시작 시 mcp_status 이벤트 놓칠 수 있음)
         invoke("ping_sidecar").catch((e) =>
-          console.warn("[sidecar] ping failed:", e)
+          logger.warn("[sidecar] ping failed:", e)
         );
         break;
       }
@@ -303,7 +327,7 @@ export default function App() {
         const newInputTokens = ev.computed_usage?.input_tokens ?? ev.usage?.input_tokens ?? 0;
         const newOutputTokens = ev.computed_usage?.output_tokens ?? ev.usage?.output_tokens ?? 0;
 
-        console.log(`[Metrics] Turn tokens - IN: ${newInputTokens}, OUT: ${newOutputTokens}`);
+        logger.log(`[Metrics] Turn tokens - IN: ${newInputTokens}, OUT: ${newOutputTokens}`);
 
         setMetrics((m) => {
           const updatedMetrics = {
@@ -316,7 +340,7 @@ export default function App() {
           // 90% 임계치 도달 시 자동 세션 갱신 트리거
           const contextUsage = updatedMetrics.totalInputTokens / MAX_CONTEXT_TOKENS;
           if (contextUsage >= CONTEXT_THRESHOLD && !isRefreshingSessionRef.current) {
-            console.log(`[Session] 컨텍스트 ${(contextUsage * 100).toFixed(1)}% 도달 - 세션 자동 갱신 시작`);
+            logger.log(`[Session] 컨텍스트 ${(contextUsage * 100).toFixed(1)}% 도달 - 세션 자동 갱신 시작`);
             isRefreshingSessionRef.current = true;
             // 비동기로 세션 갱신 실행
             setTimeout(() => triggerSessionRefresh(), 100);
@@ -341,7 +365,7 @@ export default function App() {
             `[sidecar] ${ev.message}`
           );
         } else {
-          console.log(`[sidecar] ${ev.message}`);
+          logger.log(`[sidecar] ${ev.message}`);
         }
         break;
       }
@@ -661,7 +685,7 @@ export default function App() {
 
   // 세션 자동 갱신 트리거
   async function triggerSessionRefresh() {
-    console.log("[Session] 세션 갱신 시작...");
+    logger.log("[Session] 세션 갱신 시작...");
 
     const convId = activeConversationIdRef.current;
     if (!convId) {
@@ -673,7 +697,7 @@ export default function App() {
       // 1. 현재 대화 요약 생성
       const summary = generateConversationSummary(messages);
       setSessionSummary(summary);
-      console.log("[Session] 대화 요약 생성 완료");
+      logger.log("[Session] 대화 요약 생성 완료");
 
       // 2. agentId 리셋 (새 세션 시작)
       await updateConversationAgentId(convId, null);
@@ -682,7 +706,7 @@ export default function App() {
           c.id === convId ? { ...c, agentId: null } : c
         )
       );
-      console.log("[Session] agentId 리셋 완료");
+      logger.log("[Session] agentId 리셋 완료");
 
       // 3. 메트릭 초기화 (새 세션)
       setMetrics({
@@ -703,12 +727,99 @@ export default function App() {
         "info"
       );
 
-      console.log("[Session] 세션 갱신 완료");
+      logger.log("[Session] 세션 갱신 완료");
     } catch (err) {
       console.error("[Session] 세션 갱신 실패:", err);
       pushSystem("세션 갱신에 실패했습니다.", "error");
     } finally {
       isRefreshingSessionRef.current = false;
+    }
+  }
+
+  // ─── 대화 압축 & 이어하기 ─────────────────────────────
+  async function handleCompressContext() {
+    if (!activeConversationId || isCompressing || isStreaming) {
+      return;
+    }
+
+    const currentConv = conversations.find((c) => c.id === activeConversationId);
+    if (!currentConv) return;
+
+    // 확인 메시지
+    const confirmed = window.confirm(
+      "대화를 요약하고 새 세션으로 이어서 진행합니다.\n\n" +
+      "• 현재 대화는 그대로 보존됩니다\n" +
+      "• 새 대화가 생성되고 요약이 포함됩니다\n" +
+      "• Claude가 요약을 참고해 대화를 이어갑니다\n\n" +
+      "계속하시겠습니까?"
+    );
+    if (!confirmed) return;
+
+    setIsCompressing(true);
+    pushSystem("📦 대화 압축 중... 잠시만 기다려주세요.", "info");
+
+    try {
+      // 1. 요약 프롬프트 생성
+      const summaryPrompt = generateSummaryPrompt(messages);
+
+      // 2. Claude에게 요약 요청 (특별한 턴으로 처리)
+      const summaryTurnId = crypto.randomUUID();
+
+      // 요약 요청을 보내고 응답 받기
+      await invoke("send_message", {
+        message: summaryPrompt,
+        id: summaryTurnId,
+        agentId: null, // 새 세션으로 요약 요청
+        history: null,
+      });
+
+      // 응답을 기다림 (done 이벤트가 올 때까지)
+      // 실제로는 sidecar 이벤트에서 처리하므로, 여기서는 타이머로 대기
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      // 마지막 assistant 메시지가 요약이라고 가정
+      const lastAssistantMsg = messages
+        .filter((m) => m.role === "assistant")
+        .pop();
+
+      const summary = lastAssistantMsg?.content || "이전 대화 내용 요약";
+
+      // 3. 압축된 새 대화 생성
+      const newConvId = await createCompressedConversation(
+        activeConversationId,
+        summary,
+        currentConv.title
+      );
+
+      // 4. 대화 목록 새로고침
+      const updatedConvs = await getAllConversations();
+      setConversations(updatedConvs);
+
+      // 5. 새 대화로 전환
+      setActiveConversationId(newConvId);
+      const newMessages = await getMessages(newConvId);
+      setMessages(newMessages);
+
+      // 6. 메트릭 초기화
+      setMetrics({
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        turnCount: 0,
+        toolCallCount: 0,
+        startedAt: Date.now(),
+      });
+
+      pushSystem(
+        `✅ 대화 압축 완료! 새 세션 "${currentConv.title} (continued)"에서 이어갑니다.`,
+        "info"
+      );
+
+      logger.log(`[Compress] 대화 압축 완료: ${activeConversationId} → ${newConvId}`);
+    } catch (err) {
+      console.error("[Compress] 대화 압축 실패:", err);
+      pushSystem("대화 압축에 실패했습니다: " + (err as Error).message, "error");
+    } finally {
+      setIsCompressing(false);
     }
   }
 
@@ -745,30 +856,66 @@ export default function App() {
   // 전역에서 접근 가능하게 (MCP 도구에서 호출용) - window에 노출
   useEffect(() => {
     (window as any).__showElicitation = showElicitation;
+    (window as any).__kdaSendMessage = handleSendMessage;
+    (window as any).__kdaOpenCommandPalette = () => setCommandPaletteOpen(true);
     return () => {
       delete (window as any).__showElicitation;
+      delete (window as any).__kdaSendMessage;
+      delete (window as any).__kdaOpenCommandPalette;
     };
-  }, []);
+  }, [handleSendMessage]);
 
   // ─── 전역 단축키 등록 (Phase 6) ────────────────────────
   useEffect(() => {
-    let registered = false;
+    let registeredK = false;
+    let registeredS = false;
+    let registeredP = false;
 
     const setupShortcuts = async () => {
       try {
-        // Ctrl+Shift+K: 창 토글
-        await register("Ctrl+Shift+K", async () => {
-          console.log("[Shortcut] Ctrl+Shift+K triggered");
+        // Ctrl+Shift+Space: 창 토글 (K는 브라우저 DevTools와 충돌)
+        await register("Ctrl+Shift+Space", async () => {
+          logger.log("[Shortcut] Ctrl+Shift+Space triggered");
           try {
-            // 현재 창 상태 확인하고 토글
             await invoke("show_main_window");
           } catch (err) {
             console.error("[Shortcut] 창 토글 실패:", err);
           }
         });
-        console.log("[Shortcut] Ctrl+Shift+K 등록 완료");
+        logger.log("[Shortcut] Ctrl+Shift+Space 등록 완료");
+        registeredK = true;
 
-        registered = true;
+        // Ctrl+Shift+S: 스크린샷 캡처 후 분석
+        await register("Ctrl+Shift+S", async () => {
+          logger.log("[Shortcut] Ctrl+Shift+S triggered");
+          try {
+            // 창 표시
+            await invoke("show_main_window");
+            // 전역 함수로 메시지 전송 (App 컴포넌트에서 노출)
+            if ((window as any).__kdaSendMessage) {
+              (window as any).__kdaSendMessage("현재 화면을 스크린샷으로 캡처해서 분석해줘");
+            }
+          } catch (err) {
+            console.error("[Shortcut] 스크린샷 분석 실패:", err);
+          }
+        });
+        logger.log("[Shortcut] Ctrl+Shift+S 등록 완료");
+        registeredS = true;
+
+        // Ctrl+Shift+P: 명령 팔레트 열기
+        await register("Ctrl+Shift+P", async () => {
+          logger.log("[Shortcut] Ctrl+Shift+P triggered");
+          try {
+            await invoke("show_main_window");
+            if ((window as any).__kdaOpenCommandPalette) {
+              (window as any).__kdaOpenCommandPalette();
+            }
+          } catch (err) {
+            console.error("[Shortcut] 명령 팔레트 실패:", err);
+          }
+        });
+        logger.log("[Shortcut] Ctrl+Shift+P 등록 완료");
+        registeredP = true;
       } catch (err) {
         console.error("[Shortcut] 전역 단축키 등록 실패:", err);
       }
@@ -777,9 +924,9 @@ export default function App() {
     setupShortcuts();
 
     return () => {
-      if (registered) {
-        unregister("Ctrl+Shift+K").catch(console.error);
-      }
+      if (registeredK) unregister("Ctrl+Shift+Space").catch(console.error);
+      if (registeredS) unregister("Ctrl+Shift+S").catch(console.error);
+      if (registeredP) unregister("Ctrl+Shift+P").catch(console.error);
     };
   }, []);
 
@@ -791,6 +938,7 @@ export default function App() {
         onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
+        onRefreshConversations={refreshConversations}
         mcpConnected={mcpState.connected}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -807,6 +955,8 @@ export default function App() {
         metrics={metrics}
         mcpConnected={mcpState.connected}
         onManualRefresh={triggerSessionRefresh}
+        onCompressContext={handleCompressContext}
+        isCompressing={isCompressing}
       />
 
       <Settings
@@ -818,6 +968,14 @@ export default function App() {
       <ElicitationDialog
         request={elicitationRequest}
         onResponse={handleElicitationResponse}
+      />
+
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onSendMessage={handleSendMessage}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onNewChat={handleNewConversation}
       />
 
       {/* 세션 자동 갱신 토스트 */}

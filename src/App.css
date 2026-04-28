@@ -1914,6 +1914,46 @@
   transform: scale(0.98);
 }
 
+/* 대화 압축 버튼 */
+.context-compress-btn {
+  width: 100%;
+  margin-top: var(--space-sm);
+  padding: 8px 12px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 165, 0, 0.2) 0%,
+    rgba(255, 165, 0, 0.08) 100%
+  );
+  border: 1px solid rgba(255, 165, 0, 0.5);
+  border-radius: var(--radius-sm);
+  color: #ffa500;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.context-compress-btn:hover:not(:disabled) {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 165, 0, 0.3) 0%,
+    rgba(255, 165, 0, 0.15) 100%
+  );
+  border-color: #ffa500;
+  box-shadow: 0 0 12px rgba(255, 165, 0, 0.3);
+}
+
+.context-compress-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.context-compress-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* ─── Settings Modal ────────────────────────────────── */
 
 .settings-overlay {
@@ -2308,4 +2348,217 @@
   font-weight: 600;
   color: var(--accent);
   letter-spacing: 0.05em;
+}
+
+/* ─── Shortcuts 섹션 (Settings) ──────────────────────────────── */
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--bg-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.shortcut-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.shortcut-item:hover {
+  border-color: var(--accent-dim);
+  background: rgba(79, 232, 225, 0.05);
+}
+
+.shortcut-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: linear-gradient(
+    180deg,
+    rgba(79, 232, 225, 0.15) 0%,
+    rgba(79, 232, 225, 0.05) 100%
+  );
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.shortcut-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+/* ─── Command Palette (Phase 6) ──────────────────────────────── */
+
+.command-palette-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 2000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 15vh;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.command-palette {
+  width: 560px;
+  max-width: 90vw;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 40px var(--accent-glow);
+  overflow: hidden;
+  animation: slideDown 0.2s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.command-palette-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.command-palette-icon {
+  font-size: 18px;
+  color: var(--accent);
+}
+
+.command-palette-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--font-body);
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.command-palette-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.command-palette-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 4px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.command-palette-list {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: var(--space-sm) 0;
+}
+
+.command-palette-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.command-palette-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.command-palette-list::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 3px;
+}
+
+.command-palette-empty {
+  padding: var(--space-xl);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 14px;
+}
+
+.command-palette-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 10px var(--space-lg);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.command-palette-item:hover,
+.command-palette-item.selected {
+  background: rgba(79, 232, 225, 0.08);
+}
+
+.command-palette-item.selected {
+  border-left: 2px solid var(--accent);
+  padding-left: calc(var(--space-lg) - 2px);
+}
+
+.command-item-icon {
+  font-size: 18px;
+  width: 28px;
+  text-align: center;
+}
+
+.command-item-label {
+  flex: 1;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.command-item-shortcut {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 3px 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.command-palette-footer {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-lg);
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--bg-1);
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-tertiary);
 }

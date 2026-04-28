@@ -7,10 +7,44 @@
 
 import process from "node:process";
 import readline from "node:readline";
-import { existsSync } from "node:fs";
+import { existsSync, createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { spawnSync } from "node:child_process";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpStdioServerConfig } from "@anthropic-ai/claude-agent-sdk";
+
+// ─── 파일 로거 ─────────────────────────────────────────
+// release 모드에서는 sidecar 의 stderr 가 소실되므로 `logs/sidecar.log` 에 직접 append.
+// path: <project-root>/logs/sidecar.log — __filename 이 sidecar/src 또는 sidecar/dist 안에 있어서 2단계 위로.
+const __filename_local = fileURLToPath(import.meta.url);
+const __dirname_local = path.dirname(__filename_local);
+const LOG_DIR = path.resolve(__dirname_local, "..", "..", "logs");
+let fileLogStream: WriteStream | null = null;
+try {
+  mkdirSync(LOG_DIR, { recursive: true });
+  fileLogStream = createWriteStream(path.join(LOG_DIR, "sidecar.log"), { flags: "a" });
+} catch {
+  // 로깅 실패가 sidecar 동작을 막으면 안 됨
+}
+
+function logToFile(level: string, message: string): void {
+  if (!fileLogStream) return;
+  const ts = Math.floor(Date.now() / 1000);
+  try {
+    fileLogStream.write(`[epoch=${ts}] ${level}: ${message}\n`);
+  } catch {
+    // ignore
+  }
+}
+
+// 크래시 로그: uncaught 예외/거부를 sidecar.log 에 남김 (release 에서도 원인 추적 가능)
+process.on("uncaughtException", (err) => {
+  logToFile("fatal", `uncaughtException: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+});
+process.on("unhandledRejection", (reason) => {
+  logToFile("fatal", `unhandledRejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`);
+});
 
 // ─── 설정 ─────────────────────────────────────────────
 
@@ -115,6 +149,7 @@ function emit(obj: Record<string, unknown>): void {
 
 function log(level: "info" | "warn" | "error", message: string): void {
   emit({ type: "log", level, message });
+  logToFile(level, message);
 }
 
 // ─── Elicitation (사용자 확인 요청) ─────────────────────
@@ -296,6 +331,10 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
 
   try {
     const promptWithHistory = buildPromptWithHistory(msg.content, msg.history);
+    logToFile(
+      "info",
+      `query start id=${msg.id} len=${msg.content.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpServers).length}`
+    );
     const stream = query({
       prompt: promptWithHistory,
       options: {
@@ -387,8 +426,11 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    logToFile("error", `query error id=${msg.id}: ${message}${stack ? `\n${stack}` : ""}`);
     emit({ type: "error", id: msg.id, message });
   } finally {
+    logToFile("info", `query end id=${msg.id}`);
     activeTurns.delete(msg.id);
   }
 }

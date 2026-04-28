@@ -110,14 +110,31 @@ stdin/stdout JSON 라인 기반. 자세한 건 `sidecar/src/index.ts` 주석.
 
 ## 개발 워크플로우
 
-### 로컬 개발 (매일)
-```powershell
-cd C:\Users\user\Documents\K-Desktop-Agent
-.\scripts\run-dev.ps1
-```
-TSX/CSS 수정은 HMR 자동 적용. Rust/sidecar 수정은 Ctrl+C 후 재시작.
+### ⭐ 운영 원칙: Release 와 Dev 분리
+K 가 일상적으로 사용하는 앱은 **release 바이너리**. Claude 가 코드 수정할 때만 dev 모드 띄움.
+이유: dev 모드는 Rust 파일 변경 시 자동 full rebuild 하면서 창이 40~60초 사라짐.
+Release 는 watcher 가 없어 **절대 안 꺼짐**. 성능도 더 빠름.
 
-### 릴리즈 빌드 (Phase 5)
+Tauri identifier (`com.k.desktop-agent`) 가 같아서 **대화 DB/설정은 양쪽이 공유**.
+
+### 일상 사용 (Release)
+바탕화면 아이콘은 `src-tauri/target/release/k-desktop-agent.exe` 직접 실행.
+한 번 셋업:
+```powershell
+npm run tauri build -- --no-bundle        # 최초 release 빌드 (5~10분)
+.\scripts\setup-shortcuts.ps1 -Release    # 바로가기를 release 로 교체
+```
+
+### 코드 수정 워크플로우 (Claude 가 주로 수행)
+1. **dev 모드 띄우기**: `.\scripts\run-dev.ps1` — HMR 로 빠른 반복
+2. **preflight**: `.\scripts\check.ps1 -SkipDeps`
+3. **동작 확인**: dev 창에서 변경 검증
+4. **release 반영**: `.\scripts\rebuild-release.ps1 -Launch` — 재빌드 후 새 바이너리로 교체
+5. dev 세션은 Ctrl+C 또는 내버려둠 (release 와 동시 실행 가능)
+
+**중요**: Rust 또는 sidecar 코드를 바꾼 뒤에는 **반드시 rebuild-release 제안** — 안 그러면 K 의 일상 앱은 옛날 코드로 동작.
+
+### 인스톨러 빌드 (Phase 5 — 아직 미사용)
 ```powershell
 .\scripts\build-msi.ps1
 ```
@@ -125,9 +142,10 @@ MSI/NSIS 인스톨러가 `src-tauri/target/release/bundle/` 에 생성.
 
 ### 바탕화면 바로가기 / 자동시작
 ```powershell
-.\scripts\setup-shortcuts.ps1             # 바탕화면 + 시작메뉴만
-.\scripts\setup-shortcuts.ps1 -AutoStart  # + Windows 시작 시 자동 실행
-.\scripts\setup-shortcuts.ps1 -Remove     # 모두 제거
+.\scripts\setup-shortcuts.ps1 -Release             # release 모드 (권장)
+.\scripts\setup-shortcuts.ps1 -Release -AutoStart  # + Windows 시작 시 자동 실행
+.\scripts\setup-shortcuts.ps1                      # dev 모드 (launch.vbs)
+.\scripts\setup-shortcuts.ps1 -Remove              # 모두 제거
 ```
 
 ### DevTools

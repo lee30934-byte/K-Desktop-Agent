@@ -16,7 +16,8 @@
       "Bash(sqlite3 \"C:/Users/user/AppData/Roaming/com.k.desktop-agent/conversations.db\" \"SELECT id, title, message_count FROM conversations c LEFT JOIN \\(SELECT conversation_id, COUNT\\(*\\) as message_count FROM messages GROUP BY conversation_id\\) m ON m.conversation_id = c.id ORDER BY updated_at DESC LIMIT 10;\")",
       "Bash(python *)",
       "Bash(taskkill /PID 31836 /F)",
-      "Bash(node test-history.mjs)"
+      "Bash(node test-history.mjs)",
+      "Bash(start \"\" \"C:/Users/user/Documents/K-Desktop-Agent/src-tauri/target/release/k-desktop-agent.exe\")"
     ]
   }
 }

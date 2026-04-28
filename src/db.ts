@@ -5,6 +5,7 @@
 
 import Database from "@tauri-apps/plugin-sql";
 import type { ChatMessage, Conversation } from "./types";
+import logger from "./utils/logger";
 
 // 싱글톤 DB 인스턴스
 let db: Database | null = null;
@@ -59,7 +60,7 @@ export async function initDB(): Promise<Database> {
     ON conversations(updated_at DESC)
   `);
 
-  console.log("[DB] 초기화 완료");
+  logger.log("[DB] 초기화 완료");
   return db;
 }
 
@@ -381,4 +382,284 @@ export function generateTitleFromMessage(content: string): string {
     ? firstLine.slice(0, 37) + "..."
     : firstLine;
   return truncated || "New Conversation";
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Export / Import (백업 & 복구)
+// ─────────────────────────────────────────────────────────────────
+
+export interface ExportedConversation {
+  version: "1.0";
+  exportedAt: string;
+  conversation: {
+    id: string;
+    title: string;
+    createdAt: number;
+    updatedAt: number;
+    agentId: string | null;
+  };
+  messages: ChatMessage[];
+}
+
+export interface ExportedBackup {
+  version: "1.0";
+  exportedAt: string;
+  conversations: ExportedConversation[];
+}
+
+/**
+ * 단일 대화 내보내기용 데이터 생성
+ */
+export async function exportConversation(conversationId: string): Promise<ExportedConversation | null> {
+  const database = await initDB();
+
+  // 대화 정보 가져오기
+  const convRows = await database.select<DBConversation[]>(
+    `SELECT * FROM conversations WHERE id = ?`,
+    [conversationId]
+  );
+
+  if (convRows.length === 0) {
+    return null;
+  }
+
+  const conv = convRows[0];
+  const messages = await getMessages(conversationId);
+
+  return {
+    version: "1.0",
+    exportedAt: new Date().toISOString(),
+    conversation: {
+      id: conv.id,
+      title: conv.title,
+      createdAt: conv.created_at,
+      updatedAt: conv.updated_at,
+      agentId: conv.agent_id,
+    },
+    messages,
+  };
+}
+
+/**
+ * 모든 대화 내보내기용 데이터 생성
+ */
+export async function exportAllConversations(): Promise<ExportedBackup> {
+  const database = await initDB();
+
+  const convRows = await database.select<DBConversation[]>(
+    `SELECT * FROM conversations ORDER BY updated_at DESC`
+  );
+
+  const conversations: ExportedConversation[] = [];
+
+  for (const conv of convRows) {
+    const messages = await getMessages(conv.id);
+    conversations.push({
+      version: "1.0",
+      exportedAt: new Date().toISOString(),
+      conversation: {
+        id: conv.id,
+        title: conv.title,
+        createdAt: conv.created_at,
+        updatedAt: conv.updated_at,
+        agentId: conv.agent_id,
+      },
+      messages,
+    });
+  }
+
+  return {
+    version: "1.0",
+    exportedAt: new Date().toISOString(),
+    conversations,
+  };
+}
+
+/**
+ * 단일 대화 가져오기
+ * @param data 내보낸 대화 데이터
+ * @param newId 새 ID 사용 여부 (true면 새 ID 생성, false면 기존 ID 유지)
+ */
+export async function importConversation(
+  data: ExportedConversation,
+  newId: boolean = true
+): Promise<string> {
+  const database = await initDB();
+
+  const convId = newId ? crypto.randomUUID() : data.conversation.id;
+  const now = Date.now();
+
+  // 기존 대화가 있으면 삭제 (newId가 false일 때만 해당)
+  if (!newId) {
+    await database.execute(`DELETE FROM messages WHERE conversation_id = ?`, [convId]);
+    await database.execute(`DELETE FROM conversations WHERE id = ?`, [convId]);
+  }
+
+  // 대화 생성
+  await database.execute(
+    `INSERT INTO conversations (id, title, created_at, updated_at, agent_id) VALUES (?, ?, ?, ?, ?)`,
+    [
+      convId,
+      data.conversation.title + (newId ? " (imported)" : ""),
+      newId ? now : data.conversation.createdAt,
+      now,
+      null, // agentId는 복구 시 초기화 (세션 만료됨)
+    ]
+  );
+
+  // 메시지 삽입 (ID도 새로 생성)
+  for (const msg of data.messages) {
+    const newMsg = { ...msg, id: newId ? crypto.randomUUID() : msg.id };
+    const params = messageToDbParams(convId, newMsg);
+    await database.execute(
+      `INSERT INTO messages
+       (id, conversation_id, role, content, timestamp, streaming, level,
+        tool_id, tool_name, tool_input, tool_output, tool_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params
+    );
+  }
+
+  logger.log(`[DB] 대화 가져오기 완료: ${convId} (${data.messages.length}개 메시지)`);
+  return convId;
+}
+
+/**
+ * 전체 백업 가져오기
+ */
+export async function importAllConversations(data: ExportedBackup): Promise<number> {
+  let imported = 0;
+
+  for (const conv of data.conversations) {
+    try {
+      await importConversation(conv, true);
+      imported++;
+    } catch (e) {
+      logger.error(`[DB] 대화 가져오기 실패:`, e);
+    }
+  }
+
+  logger.log(`[DB] 전체 백업 가져오기 완료: ${imported}/${data.conversations.length}개`);
+  return imported;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Context Compression (대화 압축)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * 대화를 요약 형식으로 압축
+ * 실제 요약은 Claude에게 요청하므로, 여기서는 요약 요청용 프롬프트 생성
+ */
+export function generateSummaryPrompt(messages: ChatMessage[]): string {
+  // user/assistant 메시지만 추출
+  const relevantMessages = messages.filter(
+    (m) => m.role === "user" || m.role === "assistant"
+  );
+
+  // 메시지를 텍스트로 변환
+  const transcript = relevantMessages
+    .map((m) => `[${m.role.toUpperCase()}]: ${m.content.slice(0, 500)}${m.content.length > 500 ? "..." : ""}`)
+    .join("\n\n");
+
+  return `다음은 이전 대화 내용입니다. 핵심 내용을 3-5문장으로 요약해주세요:
+
+---
+${transcript}
+---
+
+요약:`;
+}
+
+/**
+ * 압축된 대화로 새 세션 시작을 위한 시스템 메시지 생성
+ */
+export function createCompressedSessionMessage(
+  summary: string,
+  originalMessageCount: number,
+  originalTurnCount: number
+): ChatMessage {
+  return {
+    id: crypto.randomUUID(),
+    role: "system",
+    content: `[이전 대화 요약 - ${originalMessageCount}개 메시지, ${originalTurnCount}턴]\n\n${summary}\n\n---\n위 내용은 이전 대화의 요약입니다. 이 맥락을 참고하여 대화를 이어가세요.`,
+    timestamp: Date.now(),
+    level: "info",
+  };
+}
+
+/**
+ * 대화 압축 후 새 대화 생성
+ * @param originalConvId 원본 대화 ID
+ * @param summary 요약 내용
+ * @returns 새 대화 ID
+ */
+export async function createCompressedConversation(
+  originalConvId: string,
+  summary: string,
+  originalTitle: string
+): Promise<string> {
+  const database = await initDB();
+  const originalMessages = await getMessages(originalConvId);
+
+  // 원본 대화 정보
+  const userMessages = originalMessages.filter((m) => m.role === "user");
+  const turnCount = userMessages.length;
+
+  // 새 대화 생성
+  const newConvId = crypto.randomUUID();
+  const now = Date.now();
+
+  await database.execute(
+    `INSERT INTO conversations (id, title, created_at, updated_at, agent_id) VALUES (?, ?, ?, ?, ?)`,
+    [
+      newConvId,
+      `${originalTitle} (continued)`,
+      now,
+      now,
+      null, // 새 세션이므로 agentId 초기화
+    ]
+  );
+
+  // 요약 시스템 메시지 저장
+  const summaryMessage = createCompressedSessionMessage(
+    summary,
+    originalMessages.length,
+    turnCount
+  );
+
+  await saveMessage(newConvId, summaryMessage);
+
+  logger.log(`[DB] 압축 대화 생성: ${newConvId} (원본: ${originalConvId}, ${originalMessages.length}개 → 1개 요약)`);
+
+  return newConvId;
+}
+
+/**
+ * 대화 통계 계산 (압축 필요 여부 판단용)
+ */
+export async function getConversationStats(conversationId: string): Promise<{
+  messageCount: number;
+  turnCount: number;
+  estimatedTokens: number;
+  needsCompression: boolean;
+}> {
+  const messages = await getMessages(conversationId);
+
+  const userMessages = messages.filter((m) => m.role === "user");
+  const turnCount = userMessages.length;
+
+  // 토큰 추정 (대략 4자 = 1토큰)
+  const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  const estimatedTokens = Math.ceil(totalChars / 4);
+
+  // 200k 컨텍스트 기준, 80% (160k) 넘으면 압축 권장
+  const COMPRESSION_THRESHOLD = 160000;
+
+  return {
+    messageCount: messages.length,
+    turnCount,
+    estimatedTokens,
+    needsCompression: estimatedTokens > COMPRESSION_THRESHOLD,
+  };
 }
