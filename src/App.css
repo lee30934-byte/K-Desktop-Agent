@@ -2633,6 +2633,200 @@
   box-shadow: 0 0 8px var(--accent-glow);
 }
 
+/* ─── Theme Selector ──────────────────────────────── */
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  background: var(--bg-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  position: relative;
+}
+
+.theme-card:hover {
+  border-color: var(--accent-dim);
+  background: rgba(79, 232, 225, 0.03);
+}
+
+.theme-card.active {
+  border-color: var(--accent);
+  background: linear-gradient(
+    180deg,
+    rgba(79, 232, 225, 0.1) 0%,
+    rgba(79, 232, 225, 0.03) 100%
+  );
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.theme-preview {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.theme-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.theme-card.active .theme-name {
+  color: var(--accent);
+}
+
+.theme-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* ─── Permission Settings ──────────────────────────────── */
+
+.permissions-legend {
+  display: flex;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-0);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-md);
+}
+
+.perm-badge {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.perm-badge.perm-auto {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22C55E;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.perm-badge.perm-ask {
+  background: rgba(249, 115, 22, 0.15);
+  color: #F97316;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+}
+
+.perm-badge.perm-manual {
+  background: rgba(239, 68, 68, 0.15);
+  color: #EF4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.permission-category {
+  margin-bottom: var(--space-md);
+  padding: var(--space-md);
+  background: var(--bg-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.permission-category-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.permission-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.permission-item:last-child {
+  border-bottom: none;
+}
+
+.permission-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.permission-icon {
+  font-size: 16px;
+}
+
+.permission-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.permission-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.perm-toggle {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  border: 1px solid;
+}
+
+.perm-toggle.perm-auto {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22C55E;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.perm-toggle.perm-auto:hover {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: #22C55E;
+}
+
+.perm-toggle.perm-ask {
+  background: rgba(249, 115, 22, 0.1);
+  color: #F97316;
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
+.perm-toggle.perm-ask:hover {
+  background: rgba(249, 115, 22, 0.2);
+  border-color: #F97316;
+}
+
+.perm-toggle.perm-manual {
+  background: rgba(239, 68, 68, 0.1);
+  color: #EF4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.perm-toggle.perm-manual:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #EF4444;
+}
+
 /* ─── Command Palette (Phase 6) ──────────────────────────────── */
 
 .command-palette-overlay {

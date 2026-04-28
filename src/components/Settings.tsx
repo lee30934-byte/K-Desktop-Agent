@@ -22,6 +22,27 @@ interface APIProvider {
   supportsOAuth?: boolean;
 }
 
+// 에이전트 권한 타입
+type PermissionLevel = "auto" | "ask" | "manual";
+
+interface AgentPermission {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  level: PermissionLevel;
+  category: "file" | "system" | "network" | "input";
+}
+
+// UI 테마 타입
+interface Theme {
+  id: string;
+  name: string;
+  preview: string; // 색상 코드
+  accent: string;
+  background: string;
+}
+
 const API_PROVIDERS: APIProvider[] = [
   {
     id: "anthropic",
@@ -52,6 +73,120 @@ const API_PROVIDERS: APIProvider[] = [
   },
 ];
 
+// 기본 에이전트 권한 설정
+const DEFAULT_PERMISSIONS: AgentPermission[] = [
+  {
+    id: "file_read",
+    name: "파일 읽기",
+    description: "파일 및 폴더 내용 조회",
+    icon: "📖",
+    level: "auto",
+    category: "file",
+  },
+  {
+    id: "file_write",
+    name: "파일 쓰기",
+    description: "파일 생성, 수정, 이동, 복사",
+    icon: "✏️",
+    level: "ask",
+    category: "file",
+  },
+  {
+    id: "file_delete",
+    name: "파일 삭제",
+    description: "파일 및 폴더 삭제",
+    icon: "🗑️",
+    level: "ask",
+    category: "file",
+  },
+  {
+    id: "app_launch",
+    name: "앱 실행",
+    description: "프로그램 실행 및 종료",
+    icon: "🚀",
+    level: "ask",
+    category: "system",
+  },
+  {
+    id: "system_control",
+    name: "시스템 제어",
+    description: "마우스, 키보드, 클립보드 제어",
+    icon: "🖱️",
+    level: "ask",
+    category: "input",
+  },
+  {
+    id: "screenshot",
+    name: "화면 캡처",
+    description: "스크린샷 촬영 및 분석",
+    icon: "📸",
+    level: "auto",
+    category: "system",
+  },
+  {
+    id: "web_fetch",
+    name: "웹 요청",
+    description: "웹페이지 및 API 호출",
+    icon: "🌐",
+    level: "auto",
+    category: "network",
+  },
+  {
+    id: "db_access",
+    name: "개인 DB",
+    description: "할일, 메모, 습관 관리",
+    icon: "📝",
+    level: "auto",
+    category: "system",
+  },
+];
+
+// 테마 목록
+const THEMES: Theme[] = [
+  {
+    id: "cyber-teal",
+    name: "사이버 틸 (기본)",
+    preview: "#4FE8E1",
+    accent: "79, 232, 225",
+    background: "12, 14, 18",
+  },
+  {
+    id: "neon-purple",
+    name: "네온 퍼플",
+    preview: "#A855F7",
+    accent: "168, 85, 247",
+    background: "15, 10, 25",
+  },
+  {
+    id: "matrix-green",
+    name: "매트릭스 그린",
+    preview: "#22C55E",
+    accent: "34, 197, 94",
+    background: "8, 15, 10",
+  },
+  {
+    id: "sunset-orange",
+    name: "선셋 오렌지",
+    preview: "#F97316",
+    accent: "249, 115, 22",
+    background: "20, 12, 8",
+  },
+  {
+    id: "arctic-blue",
+    name: "아틱 블루",
+    preview: "#3B82F6",
+    accent: "59, 130, 246",
+    background: "8, 12, 20",
+  },
+  {
+    id: "rose-pink",
+    name: "로즈 핑크",
+    preview: "#EC4899",
+    accent: "236, 72, 153",
+    background: "20, 10, 15",
+  },
+];
+
 export default function Settings({ open, onClose, mcpConnected }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -65,6 +200,12 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [activeProvider, setActiveProvider] = useState<string>("anthropic");
 
+  // 에이전트 권한 상태
+  const [permissions, setPermissions] = useState<AgentPermission[]>(DEFAULT_PERMISSIONS);
+
+  // 테마 상태
+  const [currentTheme, setCurrentTheme] = useState<string>("cyber-teal");
+
   useEffect(() => {
     if (!open) return;
     setLoading(true);
@@ -74,11 +215,15 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       isEnabled().catch(() => false),
       invoke<WatchedFolder[]>("get_watched_folders_list").catch(() => []),
       loadAPIKeys(),
+      loadPermissions(),
+      loadTheme(),
     ])
-      .then(([autoStartEnabled, folders, keys]) => {
+      .then(([autoStartEnabled, folders, keys, perms, theme]) => {
         setAutoStart(autoStartEnabled);
         setWatchedFolders(folders);
         setApiKeys(keys);
+        if (perms) setPermissions(perms);
+        if (theme) setCurrentTheme(theme);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -95,6 +240,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       console.error("API 키 로드 실패:", e);
     }
     return {};
+  }
+
+  // 권한 설정 로드
+  async function loadPermissions(): Promise<AgentPermission[] | null> {
+    try {
+      const stored = localStorage.getItem("kda_permissions");
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.error("권한 설정 로드 실패:", e);
+    }
+    return null;
+  }
+
+  // 테마 로드
+  async function loadTheme(): Promise<string | null> {
+    try {
+      const stored = localStorage.getItem("kda_theme");
+      if (stored) {
+        return stored;
+      }
+    } catch (e) {
+      console.error("테마 로드 실패:", e);
+    }
+    return null;
   }
 
   // API 키 저장
@@ -130,6 +301,41 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     localStorage.setItem("kda_api_keys", JSON.stringify(newKeys));
   }
 
+  // 권한 레벨 변경
+  function updatePermission(permId: string, level: PermissionLevel) {
+    const updated = permissions.map(p =>
+      p.id === permId ? { ...p, level } : p
+    );
+    setPermissions(updated);
+    localStorage.setItem("kda_permissions", JSON.stringify(updated));
+  }
+
+  // 테마 변경
+  function changeTheme(themeId: string) {
+    const theme = THEMES.find(t => t.id === themeId);
+    if (!theme) return;
+
+    setCurrentTheme(themeId);
+    localStorage.setItem("kda_theme", themeId);
+
+    // CSS 변수 업데이트
+    document.documentElement.style.setProperty("--accent-rgb", theme.accent);
+    document.documentElement.style.setProperty("--bg-rgb", theme.background);
+    document.documentElement.style.setProperty("--accent", `rgb(${theme.accent})`);
+    document.documentElement.style.setProperty("--accent-glow", `rgba(${theme.accent}, 0.35)`);
+    document.documentElement.style.setProperty("--accent-strong-glow", `rgba(${theme.accent}, 0.5)`);
+    document.documentElement.style.setProperty("--accent-dim", `rgba(${theme.accent}, 0.4)`);
+    document.documentElement.style.setProperty("--bg-0", `rgb(${theme.background})`);
+  }
+
+  // 앱 시작 시 저장된 테마 적용
+  useEffect(() => {
+    const savedTheme = localStorage.getItem("kda_theme");
+    if (savedTheme) {
+      changeTheme(savedTheme);
+    }
+  }, []);
+
   async function toggleAutoStart() {
     setLoading(true);
     try {
@@ -151,7 +357,6 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     setReloading(true);
     try {
       await invoke("reload_sidecar");
-      // 잠시 후 자동 해제 (sidecar ready 다시 뜨면 UI 업데이트됨)
       setTimeout(() => setReloading(false), 2000);
     } catch (e) {
       console.error("reload failed:", e);
@@ -197,9 +402,35 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     }
   }
 
+  // 권한 레벨 라벨
+  function getPermissionLabel(level: PermissionLevel): string {
+    switch (level) {
+      case "auto": return "자동 승인";
+      case "ask": return "매번 확인";
+      case "manual": return "수동만";
+    }
+  }
+
+  // 권한 레벨 순환
+  function cyclePermissionLevel(current: PermissionLevel): PermissionLevel {
+    switch (current) {
+      case "auto": return "ask";
+      case "ask": return "manual";
+      case "manual": return "auto";
+    }
+  }
+
   if (!open) return null;
 
   const currentProvider = API_PROVIDERS.find(p => p.id === activeProvider);
+
+  // 카테고리별 권한 그룹화
+  const permissionsByCategory = {
+    file: permissions.filter(p => p.category === "file"),
+    system: permissions.filter(p => p.category === "system"),
+    input: permissions.filter(p => p.category === "input"),
+    network: permissions.filter(p => p.category === "network"),
+  };
 
   return (
     <div className="settings-overlay" onClick={onClose}>
@@ -217,6 +448,144 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         </div>
 
         <div className="settings-body">
+          {/* UI 테마 섹션 */}
+          <section className="settings-section">
+            <div className="eyebrow">테마</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">UI 테마</div>
+                <div className="settings-row-desc">
+                  앱의 색상 테마를 선택합니다
+                </div>
+              </div>
+              <div className="theme-grid">
+                {THEMES.map((theme) => (
+                  <button
+                    key={theme.id}
+                    className={`theme-card ${currentTheme === theme.id ? "active" : ""}`}
+                    onClick={() => changeTheme(theme.id)}
+                  >
+                    <div
+                      className="theme-preview"
+                      style={{ backgroundColor: theme.preview }}
+                    />
+                    <span className="theme-name">{theme.name}</span>
+                    {currentTheme === theme.id && (
+                      <span className="theme-check">✓</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* 에이전트 권한 섹션 */}
+          <section className="settings-section">
+            <div className="eyebrow">에이전트 권한</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">기능별 실행 권한</div>
+                <div className="settings-row-desc">
+                  각 기능의 실행 방식을 설정합니다
+                </div>
+              </div>
+
+              <div className="permissions-legend">
+                <span className="perm-badge perm-auto">자동 승인</span>
+                <span className="perm-badge perm-ask">매번 확인</span>
+                <span className="perm-badge perm-manual">수동만</span>
+              </div>
+
+              {/* 파일 권한 */}
+              <div className="permission-category">
+                <div className="permission-category-title">📁 파일 관리</div>
+                {permissionsByCategory.file.map((perm) => (
+                  <div key={perm.id} className="permission-item">
+                    <div className="permission-info">
+                      <span className="permission-icon">{perm.icon}</span>
+                      <div>
+                        <div className="permission-name">{perm.name}</div>
+                        <div className="permission-desc">{perm.description}</div>
+                      </div>
+                    </div>
+                    <button
+                      className={`perm-toggle perm-${perm.level}`}
+                      onClick={() => updatePermission(perm.id, cyclePermissionLevel(perm.level))}
+                    >
+                      {getPermissionLabel(perm.level)}
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* 시스템 권한 */}
+              <div className="permission-category">
+                <div className="permission-category-title">⚙️ 시스템</div>
+                {permissionsByCategory.system.map((perm) => (
+                  <div key={perm.id} className="permission-item">
+                    <div className="permission-info">
+                      <span className="permission-icon">{perm.icon}</span>
+                      <div>
+                        <div className="permission-name">{perm.name}</div>
+                        <div className="permission-desc">{perm.description}</div>
+                      </div>
+                    </div>
+                    <button
+                      className={`perm-toggle perm-${perm.level}`}
+                      onClick={() => updatePermission(perm.id, cyclePermissionLevel(perm.level))}
+                    >
+                      {getPermissionLabel(perm.level)}
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* 입력 권한 */}
+              <div className="permission-category">
+                <div className="permission-category-title">🖱️ 입력 제어</div>
+                {permissionsByCategory.input.map((perm) => (
+                  <div key={perm.id} className="permission-item">
+                    <div className="permission-info">
+                      <span className="permission-icon">{perm.icon}</span>
+                      <div>
+                        <div className="permission-name">{perm.name}</div>
+                        <div className="permission-desc">{perm.description}</div>
+                      </div>
+                    </div>
+                    <button
+                      className={`perm-toggle perm-${perm.level}`}
+                      onClick={() => updatePermission(perm.id, cyclePermissionLevel(perm.level))}
+                    >
+                      {getPermissionLabel(perm.level)}
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* 네트워크 권한 */}
+              <div className="permission-category">
+                <div className="permission-category-title">🌐 네트워크</div>
+                {permissionsByCategory.network.map((perm) => (
+                  <div key={perm.id} className="permission-item">
+                    <div className="permission-info">
+                      <span className="permission-icon">{perm.icon}</span>
+                      <div>
+                        <div className="permission-name">{perm.name}</div>
+                        <div className="permission-desc">{perm.description}</div>
+                      </div>
+                    </div>
+                    <button
+                      className={`perm-toggle perm-${perm.level}`}
+                      onClick={() => updatePermission(perm.id, cyclePermissionLevel(perm.level))}
+                    >
+                      {getPermissionLabel(perm.level)}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
           {/* API 키 / 인증 섹션 */}
           <section className="settings-section">
             <div className="eyebrow">AI 모델 연동</div>
