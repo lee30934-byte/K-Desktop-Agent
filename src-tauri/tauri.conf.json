@@ -64,5 +64,12 @@
       }
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/YOUR_USERNAME/K-Desktop-Agent/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
+    }
+  }
 }

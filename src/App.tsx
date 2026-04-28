@@ -19,6 +19,7 @@ import type {
 } from "./types";
 import ElicitationDialog from "./components/ElicitationDialog";
 import CommandPalette from "./components/CommandPalette";
+import { UpdateChecker } from "./components/UpdateChecker";
 import {
   initDB,
   getAllConversations,
@@ -1004,6 +1005,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <UpdateChecker />
       <Sidebar
         conversations={conversations}
         activeConversationId={activeConversationId}
