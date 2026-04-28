@@ -437,8 +437,9 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
 
     // Windows: 콘솔 창 숨기기 (CREATE_NO_WINDOW = 0x08000000).
     // 기본 spawn 은 npx.cmd/node.exe 실행 시 cmd 창이 깜빡이거나 남는다.
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     {
+        #[allow(unused_imports)]
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         command.creation_flags(CREATE_NO_WINDOW);
