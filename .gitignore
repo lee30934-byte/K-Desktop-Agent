@@ -45,3 +45,4 @@ data/
 # Release builds (large binaries)
 release/*.exe
 release/*.msi
+.tauri/
