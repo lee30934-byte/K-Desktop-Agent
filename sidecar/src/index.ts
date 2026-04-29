@@ -273,16 +273,22 @@ const PERM_TOOL_MAP: Record<string, string[]> = {
     "mcp__k-personal__fm_operation_log",
   ],
   file_write: [
-    "Write", "Edit", "MultiEdit", "NotebookEdit",
-    "mcp__k-personal__fm_move_file",
+    "Write", "Edit", "MultiEdit",
+    // 비파괴 도구만 여기 — destructive 도구는 file_delete 로 이관 (B안).
     "mcp__k-personal__fm_copy_file",
+  ],
+  // "파일 삭제" 카테고리.
+  // K-Personal MCP 자체는 직접 삭제 도구가 없는 안전한 설계지만,
+  // "결과적으로 삭제와 동등한" 도구는 여기로 묶어 file_delete 토글로 통제.
+  //   - fm_move_file: 다른 폴더로 옮기면 사실상 원본 위치에선 사라짐
+  //   - fm_organize_folder: 자동 정리 = 대량 이동
+  //   - fm_restore_file: 백업 복원 = 현재 파일 덮어쓰기
+  // Bash(rm/del) 도 file_delete 토글을 참조 (HIGH_RISK_BUILTINS 정책).
+  file_delete: [
+    "mcp__k-personal__fm_move_file",
     "mcp__k-personal__fm_organize_folder",
     "mcp__k-personal__fm_restore_file",
   ],
-  // K-Personal MCP 자체는 직접 삭제 도구가 없음 (안전한 설계).
-  // 삭제 행위는 거의 항상 Bash(rm/del) 또는 fm_organize_folder 의 부수효과.
-  // 여기 명시 도구는 없지만, 아래 Bash 정책이 file_delete 토글을 참조.
-  file_delete: [],
   app_launch: [
     "mcp__k-personal__app_launch",
     "mcp__k-personal__app_kill",
@@ -359,6 +365,15 @@ const DEFAULT_PERMISSIONS: Record<string, PermLevel> = {
 //       (모두 auto 일 때만 K가 명시적으로 풀권한 상태이므로 허용)
 const HIGH_RISK_BUILTINS = ["Bash", "BashOutput", "KillShell"];
 
+// Claude CLI 가 노출하는 "셸·코드 실행 우회 통로" — 권한 카테고리 매핑이 어렵거나
+// sub-agent 형태로 게이트를 무력화할 수 있는 도구들. 권한 토글과 무관하게 항상 차단.
+//   - Task: sub-agent 를 띄우면 그 안에선 게이트가 다시 풀린 상태 → 우회 가능
+//   - Monitor: 임의 셸 명령 실행 (Bash 우회 통로)
+//   - Skill: .claude/skills 의 임의 코드 실행
+//   - NotebookEdit: Jupyter 셀 실행 (이 프로젝트엔 불필요, 셸 실행 가능)
+// (Bash 자체는 HIGH_RISK_BUILTINS 에서 별도 정책으로 처리)
+const ALWAYS_BLOCKED_BYPASS = ["Task", "Monitor", "Skill", "NotebookEdit"];
+
 interface ToolFlags {
   allowed: string[];
   disallowed: string[];
@@ -375,19 +390,26 @@ function buildToolFlags(perms: PermissionsMap | undefined): ToolFlags {
     }
   }
 
-  const allowed: string[] = [];
-  const disallowed: string[] = [];
+  // ─── default-deny 정책 (C안) ────────────────────────────────────
+  //   - allowed 에 명시된 도구만 통과 (--allowed-tools 가 strict 모드).
+  //   - 그 외 도구(미지의 신규 CLI 도구 포함)는 자동 거부 → 화이트리스트 안전성.
+  //   - auto / ask 카테고리 도구 → allowed (ask 는 시스템 프롬프트로 K 확인 의무화).
+  //   - manual 카테고리 도구 → disallowed 이중 가드 (allowed 미포함만으로도 차단됨).
+  //   - ALWAYS_BLOCKED_BYPASS (Task/Monitor/Skill/NotebookEdit) → disallowed 항상.
+  //   - TodoWrite 같은 메모리-내 안전 도구는 권한과 무관하게 기본 허용.
+  const allowed: string[] = [
+    "TodoWrite", // 메모리-내 todo, 사이드 이펙트 없음
+  ];
+  const disallowed: string[] = [...ALWAYS_BLOCKED_BYPASS];
 
   for (const [permId, level] of Object.entries(effective)) {
     const tools = PERM_TOOL_MAP[permId] ?? [];
     if (tools.length === 0) continue;
-    if (level === "auto") {
+    if (level === "auto" || level === "ask") {
       allowed.push(...tools);
     } else if (level === "manual") {
       disallowed.push(...tools);
     }
-    // "ask" → 명시적 allowed/disallowed 양쪽에서 제외.
-    // (default-allow 모드라 결과적으로 허용되지만, 시스템 프롬프트로 모델이 K 확인 받게 강제)
   }
 
   // Bash 정책: file_write/file_delete/app_launch 셋 중 하나라도 비-auto 면 disallow.
@@ -521,13 +543,16 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     "--permission-mode", "bypassPermissions",
   ];
 
+  // default-deny + 화이트리스트(C안):
+  //   - --allowed-tools: 화이트리스트(strict 모드). 목록 외 모든 도구 거부 → 미지의 신규 도구도 자동 차단.
+  //   - --disallowed-tools: ALWAYS_BLOCKED_BYPASS + manual 카테고리에 대한 이중 가드.
+  //   - ask 카테고리 도구는 allowed 에 포함되되, 시스템 프롬프트가 K 확인 의무화 (soft gate).
+  if (toolFlags.allowed.length > 0) {
+    args.push("--allowed-tools", toolFlags.allowed.join(","));
+  }
   if (toolFlags.disallowed.length > 0) {
-    // 콤마 구분 — Claude CLI 가 split 해서 처리.
     args.push("--disallowed-tools", toolFlags.disallowed.join(","));
   }
-  // allowed-tools 는 default-allow 모드 유지를 위해 일부러 비워둠.
-  // (allowed-tools 를 지정하면 그 목록 외 모든 도구가 거부되는 strict 모드로 바뀜.
-  //  ask 모드의 도구가 보이지 않게 되므로 사용 안 함. manual 만 disallowed 로 차단.)
 
   // 시스템 프롬프트 = 기본 + ask 안내 + manual 안내
   const askGuidance = buildAskGuidance(toolFlags.effective);
@@ -562,7 +587,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
 
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length}`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} allowed=${toolFlags.allowed.length} disallowed=${toolFlags.disallowed.length}`
   );
 
   try {
