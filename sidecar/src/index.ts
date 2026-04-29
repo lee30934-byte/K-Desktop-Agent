@@ -593,6 +593,27 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     args.push("--resume", msg.agent_id);
   }
 
+  // ─── PreToolUse Hook 주입 (덮어쓰기 가드) ──────────────────────────
+  // file_delete=manual 일 때 Write/Edit/MultiEdit 가 "기존 파일을 덮어쓰는" 행위
+  // (= 의미적으로 데이터 삭제) 를 차단. 신규 파일 생성은 file_write 토글로만 통제.
+  // hook 스크립트는 sidecar/hooks/preToolUse-overwriteGuard.mjs 에 위치.
+  // dev (sidecar/src/index.ts) 와 release (sidecar/dist/index.js) 모두 한 단계 위로 가서 hooks/ 도달.
+  const hookScriptPath = path.resolve(__dirname_local, "..", "hooks", "preToolUse-overwriteGuard.mjs");
+  const hookSettings = {
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: "Write|Edit|MultiEdit",
+          hooks: [
+            { type: "command", command: `node "${hookScriptPath}"` },
+          ],
+        },
+      ],
+    },
+  };
+  // --settings 는 file path 또는 inline JSON 둘 다 가능. inline 으로 전달 (임시 파일 부담 없음).
+  args.push("--settings", JSON.stringify(hookSettings));
+
   // 권한 정책 요약 — 어느 카테고리가 어떻게 처리됐는지 진단 가능.
   const permSummary = Object.entries(toolFlags.effective)
     .map(([k, v]) => `${k}=${v}`)
@@ -600,11 +621,13 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
 
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount}`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hook=overwriteGuard`
   );
 
   try {
     // Claude CLI 실행
+    // hook 스크립트(preToolUse-overwriteGuard.mjs) 가 자식 자식 프로세스로 실행되므로
+    // 권한 정책 정보는 환경변수로 전파한다 (Claude CLI → hook 으로 자동 상속됨).
     const proc = spawn(CLAUDE_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
@@ -612,6 +635,9 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
         ...process.env,
         // 터미널 깜빡임 방지
         CLAUDE_CODE_NO_FLICKER: "1",
+        // PreToolUse hook 이 읽는 권한 정보
+        KDA_FILE_DELETE_LEVEL: toolFlags.effective.file_delete ?? "auto",
+        KDA_OVERWRITE_GUARD: "1",
       },
     });
 
