@@ -59,7 +59,6 @@ export default function App() {
     toolCallCount: 0,
     startedAt: Date.now(),
   });
-  const [, setTick] = useState(0);
   const [dbReady, setDbReady] = useState(false);
   const [elicitationRequest, setElicitationRequest] = useState<ElicitationRequest | null>(null);
   const elicitationResolveRef = useRef<((response: ElicitationResponse) => void) | null>(null);
@@ -85,12 +84,6 @@ export default function App() {
   const dbReadyRef = useRef(false);
   useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
   useEffect(() => { dbReadyRef.current = dbReady; }, [dbReady]);
-
-  // 매초 UI 갱신 (경과 시간 등)
-  useEffect(() => {
-    const h = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(h);
-  }, []);
 
   // ─── 재기동 감지 (dev rebuild 등) ────────────────────
   // 주기적으로 localStorage 에 heartbeat 를 찍고, 기동 시 마지막 heartbeat 와의 갭을 본다.

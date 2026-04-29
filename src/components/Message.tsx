@@ -1,4 +1,4 @@
-import { useState, type ReactNode, isValidElement } from "react";
+import { memo, useState, type ReactNode, isValidElement } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -53,7 +53,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
   );
 }
 
-export default function Message({ message }: MessageProps) {
+function Message({ message }: MessageProps) {
   const [copied, setCopied] = useState(false);
 
   if (message.role === "tool") {
@@ -180,6 +180,11 @@ function ToolMessageView({ message }: { message: Extract<ChatMessage, { role: "t
     </details>
   );
 }
+
+// React.memo — message 객체 참조가 바뀌지 않으면 리렌더 스킵.
+// App.tsx 의 매초 setTick 등으로 인한 부모 리렌더 시 ReactMarkdown 재파싱 폭탄을 방지.
+// 스트리밍 중인 메시지는 객체 참조가 매 청크마다 새로 만들어지므로 정상적으로 갱신됨.
+export default memo(Message, (prev, next) => prev.message === next.message);
 
 function roleLabel(role: string): string {
   switch (role) {

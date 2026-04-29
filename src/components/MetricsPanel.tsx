@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import CornerBrackets from "./CornerBrackets";
 import type { SessionMetrics } from "../types";
 
@@ -22,6 +22,14 @@ export default function MetricsPanel({
   isCompressing = false,
 }: MetricsPanelProps) {
   const [showContextDetails, setShowContextDetails] = useState(false);
+  // 매초 자체 리렌더 — Session 경과 시간 표시용.
+  // 이전엔 App.tsx 의 setTick 으로 전체 트리가 리렌더돼서 메시지 ReactMarkdown 재파싱이
+  // 매초 일어났음. 여기로 격리하면 매초 갱신 비용이 footer 한 줄에만 머문다.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const h = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(h);
+  }, []);
 
   // 컨텍스트 사용량 = 마지막 턴에서 모델이 본 전체 토큰 (input + cache_creation + cache_read).
   // 누적 totalInputTokens 가 아닌 "현재 컨텍스트 윈도우 점유율" — 새 턴마다 갱신됨.
