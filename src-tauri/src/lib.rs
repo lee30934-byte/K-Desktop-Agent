@@ -130,6 +130,7 @@ async fn send_message(
     history: Option<serde_json::Value>,
     api_key: Option<String>,
     provider: Option<String>,
+    model: Option<String>,
 ) -> Result<(), String> {
     let mut payload = serde_json::json!({
         "type": "user_message",
@@ -144,12 +145,15 @@ async fn send_message(
     if let Some(h) = history {
         payload["history"] = h;
     }
-    // API 키와 프로바이더 정보 추가
+    // API 키와 프로바이더/모델 정보 추가
     if let Some(key) = api_key {
         payload["api_key"] = serde_json::Value::String(key);
     }
     if let Some(prov) = provider {
         payload["provider"] = serde_json::Value::String(prov);
+    }
+    if let Some(m) = model {
+        payload["model"] = serde_json::Value::String(m);
     }
     let line = format!("{}\n", payload);
     let tx_holder = get_tx_holder().clone();

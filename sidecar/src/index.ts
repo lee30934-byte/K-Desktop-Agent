@@ -1,18 +1,24 @@
 /**
- * K Desktop Agent — Node Sidecar (Phase 3: K-Personal MCP 통합)
+ * K Desktop Agent — Node Sidecar (Phase 4: Claude Code CLI 연동)
  *
- * Rust ↔ Sidecar 프로토콜은 Phase 1과 동일.
- * 변경점: mcpServers 설정에 K-Personal 추가, MCP 헬스 체크 및 mcp_status 이벤트.
+ * Claude Agent SDK 대신 Claude Code CLI를 subprocess로 호출하여
+ * Max 계정 인증을 활용합니다.
  */
 
 import process from "node:process";
 import readline from "node:readline";
-import { existsSync, createWriteStream, mkdirSync, type WriteStream } from "node:fs";
-import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  createWriteStream,
+  mkdirSync,
+  writeFileSync,
+  unlinkSync,
+  type WriteStream,
+} from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
+import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { McpStdioServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 // ─── 파일 로거 ─────────────────────────────────────────
 // release 모드에서는 sidecar 의 stderr 가 소실되므로 `logs/sidecar.log` 에 직접 append.
@@ -62,6 +68,59 @@ const K_PERSONAL_PATH =
  */
 const PYTHON_EXE = process.env.PYTHON_EXE ?? "python";
 
+/**
+ * Claude Code CLI 실행 파일.
+ *
+ * 환경변수 CLAUDE_CLI 가 있으면 그걸 우선 사용. 없으면 후보 경로들을
+ * 순차적으로 `--version` 으로 검사해 처음 0 리턴 나오는 걸 채택.
+ *
+ * 후보 우선순위:
+ *   1. %APPDATA%\npm\claude.cmd  (npm i -g 글로벌 기본 경로)
+ *   2. claude.cmd                (PATH 의 npm 글로벌 디렉토리)
+ *   3. claude                    (마지막 폴백)
+ *
+ * 시도한 경로 목록은 진단용으로 보존 (헬스체크 에러 메시지에 포함).
+ */
+function getClaudeCliCandidates(): string[] {
+  if (process.env.CLAUDE_CLI) {
+    return [process.env.CLAUDE_CLI];
+  }
+  const list: string[] = [];
+  const appdata = process.env.APPDATA;
+  if (appdata) {
+    list.push(path.join(appdata, "npm", "claude.cmd"));
+  }
+  list.push("claude.cmd", "claude");
+  return list;
+}
+
+function probeClaudeCli(exe: string): boolean {
+  try {
+    const result = spawnSync(exe, ["--version"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      shell: true,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function resolveClaudeCli(): { resolved: string | null; tried: string[] } {
+  const tried: string[] = [];
+  for (const candidate of getClaudeCliCandidates()) {
+    tried.push(candidate);
+    if (probeClaudeCli(candidate)) {
+      return { resolved: candidate, tried };
+    }
+  }
+  return { resolved: null, tried };
+}
+
+const claudeCliResolution = resolveClaudeCli();
+const CLAUDE_CLI = claudeCliResolution.resolved ?? "claude";
+
 const SYSTEM_PROMPT = `당신은 K님의 개인 Windows 컴퓨터를 자동화하는 조수입니다.
 
 [원칙]
@@ -92,6 +151,7 @@ interface MCPStatus {
   configured: boolean;
   serverPathExists: boolean;
   pythonAvailable: boolean;
+  claudeCliAvailable: boolean;
   error?: string;
 }
 
@@ -110,24 +170,37 @@ function checkMCPHealth(): MCPStatus {
     pythonAvailable = false;
   }
 
+  // Claude CLI 사용 가능 여부 확인.
+  // 모듈 로드 시 resolveClaudeCli() 가 한 번 돌아 후보를 검증했으므로,
+  // resolved 가 null 이 아니면 사용 가능.
+  // (재호출도 가능하지만 여기선 모듈 초기화 결과를 신뢰 — 헬스체크가
+  //  spawnSync 5초 timeout × N 후보로 늘어나면 UX 가 나빠짐.)
+  const claudeCliAvailable = claudeCliResolution.resolved !== null;
+
+  const claudeCliError = !claudeCliAvailable
+    ? `Claude CLI 실행 안 됨. 시도한 경로: [${claudeCliResolution.tried.join(", ")}]. ` +
+      `설치 확인: 'npm i -g @anthropic-ai/claude-code' 후 앱 재시작.`
+    : undefined;
+
   return {
-    configured: serverPathExists && pythonAvailable,
+    configured: serverPathExists && pythonAvailable && claudeCliAvailable,
     serverPathExists,
     pythonAvailable,
-    error: !serverPathExists
-      ? `K-Personal 서버 없음: ${K_PERSONAL_PATH}`
-      : !pythonAvailable
-        ? `Python 실행 안 됨: ${PYTHON_EXE}`
-        : undefined,
+    claudeCliAvailable,
+    error: claudeCliError
+      ?? (!serverPathExists
+        ? `K-Personal 서버 없음: ${K_PERSONAL_PATH}`
+        : !pythonAvailable
+          ? `Python 실행 안 됨: ${PYTHON_EXE}`
+          : undefined),
   };
 }
 
 /**
- * Claude Agent SDK에 전달할 MCP 서버 설정.
- * K-Personal이 사용 가능하면 등록, 아니면 빈 객체.
+ * MCP 서버 설정 JSON 생성
  */
-function buildMCPServers(health: MCPStatus): Record<string, McpStdioServerConfig> {
-  if (!health.configured) {
+function buildMCPConfig(health: MCPStatus): Record<string, any> {
+  if (!health.serverPathExists || !health.pythonAvailable) {
     return {};
   }
 
@@ -152,144 +225,9 @@ function log(level: "info" | "warn" | "error", message: string): void {
   logToFile(level, message);
 }
 
-// ─── Elicitation (사용자 확인 요청) ─────────────────────
-
-/**
- * 위험한 도구 목록 — 실행 전 사용자 확인 필요
- */
-const DANGEROUS_TOOLS: Record<string, { action: string; severity: "warn" | "danger" }> = {
-  // 파일 이동/삭제
-  "fm_move_file": { action: "파일을 이동합니다", severity: "warn" },
-  "fm_copy_file": { action: "파일을 복사합니다", severity: "warn" },
-  "fm_organize_folder": { action: "폴더를 정리합니다", severity: "warn" },
-  // 앱 종료
-  "app_kill": { action: "프로세스를 종료합니다", severity: "danger" },
-  // 마우스/키보드 자동화 (민감한 작업)
-  "cc_mouse_click": { action: "마우스 클릭을 수행합니다", severity: "warn" },
-  "cc_keyboard_type": { action: "키보드 입력을 수행합니다", severity: "warn" },
-  "cc_keyboard_hotkey": { action: "단축키를 입력합니다", severity: "warn" },
-};
-
-/**
- * 현재 대기 중인 elicitation 요청들
- */
-const pendingElicitations = new Map<string, {
-  resolve: (confirmed: boolean) => void;
-  toolName: string;
-  toolInput: unknown;
-}>();
-
-/**
- * Elicitation 응답 처리
- */
-function handleElicitationResponse(id: string, confirmed: boolean): void {
-  const pending = pendingElicitations.get(id);
-  if (pending) {
-    pending.resolve(confirmed);
-    pendingElicitations.delete(id);
-  }
-}
-
-/**
- * 위험한 도구 실행 전 사용자 확인 요청
- */
-async function requestElicitation(
-  turnId: string,
-  toolName: string,
-  toolInput: unknown,
-): Promise<boolean> {
-  // dry_run 모드면 확인 없이 바로 실행
-  if (typeof toolInput === "object" && toolInput !== null && (toolInput as any).dry_run === true) {
-    return true;
-  }
-
-  const dangerousInfo = DANGEROUS_TOOLS[toolName];
-  if (!dangerousInfo) {
-    return true; // 위험하지 않은 도구는 바로 실행
-  }
-
-  const elicitationId = `elicit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-  // 도구 입력을 사람이 읽기 쉽게 포맷
-  const inputSummary = formatToolInput(toolName, toolInput);
-
-  // Frontend로 확인 요청 전송
-  emit({
-    type: "elicitation_request",
-    id: elicitationId,
-    turn_id: turnId,
-    tool_name: toolName,
-    tool_input: toolInput,
-    title: `🔧 ${toolName}`,
-    message: `${dangerousInfo.action}\n\n${inputSummary}`,
-    severity: dangerousInfo.severity,
-    confirm_label: "실행",
-    cancel_label: "취소",
-  });
-
-  // 응답 대기 (Promise)
-  return new Promise((resolve) => {
-    pendingElicitations.set(elicitationId, {
-      resolve,
-      toolName,
-      toolInput,
-    });
-
-    // 60초 타임아웃 — 응답 없으면 취소로 처리
-    setTimeout(() => {
-      if (pendingElicitations.has(elicitationId)) {
-        pendingElicitations.delete(elicitationId);
-        resolve(false);
-        log("warn", `Elicitation timeout for ${toolName}`);
-      }
-    }, 60000);
-  });
-}
-
-/**
- * 도구 입력을 사람이 읽기 쉽게 포맷
- */
-function formatToolInput(toolName: string, input: unknown): string {
-  if (typeof input !== "object" || input === null) {
-    return String(input);
-  }
-
-  const obj = input as Record<string, unknown>;
-  const lines: string[] = [];
-
-  switch (toolName) {
-    case "fm_move_file":
-    case "fm_copy_file":
-      if (obj.src) lines.push(`📄 원본: ${obj.src}`);
-      if (obj.dst) lines.push(`📁 대상: ${obj.dst}`);
-      break;
-    case "fm_organize_folder":
-      if (obj.path) lines.push(`📁 폴더: ${obj.path}`);
-      if (obj.dry_run) lines.push(`🔍 미리보기 모드`);
-      break;
-    case "app_kill":
-      if (obj.process_name) lines.push(`💀 프로세스: ${obj.process_name}`);
-      break;
-    case "cc_mouse_click":
-      lines.push(`🖱️ 클릭 위치: (${obj.x ?? "현재"}, ${obj.y ?? "현재"})`);
-      if (obj.button) lines.push(`버튼: ${obj.button}`);
-      break;
-    case "cc_keyboard_type":
-      if (obj.text) lines.push(`⌨️ 입력: "${obj.text}"`);
-      break;
-    case "cc_keyboard_hotkey":
-      if (Array.isArray(obj.keys)) lines.push(`⌨️ 단축키: ${obj.keys.join("+")}`);
-      break;
-    default:
-      // 기본: JSON 형태로 표시 (최대 200자)
-      const json = JSON.stringify(obj, null, 2);
-      lines.push(json.length > 200 ? json.slice(0, 200) + "..." : json);
-  }
-
-  return lines.join("\n");
-}
-
 // ─── 턴 관리 ───────────────────────────────────────────
+
+type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter";
 
 type UserMessage = {
   type: "user_message";
@@ -298,9 +236,23 @@ type UserMessage = {
   agent_id?: string;  // resume 지원용 (기존 대화 이어가기)
   history?: Array<{ role: "user" | "assistant"; content: string }>;
   // API 키 (설정에서 입력한 값)
+  // - provider === "claude" → Max 구독 OAuth 사용, api_key 무시
+  // - 그 외 → REST API 직접 호출에 사용 (필수)
   api_key?: string;
-  provider?: "anthropic" | "openai" | "google";
+  // 선택된 provider. 미지정/"claude" → Claude Code CLI 경로 (기본).
+  provider?: Provider;
+  // 모델 ID. provider 별로 형식이 다름 (예: openai="gpt-4o-mini", gemini="gemini-2.0-flash").
+  // 미지정이면 provider 별 기본값.
+  model?: string;
 };
+
+// REST API 호출용 시스템 프롬프트 (도구 미지원 — Claude CLI 경로의 K-Personal MCP 안내 제거)
+const SYSTEM_PROMPT_REST = `당신은 K님의 개인 비서입니다. 한국어로 자연스럽고 간결하게 응답하세요.
+
+[제약]
+- 이 모드(외부 API)에서는 K-Personal MCP 도구(스크린샷, 마우스, 파일 등)를 사용할 수 없습니다.
+- 시스템 자동화가 필요하면 K님께 "Claude (Max 구독) 모드로 전환" 을 안내하세요.
+- 코드/명령어를 제외한 모든 답변은 한국어로 작성합니다.`;
 
 function buildPromptWithHistory(
   content: string,
@@ -323,135 +275,274 @@ function buildPromptWithHistory(
   return lines.join("\n");
 }
 
-const activeTurns = new Map<string, AbortController>();
-let cachedMCPHealth: MCPStatus = { configured: false, serverPathExists: false, pythonAvailable: false };
+const activeTurns = new Map<string, ChildProcess>();
+// REST API 모드의 turn은 fetch AbortController 로 취소.
+const activeRestTurns = new Map<string, AbortController>();
+let cachedMCPHealth: MCPStatus = { configured: false, serverPathExists: false, pythonAvailable: false, claudeCliAvailable: false };
 
+// ─── Provider 라우터 ──────────────────────────────────
 async function handleUserMessage(msg: UserMessage): Promise<void> {
-  const abort = new AbortController();
-  activeTurns.set(msg.id, abort);
+  const provider: Provider = msg.provider ?? "claude";
+  if (provider === "claude") {
+    return handleViaClaudeCLI(msg);
+  }
+  return handleViaRestAPI(msg, provider);
+}
 
-  // API 키가 메시지에 포함되어 있으면 환경변수로 설정
-  if (msg.api_key) {
-    const provider = msg.provider ?? "anthropic";
-    switch (provider) {
-      case "anthropic":
-        process.env.ANTHROPIC_API_KEY = msg.api_key;
-        break;
-      case "openai":
-        process.env.OPENAI_API_KEY = msg.api_key;
-        break;
-      case "google":
-        process.env.GOOGLE_API_KEY = msg.api_key;
-        break;
+// ─── Claude Code CLI 경로 (Max 구독 OAuth) ─────────────
+async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
+  const mcpConfig = buildMCPConfig(cachedMCPHealth);
+  const promptWithHistory = buildPromptWithHistory(msg.content, msg.history);
+
+  // ─── 명령행 길이 절약 ───────────────────────────────────────
+  // Windows cmd.exe 의 명령행 길이 한계는 약 8191자.
+  // history 가 길어진 prompt(최대 ~40KB) 를 -p 인자로 그대로 박으면
+  // "명령줄이 너무 깁니다" 류 에러로 spawn 자체가 실패한다.
+  // 대책:
+  //   1. prompt 본문은 stdin 으로 흘려보낸다 (-p 만 두고 인자 값은 생략).
+  //   2. mcp-config JSON 도 임시 파일로 빼서 path 만 인자로 넘긴다.
+  //
+  // 임시 파일은 finally 에서 정리.
+  let mcpConfigFile: string | null = null;
+
+  // Claude CLI 인자 구성 (인자에 박는 본문 최소화)
+  const args: string[] = [
+    "-p",  // prompt 는 stdin 으로 받음 (인자 생략)
+    "--output-format", "stream-json",
+    "--verbose",
+    // 도구 사용 시 매번 사용자 확인 prompt 우회 (sidecar 환경에서는 prompt 처리 불가)
+    // 안전장치는 SYSTEM_PROMPT 의 dry_run 가이드로 대체.
+    "--dangerously-skip-permissions",
+  ];
+
+  // 시스템 프롬프트는 한국어 ~1KB 라 명령행 한계 안에 들어감 → 그대로 둠
+  args.push("--system-prompt", SYSTEM_PROMPT);
+
+  // MCP 설정이 있으면 임시 파일로
+  if (Object.keys(mcpConfig).length > 0) {
+    try {
+      const tmpPath = path.join(os.tmpdir(), `kda-mcp-${msg.id}.json`);
+      writeFileSync(tmpPath, JSON.stringify(mcpConfig), "utf-8");
+      mcpConfigFile = tmpPath;
+      args.push("--mcp-config", tmpPath);
+    } catch (e) {
+      // 임시 파일 작성 실패 시 inline JSON 폴백
+      logToFile("warn", `mcp-config 임시 파일 작성 실패, inline 으로 폴백: ${e instanceof Error ? e.message : String(e)}`);
+      args.push("--mcp-config", JSON.stringify(mcpConfig));
+      mcpConfigFile = null;
     }
-    logToFile("info", `API key set for provider: ${provider}`);
   }
 
-  const mcpServers = buildMCPServers(cachedMCPHealth);
+  // 세션 ID가 있으면 이어가기
+  if (msg.agent_id) {
+    args.push("--resume", msg.agent_id);
+  }
+
+  logToFile(
+    "info",
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"}`
+  );
 
   try {
-    const promptWithHistory = buildPromptWithHistory(msg.content, msg.history);
-    logToFile(
-      "info",
-      `query start id=${msg.id} len=${msg.content.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpServers).length} provider=${msg.provider ?? "anthropic"}`
-    );
-    const stream = query({
-      prompt: promptWithHistory,
-      options: {
-        systemPrompt: SYSTEM_PROMPT,
-        mcpServers,
-        abortController: abort,
-        permissionMode: "bypassPermissions",
-        ...(msg.agent_id ? { resume: msg.agent_id } : {}),
+    // Claude CLI 실행
+    const proc = spawn(CLAUDE_CLI, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: true,
+      env: {
+        ...process.env,
+        // 터미널 깜빡임 방지
+        CLAUDE_CODE_NO_FLICKER: "1",
       },
     });
 
+    activeTurns.set(msg.id, proc);
+
+    // prompt 본문을 stdin 으로 흘려보냄 (명령행 길이 한계 우회)
+    if (proc.stdin) {
+      proc.stdin.on("error", (e) => {
+        logToFile("warn", `CLI stdin error: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      proc.stdin.write(promptWithHistory, "utf-8");
+      proc.stdin.end();
+    }
+
+    let currentText = "";
+    let sessionId: string | null = null;
     let sawResult = false;
-    for await (const event of stream as AsyncIterable<any>) {
-      switch (event.type) {
-        case "assistant": {
-          const blocks = event.message?.content ?? [];
-          for (const block of blocks) {
-            if (block.type === "text") {
+
+    // stderr 캡처: CLI 가 비정상 종료할 때 진짜 원인을 파악.
+    // Windows 한국어 콘솔은 cp949(euc-kr) 로 출력하므로 해당 인코딩으로 디코드.
+    // 영어 메시지는 ASCII 호환이라 cp949 디코더로도 정상 디코드됨.
+    let stderrTail = "";
+    const STDERR_KEEP = 4096;
+    let stderrDecoder: TextDecoder | null = null;
+    try {
+      stderrDecoder = new TextDecoder("euc-kr", { fatal: false });
+    } catch {
+      stderrDecoder = null; // ICU 미지원 환경에선 utf-8 폴백
+    }
+    if (proc.stderr) {
+      proc.stderr.on("data", (chunk: Buffer) => {
+        const decoded = stderrDecoder
+          ? stderrDecoder.decode(chunk, { stream: true })
+          : chunk.toString("utf-8");
+        stderrTail += decoded;
+        if (stderrTail.length > STDERR_KEEP) {
+          stderrTail = stderrTail.slice(-STDERR_KEEP);
+        }
+        logToFile("warn", `CLI stderr: ${decoded.trimEnd()}`);
+      });
+    }
+
+    // stdout 스트리밍 처리
+    const rl = readline.createInterface({
+      input: proc.stdout,
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+
+      try {
+        const event = JSON.parse(line);
+
+        // 이벤트 타입에 따라 처리
+        switch (event.type) {
+          case "system": {
+            // 시스템 초기화 이벤트 (session_id 포함)
+            if (event.session_id) {
+              sessionId = event.session_id;
+            }
+            break;
+          }
+
+          case "assistant": {
+            // assistant 메시지 - 텍스트 또는 tool_use
+            const message = event.message;
+            if (message?.content) {
+              for (const block of message.content) {
+                if (block.type === "text") {
+                  // 텍스트 델타 전송
+                  const newText = block.text;
+                  if (newText && newText !== currentText) {
+                    // 전체 텍스트 대신 새로운 부분만 전송
+                    const delta = newText.slice(currentText.length);
+                    if (delta) {
+                      emit({
+                        type: "assistant_delta",
+                        id: msg.id,
+                        text: delta,
+                      });
+                    }
+                    currentText = newText;
+                  }
+                } else if (block.type === "tool_use") {
+                  emit({
+                    type: "tool_use",
+                    id: msg.id,
+                    tool_id: block.id,
+                    name: block.name,
+                    input: block.input,
+                  });
+                }
+              }
+            }
+            break;
+          }
+
+          case "user": {
+            // tool_result 이벤트
+            const message = event.message;
+            if (message?.content) {
+              for (const block of message.content) {
+                if (block.type === "tool_result") {
+                  emit({
+                    type: "tool_result",
+                    id: msg.id,
+                    tool_id: block.tool_use_id,
+                    output: normalizeToolOutput(block.content),
+                  });
+                }
+              }
+            }
+            break;
+          }
+
+          case "result": {
+            // 완료 이벤트
+            sawResult = true;
+            emit({
+              type: "done",
+              id: msg.id,
+              usage: event.usage ?? null,
+              computed_usage: event.usage ?? null,
+              agentId: event.session_id ?? sessionId,
+            });
+            break;
+          }
+
+          case "stream_event": {
+            // 부분 응답 이벤트 (실시간 스트리밍)
+            const delta = event.event?.delta;
+            if (delta?.type === "text_delta" && delta.text) {
               emit({
                 type: "assistant_delta",
                 id: msg.id,
-                text: block.text,
+                text: delta.text,
               });
-            } else if (block.type === "tool_use") {
-              emit({
-                type: "tool_use",
-                id: msg.id,
-                tool_id: block.id,
-                name: block.name,
-                input: block.input,
-              });
+              currentText += delta.text;
             }
-          }
-          break;
-        }
-        case "user": {
-          const blocks = event.message?.content ?? [];
-          for (const block of blocks) {
-            if (block.type === "tool_result") {
-              emit({
-                type: "tool_result",
-                id: msg.id,
-                tool_id: block.tool_use_id,
-                output: normalizeToolOutput(block.content),
-              });
-            }
-          }
-          break;
-        }
-        case "result": {
-          sawResult = true;
-          // usage 디버깅 로그 - 상세 출력
-          log("info", `[usage] raw: ${JSON.stringify(event.usage)}`);
-          log("info", `[usage] modelUsage: ${JSON.stringify(event.modelUsage)}`);
-
-          // modelUsage에서 총 토큰 계산 (input_tokens가 없을 수 있음)
-          let totalInputTokens = 0;
-          let totalOutputTokens = 0;
-          if (event.modelUsage) {
-            for (const model of Object.values(event.modelUsage)) {
-              totalInputTokens += (model as any).inputTokens ?? 0;
-              totalOutputTokens += (model as any).outputTokens ?? 0;
-            }
+            break;
           }
 
-          emit({
-            type: "done",
-            id: msg.id,
-            usage: event.usage ?? null,
-            // 계산된 토큰도 함께 전송
-            computed_usage: {
-              input_tokens: totalInputTokens,
-              output_tokens: totalOutputTokens,
-            },
-            // SDK는 session_id 필드로 보냄 — 프런트에서는 기존대로 agentId 로 소비
-            agentId: event.session_id ?? null,
-          });
-          break;
+          default: {
+            // 기타 이벤트 로깅
+            logToFile("info", `CLI event: ${event.type}`);
+          }
         }
-        default: {
-          log("info", `unhandled SDK event: ${JSON.stringify(event.type)}`);
-        }
+      } catch (parseErr) {
+        // JSON 파싱 실패 - 무시
+        logToFile("warn", `JSON parse error: ${line}`);
       }
     }
 
+    // 프로세스 종료 대기
+    await new Promise<void>((resolve, reject) => {
+      proc.on("close", (code) => {
+        if (code === 0 || sawResult) {
+          resolve();
+        } else {
+          const tail = stderrTail.trim();
+          const detail = tail
+            ? `\nstderr (tail):\n${tail}`
+            : "\n(stderr 비어있음 — claude --version 으로 CLI 직접 동작 확인 권장)";
+          reject(new Error(`Claude CLI exited with code ${code}${detail}`));
+        }
+      });
+      proc.on("error", reject);
+    });
+
     // result 이벤트가 없었을 때만 fallback done 보냄 (중복 방지)
     if (!sawResult && activeTurns.has(msg.id)) {
-      emit({ type: "done", id: msg.id });
+      emit({ type: "done", id: msg.id, agentId: sessionId });
     }
+
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
-    logToFile("error", `query error id=${msg.id}: ${message}${stack ? `\n${stack}` : ""}`);
+    logToFile("error", `CLI query error id=${msg.id}: ${message}${stack ? `\n${stack}` : ""}`);
     emit({ type: "error", id: msg.id, message });
   } finally {
-    logToFile("info", `query end id=${msg.id}`);
+    logToFile("info", `CLI query end id=${msg.id}`);
     activeTurns.delete(msg.id);
+    // 임시 mcp-config 파일 정리
+    if (mcpConfigFile) {
+      try {
+        unlinkSync(mcpConfigFile);
+      } catch {
+        // cleanup error ignored
+      }
+    }
   }
 }
 
@@ -463,6 +554,260 @@ function normalizeToolOutput(content: unknown): string {
       .join("\n");
   }
   return JSON.stringify(content);
+}
+
+// ─── REST API 경로 (OpenAI / Anthropic / Gemini / OpenRouter) ─────────────
+// 각 프로바이더의 SSE 스트리밍 응답을 파싱해 assistant_delta 이벤트로 중계.
+// 도구 사용은 미지원(K-Personal MCP는 Claude CLI 전용).
+
+type ProviderFormat = "openai" | "anthropic" | "gemini";
+
+function defaultModelFor(provider: Provider): string {
+  switch (provider) {
+    case "anthropic": return "claude-sonnet-4-5";
+    case "openai": return "gpt-4o-mini";
+    case "gemini": return "gemini-2.0-flash";
+    case "openrouter": return "openai/gpt-4o-mini";
+    default: return "";
+  }
+}
+
+interface ParsedDelta {
+  text?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+function parseStreamChunk(parsed: any, format: ProviderFormat): ParsedDelta {
+  if (format === "openai") {
+    const choice = parsed?.choices?.[0];
+    const text = choice?.delta?.content;
+    const usage = parsed?.usage;
+    return {
+      text: typeof text === "string" ? text : undefined,
+      inputTokens: usage?.prompt_tokens,
+      outputTokens: usage?.completion_tokens,
+    };
+  }
+  if (format === "anthropic") {
+    if (parsed?.type === "content_block_delta") {
+      const delta = parsed.delta;
+      if (delta?.type === "text_delta" && typeof delta.text === "string") {
+        return { text: delta.text };
+      }
+    }
+    if (parsed?.type === "message_start") {
+      return { inputTokens: parsed.message?.usage?.input_tokens };
+    }
+    if (parsed?.type === "message_delta") {
+      return { outputTokens: parsed.usage?.output_tokens };
+    }
+    return {};
+  }
+  if (format === "gemini") {
+    const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const usage = parsed?.usageMetadata;
+    return {
+      text: typeof text === "string" ? text : undefined,
+      inputTokens: usage?.promptTokenCount,
+      outputTokens: usage?.candidatesTokenCount,
+    };
+  }
+  return {};
+}
+
+async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<void> {
+  const apiKey = msg.api_key;
+  if (!apiKey || !apiKey.trim()) {
+    emit({
+      type: "error",
+      id: msg.id,
+      message: `${provider} API 키가 설정되지 않았습니다. 환경설정 → AI 모델 연동에서 키를 입력하거나, Claude (Max 구독) 모드로 전환하세요.`,
+    });
+    emit({ type: "done", id: msg.id, agentId: null });
+    return;
+  }
+
+  const model = (msg.model && msg.model.trim()) || defaultModelFor(provider);
+  const history = msg.history ?? [];
+
+  // OpenAI 호환 messages 배열 (openai/openrouter/anthropic 공통 베이스)
+  const oaiMessages = history
+    .filter((m) => m.content && m.content.trim())
+    .map((m) => ({ role: m.role, content: m.content }));
+  oaiMessages.push({ role: "user", content: msg.content });
+
+  let endpoint: string;
+  let headers: Record<string, string>;
+  let body: any;
+  let format: ProviderFormat;
+
+  switch (provider) {
+    case "anthropic": {
+      endpoint = "https://api.anthropic.com/v1/messages";
+      headers = {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      };
+      body = {
+        model,
+        max_tokens: 4096,
+        system: SYSTEM_PROMPT_REST,
+        messages: oaiMessages,
+        stream: true,
+      };
+      format = "anthropic";
+      break;
+    }
+    case "openai": {
+      endpoint = "https://api.openai.com/v1/chat/completions";
+      headers = {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      };
+      body = {
+        model,
+        messages: [{ role: "system", content: SYSTEM_PROMPT_REST }, ...oaiMessages],
+        stream: true,
+        stream_options: { include_usage: true },
+      };
+      format = "openai";
+      break;
+    }
+    case "openrouter": {
+      endpoint = "https://openrouter.ai/api/v1/chat/completions";
+      headers = {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+        "x-title": "K Desktop Agent",
+        "http-referer": "https://github.com/lee30934-byte/K-Desktop-Agent",
+      };
+      body = {
+        model,
+        messages: [{ role: "system", content: SYSTEM_PROMPT_REST }, ...oaiMessages],
+        stream: true,
+      };
+      format = "openai";
+      break;
+    }
+    case "gemini": {
+      endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+      headers = { "content-type": "application/json" };
+      const contents = history
+        .filter((m) => m.content && m.content.trim())
+        .map((m) => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content }],
+        }));
+      contents.push({ role: "user", parts: [{ text: msg.content }] });
+      body = {
+        contents,
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT_REST }] },
+      };
+      format = "gemini";
+      break;
+    }
+    default: {
+      emit({ type: "error", id: msg.id, message: `Unknown provider: ${provider}` });
+      emit({ type: "done", id: msg.id, agentId: null });
+      return;
+    }
+  }
+
+  const controller = new AbortController();
+  activeRestTurns.set(msg.id, controller);
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let aborted = false;
+
+  logToFile(
+    "info",
+    `REST query start id=${msg.id} provider=${provider} model=${model} historyLen=${history.length}`
+  );
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      throw new Error(`HTTP ${response.status} ${response.statusText}: ${errText.slice(0, 800)}`);
+    }
+    if (!response.body) {
+      throw new Error("응답 body 가 비어있음 (스트리밍 미지원?)");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE: 이벤트 경계는 빈 줄(\n\n).
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const eventBlock = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+
+        // event: 라인은 무시, data: 라인만 추출 (멀티라인 data 도 합침)
+        const dataLines: string[] = [];
+        for (const line of eventBlock.split("\n")) {
+          if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).replace(/^ /, ""));
+          }
+        }
+        if (dataLines.length === 0) continue;
+        const data = dataLines.join("\n").trim();
+        if (!data || data === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parseStreamChunk(parsed, format);
+          if (delta.text) {
+            emit({ type: "assistant_delta", id: msg.id, text: delta.text });
+          }
+          if (typeof delta.inputTokens === "number") inputTokens = delta.inputTokens;
+          if (typeof delta.outputTokens === "number") outputTokens = delta.outputTokens;
+        } catch (e) {
+          logToFile("warn", `REST SSE parse error: ${data.slice(0, 200)}`);
+        }
+      }
+    }
+
+    emit({
+      type: "done",
+      id: msg.id,
+      usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+      computed_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+      agentId: null,
+    });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      aborted = true;
+      logToFile("info", `REST query aborted id=${msg.id}`);
+      emit({ type: "done", id: msg.id, agentId: null });
+    } else {
+      const message = err instanceof Error ? err.message : String(err);
+      logToFile("error", `REST query error id=${msg.id}: ${message}`);
+      emit({ type: "error", id: msg.id, message });
+      emit({ type: "done", id: msg.id, agentId: null });
+    }
+  } finally {
+    activeRestTurns.delete(msg.id);
+    logToFile(
+      "info",
+      `REST query end id=${msg.id} aborted=${aborted} in=${inputTokens} out=${outputTokens}`
+    );
+  }
 }
 
 // ─── stdin 라인 리더 ───────────────────────────────────
@@ -492,10 +837,15 @@ rl.on("line", (line) => {
       void handleUserMessage(msg as UserMessage);
       break;
     case "interrupt": {
-      const ac = activeTurns.get(msg.id);
-      if (ac) {
-        ac.abort();
-        log("info", `interrupted turn ${msg.id}`);
+      const proc = activeTurns.get(msg.id);
+      if (proc) {
+        proc.kill("SIGTERM");
+        log("info", `interrupted CLI turn ${msg.id}`);
+      }
+      const controller = activeRestTurns.get(msg.id);
+      if (controller) {
+        controller.abort();
+        log("info", `interrupted REST turn ${msg.id}`);
       }
       break;
     }
@@ -519,8 +869,8 @@ rl.on("line", (line) => {
       break;
     }
     case "elicitation_response": {
-      // Frontend에서 확인/취소 응답
-      handleElicitationResponse(msg.id, msg.confirmed === true);
+      // CLI 모드에서는 elicitation 처리 안 함 (CLI가 자체 처리)
+      log("info", `elicitation_response received (ignored in CLI mode)`);
       break;
     }
     default:
@@ -536,25 +886,11 @@ rl.on("close", () => {
   process.exit(0);
 });
 
-process.on("uncaughtException", (err) => {
-  emit({
-    type: "error",
-    message: `uncaughtException: ${err.message}`,
-  });
-});
-
-process.on("unhandledRejection", (reason) => {
-  emit({
-    type: "error",
-    message: `unhandledRejection: ${String(reason)}`,
-  });
-});
-
 // ─── 기동 ──────────────────────────────────────────────
 
 cachedMCPHealth = checkMCPHealth();
 
-emit({ type: "ready", version: "0.3.0" });
+emit({ type: "ready", version: "0.4.0" });
 
 emit({
   type: "mcp_status",
@@ -565,10 +901,12 @@ emit({
     path: K_PERSONAL_PATH,
     pathExists: cachedMCPHealth.serverPathExists,
     pythonAvailable: cachedMCPHealth.pythonAvailable,
+    claudeCliAvailable: cachedMCPHealth.claudeCliAvailable,
+    claudeCliResolved: claudeCliResolution.resolved,
+    claudeCliTried: claudeCliResolution.tried,
   },
 });
 
-log(
-  "info",
-  `sidecar ready (MCP ${cachedMCPHealth.configured ? "configured" : "NOT configured: " + cachedMCPHealth.error})`
-);
+
+const _readyMsg = "sidecar ready (CLI mode, claudeCli=" + (claudeCliResolution.resolved ?? "(none)") + ", MCP " + (cachedMCPHealth.configured ? "configured" : ("NOT configured: " + (cachedMCPHealth.error ?? ""))) + ")";
+log("info", _readyMsg);

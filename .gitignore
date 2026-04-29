@@ -46,3 +46,7 @@ data/
 release/*.exe
 release/*.msi
 .tauri/
+
+# Local-only artifacts
+backups/
+node-bundle/

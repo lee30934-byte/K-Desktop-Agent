@@ -1,6 +1,6 @@
 [package]
 name = "k-desktop-agent"
-version = "0.1.0"
+version = "0.4.0"
 description = "K Desktop Agent - personal automation chat app"
 authors = ["K"]
 edition = "2021"
@@ -22,8 +22,8 @@ tauri-plugin-single-instance = "2.0.1"
 tauri-plugin-dialog = "2.0.0"
 tauri-plugin-global-shortcut = "2.0.0"
 tauri-plugin-fs = "2.0.0"
-tauri-plugin-updater = "2.0.0"
-tauri-plugin-process = "2.0.0"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }

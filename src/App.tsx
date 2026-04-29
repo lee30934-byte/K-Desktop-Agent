@@ -579,27 +579,25 @@ export default function App() {
         base64: f.base64,
       }));
 
-      // API 키 가져오기 (localStorage에서)
-      let apiKey: string | undefined;
+      // 활성 provider / model / API 키 가져오기 (Settings 에서 저장)
+      // Settings 의 LS_ACTIVE_PROVIDER / LS_ACTIVE_MODEL 와 동일 키.
       let provider: string | undefined;
+      let model: string | undefined;
+      let apiKey: string | undefined;
       try {
-        const storedKeys = localStorage.getItem("kda_api_keys");
-        if (storedKeys) {
-          const keys = JSON.parse(storedKeys);
-          // 활성 프로바이더 순서: anthropic > openai > google
-          if (keys.anthropic) {
-            apiKey = keys.anthropic;
-            provider = "anthropic";
-          } else if (keys.openai) {
-            apiKey = keys.openai;
-            provider = "openai";
-          } else if (keys.google) {
-            apiKey = keys.google;
-            provider = "google";
+        provider = localStorage.getItem("kda_active_provider") || "claude";
+        model = localStorage.getItem("kda_active_model") || undefined;
+        // claude(Max 구독) 외의 provider 는 API 키 필요
+        if (provider !== "claude") {
+          const storedKeys = localStorage.getItem("kda_api_keys");
+          if (storedKeys) {
+            const keys = JSON.parse(storedKeys);
+            apiKey = keys[provider];
           }
         }
       } catch (e) {
-        console.warn("API 키 로드 실패:", e);
+        console.warn("[App] provider/model 로드 실패:", e);
+        provider = "claude";
       }
 
       await invoke("send_message", {
@@ -610,6 +608,7 @@ export default function App() {
         attachments,
         apiKey,
         provider,
+        model,
       });
     } catch (err) {
       setIsStreaming(false);

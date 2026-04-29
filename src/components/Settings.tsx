@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import CornerBrackets from "./CornerBrackets";
 import type { WatchedFolder } from "../types";
 
@@ -20,6 +22,12 @@ interface APIProvider {
   placeholder: string;
   docsUrl: string;
   supportsOAuth?: boolean;
+  // 이 provider 는 별도 API 키 없이 동작 (예: Claude Max 구독 OAuth)
+  noKeyRequired?: boolean;
+  // 모델 ID 후보 — sidecar 의 model 인자로 그대로 전달
+  models: { id: string; label: string }[];
+  // 비고
+  note?: string;
 }
 
 // 에이전트 권한 타입
@@ -45,13 +53,31 @@ interface Theme {
 
 const API_PROVIDERS: APIProvider[] = [
   {
+    id: "claude",
+    name: "Claude (Max 구독)",
+    icon: "💠",
+    keyName: "(none)",
+    placeholder: "Max 구독 OAuth — claude login",
+    docsUrl: "https://docs.claude.com/en/docs/claude-code/quickstart",
+    noKeyRequired: true,
+    note: "Claude Code CLI 로 K-Personal MCP 도구 사용 가능 (스크린샷·마우스·키보드 등). API 키 불필요.",
+    models: [
+      { id: "default", label: "Max 기본 모델 (Opus 4.7 / 1M ctx)" },
+    ],
+  },
+  {
     id: "anthropic",
-    name: "Anthropic (Claude)",
+    name: "Anthropic API",
     icon: "🤖",
     keyName: "ANTHROPIC_API_KEY",
     placeholder: "sk-ant-api...",
     docsUrl: "https://console.anthropic.com/",
-    supportsOAuth: false,
+    note: "직접 API 호출 (텍스트 전용 — MCP 도구 미지원).",
+    models: [
+      { id: "claude-opus-4-5", label: "Claude Opus 4.5" },
+      { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5 (권장)" },
+      { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 (저렴/빠름)" },
+    ],
   },
   {
     id: "openai",
@@ -60,18 +86,52 @@ const API_PROVIDERS: APIProvider[] = [
     keyName: "OPENAI_API_KEY",
     placeholder: "sk-proj-...",
     docsUrl: "https://platform.openai.com/api-keys",
-    supportsOAuth: false,
+    note: "직접 API 호출 (텍스트 전용).",
+    models: [
+      { id: "gpt-4o", label: "GPT-4o" },
+      { id: "gpt-4o-mini", label: "GPT-4o mini (저렴/빠름)" },
+      { id: "gpt-4-turbo", label: "GPT-4 Turbo" },
+      { id: "o1-mini", label: "o1-mini (추론)" },
+      { id: "o3-mini", label: "o3-mini (최신 추론)" },
+    ],
   },
   {
-    id: "google",
-    name: "Google (Gemini)",
+    id: "gemini",
+    name: "Google Gemini",
     icon: "🔮",
     keyName: "GOOGLE_API_KEY",
     placeholder: "AIza...",
     docsUrl: "https://aistudio.google.com/apikey",
-    supportsOAuth: true,
+    note: "AI Studio API 키 사용 (텍스트 전용).",
+    models: [
+      { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (권장)" },
+      { id: "gemini-2.0-flash-thinking-exp", label: "Gemini 2.0 Flash Thinking" },
+      { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
+      { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
+    ],
+  },
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    icon: "🌐",
+    keyName: "OPENROUTER_API_KEY",
+    placeholder: "sk-or-v1-...",
+    docsUrl: "https://openrouter.ai/keys",
+    note: "여러 모델을 한 키로 라우팅 (DeepSeek, Llama, Qwen 등).",
+    models: [
+      { id: "openai/gpt-4o-mini", label: "OpenAI GPT-4o mini" },
+      { id: "anthropic/claude-sonnet-4.5", label: "Anthropic Claude Sonnet 4.5" },
+      { id: "google/gemini-2.0-flash-exp:free", label: "Gemini 2.0 Flash (free)" },
+      { id: "deepseek/deepseek-chat", label: "DeepSeek V3" },
+      { id: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B" },
+      { id: "qwen/qwen-2.5-72b-instruct", label: "Qwen 2.5 72B" },
+    ],
   },
 ];
+
+// localStorage 키 — App.tsx 와 공유
+const LS_ACTIVE_PROVIDER = "kda_active_provider";
+const LS_ACTIVE_MODEL = "kda_active_model";
 
 // 기본 에이전트 권한 설정
 const DEFAULT_PERMISSIONS: AgentPermission[] = [
@@ -198,13 +258,37 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [activeProvider, setActiveProvider] = useState<string>("anthropic");
+  // UI 탭 (어느 provider 카드를 보고 있는지)
+  const [activeProvider, setActiveProvider] = useState<string>("claude");
+  // 실제 채팅에 사용되는 active provider/model (sidecar 로 전달됨)
+  const [chatProvider, setChatProvider] = useState<string>("claude");
+  const [chatModel, setChatModel] = useState<string>("default");
 
   // 에이전트 권한 상태
   const [permissions, setPermissions] = useState<AgentPermission[]>(DEFAULT_PERMISSIONS);
 
   // 테마 상태
   const [currentTheme, setCurrentTheme] = useState<string>("cyber-teal");
+
+  // 말풍선 색상 상태
+  const [bubbleColors, setBubbleColors] = useState<{
+    userBg: string;
+    userBorder: string;
+    assistantBg: string;
+    assistantBorder: string;
+  }>({
+    userBg: "79, 232, 225",      // 기본 accent 색상
+    userBorder: "79, 232, 225",
+    assistantBg: "20, 27, 45",    // bg-3 색상
+    assistantBorder: "28, 37, 55", // border-subtle
+  });
+
+  // 자동 업데이트 상태
+  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [updateProgress, setUpdateProgress] = useState(0);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -217,17 +301,42 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       loadAPIKeys(),
       loadPermissions(),
       loadTheme(),
+      loadBubbleColors(),
+      loadAutoUpdateSetting(),
     ])
-      .then(([autoStartEnabled, folders, keys, perms, theme]) => {
+      .then(([autoStartEnabled, folders, keys, perms, theme, colors, autoUpdateEnabled]) => {
         setAutoStart(autoStartEnabled);
         setWatchedFolders(folders);
         setApiKeys(keys);
         if (perms) setPermissions(perms);
         if (theme) setCurrentTheme(theme);
+        if (colors) setBubbleColors(colors);
+        setAutoUpdate(autoUpdateEnabled);
+        // 활성 provider/model 로드 (저장된 게 있으면 채팅 전환에 사용)
+        const savedProvider = localStorage.getItem(LS_ACTIVE_PROVIDER) || "claude";
+        const savedModel = localStorage.getItem(LS_ACTIVE_MODEL) || "default";
+        setChatProvider(savedProvider);
+        setChatModel(savedModel);
+        setActiveProvider(savedProvider);
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, [open]);
+
+  // 활성 provider/model 저장
+  function saveActiveProvider(providerId: string, modelId: string) {
+    setChatProvider(providerId);
+    setChatModel(modelId);
+    localStorage.setItem(LS_ACTIVE_PROVIDER, providerId);
+    localStorage.setItem(LS_ACTIVE_MODEL, modelId);
+  }
+
+  // provider 바꾸면 해당 provider 의 첫 모델로 자동 선택
+  function selectActiveProvider(providerId: string) {
+    const provider = API_PROVIDERS.find((p) => p.id === providerId);
+    const firstModel = provider?.models[0]?.id ?? "default";
+    saveActiveProvider(providerId, firstModel);
+  }
 
   // API 키 로드 (localStorage에서)
   async function loadAPIKeys(): Promise<Record<string, string>> {
@@ -266,6 +375,137 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       console.error("테마 로드 실패:", e);
     }
     return null;
+  }
+
+  // 말풍선 색상 로드
+  async function loadBubbleColors(): Promise<typeof bubbleColors | null> {
+    try {
+      const stored = localStorage.getItem("kda_bubble_colors");
+      if (stored) {
+        const colors = JSON.parse(stored);
+        // CSS 변수 적용
+        applyBubbleColors(colors);
+        return colors;
+      }
+    } catch (e) {
+      console.error("말풍선 색상 로드 실패:", e);
+    }
+    return null;
+  }
+
+  // 말풍선 색상 적용
+  function applyBubbleColors(colors: typeof bubbleColors) {
+    document.documentElement.style.setProperty("--bubble-user-bg", colors.userBg);
+    document.documentElement.style.setProperty("--bubble-user-border", colors.userBorder);
+    document.documentElement.style.setProperty("--bubble-assistant-bg", colors.assistantBg);
+    document.documentElement.style.setProperty("--bubble-assistant-border", colors.assistantBorder);
+  }
+
+  // 말풍선 색상 저장
+  function saveBubbleColors(colors: typeof bubbleColors) {
+    setBubbleColors(colors);
+    localStorage.setItem("kda_bubble_colors", JSON.stringify(colors));
+    applyBubbleColors(colors);
+  }
+
+  // 말풍선 색상 변경 핸들러
+  function handleBubbleColorChange(key: keyof typeof bubbleColors, hexColor: string) {
+    // HEX를 RGB로 변환
+    const r = parseInt(hexColor.slice(1, 3), 16);
+    const g = parseInt(hexColor.slice(3, 5), 16);
+    const b = parseInt(hexColor.slice(5, 7), 16);
+    const rgbValue = `${r}, ${g}, ${b}`;
+
+    const newColors = { ...bubbleColors, [key]: rgbValue };
+    saveBubbleColors(newColors);
+  }
+
+  // RGB 문자열을 HEX로 변환 (컬러 피커용)
+  function rgbToHex(rgb: string): string {
+    const parts = rgb.split(",").map(p => parseInt(p.trim()));
+    if (parts.length !== 3) return "#4FE8E1";
+    const [r, g, b] = parts;
+    return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+  }
+
+  // 자동 업데이트 설정 로드
+  async function loadAutoUpdateSetting(): Promise<boolean> {
+    try {
+      const stored = localStorage.getItem("kda_auto_update");
+      if (stored !== null) {
+        return stored === "true";
+      }
+    } catch (e) {
+      console.error("자동 업데이트 설정 로드 실패:", e);
+    }
+    return true; // 기본값: 활성화
+  }
+
+  // 자동 업데이트 토글
+  function toggleAutoUpdate() {
+    const newValue = !autoUpdate;
+    setAutoUpdate(newValue);
+    localStorage.setItem("kda_auto_update", String(newValue));
+  }
+
+  // 업데이트 확인
+  async function checkForUpdate() {
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    setUpdateVersion(null);
+
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateStatus("available");
+        setUpdateVersion(update.version);
+      } else {
+        setUpdateStatus("latest");
+      }
+    } catch (e) {
+      setUpdateStatus("error");
+      setUpdateError(e instanceof Error ? e.message : "업데이트 확인 실패");
+    }
+  }
+
+  // 업데이트 다운로드 및 설치
+  async function downloadAndInstallUpdate() {
+    setUpdateStatus("downloading");
+    setUpdateError(null);
+    setUpdateProgress(0);
+
+    let totalSize = 0;
+    let downloaded = 0;
+
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateStatus("latest");
+        return;
+      }
+
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          const data = event.data as { contentLength?: number };
+          totalSize = data.contentLength || 0;
+          setUpdateProgress(0);
+        } else if (event.event === "Progress") {
+          const data = event.data as { chunkLength: number };
+          downloaded += data.chunkLength;
+          if (totalSize > 0) {
+            setUpdateProgress(Math.round((downloaded / totalSize) * 100));
+          }
+        } else if (event.event === "Finished") {
+          setUpdateProgress(100);
+        }
+      });
+
+      // 설치 완료 후 재시작
+      await relaunch();
+    } catch (e) {
+      setUpdateStatus("error");
+      setUpdateError(e instanceof Error ? e.message : "업데이트 설치 실패");
+    }
   }
 
   // API 키 저장
@@ -328,11 +568,21 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     document.documentElement.style.setProperty("--bg-0", `rgb(${theme.background})`);
   }
 
-  // 앱 시작 시 저장된 테마 적용
+  // 앱 시작 시 저장된 테마 및 말풍선 색상 적용
   useEffect(() => {
     const savedTheme = localStorage.getItem("kda_theme");
     if (savedTheme) {
       changeTheme(savedTheme);
+    }
+
+    const savedBubbleColors = localStorage.getItem("kda_bubble_colors");
+    if (savedBubbleColors) {
+      try {
+        const colors = JSON.parse(savedBubbleColors);
+        applyBubbleColors(colors);
+      } catch {
+        // ignore
+      }
     }
   }, []);
 
@@ -479,6 +729,104 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
+          {/* 말풍선 색상 섹션 */}
+          <section className="settings-section">
+            <div className="eyebrow">말풍선 색상</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">채팅 말풍선 커스터마이징</div>
+                <div className="settings-row-desc">
+                  사용자와 AI의 말풍선 색상을 원하는 대로 변경합니다
+                </div>
+              </div>
+
+              <div className="bubble-color-grid">
+                {/* 사용자 말풍선 */}
+                <div className="bubble-color-section">
+                  <div className="bubble-color-title">👤 내 메시지</div>
+                  <div className="bubble-color-row">
+                    <span className="bubble-color-label">배경색</span>
+                    <input
+                      type="color"
+                      className="bubble-color-picker"
+                      value={rgbToHex(bubbleColors.userBg)}
+                      onChange={(e) => handleBubbleColorChange("userBg", e.target.value)}
+                    />
+                    <span className="bubble-color-hex mono">{rgbToHex(bubbleColors.userBg)}</span>
+                  </div>
+                  <div className="bubble-color-row">
+                    <span className="bubble-color-label">테두리</span>
+                    <input
+                      type="color"
+                      className="bubble-color-picker"
+                      value={rgbToHex(bubbleColors.userBorder)}
+                      onChange={(e) => handleBubbleColorChange("userBorder", e.target.value)}
+                    />
+                    <span className="bubble-color-hex mono">{rgbToHex(bubbleColors.userBorder)}</span>
+                  </div>
+                  <div
+                    className="bubble-preview bubble-preview-user"
+                    style={{
+                      background: `linear-gradient(180deg, rgba(${bubbleColors.userBg}, 0.15) 0%, rgba(${bubbleColors.userBg}, 0.06) 100%)`,
+                      borderColor: `rgba(${bubbleColors.userBorder}, 0.25)`,
+                    }}
+                  >
+                    미리보기 텍스트
+                  </div>
+                </div>
+
+                {/* AI 말풍선 */}
+                <div className="bubble-color-section">
+                  <div className="bubble-color-title">🤖 AI 메시지</div>
+                  <div className="bubble-color-row">
+                    <span className="bubble-color-label">배경색</span>
+                    <input
+                      type="color"
+                      className="bubble-color-picker"
+                      value={rgbToHex(bubbleColors.assistantBg)}
+                      onChange={(e) => handleBubbleColorChange("assistantBg", e.target.value)}
+                    />
+                    <span className="bubble-color-hex mono">{rgbToHex(bubbleColors.assistantBg)}</span>
+                  </div>
+                  <div className="bubble-color-row">
+                    <span className="bubble-color-label">테두리</span>
+                    <input
+                      type="color"
+                      className="bubble-color-picker"
+                      value={rgbToHex(bubbleColors.assistantBorder)}
+                      onChange={(e) => handleBubbleColorChange("assistantBorder", e.target.value)}
+                    />
+                    <span className="bubble-color-hex mono">{rgbToHex(bubbleColors.assistantBorder)}</span>
+                  </div>
+                  <div
+                    className="bubble-preview bubble-preview-assistant"
+                    style={{
+                      background: `rgb(${bubbleColors.assistantBg})`,
+                      borderColor: `rgb(${bubbleColors.assistantBorder})`,
+                    }}
+                  >
+                    미리보기 텍스트
+                  </div>
+                </div>
+              </div>
+
+              <button
+                className="settings-btn"
+                onClick={() => {
+                  const defaultColors = {
+                    userBg: "79, 232, 225",
+                    userBorder: "79, 232, 225",
+                    assistantBg: "20, 27, 45",
+                    assistantBorder: "28, 37, 55",
+                  };
+                  saveBubbleColors(defaultColors);
+                }}
+              >
+                기본값으로 초기화
+              </button>
+            </div>
+          </section>
+
           {/* 에이전트 권한 섹션 */}
           <section className="settings-section">
             <div className="eyebrow">에이전트 권한</div>
@@ -487,6 +835,29 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 <div className="settings-row-title">기능별 실행 권한</div>
                 <div className="settings-row-desc">
                   각 기능의 실행 방식을 설정합니다
+                </div>
+              </div>
+
+              {/* 디스클레이머: 현재 sidecar 는 도구 권한 게이트가 없음 */}
+              <div
+                className="settings-row-info"
+                style={{
+                  padding: "10px 12px",
+                  background: "rgba(249, 115, 22, 0.08)",
+                  border: "1px solid rgba(249, 115, 22, 0.3)",
+                  borderRadius: "6px",
+                  marginBottom: "12px",
+                  fontSize: "0.85em",
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: "4px" }}>
+                  ⚠️ 현재 sidecar 는 모든 도구를 자동 승인합니다
+                </div>
+                <div style={{ opacity: 0.85 }}>
+                  Claude Code CLI 가 <code>--dangerously-skip-permissions</code> 로
+                  실행되어 권한 체크가 우회됩니다. 아래 토글은{" "}
+                  <strong>참고용</strong>이며 실제 동작에는 아직 반영되지 않습니다.
+                  향후 sidecar 권한 게이트가 추가될 예정입니다.
                 </div>
               </div>
 
@@ -591,25 +962,37 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             <div className="eyebrow">AI 모델 연동</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
-                <div className="settings-row-title">API 키 설정</div>
+                <div className="settings-row-title">제공자 / 모델</div>
                 <div className="settings-row-desc">
-                  여러 AI 모델을 API 키로 연동하여 사용할 수 있습니다
+                  Claude (Max 구독) 또는 외부 API (OpenAI, Gemini, OpenRouter, Anthropic) 중에서 선택합니다.
                 </div>
               </div>
 
               {/* 제공자 탭 */}
               <div className="api-provider-tabs">
-                {API_PROVIDERS.map((provider) => (
-                  <button
-                    key={provider.id}
-                    className={`api-provider-tab ${activeProvider === provider.id ? "active" : ""} ${apiKeys[provider.id] ? "has-key" : ""}`}
-                    onClick={() => setActiveProvider(provider.id)}
-                  >
-                    <span className="api-provider-icon">{provider.icon}</span>
-                    <span className="api-provider-name">{provider.name.split(" ")[0]}</span>
-                    {apiKeys[provider.id] && <span className="api-key-check">✓</span>}
-                  </button>
-                ))}
+                {API_PROVIDERS.map((provider) => {
+                  const usable = provider.noKeyRequired || !!apiKeys[provider.id];
+                  return (
+                    <button
+                      key={provider.id}
+                      className={`api-provider-tab ${activeProvider === provider.id ? "active" : ""} ${usable ? "has-key" : ""}`}
+                      onClick={() => setActiveProvider(provider.id)}
+                      title={chatProvider === provider.id ? "현재 채팅에 사용 중" : "탭으로 전환"}
+                    >
+                      <span className="api-provider-icon">{provider.icon}</span>
+                      <span className="api-provider-name">{provider.name.split(" ")[0]}</span>
+                      {usable && <span className="api-key-check">✓</span>}
+                      {chatProvider === provider.id && (
+                        <span
+                          className="api-key-check"
+                          style={{ color: "var(--accent)" }}
+                        >
+                          ●
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* 선택된 제공자 설정 */}
@@ -623,47 +1006,121 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       rel="noopener noreferrer"
                       className="api-key-docs"
                     >
-                      API 키 발급 →
+                      {currentProvider.noKeyRequired ? "문서 →" : "API 키 발급 →"}
                     </a>
                   </div>
 
-                  <div className="api-key-input-row">
-                    <input
-                      type={showKeys[currentProvider.id] ? "text" : "password"}
-                      className="api-key-input mono"
-                      placeholder={currentProvider.placeholder}
-                      value={apiKeys[currentProvider.id] || ""}
-                      onChange={(e) => setApiKeys({
-                        ...apiKeys,
-                        [currentProvider.id]: e.target.value
-                      })}
-                    />
-                    <button
-                      className="api-key-toggle"
-                      onClick={() => setShowKeys({
-                        ...showKeys,
-                        [currentProvider.id]: !showKeys[currentProvider.id]
-                      })}
-                      title={showKeys[currentProvider.id] ? "숨기기" : "보기"}
+                  {currentProvider.note && (
+                    <div
+                      style={{
+                        fontSize: "0.85em",
+                        opacity: 0.75,
+                        marginBottom: "10px",
+                      }}
                     >
-                      {showKeys[currentProvider.id] ? "🙈" : "👁"}
-                    </button>
+                      {currentProvider.note}
+                    </div>
+                  )}
+
+                  {/* API 키 입력 (Max 구독 제외) */}
+                  {!currentProvider.noKeyRequired && (
+                    <>
+                      <div className="api-key-input-row">
+                        <input
+                          type={showKeys[currentProvider.id] ? "text" : "password"}
+                          className="api-key-input mono"
+                          placeholder={currentProvider.placeholder}
+                          value={apiKeys[currentProvider.id] || ""}
+                          onChange={(e) => setApiKeys({
+                            ...apiKeys,
+                            [currentProvider.id]: e.target.value
+                          })}
+                        />
+                        <button
+                          className="api-key-toggle"
+                          onClick={() => setShowKeys({
+                            ...showKeys,
+                            [currentProvider.id]: !showKeys[currentProvider.id]
+                          })}
+                          title={showKeys[currentProvider.id] ? "숨기기" : "보기"}
+                        >
+                          {showKeys[currentProvider.id] ? "🙈" : "👁"}
+                        </button>
+                      </div>
+
+                      <div className="api-key-actions">
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={() => saveAPIKey(currentProvider.id, apiKeys[currentProvider.id] || "")}
+                          disabled={savingKey === currentProvider.id || !apiKeys[currentProvider.id]}
+                        >
+                          {savingKey === currentProvider.id ? "저장 중..." : "저장"}
+                        </button>
+                        {apiKeys[currentProvider.id] && (
+                          <button
+                            className="settings-btn settings-btn-danger"
+                            onClick={() => removeAPIKey(currentProvider.id)}
+                          >
+                            삭제
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* 모델 드롭박스 */}
+                  <div style={{ marginTop: "14px" }}>
+                    <div
+                      className="settings-row-title"
+                      style={{ fontSize: "0.95em", marginBottom: "6px" }}
+                    >
+                      모델 선택
+                    </div>
+                    <select
+                      className="api-key-input mono"
+                      value={
+                        chatProvider === currentProvider.id
+                          ? chatModel
+                          : currentProvider.models[0]?.id ?? "default"
+                      }
+                      onChange={(e) =>
+                        saveActiveProvider(currentProvider.id, e.target.value)
+                      }
+                      style={{ width: "100%", padding: "8px 10px" }}
+                    >
+                      {currentProvider.models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
-                  <div className="api-key-actions">
-                    <button
-                      className="settings-btn settings-btn-primary"
-                      onClick={() => saveAPIKey(currentProvider.id, apiKeys[currentProvider.id] || "")}
-                      disabled={savingKey === currentProvider.id || !apiKeys[currentProvider.id]}
-                    >
-                      {savingKey === currentProvider.id ? "저장 중..." : "저장"}
-                    </button>
-                    {apiKeys[currentProvider.id] && (
-                      <button
-                        className="settings-btn settings-btn-danger"
-                        onClick={() => removeAPIKey(currentProvider.id)}
+                  {/* 활성 채팅 provider 로 설정 */}
+                  <div className="api-key-actions" style={{ marginTop: "14px" }}>
+                    {chatProvider === currentProvider.id ? (
+                      <span
+                        className="model-badge active"
+                        style={{ alignSelf: "center" }}
                       >
-                        삭제
+                        ● 현재 이 provider 로 채팅 중
+                      </span>
+                    ) : (
+                      <button
+                        className="settings-btn settings-btn-primary"
+                        onClick={() => selectActiveProvider(currentProvider.id)}
+                        disabled={
+                          !currentProvider.noKeyRequired &&
+                          !apiKeys[currentProvider.id]
+                        }
+                        title={
+                          !currentProvider.noKeyRequired &&
+                          !apiKeys[currentProvider.id]
+                            ? "먼저 API 키를 저장하세요"
+                            : "이 provider 로 채팅 전환"
+                        }
+                      >
+                        이 provider 로 전환
                       </button>
                     )}
                   </div>
@@ -671,8 +1128,12 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   {currentProvider.supportsOAuth && (
                     <div className="api-oauth-section">
                       <div className="api-oauth-divider">또는</div>
-                      <button className="settings-btn settings-btn-oauth">
-                        🔐 {currentProvider.name.split(" ")[0]} 계정으로 로그인
+                      <button
+                        className="settings-btn settings-btn-oauth"
+                        disabled
+                        title="OAuth 로그인은 아직 구현되지 않음 — API 키를 사용하세요"
+                      >
+                        🔐 {currentProvider.name.split(" ")[0]} OAuth (준비 중)
                       </button>
                     </div>
                   )}
@@ -686,13 +1147,105 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             <div className="eyebrow">활성 모델</div>
             <div className="settings-row">
               <div className="settings-row-info">
-                <div className="settings-row-title">현재 사용 중인 모델</div>
+                <div className="settings-row-title">
+                  {API_PROVIDERS.find((p) => p.id === chatProvider)?.icon}{" "}
+                  {API_PROVIDERS.find((p) => p.id === chatProvider)?.name ?? chatProvider}
+                </div>
                 <div className="settings-row-desc">
-                  Claude Opus 4.7 (Max 구독 - 1M 컨텍스트)
+                  모델: <span className="mono">{chatModel}</span>
+                  {chatProvider === "claude" && " · Max 구독 OAuth · MCP 도구 사용 가능"}
+                  {chatProvider !== "claude" && " · REST API 직접 호출 · 텍스트 전용"}
                 </div>
               </div>
               <div className="model-status">
                 <span className="model-badge active">활성</span>
+              </div>
+            </div>
+          </section>
+
+          {/* 자동 업데이트 섹션 */}
+          <section className="settings-section">
+            <div className="eyebrow">업데이트</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">자동 업데이트</div>
+                <div className="settings-row-desc">
+                  새 버전이 출시되면 자동으로 알림을 표시합니다
+                </div>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={autoUpdate}
+                  onChange={toggleAutoUpdate}
+                  disabled={loading}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">업데이트 확인</div>
+                <div className="settings-row-desc">
+                  현재 버전: v0.4.0
+                </div>
+              </div>
+              <div className="update-status-container">
+                {updateStatus === "idle" && (
+                  <button className="settings-btn" onClick={checkForUpdate}>
+                    업데이트 확인
+                  </button>
+                )}
+                {updateStatus === "checking" && (
+                  <div className="update-status update-checking">
+                    <span className="update-spinner">⟳</span>
+                    확인 중...
+                  </div>
+                )}
+                {updateStatus === "latest" && (
+                  <div className="update-status update-latest">
+                    <span className="update-icon">✓</span>
+                    최신 버전입니다!
+                  </div>
+                )}
+                {updateStatus === "available" && (
+                  <div className="update-available-section">
+                    <div className="update-status update-available">
+                      <span className="update-icon">🎉</span>
+                      새 버전 {updateVersion} 사용 가능!
+                    </div>
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      onClick={downloadAndInstallUpdate}
+                    >
+                      지금 업데이트
+                    </button>
+                  </div>
+                )}
+                {updateStatus === "downloading" && (
+                  <div className="update-downloading-section">
+                    <div className="update-status update-downloading">
+                      다운로드 중... {updateProgress}%
+                    </div>
+                    <div className="update-progress-bar">
+                      <div
+                        className="update-progress-fill"
+                        style={{ width: `${updateProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {updateStatus === "error" && (
+                  <div className="update-error-section">
+                    <div className="update-status update-error">
+                      <span className="update-icon">⚠</span>
+                      {updateError}
+                    </div>
+                    <button className="settings-btn" onClick={checkForUpdate}>
+                      다시 시도
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -829,9 +1382,12 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           <section className="settings-section">
             <div className="eyebrow">정보</div>
             <div className="settings-meta mono">
-              <div>K Desktop Agent v0.1.0</div>
-              <div>Tauri + React + Node sidecar (Claude Agent SDK)</div>
-              <div>현재 모델: Claude Opus 4.7 · 1M 컨텍스트 · Max 구독</div>
+              <div>K Desktop Agent v0.4.0</div>
+              <div>Tauri + React + Node sidecar</div>
+              <div>
+                현재: {chatProvider === "claude" ? "Claude Code CLI (Max 구독)" : `${chatProvider} REST API`}
+                {" · "}모델 <span className="mono">{chatModel}</span>
+              </div>
             </div>
           </section>
         </div>

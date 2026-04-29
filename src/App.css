@@ -772,18 +772,18 @@
   align-self: flex-end;
   background: linear-gradient(
     180deg,
-    rgba(79, 232, 225, 0.15) 0%,
-    rgba(79, 232, 225, 0.06) 100%
+    rgba(var(--bubble-user-bg, 79, 232, 225), 0.15) 0%,
+    rgba(var(--bubble-user-bg, 79, 232, 225), 0.06) 100%
   );
-  border: 1px solid rgba(79, 232, 225, 0.25);
+  border: 1px solid rgba(var(--bubble-user-border, 79, 232, 225), 0.25);
   color: var(--text-primary);
 }
 
 /* Assistant */
 .msg-assistant {
   align-self: flex-start;
-  background: var(--bg-3);
-  border: 1px solid var(--border-subtle);
+  background: rgb(var(--bubble-assistant-bg, 20, 27, 45));
+  border: 1px solid rgb(var(--bubble-assistant-border, 28, 37, 55));
   color: var(--text-primary);
 }
 
@@ -2694,6 +2694,177 @@
   right: 6px;
   font-size: 12px;
   color: var(--accent);
+}
+
+/* ─── Bubble Color Settings ──────────────────────────────── */
+
+.bubble-color-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-lg);
+  margin-bottom: var(--space-md);
+}
+
+.bubble-color-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--bg-0);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.bubble-color-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--space-xs);
+}
+
+.bubble-color-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.bubble-color-label {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.bubble-color-picker {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.bubble-color-picker::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.bubble-color-picker::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.bubble-color-hex {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  min-width: 60px;
+}
+
+.bubble-preview {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--text-primary);
+  border: 1px solid;
+  text-align: center;
+}
+
+.bubble-preview-user {
+  align-self: flex-end;
+}
+
+.bubble-preview-assistant {
+  align-self: flex-start;
+}
+
+/* ─── Update Settings ──────────────────────────────────── */
+
+.update-status-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--bg-0);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.update-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.update-icon {
+  font-size: 14px;
+}
+
+.update-spinner {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+  font-size: 14px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.update-checking {
+  color: var(--text-secondary);
+}
+
+.update-latest {
+  color: var(--success);
+}
+
+.update-latest .update-icon {
+  color: var(--success);
+}
+
+.update-available {
+  color: var(--accent);
+}
+
+.update-available .update-icon {
+  color: var(--accent);
+}
+
+.update-downloading {
+  color: var(--info);
+}
+
+.update-error {
+  color: var(--error);
+}
+
+.update-error .update-icon {
+  color: var(--error);
+}
+
+.update-available-section,
+.update-downloading-section,
+.update-error-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.update-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
 }
 
 /* ─── Permission Settings ──────────────────────────────── */
