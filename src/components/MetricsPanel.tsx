@@ -23,10 +23,13 @@ export default function MetricsPanel({
 }: MetricsPanelProps) {
   const [showContextDetails, setShowContextDetails] = useState(false);
 
-  // 컨텍스트 사용량 계산 (80%에서 자동 갱신)
-  const contextUsage = (metrics.totalInputTokens / maxContextTokens) * 100;
+  // 컨텍스트 사용량 = 마지막 턴에서 모델이 본 전체 토큰 (input + cache_creation + cache_read).
+  // 누적 totalInputTokens 가 아닌 "현재 컨텍스트 윈도우 점유율" — 새 턴마다 갱신됨.
+  // currentContextTokens 가 없으면(첫 메시지 전, 또는 과거 대화 복원 직후) 0 으로 표시.
+  const currentContext = metrics.currentContextTokens ?? 0;
+  const contextUsage = (currentContext / maxContextTokens) * 100;
   const contextColor = contextUsage >= 80 ? "warn" : contextUsage >= 60 ? undefined : "accent";
-  const remainingTokens = maxContextTokens - metrics.totalInputTokens;
+  const remainingTokens = Math.max(0, maxContextTokens - currentContext);
 
   return (
     <footer className="metrics">
@@ -67,7 +70,7 @@ export default function MetricsPanel({
             <div className="context-tooltip-title">컨텍스트 사용량</div>
             <div className="context-tooltip-row">
               <span>사용</span>
-              <span className="mono">{formatTokens(metrics.totalInputTokens)}</span>
+              <span className="mono">{formatTokens(currentContext)}</span>
             </div>
             <div className="context-tooltip-row">
               <span>최대</span>

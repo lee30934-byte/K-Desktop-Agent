@@ -96,6 +96,9 @@ export interface SessionMetrics {
   turnCount: number;
   toolCallCount: number;
   startedAt: number;
+  // 마지막 턴에서 모델이 본 전체 컨텍스트 (input + cache_creation + cache_read).
+  // 누적 totalInputTokens 와 달리 "현재 컨텍스트 윈도우 점유율" 의미.
+  currentContextTokens?: number;
 }
 
 export interface Conversation {

@@ -340,10 +340,18 @@ export default function App() {
 
         // 토큰 사용량 업데이트 및 임계치 체크
         // computed_usage 우선 사용 (sidecar에서 modelUsage 기반으로 계산)
-        const newInputTokens = ev.computed_usage?.input_tokens ?? ev.usage?.input_tokens ?? 0;
-        const newOutputTokens = ev.computed_usage?.output_tokens ?? ev.usage?.output_tokens ?? 0;
+        const usage = ev.computed_usage ?? ev.usage ?? null;
+        const newInputTokens = usage?.input_tokens ?? 0;
+        const newOutputTokens = usage?.output_tokens ?? 0;
+        // 컨텍스트 점유량 = 이번 턴 모델이 본 전체 토큰 (input + cache_creation + cache_read).
+        // input_tokens 만 보면 cache hit 시 매우 작게 잡혀서 실제 윈도우 점유율과 동떨어짐.
+        const cacheCreation = usage?.cache_creation_input_tokens ?? 0;
+        const cacheRead = usage?.cache_read_input_tokens ?? 0;
+        const turnContextTokens = newInputTokens + cacheCreation + cacheRead;
 
-        logger.log(`[Metrics] Turn tokens - IN: ${newInputTokens}, OUT: ${newOutputTokens}`);
+        logger.log(
+          `[Metrics] Turn IN: ${newInputTokens} (+cc:${cacheCreation} +cr:${cacheRead} = ctx:${turnContextTokens}), OUT: ${newOutputTokens}`
+        );
 
         setMetrics((m) => {
           const updatedMetrics = {
@@ -351,6 +359,8 @@ export default function App() {
             turnCount: m.turnCount + 1,
             totalInputTokens: m.totalInputTokens + newInputTokens,
             totalOutputTokens: m.totalOutputTokens + newOutputTokens,
+            // 마지막 턴 컨텍스트 점유량 (누적 아님, 그 턴 한 번)
+            currentContextTokens: turnContextTokens > 0 ? turnContextTokens : m.currentContextTokens,
           };
 
           // DB에 메트릭 저장 (비동기)
@@ -364,8 +374,9 @@ export default function App() {
             }).catch((err) => console.error("[App] 메트릭 저장 실패:", err));
           }
 
-          // 90% 임계치 도달 시 자동 세션 갱신 트리거
-          const contextUsage = updatedMetrics.totalInputTokens / MAX_CONTEXT_TOKENS;
+          // 임계치 체크 — 누적이 아닌 마지막 턴 컨텍스트 기준 (실제 윈도우 점유율).
+          const ctx = updatedMetrics.currentContextTokens ?? 0;
+          const contextUsage = ctx / MAX_CONTEXT_TOKENS;
           if (contextUsage >= CONTEXT_THRESHOLD && !isRefreshingSessionRef.current) {
             logger.log(`[Session] 컨텍스트 ${(contextUsage * 100).toFixed(1)}% 도달 - 세션 자동 갱신 시작`);
             isRefreshingSessionRef.current = true;
@@ -707,6 +718,7 @@ export default function App() {
         turnCount: 0,
         toolCallCount: 0,
         startedAt: Date.now(),
+        currentContextTokens: 0,
       });
     } catch (err) {
       console.error("[App] 대화 생성 실패:", err);
@@ -737,6 +749,8 @@ export default function App() {
           turnCount: savedMetrics.turnCount,
           toolCallCount: savedMetrics.toolCallCount,
           startedAt: Date.now(),
+          // currentContextTokens 는 다음 턴에서 자연스럽게 갱신됨 (영속 불필요)
+          currentContextTokens: 0,
         });
         logger.log(`[App] 메트릭 복원: IN ${savedMetrics.totalInputTokens}, OUT ${savedMetrics.totalOutputTokens}`);
       } else {
@@ -751,6 +765,7 @@ export default function App() {
           turnCount: userMessages,
           toolCallCount: toolMessages,
           startedAt: Date.now(),
+          currentContextTokens: 0,
         });
         logger.log(`[App] 메트릭 추정: ${estimatedTokens} tokens (${msgs.length} messages)`);
       }
@@ -763,6 +778,7 @@ export default function App() {
         turnCount: 0,
         toolCallCount: 0,
         startedAt: Date.now(),
+        currentContextTokens: 0,
       });
       pushSystem("메시지를 불러오지 못했습니다.", "error");
     }
@@ -857,6 +873,7 @@ export default function App() {
         turnCount: 0,
         toolCallCount: 0,
         startedAt: Date.now(),
+        currentContextTokens: 0,
       });
 
       // 4. 세션 갱신 완료 토스트 표시
@@ -949,6 +966,7 @@ export default function App() {
         turnCount: 0,
         toolCallCount: 0,
         startedAt: Date.now(),
+        currentContextTokens: 0,
       });
 
       pushSystem(

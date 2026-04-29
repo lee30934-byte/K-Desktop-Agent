@@ -399,6 +399,51 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  position: relative; /* scroll-to-bottom-btn floating anchor */
+}
+
+/* 위로 스크롤했을 때만 노출되는 "맨 아래로" 플로팅 버튼.
+   composer + tool-log 위에 띄우기 위해 absolute + z-index. */
+.scroll-to-bottom-btn {
+  position: absolute;
+  right: 24px;
+  bottom: 110px; /* composer 높이 + 여백 */
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  color: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4), 0 0 8px rgba(79, 232, 225, 0.25);
+  transition: all 0.15s ease;
+  z-index: 10;
+  animation: scroll-btn-fade-in 0.2s ease;
+}
+
+.scroll-to-bottom-btn:hover {
+  background: rgba(79, 232, 225, 0.15);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4), 0 0 14px rgba(79, 232, 225, 0.5);
+  transform: translateY(-1px);
+}
+
+.scroll-to-bottom-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+@keyframes scroll-btn-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .messages {
@@ -684,9 +729,14 @@
   color: var(--accent);
 }
 
-/* 코드 블록 */
-.md-code-block {
+/* 코드 블록 — wrapper 가 hover 컨테이너 역할 (복사 버튼 노출) */
+.md-code-block-wrapper {
+  position: relative;
   margin: 0.75em 0;
+}
+
+.md-code-block {
+  margin: 0;
   padding: 1em;
   background: var(--bg-0);
   border: 1px solid var(--border-subtle);
@@ -702,6 +752,42 @@
   padding: 0;
   border: none;
   color: var(--text-primary);
+}
+
+/* 코드 블록 우상단 복사 버튼 — hover 시만 노출 */
+.md-code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 4px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  z-index: 2;
+}
+
+.md-code-block-wrapper:hover .md-code-copy-btn,
+.md-code-copy-btn:focus-visible {
+  opacity: 1;
+}
+
+.md-code-copy-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(79, 232, 225, 0.1);
+}
+
+.md-code-copy-btn.copied {
+  opacity: 1;
+  border-color: #4ade80;
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
 }
 
 /* highlight.js 테마 오버라이드 (HUD 스타일) */

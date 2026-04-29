@@ -1,4 +1,4 @@
-import { useEffect, useRef, useLayoutEffect, useState } from "react";
+import { useEffect, useRef, useLayoutEffect, useState, useCallback } from "react";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
@@ -12,6 +12,9 @@ interface MainChatProps {
   onInterrupt: () => void;
 }
 
+// "맨 아래" 판정 임계값 (px). 사용자가 이 안에 있으면 자동 스크롤 따라감.
+const SCROLL_BOTTOM_THRESHOLD = 80;
+
 export default function MainChat({
   messages,
   status,
@@ -21,6 +24,10 @@ export default function MainChat({
 }: MainChatProps) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const lastMessageCountRef = useRef(0);
+  // 사용자가 위로 스크롤했는지 — true 면 자동 스크롤 일시 중지.
+  // ref 로 들고서 effect 가 stale 안 되게.
+  const userScrolledUpRef = useRef(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [toolPanelOpen, setToolPanelOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
 
@@ -47,34 +54,72 @@ export default function MainChat({
     }
   };
 
-  // 스크롤 함수
-  const scrollToBottom = () => {
+  // 컨테이너가 맨 아래에 있는가
+  const isAtBottom = useCallback(() => {
     const container = messagesContainerRef.current;
-    if (container) {
-      container.scrollTop = container.scrollHeight;
-    }
-  };
+    if (!container) return true;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    return scrollHeight - (scrollTop + clientHeight) <= SCROLL_BOTTOM_THRESHOLD;
+  }, []);
 
-  // 메시지가 추가되거나 스트리밍 중일 때 스크롤
+  // 스크롤 함수 (force=true 면 사용자 의도 무시하고 강제)
+  const scrollToBottom = useCallback((force = false) => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    if (!force && userScrolledUpRef.current) return;
+    container.scrollTop = container.scrollHeight;
+  }, []);
+
+  // 사용자가 직접 클릭한 "맨 아래로 가기" — 자동 스크롤도 다시 켜짐
+  const handleScrollToBottomClick = useCallback(() => {
+    userScrolledUpRef.current = false;
+    setShowScrollToBottom(false);
+    scrollToBottom(true);
+  }, [scrollToBottom]);
+
+  // 사용자 스크롤 감지 — 위로 올렸으면 자동 스크롤 잠금, 다시 맨 아래로 가면 해제
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const atBottom = isAtBottom();
+      userScrolledUpRef.current = !atBottom;
+      setShowScrollToBottom(!atBottom);
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [isAtBottom]);
+
+  // 메시지 변경 시 — 사용자가 맨 아래일 때만 따라감
   useLayoutEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, scrollToBottom]);
 
-  // 스트리밍 중에는 주기적으로 스크롤 (메시지 내용 업데이트 감지)
+  // 스트리밍 중 100ms 폴링 — 동일하게 사용자 의도 존중
   useEffect(() => {
     if (!isStreaming) return;
-
-    const interval = setInterval(scrollToBottom, 100);
+    const interval = setInterval(() => scrollToBottom(), 100);
     return () => clearInterval(interval);
-  }, [isStreaming]);
+  }, [isStreaming, scrollToBottom]);
 
-  // 메시지 개수가 바뀔 때 스크롤
+  // 새 메시지 추가 시 — 신규 발화면 강제 스크롤 (대화 시작 시 위에 묶이는 거 방지)
   useEffect(() => {
     if (messages.length !== lastMessageCountRef.current) {
+      const isNewMessage = messages.length > lastMessageCountRef.current;
       lastMessageCountRef.current = messages.length;
-      scrollToBottom();
+      // 사용자가 자기 메시지 보냈을 때(=last is user)는 강제로 따라감
+      const lastMsg = messages[messages.length - 1];
+      if (isNewMessage && lastMsg?.role === "user") {
+        userScrolledUpRef.current = false;
+        setShowScrollToBottom(false);
+        scrollToBottom(true);
+      } else {
+        scrollToBottom();
+      }
     }
-  }, [messages.length]);
+  }, [messages, scrollToBottom]);
 
   return (
     <section className="main-chat">
@@ -121,6 +166,18 @@ export default function MainChat({
             );
           })()}
         </div>
+
+        {/* 맨 아래로 가기 버튼 — 위로 스크롤했을 때만 노출 */}
+        {showScrollToBottom && (
+          <button
+            className="scroll-to-bottom-btn"
+            onClick={handleScrollToBottomClick}
+            title="맨 아래로"
+            aria-label="맨 아래로"
+          >
+            <span className="scroll-to-bottom-icon">▼</span>
+          </button>
+        )}
 
         {/* Tool 로그 패널 */}
         <ToolLogPanel

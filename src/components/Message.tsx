@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode, isValidElement } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -7,6 +7,50 @@ import type { ChatMessage } from "../types";
 
 interface MessageProps {
   message: ChatMessage;
+}
+
+// React children 트리에서 평문 텍스트 추출 — 코드 블록 복사용.
+// rehype-highlight 가 토큰별 <span> 으로 감싸기 때문에 단순 문자열이 아님.
+function extractText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (isValidElement(node)) {
+    const props = node.props as { children?: ReactNode };
+    return extractText(props.children);
+  }
+  return "";
+}
+
+// 코드 블록 wrapper — 우상단 복사 버튼.
+function CodeBlock({ children }: { children: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      const text = extractText(children).replace(/\n$/, "");
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.error("[CodeBlock] copy failed:", err);
+    }
+  };
+
+  return (
+    <div className="md-code-block-wrapper">
+      <button
+        className={`md-code-copy-btn ${copied ? "copied" : ""}`}
+        onClick={handleCopy}
+        title="코드 복사"
+        aria-label="코드 복사"
+      >
+        {copied ? "✓ 복사됨" : "📋 복사"}
+      </button>
+      <pre className="md-code-block">{children}</pre>
+    </div>
+  );
 }
 
 export default function Message({ message }: MessageProps) {
@@ -83,10 +127,8 @@ export default function Message({ message }: MessageProps) {
                     </code>
                   );
                 },
-                // pre 태그 스타일링
-                pre: ({ children }) => (
-                  <pre className="md-code-block">{children}</pre>
-                ),
+                // pre 태그 — 복사 버튼이 달린 wrapper 로 교체
+                pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
               }}
             >
               {message.content}
