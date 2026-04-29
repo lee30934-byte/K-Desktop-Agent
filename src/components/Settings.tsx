@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { check } from "@tauri-apps/plugin-updater";
@@ -21,7 +22,6 @@ interface APIProvider {
   keyName: string;
   placeholder: string;
   docsUrl: string;
-  supportsOAuth?: boolean;
   // 이 provider 는 별도 API 키 없이 동작 (예: Claude Max 구독 OAuth)
   noKeyRequired?: boolean;
   // 모델 ID 후보 — sidecar 의 model 인자로 그대로 전달
@@ -437,6 +437,14 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string>("");
+
+  // 앱 버전은 한 번만 동적으로 로딩 (tauri.conf.json 의 단일 진실원)
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion("unknown"));
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -1523,19 +1531,6 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       </button>
                     )}
                   </div>
-
-                  {currentProvider.supportsOAuth && (
-                    <div className="api-oauth-section">
-                      <div className="api-oauth-divider">또는</div>
-                      <button
-                        className="settings-btn settings-btn-oauth"
-                        disabled
-                        title="OAuth 로그인은 아직 구현되지 않음 — API 키를 사용하세요"
-                      >
-                        🔐 {currentProvider.name.split(" ")[0]} OAuth (준비 중)
-                      </button>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
@@ -1586,7 +1581,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               <div className="settings-row-info">
                 <div className="settings-row-title">업데이트 확인</div>
                 <div className="settings-row-desc">
-                  현재 버전: v0.4.0
+                  현재 버전: {appVersion ? `v${appVersion}` : "확인 중..."}
                 </div>
               </div>
               <div className="update-status-container">
