@@ -54,7 +54,7 @@ K-Desktop-Agent/
     └── launch.vbs             창 없이 앱 실행 (바로가기 Target)
 ```
 
-## 현재 상태 (2026-04-22)
+## 현재 상태 (2026-04-29)
 
 **완료된 Phase:**
 - ✅ **Phase 0**: 스캐폴드, Rust-React 왕복
@@ -62,6 +62,7 @@ K-Desktop-Agent/
 - ✅ **Phase 2**: 트레이 + 자동시작 + 리로드 + 바로가기 (2026-04-21)
 - ✅ **Phase 3**: K-Personal MCP 통합 (스크린샷 등 검증 완료)
 - ✅ **Phase 4**: SQLite 대화 히스토리 + resume (2026-04-22 latest-ref 버그 수정 포함)
+- ✅ **Phase 4.5**: 권한 게이트 v0.4.1 (2026-04-29) — default-allow + 카테고리 토글(8개) + 정밀 잠금(도구 단위 체크박스) + PreToolUse Hook(`sidecar/hooks/preToolUse-overwriteGuard.mjs`)으로 Write/Edit/MultiEdit 덮어쓰기 갭 차단. `ALWAYS_BLOCKED_BYPASS`(Task/Monitor/Skill/NotebookEdit) + `HIGH_RISK_BUILTINS`(Bash) 정책 상시. 회귀 테스트 13/13 통과 (`sidecar/test-perm-gate.mjs`, `sidecar/test-hook-overwriteGuard.mjs`).
 
 **남은 Phase:**
 - ⬜ **Phase 5**: 마크다운 렌더링 + MSI 인스톨러 (`docs/PHASE-5-POLISH.md`)
