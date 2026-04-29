@@ -600,6 +600,31 @@ export default function App() {
         provider = "claude";
       }
 
+      // 에이전트 권한 (Settings UI 의 8개 토글 — id → level)
+      // Settings.tsx 가 [{id, level, ...}] 배열로 저장하므로 sidecar 의 map 형태 { id: level } 로 변환.
+      // 변환 실패 시 undefined 로 두면 sidecar 가 DEFAULT_PERMISSIONS 사용.
+      let permissions: Record<string, string> | undefined;
+      try {
+        const storedPerms = localStorage.getItem("kda_permissions");
+        if (storedPerms) {
+          const arr = JSON.parse(storedPerms);
+          if (Array.isArray(arr)) {
+            permissions = {};
+            for (const p of arr) {
+              if (
+                p &&
+                typeof p.id === "string" &&
+                (p.level === "auto" || p.level === "ask" || p.level === "manual")
+              ) {
+                permissions[p.id] = p.level;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[App] permissions 로드 실패:", e);
+      }
+
       await invoke("send_message", {
         message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
@@ -609,6 +634,7 @@ export default function App() {
         apiKey,
         provider,
         model,
+        permissions,
       });
     } catch (err) {
       setIsStreaming(false);

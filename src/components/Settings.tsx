@@ -838,26 +838,33 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </div>
               </div>
 
-              {/* 디스클레이머: 현재 sidecar 는 도구 권한 게이트가 없음 */}
+              {/* 권한 게이트 동작 안내 — 실제 sidecar 가 토글을 반영함 (v0.4.1+) */}
               <div
                 className="settings-row-info"
                 style={{
                   padding: "10px 12px",
-                  background: "rgba(249, 115, 22, 0.08)",
-                  border: "1px solid rgba(249, 115, 22, 0.3)",
+                  background: "rgba(79, 232, 225, 0.06)",
+                  border: "1px solid rgba(79, 232, 225, 0.25)",
                   borderRadius: "6px",
                   marginBottom: "12px",
                   fontSize: "0.85em",
                 }}
               >
                 <div style={{ fontWeight: 600, marginBottom: "4px" }}>
-                  ⚠️ 현재 sidecar 는 모든 도구를 자동 승인합니다
+                  ✓ 권한 게이트 활성 (Claude Max 모드 한정)
                 </div>
-                <div style={{ opacity: 0.85 }}>
-                  Claude Code CLI 가 <code>--dangerously-skip-permissions</code> 로
-                  실행되어 권한 체크가 우회됩니다. 아래 토글은{" "}
-                  <strong>참고용</strong>이며 실제 동작에는 아직 반영되지 않습니다.
-                  향후 sidecar 권한 게이트가 추가될 예정입니다.
+                <div style={{ opacity: 0.85, lineHeight: 1.55 }}>
+                  • <strong>자동 승인</strong>: 도구를 자유롭게 호출합니다.<br />
+                  • <strong>매번 확인</strong>: 도구 호출 전 모델이 K님께 한국어로
+                  의도 설명 후 명시적 동의 (예: "응", "진행해")를 받아야만 실행합니다.
+                  (sidecar 가 stdin 프로토콜이라 CLI interactive prompt 를 쓸 수 없어
+                  모델 협조에 의존하는 <em>soft enforcement</em>.)<br />
+                  • <strong>수동만</strong>: Claude CLI 의{" "}
+                  <code>--disallowed-tools</code> 에 박혀 호출 자체가 거부됩니다 (hard).<br />
+                  • <code>Bash</code> 는 파일 쓰기·삭제·앱 실행 셋이 모두{" "}
+                  자동 승인일 때만 허용. 하나라도 ask/manual 이면 차단.<br />
+                  • 외부 API (OpenAI/Gemini/OpenRouter/Anthropic) 모드는 도구 미지원이라
+                  이 설정과 무관합니다.
                 </div>
               </div>
 

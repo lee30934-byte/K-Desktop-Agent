@@ -131,6 +131,10 @@ async fn send_message(
     api_key: Option<String>,
     provider: Option<String>,
     model: Option<String>,
+    // 권한 정책: { permission_id: "auto" | "ask" | "manual", ... }
+    // claude provider 의 sidecar CLI 호출 시 --disallowed-tools 와 시스템 프롬프트 안내 생성.
+    // None 이면 sidecar 의 DEFAULT_PERMISSIONS 가 적용.
+    permissions: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let mut payload = serde_json::json!({
         "type": "user_message",
@@ -154,6 +158,10 @@ async fn send_message(
     }
     if let Some(m) = model {
         payload["model"] = serde_json::Value::String(m);
+    }
+    // 권한 정책 (있으면 그대로 전달; 없으면 sidecar 가 기본값 사용)
+    if let Some(p) = permissions {
+        payload["permissions"] = p;
     }
     let line = format!("{}\n", payload);
     let tx_holder = get_tx_holder().clone();
