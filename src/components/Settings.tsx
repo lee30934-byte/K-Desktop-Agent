@@ -132,6 +132,149 @@ const API_PROVIDERS: APIProvider[] = [
 // localStorage 키 — App.tsx 와 공유
 const LS_ACTIVE_PROVIDER = "kda_active_provider";
 const LS_ACTIVE_MODEL = "kda_active_model";
+// 개별 잠금 도구 풀네임 배열 — App.tsx 가 invoke send_message 에 lockedTools 로 전달
+const LS_LOCKED_TOOLS = "kda_locked_tools";
+
+// ─── 도구 카탈로그 (정밀 잠금 UI 용) ──────────────────────────────────
+// sidecar/src/index.ts 의 PERM_TOOL_MAP 과 동기화 필수.
+// 사이드카가 source-of-truth 지만 UI 가 도구 목록을 펼쳐 보여주려면 풀네임이 필요.
+// 새 도구를 sidecar 에 추가하면 여기도 같이 추가 (린트/테스트로 자동 감지는 어려우니
+// 코드 리뷰 시 양쪽 짝맞추기 체크리스트 유지).
+interface ToolCatalogEntry {
+  name: string;        // 도구 풀네임 (예: "mcp__k-personal__fm_move_file")
+  label: string;       // 사람용 라벨
+  desc?: string;       // 짧은 설명
+  destructive?: boolean;  // 위험 표시 (적색 강조)
+}
+
+interface ToolCategory {
+  permId: string;          // 카테고리 토글 ID (PERM_TOOL_MAP 키)
+  title: string;           // UI 섹션 제목
+  icon: string;
+  tools: ToolCatalogEntry[];
+}
+
+const TOOL_CATALOG: ToolCategory[] = [
+  {
+    permId: "file_read",
+    title: "파일 읽기",
+    icon: "📖",
+    tools: [
+      { name: "Read", label: "Read", desc: "단일 파일 읽기" },
+      { name: "Glob", label: "Glob", desc: "파일 패턴 검색" },
+      { name: "Grep", label: "Grep", desc: "내용 grep" },
+      { name: "mcp__k-personal__fm_list_directory", label: "fm_list_directory", desc: "폴더 내용 목록" },
+      { name: "mcp__k-personal__fm_search_files", label: "fm_search_files", desc: "파일 이름 검색" },
+      { name: "mcp__k-personal__fm_recent_files", label: "fm_recent_files", desc: "최근 수정 파일" },
+      { name: "mcp__k-personal__fm_file_info", label: "fm_file_info", desc: "파일 정보" },
+      { name: "mcp__k-personal__fm_disk_usage", label: "fm_disk_usage", desc: "디스크 사용량" },
+      { name: "mcp__k-personal__fm_list_backups", label: "fm_list_backups", desc: "백업 목록" },
+      { name: "mcp__k-personal__fm_operation_log", label: "fm_operation_log", desc: "파일 작업 로그" },
+    ],
+  },
+  {
+    permId: "file_write",
+    title: "파일 쓰기",
+    icon: "✏️",
+    tools: [
+      { name: "Write", label: "Write", desc: "새 파일 작성", destructive: true },
+      { name: "Edit", label: "Edit", desc: "단일 치환", destructive: true },
+      { name: "MultiEdit", label: "MultiEdit", desc: "다중 치환", destructive: true },
+      { name: "mcp__k-personal__fm_copy_file", label: "fm_copy_file", desc: "파일 복사 (비파괴)" },
+    ],
+  },
+  {
+    permId: "file_delete",
+    title: "파일 삭제 / 이동",
+    icon: "🗑️",
+    tools: [
+      { name: "mcp__k-personal__fm_move_file", label: "fm_move_file", desc: "파일 이동 (사실상 삭제)", destructive: true },
+      { name: "mcp__k-personal__fm_organize_folder", label: "fm_organize_folder", desc: "확장자별 자동 정리 (대량 이동)", destructive: true },
+      { name: "mcp__k-personal__fm_restore_file", label: "fm_restore_file", desc: "백업 복원 (덮어쓰기)", destructive: true },
+    ],
+  },
+  {
+    permId: "app_launch",
+    title: "앱 실행",
+    icon: "🚀",
+    tools: [
+      { name: "mcp__k-personal__app_launch", label: "app_launch", desc: "프로그램 실행" },
+      { name: "mcp__k-personal__app_kill", label: "app_kill", desc: "프로세스 종료", destructive: true },
+      { name: "mcp__k-personal__app_list_running", label: "app_list_running", desc: "실행 중 목록" },
+      { name: "mcp__k-personal__app_open_url", label: "app_open_url", desc: "URL 열기" },
+      { name: "mcp__k-personal__app_register", label: "app_register", desc: "별명 등록" },
+      { name: "mcp__k-personal__app_list_registered", label: "app_list_registered", desc: "별명 목록" },
+      { name: "mcp__k-personal__app_launch_preset", label: "app_launch_preset", desc: "프리셋 실행" },
+    ],
+  },
+  {
+    permId: "system_control",
+    title: "시스템 제어 (마우스/키보드/클립보드)",
+    icon: "🖱️",
+    tools: [
+      { name: "mcp__k-personal__cc_mouse_move", label: "cc_mouse_move", desc: "마우스 이동" },
+      { name: "mcp__k-personal__cc_mouse_click", label: "cc_mouse_click", desc: "마우스 클릭" },
+      { name: "mcp__k-personal__cc_mouse_position", label: "cc_mouse_position", desc: "마우스 위치 조회" },
+      { name: "mcp__k-personal__cc_keyboard_type", label: "cc_keyboard_type", desc: "키보드 입력", destructive: true },
+      { name: "mcp__k-personal__cc_keyboard_hotkey", label: "cc_keyboard_hotkey", desc: "단축키 (Ctrl+C 등)", destructive: true },
+      { name: "mcp__k-personal__cc_focus_window", label: "cc_focus_window", desc: "창 활성화" },
+      { name: "mcp__k-personal__clip_get", label: "clip_get", desc: "클립보드 읽기" },
+      { name: "mcp__k-personal__clip_set", label: "clip_set", desc: "클립보드 쓰기" },
+      { name: "mcp__k-personal__clip_paste_at", label: "clip_paste_at", desc: "위치에 붙여넣기", destructive: true },
+      { name: "mcp__k-personal__clip_snippet_add", label: "clip_snippet_add", desc: "스니펫 저장" },
+      { name: "mcp__k-personal__clip_snippet_get", label: "clip_snippet_get", desc: "스니펫 조회" },
+      { name: "mcp__k-personal__clip_snippet_list", label: "clip_snippet_list", desc: "스니펫 목록" },
+    ],
+  },
+  {
+    permId: "screenshot",
+    title: "화면 캡처",
+    icon: "📸",
+    tools: [
+      { name: "mcp__k-personal__cc_screenshot", label: "cc_screenshot", desc: "전체 화면" },
+      { name: "mcp__k-personal__cc_screenshot_region", label: "cc_screenshot_region", desc: "영역 캡처" },
+      { name: "mcp__k-personal__cc_screen_size", label: "cc_screen_size", desc: "해상도 조회" },
+      { name: "mcp__k-personal__cc_list_windows", label: "cc_list_windows", desc: "창 목록" },
+    ],
+  },
+  {
+    permId: "web_fetch",
+    title: "웹 요청",
+    icon: "🌐",
+    tools: [
+      { name: "WebFetch", label: "WebFetch", desc: "URL 가져오기" },
+      { name: "WebSearch", label: "WebSearch", desc: "웹 검색" },
+    ],
+  },
+  {
+    permId: "db_access",
+    title: "개인 DB",
+    icon: "📝",
+    tools: [
+      { name: "mcp__k-personal__db_todo_add", label: "db_todo_add" },
+      { name: "mcp__k-personal__db_todo_list", label: "db_todo_list" },
+      { name: "mcp__k-personal__db_todo_done", label: "db_todo_done" },
+      { name: "mcp__k-personal__db_todo_delete", label: "db_todo_delete", destructive: true },
+      { name: "mcp__k-personal__db_note_add", label: "db_note_add" },
+      { name: "mcp__k-personal__db_note_list", label: "db_note_list" },
+      { name: "mcp__k-personal__db_note_search", label: "db_note_search" },
+      { name: "mcp__k-personal__db_note_delete", label: "db_note_delete", destructive: true },
+      { name: "mcp__k-personal__db_habit_add", label: "db_habit_add" },
+      { name: "mcp__k-personal__db_habit_check", label: "db_habit_check" },
+      { name: "mcp__k-personal__db_habit_list", label: "db_habit_list" },
+    ],
+  },
+  {
+    permId: "shell",
+    title: "셸 / 코드 실행 (고위험)",
+    icon: "💻",
+    tools: [
+      { name: "Bash", label: "Bash", desc: "셸 명령 실행 (rm/del 포함)", destructive: true },
+      { name: "BashOutput", label: "BashOutput", desc: "백그라운드 셸 출력 조회" },
+      { name: "KillShell", label: "KillShell", desc: "셸 강제 종료" },
+    ],
+  },
+];
 
 // 기본 에이전트 권한 설정
 const DEFAULT_PERMISSIONS: AgentPermission[] = [
@@ -267,6 +410,11 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // 에이전트 권한 상태
   const [permissions, setPermissions] = useState<AgentPermission[]>(DEFAULT_PERMISSIONS);
 
+  // 정밀 잠금된 도구 풀네임 (Set 으로 빠른 조회)
+  const [lockedTools, setLockedTools] = useState<Set<string>>(new Set());
+  // 카테고리별 펼침/접힘 상태 (UI 만 — 저장 안 함)
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+
   // 테마 상태
   const [currentTheme, setCurrentTheme] = useState<string>("cyber-teal");
 
@@ -303,8 +451,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       loadTheme(),
       loadBubbleColors(),
       loadAutoUpdateSetting(),
+      loadLockedTools(),
     ])
-      .then(([autoStartEnabled, folders, keys, perms, theme, colors, autoUpdateEnabled]) => {
+      .then(([autoStartEnabled, folders, keys, perms, theme, colors, autoUpdateEnabled, locked]) => {
         setAutoStart(autoStartEnabled);
         setWatchedFolders(folders);
         setApiKeys(keys);
@@ -312,6 +461,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         if (theme) setCurrentTheme(theme);
         if (colors) setBubbleColors(colors);
         setAutoUpdate(autoUpdateEnabled);
+        setLockedTools(locked);
         // 활성 provider/model 로드 (저장된 게 있으면 채팅 전환에 사용)
         const savedProvider = localStorage.getItem(LS_ACTIVE_PROVIDER) || "claude";
         const savedModel = localStorage.getItem(LS_ACTIVE_MODEL) || "default";
@@ -362,6 +512,65 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       console.error("권한 설정 로드 실패:", e);
     }
     return null;
+  }
+
+  // 정밀 잠금 도구 목록 로드
+  async function loadLockedTools(): Promise<Set<string>> {
+    try {
+      const stored = localStorage.getItem(LS_LOCKED_TOOLS);
+      if (stored) {
+        const arr = JSON.parse(stored);
+        if (Array.isArray(arr)) {
+          return new Set(arr.filter((t: unknown): t is string => typeof t === "string"));
+        }
+      }
+    } catch (e) {
+      console.error("정밀 잠금 도구 로드 실패:", e);
+    }
+    return new Set();
+  }
+
+  // 도구 1개 잠금 토글 (즉시 저장 — sidecar 는 다음 메시지부터 반영)
+  function toggleLockTool(toolName: string) {
+    const next = new Set(lockedTools);
+    if (next.has(toolName)) {
+      next.delete(toolName);
+    } else {
+      next.add(toolName);
+    }
+    setLockedTools(next);
+    localStorage.setItem(LS_LOCKED_TOOLS, JSON.stringify([...next]));
+  }
+
+  // 카테고리 전체 잠금/해제 (한 번에 토글)
+  function toggleLockCategory(category: ToolCategory, lock: boolean) {
+    const next = new Set(lockedTools);
+    for (const tool of category.tools) {
+      if (lock) {
+        next.add(tool.name);
+      } else {
+        next.delete(tool.name);
+      }
+    }
+    setLockedTools(next);
+    localStorage.setItem(LS_LOCKED_TOOLS, JSON.stringify([...next]));
+  }
+
+  // 모든 잠금 해제
+  function clearAllLocks() {
+    setLockedTools(new Set());
+    localStorage.setItem(LS_LOCKED_TOOLS, JSON.stringify([]));
+  }
+
+  // 카테고리 펼침 토글
+  function toggleExpand(permId: string) {
+    const next = new Set(expandedCategories);
+    if (next.has(permId)) {
+      next.delete(permId);
+    } else {
+      next.add(permId);
+    }
+    setExpandedCategories(next);
   }
 
   // 테마 로드
@@ -863,6 +1072,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   <code>--disallowed-tools</code> 에 박혀 호출 자체가 거부됩니다 (hard).<br />
                   • <code>Bash</code> 는 파일 쓰기·삭제·앱 실행 셋이 모두{" "}
                   자동 승인일 때만 허용. 하나라도 ask/manual 이면 차단.<br />
+                  • <code>Task</code>, <code>Monitor</code>, <code>Skill</code>,
+                  <code> NotebookEdit</code> 같은 우회 통로는 항상 차단.<br />
+                  • 더 세밀한 제어가 필요하면 아래 <strong>"정밀 잠금"</strong> 섹션에서
+                  도구 단위로 잠그세요.<br />
                   • 외부 API (OpenAI/Gemini/OpenRouter/Anthropic) 모드는 도구 미지원이라
                   이 설정과 무관합니다.
                 </div>
@@ -961,6 +1174,185 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   </div>
                 ))}
               </div>
+            </div>
+          </section>
+
+          {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}
+          <section className="settings-section">
+            <div className="eyebrow">정밀 잠금</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">개별 도구 잠금 ({lockedTools.size}개 잠김)</div>
+                <div className="settings-row-desc">
+                  카테고리 토글이 자동 승인이어도 여기서 체크한 도구는 호출 자체가 거부됩니다.
+                  카테고리 단위로는 너무 거친 통제가 필요할 때 사용하세요.
+                </div>
+              </div>
+
+              <div
+                style={{
+                  padding: "10px 12px",
+                  background: "rgba(249, 115, 22, 0.06)",
+                  border: "1px solid rgba(249, 115, 22, 0.25)",
+                  borderRadius: "6px",
+                  marginBottom: "12px",
+                  fontSize: "0.85em",
+                  lineHeight: 1.55,
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: "4px" }}>
+                  💡 사용 예시
+                </div>
+                <div style={{ opacity: 0.85 }}>
+                  • <strong>마우스는 허용, 키보드 입력은 잠금</strong>: 시스템 제어를 자동으로 두고
+                  <code> cc_keyboard_type</code> · <code>cc_keyboard_hotkey</code> 만 체크<br />
+                  • <strong>읽기는 허용, Bash 만 잠금</strong>: 셸 카테고리에서 <code>Bash</code> 만 체크<br />
+                  • <strong>이동은 허용, 자동 정리만 잠금</strong>: 파일 삭제 카테고리에서
+                  <code> fm_organize_folder</code> 만 체크
+                </div>
+              </div>
+
+              {lockedTools.size > 0 && (
+                <div style={{ marginBottom: "12px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <button
+                    className="settings-btn settings-btn-danger"
+                    onClick={clearAllLocks}
+                    title="모든 개별 잠금 해제 (카테고리 토글은 영향 없음)"
+                  >
+                    🔓 모든 잠금 해제 ({lockedTools.size})
+                  </button>
+                </div>
+              )}
+
+              {TOOL_CATALOG.map((category) => {
+                const isExpanded = expandedCategories.has(category.permId);
+                const lockedInCat = category.tools.filter((t) => lockedTools.has(t.name)).length;
+                const allLocked = lockedInCat === category.tools.length;
+                const someLocked = lockedInCat > 0;
+
+                return (
+                  <div key={category.permId} className="permission-category">
+                    <div
+                      className="permission-category-title"
+                      style={{
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        userSelect: "none",
+                      }}
+                      onClick={() => toggleExpand(category.permId)}
+                    >
+                      <span>
+                        <span style={{ display: "inline-block", width: "16px" }}>
+                          {isExpanded ? "▼" : "▶"}
+                        </span>
+                        {" "}{category.icon} {category.title}
+                        {someLocked && (
+                          <span
+                            style={{
+                              marginLeft: "8px",
+                              fontSize: "0.8em",
+                              padding: "1px 8px",
+                              borderRadius: "10px",
+                              background: allLocked ? "rgba(239, 68, 68, 0.2)" : "rgba(249, 115, 22, 0.2)",
+                              color: allLocked ? "#ef4444" : "#f97316",
+                              border: `1px solid ${allLocked ? "rgba(239, 68, 68, 0.4)" : "rgba(249, 115, 22, 0.4)"}`,
+                            }}
+                          >
+                            {lockedInCat}/{category.tools.length} 잠김
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        className="settings-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleLockCategory(category, !allLocked);
+                        }}
+                        style={{ fontSize: "0.85em", padding: "4px 10px" }}
+                        title={allLocked ? "이 카테고리 전체 해제" : "이 카테고리 전체 잠금"}
+                      >
+                        {allLocked ? "전체 해제" : "전체 잠금"}
+                      </button>
+                    </div>
+
+                    {isExpanded && (
+                      <div style={{ paddingLeft: "8px" }}>
+                        {category.tools.map((tool) => {
+                          const locked = lockedTools.has(tool.name);
+                          return (
+                            <label
+                              key={tool.name}
+                              className="permission-item"
+                              style={{
+                                cursor: "pointer",
+                                opacity: locked ? 1 : 0.85,
+                                background: locked ? "rgba(239, 68, 68, 0.05)" : undefined,
+                                borderColor: locked ? "rgba(239, 68, 68, 0.3)" : undefined,
+                              }}
+                            >
+                              <div className="permission-info">
+                                <input
+                                  type="checkbox"
+                                  checked={locked}
+                                  onChange={() => toggleLockTool(tool.name)}
+                                  style={{
+                                    width: "18px",
+                                    height: "18px",
+                                    marginRight: "10px",
+                                    cursor: "pointer",
+                                    accentColor: "#ef4444",
+                                  }}
+                                />
+                                <div>
+                                  <div
+                                    className="permission-name mono"
+                                    style={{
+                                      fontSize: "0.92em",
+                                      color: tool.destructive ? "#f97316" : undefined,
+                                    }}
+                                  >
+                                    {tool.label}
+                                    {tool.destructive && (
+                                      <span
+                                        style={{
+                                          marginLeft: "6px",
+                                          fontSize: "0.75em",
+                                          opacity: 0.7,
+                                        }}
+                                      >
+                                        ⚠ 파괴적
+                                      </span>
+                                    )}
+                                  </div>
+                                  {tool.desc && (
+                                    <div className="permission-desc" style={{ fontSize: "0.8em" }}>
+                                      {tool.desc}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              {locked && (
+                                <span
+                                  style={{
+                                    fontSize: "0.8em",
+                                    color: "#ef4444",
+                                    fontWeight: 600,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  🔒 잠김
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </section>
 

@@ -625,6 +625,24 @@ export default function App() {
         console.warn("[App] permissions 로드 실패:", e);
       }
 
+      // 개별 잠금된 도구 (Settings UI "정밀 잠금" 섹션 — 도구 풀네임 배열)
+      // 카테고리 토글과 독립적으로 sidecar 의 --disallowed-tools 에 추가됨.
+      let lockedTools: string[] | undefined;
+      try {
+        const storedLocked = localStorage.getItem("kda_locked_tools");
+        if (storedLocked) {
+          const arr = JSON.parse(storedLocked);
+          if (Array.isArray(arr)) {
+            lockedTools = arr.filter(
+              (t): t is string => typeof t === "string" && t.trim().length > 0
+            );
+            if (lockedTools.length === 0) lockedTools = undefined;
+          }
+        }
+      } catch (e) {
+        console.warn("[App] lockedTools 로드 실패:", e);
+      }
+
       await invoke("send_message", {
         message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
@@ -635,6 +653,7 @@ export default function App() {
         provider,
         model,
         permissions,
+        lockedTools,
       });
     } catch (err) {
       setIsStreaming(false);
