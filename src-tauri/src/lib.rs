@@ -131,6 +131,15 @@ async fn send_message(
     api_key: Option<String>,
     provider: Option<String>,
     model: Option<String>,
+    // 권한 정책: { permission_id: "auto" | "ask" | "manual", ... }
+    // claude provider 의 sidecar CLI 호출 시 --disallowed-tools 와 시스템 프롬프트 안내 생성.
+    // None 이면 sidecar 의 DEFAULT_PERMISSIONS 가 적용.
+    permissions: Option<serde_json::Value>,
+    // 개별 잠금된 도구 풀네임 목록 (Settings UI "정밀 잠금" 섹션).
+    // 카테고리 토글과 독립적으로 --disallowed-tools 에 그대로 추가됨.
+    // None / 빈 배열 → 개별 잠금 없음.
+    // (JS 호출 측은 Tauri 의 자동 케이스 변환에 따라 `lockedTools` 키로 전달)
+    locked_tools: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let mut payload = serde_json::json!({
         "type": "user_message",
@@ -154,6 +163,14 @@ async fn send_message(
     }
     if let Some(m) = model {
         payload["model"] = serde_json::Value::String(m);
+    }
+    // 권한 정책 (있으면 그대로 전달; 없으면 sidecar 가 기본값 사용)
+    if let Some(p) = permissions {
+        payload["permissions"] = p;
+    }
+    // 개별 잠금 도구 (sidecar 는 lockedTools 키로 읽음 — JSON 키 이름 유지)
+    if let Some(lt) = locked_tools {
+        payload["lockedTools"] = lt;
     }
     let line = format!("{}\n", payload);
     let tx_holder = get_tx_holder().clone();

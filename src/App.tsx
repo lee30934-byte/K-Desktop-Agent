@@ -600,6 +600,49 @@ export default function App() {
         provider = "claude";
       }
 
+      // 에이전트 권한 (Settings UI 의 8개 토글 — id → level)
+      // Settings.tsx 가 [{id, level, ...}] 배열로 저장하므로 sidecar 의 map 형태 { id: level } 로 변환.
+      // 변환 실패 시 undefined 로 두면 sidecar 가 DEFAULT_PERMISSIONS 사용.
+      let permissions: Record<string, string> | undefined;
+      try {
+        const storedPerms = localStorage.getItem("kda_permissions");
+        if (storedPerms) {
+          const arr = JSON.parse(storedPerms);
+          if (Array.isArray(arr)) {
+            permissions = {};
+            for (const p of arr) {
+              if (
+                p &&
+                typeof p.id === "string" &&
+                (p.level === "auto" || p.level === "ask" || p.level === "manual")
+              ) {
+                permissions[p.id] = p.level;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[App] permissions 로드 실패:", e);
+      }
+
+      // 개별 잠금된 도구 (Settings UI "정밀 잠금" 섹션 — 도구 풀네임 배열)
+      // 카테고리 토글과 독립적으로 sidecar 의 --disallowed-tools 에 추가됨.
+      let lockedTools: string[] | undefined;
+      try {
+        const storedLocked = localStorage.getItem("kda_locked_tools");
+        if (storedLocked) {
+          const arr = JSON.parse(storedLocked);
+          if (Array.isArray(arr)) {
+            lockedTools = arr.filter(
+              (t): t is string => typeof t === "string" && t.trim().length > 0
+            );
+            if (lockedTools.length === 0) lockedTools = undefined;
+          }
+        }
+      } catch (e) {
+        console.warn("[App] lockedTools 로드 실패:", e);
+      }
+
       await invoke("send_message", {
         message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
@@ -609,6 +652,8 @@ export default function App() {
         apiKey,
         provider,
         model,
+        permissions,
+        lockedTools,
       });
     } catch (err) {
       setIsStreaming(false);

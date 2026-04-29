@@ -229,6 +229,15 @@ function log(level: "info" | "warn" | "error", message: string): void {
 
 type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter";
 
+// 권한 레벨 — Settings UI 와 동일.
+//   auto    : 자동 승인 (도구 즉시 사용 가능)
+//   ask     : 매번 확인 — 도구는 호출 가능하지만 시스템 프롬프트로 모델에게 K 확인 의무화
+//             (sidecar 가 stdin/stdout JSON 프로토콜이라 CLI 의 interactive prompt 를 받을 수 없으므로
+//              "soft enforcement" 로 대체. 진정한 hard prompt 는 향후 Agent SDK 임베드 시 가능)
+//   manual  : 수동만 — 도구 호출 자체를 CLI 가 거부 (--disallowed-tools)
+type PermLevel = "auto" | "ask" | "manual";
+type PermissionsMap = Partial<Record<string, PermLevel>>;
+
 type UserMessage = {
   type: "user_message";
   id: string;
@@ -244,7 +253,234 @@ type UserMessage = {
   // 모델 ID. provider 별로 형식이 다름 (예: openai="gpt-4o-mini", gemini="gemini-2.0-flash").
   // 미지정이면 provider 별 기본값.
   model?: string;
+  // 에이전트 권한 (Settings UI 의 8개 토글 — id → level).
+  // claude provider 에서만 의미 있음 (REST API 모드는 도구 미지원).
+  permissions?: PermissionsMap;
+  // 개별 잠금된 도구 풀네임 목록 (Settings UI "정밀 잠금" 섹션에서 K가 체크).
+  // 카테고리 토글과 독립적으로 작동 — 카테고리가 auto 여도 여기 들어 있으면 차단.
+  // 예: ["Bash", "mcp__k-personal__fm_move_file", "mcp__k-personal__cc_keyboard_type"]
+  lockedTools?: string[];
 };
+
+// ─── 권한 카테고리 ↔ Claude CLI 도구 매핑 ─────────────────
+// MCP 도구는 Claude Code CLI 에서 `mcp__<server>__<tool>` 형식.
+// K-Personal MCP server name = "k-personal" (buildMCPConfig 참고).
+const PERM_TOOL_MAP: Record<string, string[]> = {
+  file_read: [
+    "Read", "Glob", "Grep",
+    "mcp__k-personal__fm_list_directory",
+    "mcp__k-personal__fm_search_files",
+    "mcp__k-personal__fm_recent_files",
+    "mcp__k-personal__fm_file_info",
+    "mcp__k-personal__fm_disk_usage",
+    "mcp__k-personal__fm_list_backups",
+    "mcp__k-personal__fm_operation_log",
+  ],
+  file_write: [
+    "Write", "Edit", "MultiEdit",
+    // 비파괴 도구만 여기 — destructive 도구는 file_delete 로 이관 (B안).
+    "mcp__k-personal__fm_copy_file",
+  ],
+  // "파일 삭제" 카테고리.
+  // K-Personal MCP 자체는 직접 삭제 도구가 없는 안전한 설계지만,
+  // "결과적으로 삭제와 동등한" 도구는 여기로 묶어 file_delete 토글로 통제.
+  //   - fm_move_file: 다른 폴더로 옮기면 사실상 원본 위치에선 사라짐
+  //   - fm_organize_folder: 자동 정리 = 대량 이동
+  //   - fm_restore_file: 백업 복원 = 현재 파일 덮어쓰기
+  // Bash(rm/del) 도 file_delete 토글을 참조 (HIGH_RISK_BUILTINS 정책).
+  file_delete: [
+    "mcp__k-personal__fm_move_file",
+    "mcp__k-personal__fm_organize_folder",
+    "mcp__k-personal__fm_restore_file",
+  ],
+  app_launch: [
+    "mcp__k-personal__app_launch",
+    "mcp__k-personal__app_kill",
+    "mcp__k-personal__app_list_running",
+    "mcp__k-personal__app_open_url",
+    "mcp__k-personal__app_register",
+    "mcp__k-personal__app_list_registered",
+    "mcp__k-personal__app_launch_preset",
+  ],
+  system_control: [
+    "mcp__k-personal__cc_mouse_move",
+    "mcp__k-personal__cc_mouse_click",
+    "mcp__k-personal__cc_mouse_position",
+    "mcp__k-personal__cc_keyboard_type",
+    "mcp__k-personal__cc_keyboard_hotkey",
+    "mcp__k-personal__cc_focus_window",
+    "mcp__k-personal__clip_get",
+    "mcp__k-personal__clip_set",
+    "mcp__k-personal__clip_paste_at",
+    "mcp__k-personal__clip_snippet_add",
+    "mcp__k-personal__clip_snippet_get",
+    "mcp__k-personal__clip_snippet_list",
+  ],
+  screenshot: [
+    "mcp__k-personal__cc_screenshot",
+    "mcp__k-personal__cc_screenshot_region",
+    "mcp__k-personal__cc_screen_size",
+    "mcp__k-personal__cc_list_windows",
+  ],
+  web_fetch: ["WebFetch", "WebSearch"],
+  db_access: [
+    "mcp__k-personal__db_todo_add",
+    "mcp__k-personal__db_todo_list",
+    "mcp__k-personal__db_todo_done",
+    "mcp__k-personal__db_todo_delete",
+    "mcp__k-personal__db_note_add",
+    "mcp__k-personal__db_note_list",
+    "mcp__k-personal__db_note_search",
+    "mcp__k-personal__db_note_delete",
+    "mcp__k-personal__db_habit_add",
+    "mcp__k-personal__db_habit_check",
+    "mcp__k-personal__db_habit_list",
+  ],
+};
+
+// 권한 ID → 한국어 라벨 (시스템 프롬프트 안내문에 사용).
+const PERM_LABEL: Record<string, string> = {
+  file_read: "파일 읽기",
+  file_write: "파일 쓰기",
+  file_delete: "파일 삭제",
+  app_launch: "앱 실행",
+  system_control: "시스템 제어 (마우스/키보드/클립보드)",
+  screenshot: "화면 캡처",
+  web_fetch: "웹 요청",
+  db_access: "개인 DB",
+};
+
+// 기본 권한 정책 — Settings UI DEFAULT_PERMISSIONS 와 동일.
+// permissions 필드가 비어 있을 때(첫 실행 등) 사용.
+const DEFAULT_PERMISSIONS: Record<string, PermLevel> = {
+  file_read: "auto",
+  file_write: "ask",
+  file_delete: "ask",
+  app_launch: "ask",
+  system_control: "ask",
+  screenshot: "auto",
+  web_fetch: "auto",
+  db_access: "auto",
+};
+
+// Bash, BashOutput, KillShell 같은 high-risk built-in.
+// 단일 명령으로 파일 삭제·앱 실행·임의 코드 실행이 모두 가능 → 별도 정책.
+// 정책: file_write / file_delete / app_launch 셋 중 하나라도 manual 또는 ask 면 → 거부.
+//       (모두 auto 일 때만 K가 명시적으로 풀권한 상태이므로 허용)
+const HIGH_RISK_BUILTINS = ["Bash", "BashOutput", "KillShell"];
+
+// Claude CLI 가 노출하는 "셸·코드 실행 우회 통로" — 권한 카테고리 매핑이 어렵거나
+// sub-agent 형태로 게이트를 무력화할 수 있는 도구들. 권한 토글과 무관하게 항상 차단.
+//   - Task: sub-agent 를 띄우면 그 안에선 게이트가 다시 풀린 상태 → 우회 가능
+//   - Monitor: 임의 셸 명령 실행 (Bash 우회 통로)
+//   - Skill: .claude/skills 의 임의 코드 실행
+//   - NotebookEdit: Jupyter 셀 실행 (이 프로젝트엔 불필요, 셸 실행 가능)
+// (Bash 자체는 HIGH_RISK_BUILTINS 에서 별도 정책으로 처리)
+const ALWAYS_BLOCKED_BYPASS = ["Task", "Monitor", "Skill", "NotebookEdit"];
+
+interface ToolFlags {
+  disallowed: string[];
+  effective: Record<string, PermLevel>;
+  lockedCount: number;
+}
+
+function buildToolFlags(
+  perms: PermissionsMap | undefined,
+  lockedTools: string[] | undefined,
+): ToolFlags {
+  const effective: Record<string, PermLevel> = { ...DEFAULT_PERMISSIONS };
+  if (perms) {
+    for (const [id, level] of Object.entries(perms)) {
+      if (level === "auto" || level === "ask" || level === "manual") {
+        effective[id] = level;
+      }
+    }
+  }
+
+  // ─── 정책 모델 (v0.4.1+: A안 회귀 + 개별 잠금 추가) ──────────────────
+  //
+  // K님 원래 요구는 "자동화 능력은 살아있되, 위험 도구는 하나하나 잠그는 버튼".
+  // 이전 C안(default-deny + --allowed-tools strict) 은 새 MCP 도구가 자동 차단되고
+  // 와일드카드 잔버그(K-Personal MCP 통째 미노출)가 생겨 자동화 본질과 충돌 → 회귀.
+  //
+  // 새 모델:
+  //   1. default-allow  — `--allowed-tools` 미사용. Claude CLI 가 노출하는 도구는
+  //      기본적으로 호출 가능. 새 MCP 도구 추가돼도 자동 허용 → 자동화 능력 보존.
+  //   2. 카테고리 차단  — 카테고리 토글이 manual 인 권한의 도구는 disallowed 풀네임으로 박힘.
+  //   3. 개별 잠금      — Settings UI "정밀 잠금"에서 K가 체크한 도구 풀네임은 그대로
+  //      disallowed 에 추가 (카테고리 auto 여도 무조건 차단). "하나하나 잠그는 버튼"의 본체.
+  //   4. 우회 통로 차단 — ALWAYS_BLOCKED_BYPASS (Task/Monitor/Skill/NotebookEdit) 는 항상 disallowed.
+  //   5. Bash 정책      — file_write+file_delete+app_launch 가 모두 auto 일 때만 Bash/BashOutput/KillShell 허용.
+  const disallowed: string[] = [...ALWAYS_BLOCKED_BYPASS];
+
+  // 카테고리 토글이 manual 인 도구 풀네임 추가
+  for (const [permId, level] of Object.entries(effective)) {
+    if (level !== "manual") continue;
+    const tools = PERM_TOOL_MAP[permId] ?? [];
+    disallowed.push(...tools);
+  }
+
+  // 개별 잠금된 도구 풀네임 추가 (카테고리 토글과 독립적)
+  let lockedCount = 0;
+  if (lockedTools && Array.isArray(lockedTools)) {
+    for (const t of lockedTools) {
+      if (typeof t === "string" && t.trim()) {
+        disallowed.push(t.trim());
+        lockedCount++;
+      }
+    }
+  }
+
+  // Bash 정책: 파괴적 카테고리 셋이 모두 auto 일 때만 셸 허용
+  const bashTrustworthy =
+    effective.file_write === "auto" &&
+    effective.file_delete === "auto" &&
+    effective.app_launch === "auto";
+  if (!bashTrustworthy) {
+    disallowed.push(...HIGH_RISK_BUILTINS);
+  }
+
+  return {
+    disallowed: Array.from(new Set(disallowed)),
+    effective,
+    lockedCount,
+  };
+}
+
+// "ask" 모드 권한이 있으면 시스템 프롬프트 끝에 안내 추가.
+// 모델이 해당 카테고리 도구를 호출하기 전에 K에게 한국어로 확인을 받도록 지시.
+function buildAskGuidance(effective: Record<string, PermLevel>): string {
+  const askIds = Object.entries(effective)
+    .filter(([, lv]) => lv === "ask")
+    .map(([id]) => id);
+  if (askIds.length === 0) return "";
+
+  const lines = askIds.map((id) => `  - ${PERM_LABEL[id] ?? id}`);
+  return [
+    "",
+    "[K님 확인 필요한 권한 (ask 모드)]",
+    "다음 카테고리의 도구를 호출하기 전에는 반드시 한국어로 의도를 한 줄 설명한 뒤",
+    "K님께 \"진행해도 될까요?\" 형태로 명시적 확인을 받고, 허락 후에만 도구를 호출합니다.",
+    "K님이 \"응/그래/진행해\" 같이 동의하지 않으면 호출하지 않습니다.",
+    ...lines,
+  ].join("\n");
+}
+
+// manual 카테고리가 있을 때 시스템 프롬프트 안내 (모델이 헛수고 안 하게).
+function buildManualGuidance(effective: Record<string, PermLevel>): string {
+  const manualIds = Object.entries(effective)
+    .filter(([, lv]) => lv === "manual")
+    .map(([id]) => id);
+  if (manualIds.length === 0) return "";
+  const lines = manualIds.map((id) => `  - ${PERM_LABEL[id] ?? id}`);
+  return [
+    "",
+    "[차단된 권한 (manual 모드)]",
+    "다음 카테고리의 도구는 K님이 차단했습니다. 호출 시도 자체가 거부됩니다.",
+    "필요하면 K님께 환경설정에서 권한을 풀어달라고 안내하세요.",
+    ...lines,
+  ].join("\n");
+}
 
 // REST API 호출용 시스템 프롬프트 (도구 미지원 — Claude CLI 경로의 K-Personal MCP 안내 제거)
 const SYSTEM_PROMPT_REST = `당신은 K님의 개인 비서입니다. 한국어로 자연스럽고 간결하게 응답하세요.
@@ -305,18 +541,37 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   // 임시 파일은 finally 에서 정리.
   let mcpConfigFile: string | null = null;
 
+  // ─── 권한 게이트 (default-allow + 개별 잠금) ──────────────────────
+  // Settings UI 의 8개 카테고리 토글(auto/ask/manual) + "정밀 잠금" 도구 리스트를 변환.
+  //   카테고리 manual    → 카테고리 도구 풀네임이 --disallowed-tools 에 박힘 (hard)
+  //   카테고리 ask       → 시스템 프롬프트가 K 확인 의무화 (soft — sidecar 가 stdin 프로토콜이라
+  //                        CLI interactive prompt 를 못 받음)
+  //   카테고리 auto      → 자유 호출
+  //   개별 잠금된 도구    → 카테고리와 무관하게 --disallowed-tools 에 박힘 (hard)
+  //   Task/Monitor/Skill/NotebookEdit → 항상 차단 (우회 통로)
+  //   Bash/BashOutput/KillShell → file_write+file_delete+app_launch 가 모두 auto 일 때만 허용
+  // --allowed-tools 는 미사용 (default-allow → 새 MCP 도구 자동 허용 → 자동화 능력 보존).
+  // --permission-mode 는 bypassPermissions (interactive prompt 우회, 실제 게이트는 disallowed-tools).
+  const toolFlags = buildToolFlags(msg.permissions, msg.lockedTools);
+
   // Claude CLI 인자 구성 (인자에 박는 본문 최소화)
   const args: string[] = [
     "-p",  // prompt 는 stdin 으로 받음 (인자 생략)
     "--output-format", "stream-json",
     "--verbose",
-    // 도구 사용 시 매번 사용자 확인 prompt 우회 (sidecar 환경에서는 prompt 처리 불가)
-    // 안전장치는 SYSTEM_PROMPT 의 dry_run 가이드로 대체.
-    "--dangerously-skip-permissions",
+    // bypass 모드 — interactive prompt 우회. 실제 게이트는 disallowed-tools 가 담당.
+    "--permission-mode", "bypassPermissions",
   ];
 
-  // 시스템 프롬프트는 한국어 ~1KB 라 명령행 한계 안에 들어감 → 그대로 둠
-  args.push("--system-prompt", SYSTEM_PROMPT);
+  if (toolFlags.disallowed.length > 0) {
+    args.push("--disallowed-tools", toolFlags.disallowed.join(","));
+  }
+
+  // 시스템 프롬프트 = 기본 + ask 안내 + manual 안내
+  const askGuidance = buildAskGuidance(toolFlags.effective);
+  const manualGuidance = buildManualGuidance(toolFlags.effective);
+  const fullSystemPrompt = SYSTEM_PROMPT + askGuidance + manualGuidance;
+  args.push("--system-prompt", fullSystemPrompt);
 
   // MCP 설정이 있으면 임시 파일로
   if (Object.keys(mcpConfig).length > 0) {
@@ -338,13 +593,41 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     args.push("--resume", msg.agent_id);
   }
 
+  // ─── PreToolUse Hook 주입 (덮어쓰기 가드) ──────────────────────────
+  // file_delete=manual 일 때 Write/Edit/MultiEdit 가 "기존 파일을 덮어쓰는" 행위
+  // (= 의미적으로 데이터 삭제) 를 차단. 신규 파일 생성은 file_write 토글로만 통제.
+  // hook 스크립트는 sidecar/hooks/preToolUse-overwriteGuard.mjs 에 위치.
+  // dev (sidecar/src/index.ts) 와 release (sidecar/dist/index.js) 모두 한 단계 위로 가서 hooks/ 도달.
+  const hookScriptPath = path.resolve(__dirname_local, "..", "hooks", "preToolUse-overwriteGuard.mjs");
+  const hookSettings = {
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: "Write|Edit|MultiEdit",
+          hooks: [
+            { type: "command", command: `node "${hookScriptPath}"` },
+          ],
+        },
+      ],
+    },
+  };
+  // --settings 는 file path 또는 inline JSON 둘 다 가능. inline 으로 전달 (임시 파일 부담 없음).
+  args.push("--settings", JSON.stringify(hookSettings));
+
+  // 권한 정책 요약 — 어느 카테고리가 어떻게 처리됐는지 진단 가능.
+  const permSummary = Object.entries(toolFlags.effective)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(",");
+
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"}`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hook=overwriteGuard`
   );
 
   try {
     // Claude CLI 실행
+    // hook 스크립트(preToolUse-overwriteGuard.mjs) 가 자식 자식 프로세스로 실행되므로
+    // 권한 정책 정보는 환경변수로 전파한다 (Claude CLI → hook 으로 자동 상속됨).
     const proc = spawn(CLAUDE_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
@@ -352,6 +635,9 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
         ...process.env,
         // 터미널 깜빡임 방지
         CLAUDE_CODE_NO_FLICKER: "1",
+        // PreToolUse hook 이 읽는 권한 정보
+        KDA_FILE_DELETE_LEVEL: toolFlags.effective.file_delete ?? "auto",
+        KDA_OVERWRITE_GUARD: "1",
       },
     });
 
