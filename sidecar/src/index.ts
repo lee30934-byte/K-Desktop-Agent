@@ -13,6 +13,7 @@ import {
   mkdirSync,
   writeFileSync,
   unlinkSync,
+  rmSync,
   type WriteStream,
 } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -275,6 +276,16 @@ type UserMessage = {
   // 카테고리 토글과 독립적으로 작동 — 카테고리가 auto 여도 여기 들어 있으면 차단.
   // 예: ["Bash", "mcp__k-personal__fm_move_file", "mcp__k-personal__cc_keyboard_type"]
   lockedTools?: string[];
+  // 첨부 파일 — Composer 에서 paste/drag/select 한 파일들 (base64 인코딩됨).
+  // sidecar 가 turn 별 임시 폴더에 디코드해 저장하고, Claude CLI prompt 에 path 안내를 추가.
+  // 이후 Claude CLI 가 Read 도구로 자동 분석 (image → vision, text → 본문 읽기).
+  // turn 종료 시 finally 블록이 임시 폴더 통째로 삭제.
+  attachments?: Array<{
+    name: string;
+    type: string;
+    size: number;
+    base64: string;
+  }>;
 };
 
 // ─── 권한 카테고리 ↔ Claude CLI 도구 매핑 ─────────────────
@@ -572,10 +583,81 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
   return handleViaRestAPI(msg, provider);
 }
 
+// ─── 첨부 파일을 임시 폴더에 풀어내기 ────────────────────────────
+// Composer 에서 base64 로 보낸 파일들을 turn 별 임시 디렉토리에 디코드해 저장.
+// 반환값:
+//   dir: 정리 대상 임시 폴더 경로 (없으면 null)
+//   guidance: prompt 끝에 붙일 안내 텍스트 (없으면 빈 문자열)
+// Claude CLI 의 Read 도구가 path 를 받아 이미지는 vision, 텍스트는 본문으로 처리.
+function materializeAttachments(
+  msg: UserMessage,
+): { dir: string | null; guidance: string } {
+  const list = msg.attachments;
+  if (!list || list.length === 0) return { dir: null, guidance: "" };
+
+  // turn 별 폴더 — 이름 충돌과 동시 turn 간섭 방지 + 정리 단순화
+  const dir = path.join(os.tmpdir(), `kda-attachments-${msg.id}`);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    logToFile("warn", `attachment dir 생성 실패: ${e instanceof Error ? e.message : String(e)}`);
+    return { dir: null, guidance: "" };
+  }
+
+  const lines: string[] = [];
+  let saved = 0;
+  for (let i = 0; i < list.length; i++) {
+    const att = list[i];
+    if (!att?.base64) continue;
+    // 파일명 sanitize — Windows 경로 금지 문자 / 공백 / 디렉토리 트래버설 차단.
+    // 빈 결과면 idx 기반 fallback 으로 대체.
+    const safeName =
+      (att.name ?? "")
+        .replace(/[\\/:*?"<>|]/g, "_")
+        .replace(/\.\.+/g, "_")
+        .replace(/\s+/g, "_")
+        .slice(0, 120) || `attachment-${i}`;
+    const target = path.join(dir, safeName);
+    try {
+      writeFileSync(target, Buffer.from(att.base64, "base64"));
+      saved++;
+      const sizeKB = Math.max(1, Math.round((att.size ?? 0) / 1024));
+      lines.push(`  - ${target}  (${att.type || "application/octet-stream"}, ${sizeKB}KB)`);
+    } catch (e) {
+      logToFile(
+        "warn",
+        `attachment write 실패 ${att.name}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  if (saved === 0) {
+    return { dir, guidance: "" };
+  }
+
+  const guidance = [
+    "",
+    "[첨부 파일]",
+    "K님이 다음 파일을 첨부했습니다. Read 도구로 내용을 확인한 뒤 답변에 활용하세요.",
+    "(이미지는 자동으로 vision 분석되고, 텍스트는 본문이 그대로 읽힙니다)",
+    ...lines,
+  ].join("\n");
+
+  return { dir, guidance };
+}
+
 // ─── Claude Code CLI 경로 (Max 구독 OAuth) ─────────────
 async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   const mcpConfig = buildMCPConfig(cachedMCPHealth);
-  const promptWithHistory = buildPromptWithHistory(msg.content, msg.history);
+
+  // 첨부 파일을 임시 폴더에 풀고, prompt 에 path 안내를 덧붙임.
+  // 임시 폴더는 finally 에서 통째로 삭제.
+  const { dir: attachmentsDir, guidance: attachmentsGuidance } =
+    materializeAttachments(msg);
+  const baseContent = attachmentsGuidance
+    ? `${msg.content}${attachmentsGuidance}`
+    : msg.content;
+  const promptWithHistory = buildPromptWithHistory(baseContent, msg.history);
 
   // ─── 명령행 길이 절약 ───────────────────────────────────────
   // Windows cmd.exe 의 명령행 길이 한계는 약 8191자.
@@ -666,9 +748,10 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     .map(([k, v]) => `${k}=${v}`)
     .join(",");
 
+  const attachmentsCount = msg.attachments?.length ?? 0;
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hook=overwriteGuard`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hook=overwriteGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""}`
   );
 
   try {
@@ -874,6 +957,18 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
         unlinkSync(mcpConfigFile);
       } catch {
         // cleanup error ignored
+      }
+    }
+    // 첨부 임시 폴더 통째 정리 — Read 도구 호출이 끝난 뒤이므로 안전.
+    // (Claude CLI 가 비동기로 Read 를 부르는 건 이 turn 안에서만이고, await 가 끝나면 이미 완료.)
+    if (attachmentsDir) {
+      try {
+        rmSync(attachmentsDir, { recursive: true, force: true });
+      } catch (e) {
+        logToFile(
+          "warn",
+          `attachment dir 정리 실패 ${attachmentsDir}: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
   }
