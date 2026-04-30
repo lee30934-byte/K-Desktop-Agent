@@ -1,0 +1,85 @@
+name: Smoke
+
+# Phase 9.5 headless smoke pipeline. Runs on every push / PR to catch
+# regressions in:
+#   - sidecar JSON-stdin parsing
+#   - Phase 9 step 1 (memory loader)
+#   - Phase 9 step 4 (pitfall guard registration)
+#   - attachment plumbing (base64 -> fs round-trip + finally{rmSync} cleanup)
+#
+# Cost / cadence:
+#   - No LLM call (CLAUDE_CLI is replaced by a no-op .cmd stub by the smoke).
+#   - No Tauri / Rust build (release.yml owns that on tag push).
+#   - End-to-end ~2-3 minutes on a Windows runner — most of that is `npm ci`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Newer commits supersede in-flight runs on the same ref.
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: smoke (windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sidecar/package-lock.json
+
+      - name: Install sidecar deps
+        shell: pwsh
+        working-directory: sidecar
+        run: npm ci
+
+      - name: Build sidecar (tsc)
+        shell: pwsh
+        working-directory: sidecar
+        run: npm run build
+
+      # The real memory dir (~/.claude/projects/<key>/memory) does not exist on
+      # GitHub-hosted runners, so loadMemoryContext() would return memory=0/0b
+      # and the smoke's "memory=N/Mb (N>=1)" assertion would fail. We point
+      # KDA_MEMORY_DIR at a tiny in-repo fixture instead. See
+      # tests/fixtures/memory/MEMORY.md for the rationale.
+      - name: Run smoke-sidecar (Phase 9 step 1 + step 4 markers)
+        shell: pwsh
+        env:
+          KDA_MEMORY_DIR: ${{ github.workspace }}\tests\fixtures\memory
+        run: .\scripts\smoke-sidecar.ps1
+
+      - name: Run smoke-attachment (base64 round-trip + cleanup)
+        shell: pwsh
+        env:
+          KDA_MEMORY_DIR: ${{ github.workspace }}\tests\fixtures\memory
+        run: .\scripts\smoke-attachment.ps1
+
+      # On failure, ship sidecar.log (and the dist that was built) so a remote
+      # diagnosis is possible without re-running.
+      - name: Upload sidecar.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-log-${{ github.run_id }}
+          path: |
+            logs/sidecar.log
+            sidecar/dist/index.js
+          if-no-files-found: warn
+          retention-days: 7
