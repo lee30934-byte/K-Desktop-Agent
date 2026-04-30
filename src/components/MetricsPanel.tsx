@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, memo } from "react";
 import CornerBrackets from "./CornerBrackets";
 import type { SessionMetrics } from "../types";
 
@@ -12,7 +12,7 @@ interface MetricsPanelProps {
   isCompressing?: boolean;
 }
 
-export default function MetricsPanel({
+function MetricsPanel({
   metrics,
   mcpConnected,
   currentModel = "claude-opus-4.6",
@@ -164,6 +164,11 @@ export default function MetricsPanel({
     </footer>
   );
 }
+
+// memo — 자체 setTick 으로 매초 리렌더하지만, 부모(App) 리렌더 시 props 가
+// 새 ref 면 같이 리렌더되어 비용 중복. 핸들러는 useStableCallback 으로 안정화됐고
+// metrics/mcpConnected 만 진짜 변경 시 갱신되도록.
+export default memo(MetricsPanel);
 
 function MetricCard({
   label,

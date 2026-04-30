@@ -38,6 +38,7 @@ import {
 } from "./db";
 import "./App.css";
 import logger from "./utils/logger";
+import { useStableCallback } from "./utils/useStableCallback";
 
 export default function App() {
   // ─── 상태 ───────────────────────────────────────────
@@ -516,7 +517,7 @@ export default function App() {
 
   // ─── 액션 ───────────────────────────────────────────
 
-  async function handleSendMessage(text: string, files?: FileAttachment[]) {
+  const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
     if ((!text && (!files || files.length === 0)) || isStreaming) return;
 
     // 활성 대화가 없으면 자동 생성
@@ -691,9 +692,9 @@ export default function App() {
       setCurrentTurnId(null);
       pushSystem(`전송 실패: ${String(err)}`, "error");
     }
-  }
+  });
 
-  async function handleInterrupt() {
+  const handleInterrupt = useStableCallback(async () => {
     if (!currentTurnId) return;
     try {
       await invoke("interrupt", { id: currentTurnId });
@@ -718,9 +719,9 @@ export default function App() {
       setIsStreaming(false);
       setCurrentTurnId(null);
     }
-  }
+  });
 
-  async function handleNewConversation() {
+  const handleNewConversation = useStableCallback(async () => {
     // 스트리밍 중에는 새 대화 생성 불가
     if (isStreaming) return;
 
@@ -746,9 +747,9 @@ export default function App() {
       console.error("[App] 대화 생성 실패:", err);
       pushSystem("대화 생성에 실패했습니다.", "error");
     }
-  }
+  });
 
-  async function handleSelectConversation(id: string) {
+  const handleSelectConversation = useStableCallback(async (id: string) => {
     if (isStreaming) return; // 스트리밍 중에는 전환 불가
     if (id === activeConversationId) return;
 
@@ -806,9 +807,9 @@ export default function App() {
       });
       pushSystem("메시지를 불러오지 못했습니다.", "error");
     }
-  }
+  });
 
-  async function handleDeleteConversation(id: string) {
+  const handleDeleteConversation = useStableCallback(async (id: string) => {
     try {
       await deleteConversation(id);
       setConversations((prev) => prev.filter((c) => c.id !== id));
@@ -824,7 +825,7 @@ export default function App() {
       console.error("[App] 대화 삭제 실패:", err);
       pushSystem("대화 삭제에 실패했습니다.", "error");
     }
-  }
+  });
 
   // ─── Auto Session Continuity ─────────────────────────────
   // 대화 요약 생성 (최근 메시지 기반)
@@ -867,7 +868,7 @@ export default function App() {
   }
 
   // 세션 자동 갱신 트리거
-  async function triggerSessionRefresh() {
+  const triggerSessionRefresh = useStableCallback(async () => {
     logger.log("[Session] 세션 갱신 시작...");
 
     const convId = activeConversationIdRef.current;
@@ -922,10 +923,10 @@ export default function App() {
     } finally {
       isRefreshingSessionRef.current = false;
     }
-  }
+  });
 
   // ─── 대화 압축 & 이어하기 ─────────────────────────────
-  async function handleCompressContext() {
+  const handleCompressContext = useStableCallback(async () => {
     if (!activeConversationId || isCompressing || isStreaming) {
       return;
     }
@@ -1012,19 +1013,19 @@ export default function App() {
     } finally {
       setIsCompressing(false);
     }
-  }
+  });
 
   // ─── Elicitation (확인 다이얼로그) ─────────────────────
   // 사용자 확인이 필요한 작업에서 호출
-  function showElicitation(request: Omit<ElicitationRequest, "id">): Promise<ElicitationResponse> {
+  const showElicitation = useStableCallback((request: Omit<ElicitationRequest, "id">): Promise<ElicitationResponse> => {
     return new Promise((resolve) => {
       const id = crypto.randomUUID();
       setElicitationRequest({ ...request, id });
       elicitationResolveRef.current = resolve;
     });
-  }
+  });
 
-  async function handleElicitationResponse(response: ElicitationResponse) {
+  const handleElicitationResponse = useStableCallback(async (response: ElicitationResponse) => {
     setElicitationRequest(null);
 
     // Sidecar에 응답 전송 (MCP 도구 확인 요청에 대한 응답)
@@ -1042,9 +1043,10 @@ export default function App() {
       elicitationResolveRef.current(response);
       elicitationResolveRef.current = null;
     }
-  }
+  });
 
   // 전역에서 접근 가능하게 (MCP 도구에서 호출용) - window에 노출
+  // 핸들러가 useStableCallback 으로 평생 동일 ref 라 deps 비워도 안전 (mount 시 1회만)
   useEffect(() => {
     (window as any).__showElicitation = showElicitation;
     (window as any).__kdaSendMessage = handleSendMessage;
@@ -1054,7 +1056,8 @@ export default function App() {
       delete (window as any).__kdaSendMessage;
       delete (window as any).__kdaOpenCommandPalette;
     };
-  }, [handleSendMessage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ─── 전역 단축키 등록 (Phase 6) ────────────────────────
   useEffect(() => {
@@ -1121,6 +1124,13 @@ export default function App() {
     };
   }, []);
 
+  // 자식 memo 가 깨지지 않도록 inline arrow 대신 안정 ref 사용.
+  // setSettingsOpen / setCommandPaletteOpen 자체는 React가 안정 ref 보장하지만,
+  // (() => setSettingsOpen(true)) 같이 한 번 감싸면 매 렌더 새 함수가 됨.
+  const openSettings = useStableCallback(() => setSettingsOpen(true));
+  const closeSettings = useStableCallback(() => setSettingsOpen(false));
+  const closeCommandPalette = useStableCallback(() => setCommandPaletteOpen(false));
+
   return (
     <div className="app">
       <UpdateChecker />
@@ -1132,7 +1142,7 @@ export default function App() {
         onDeleteConversation={handleDeleteConversation}
         onRefreshConversations={refreshConversations}
         mcpConnected={mcpState.connected}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={openSettings}
       />
 
       <MainChat
@@ -1153,7 +1163,7 @@ export default function App() {
 
       <Settings
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
         mcpConnected={mcpState.connected}
       />
 
@@ -1164,9 +1174,9 @@ export default function App() {
 
       <CommandPalette
         open={commandPaletteOpen}
-        onClose={() => setCommandPaletteOpen(false)}
+        onClose={closeCommandPalette}
         onSendMessage={handleSendMessage}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={openSettings}
         onNewChat={handleNewConversation}
       />
 

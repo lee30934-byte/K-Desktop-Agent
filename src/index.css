@@ -62,6 +62,17 @@
   --transition-base: 200ms ease;
   --transition-slow: 360ms cubic-bezier(0.4, 0, 0.2, 1);
 
+  /* hover/focus 용 구체 속성 transition 셔트컷 — `transition: all` 대비
+     브라우저가 추적하는 속성 수가 줄어 hover 페인트 비용 감소.
+     레이아웃에 영향 안 주는(컴포지터 친화) 속성만 포함. */
+  --transition-ui-fast:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
+
   color-scheme: dark;
   color: var(--text-primary);
   background-color: var(--bg-0);

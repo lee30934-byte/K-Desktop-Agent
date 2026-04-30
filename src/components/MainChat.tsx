@@ -1,4 +1,4 @@
-import { useEffect, useRef, useLayoutEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useLayoutEffect, useState, useCallback, memo } from "react";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
@@ -15,7 +15,7 @@ interface MainChatProps {
 // "맨 아래" 판정 임계값 (px). 사용자가 이 안에 있으면 자동 스크롤 따라감.
 const SCROLL_BOTTOM_THRESHOLD = 80;
 
-export default function MainChat({
+function MainChat({
   messages,
   status,
   isStreaming,
@@ -197,6 +197,10 @@ export default function MainChat({
     </section>
   );
 }
+
+// memo — 핸들러 ref 안정화로 props 변동은 사실상 messages/status/isStreaming 뿐.
+// 다른 state 변화 (settingsOpen 등) 로 인한 부모 리렌더에선 스킵됨.
+export default memo(MainChat);
 
 function StatusBadge({ status }: { status: ConnectionStatus }) {
   const label: Record<ConnectionStatus, string> = {

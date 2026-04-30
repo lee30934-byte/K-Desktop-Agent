@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import CornerBrackets from "./CornerBrackets";
 import type { Conversation } from "../types";
@@ -21,7 +22,7 @@ interface SidebarProps {
   onOpenSettings?: () => void;
 }
 
-export default function Sidebar({
+function Sidebar({
   conversations,
   activeConversationId,
   onSelectConversation,
@@ -229,6 +230,11 @@ export default function Sidebar({
     </aside>
   );
 }
+
+// memo — props 가 안 바뀌면 리렌더 스킵.
+// App.tsx 가 useStableCallback 으로 핸들러 ref 안정화했으므로
+// messages 배열만 바뀐 경우 Sidebar 는 리렌더 안 됨 (긴 대화 목록 보호).
+export default memo(Sidebar);
 
 function formatRelative(ts: number): string {
   const diff = Date.now() - ts;
