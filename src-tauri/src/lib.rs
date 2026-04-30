@@ -268,6 +268,28 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Claude Code CLI 의 OAuth 로그인 흐름을 별도 콘솔 창에서 실행한다.
+/// `cmd /k claude login` 을 새 콘솔 창에 붙여 띄워서, K 가 브라우저 OAuth 를 끝낸 뒤
+/// 결과 메시지를 직접 확인하고 닫을 수 있도록 한다.
+/// Windows 한정 — 다른 OS 에서는 단순 에러 반환.
+#[tauri::command]
+fn run_claude_login() -> Result<(), String> {
+    log_lifecycle("runtime.log", "run_claude_login invoked");
+    if cfg!(target_os = "windows") {
+        // `cmd /c start "Claude Login" cmd /k claude login`
+        // - `start "..."` 는 새 콘솔 창을 띄우고, 첫 인자를 창 제목으로 소비함
+        // - `cmd /k` 는 명령 실행 후 창을 유지 (K 가 결과 보고 직접 닫음)
+        // claude.cmd 가 PATH 에 있다고 가정 (있어야 sidecar 도 동작 중일 것).
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "Claude Login", "cmd", "/k", "claude", "login"])
+            .spawn()
+            .map_err(|e| format!("claude login 콘솔 기동 실패: {}", e))?;
+        Ok(())
+    } else {
+        Err("Windows 전용 기능입니다".to_string())
+    }
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     log_lifecycle("shutdown.log", "quit_app invoked (frontend)");
@@ -902,6 +924,7 @@ pub fn run_with_options(start_minimized: bool) {
             show_main_window,
             hide_main_window,
             quit_app,
+            run_claude_login,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,

@@ -54,25 +54,25 @@ interface Theme {
 const API_PROVIDERS: APIProvider[] = [
   {
     id: "claude",
-    name: "Claude (Max 구독)",
+    name: "Claude Code (Max OAuth)",
     icon: "💠",
     keyName: "(none)",
     placeholder: "Max 구독 OAuth — claude login",
     docsUrl: "https://docs.claude.com/en/docs/claude-code/quickstart",
     noKeyRequired: true,
-    note: "Claude Code CLI 로 K-Personal MCP 도구 사용 가능 (스크린샷·마우스·키보드 등). API 키 불필요.",
+    note: "Max 구독을 Claude Code CLI 로 인증해 사용 — K-Personal MCP 도구 (스크린샷·마우스·키보드·앱 실행 등) 풀 사용 가능. API 키 불필요. 아래 [claude login] 버튼으로 터미널에서 OAuth 진행.",
     models: [
       { id: "default", label: "Max 기본 모델 (Opus 4.7 / 1M ctx)" },
     ],
   },
   {
     id: "anthropic",
-    name: "Anthropic API",
+    name: "Claude API (직접)",
     icon: "🤖",
     keyName: "ANTHROPIC_API_KEY",
     placeholder: "sk-ant-api...",
     docsUrl: "https://console.anthropic.com/",
-    note: "직접 API 호출 (텍스트 전용 — MCP 도구 미지원).",
+    note: "Anthropic 콘솔에서 발급받은 API 키로 REST 직접 호출. Max 구독과는 별도 결제. 텍스트 전용 — MCP 도구 미지원.",
     models: [
       { id: "claude-opus-4-5", label: "Claude Opus 4.5" },
       { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5 (권장)" },
@@ -86,7 +86,7 @@ const API_PROVIDERS: APIProvider[] = [
     keyName: "OPENAI_API_KEY",
     placeholder: "sk-proj-...",
     docsUrl: "https://platform.openai.com/api-keys",
-    note: "직접 API 호출 (텍스트 전용).",
+    note: "ChatGPT Plus/Pro 구독으로는 API 사용 불가 — platform.openai.com 에서 별도 API 키 발급 + 결제 필요. 텍스트 전용 (MCP 도구 미지원).",
     models: [
       { id: "gpt-4o", label: "GPT-4o" },
       { id: "gpt-4o-mini", label: "GPT-4o mini (저렴/빠름)" },
@@ -102,7 +102,7 @@ const API_PROVIDERS: APIProvider[] = [
     keyName: "GOOGLE_API_KEY",
     placeholder: "AIza...",
     docsUrl: "https://aistudio.google.com/apikey",
-    note: "AI Studio API 키 사용 (텍스트 전용).",
+    note: "Gemini Advanced 구독으로는 API 사용 불가 — AI Studio (aistudio.google.com) 에서 별도 API 키 발급 필요. 텍스트 전용 (MCP 도구 미지원).",
     models: [
       { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (권장)" },
       { id: "gemini-2.0-flash-thinking-exp", label: "Gemini 2.0 Flash Thinking" },
@@ -430,6 +430,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     assistantBg: "20, 27, 45",    // bg-3 색상
     assistantBorder: "28, 37, 55", // border-subtle
   });
+
+  // claude login 버튼 상태 (UX feedback 용 — 별도 콘솔에서 OAuth 진행)
+  const [loginStatus, setLoginStatus] = useState<"idle" | "running" | "error">("idle");
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   // 자동 업데이트 상태
   const [autoUpdate, setAutoUpdate] = useState(true);
@@ -782,6 +786,21 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     delete newKeys[providerId];
     setApiKeys(newKeys);
     localStorage.setItem("kda_api_keys", JSON.stringify(newKeys));
+  }
+
+  // Claude Code CLI OAuth 로그인 — 별도 콘솔 창에서 `claude login` 실행
+  async function handleClaudeLogin() {
+    setLoginStatus("running");
+    setLoginError(null);
+    try {
+      await invoke("run_claude_login");
+      // 콘솔 창은 열렸지만 K 가 OAuth 진행하는 동안 status 는 running 으로 둠.
+      // 5초 후 idle 로 복귀 (어차피 콘솔 창에서 결과 확인하므로 UI 는 가벼운 안내만).
+      setTimeout(() => setLoginStatus("idle"), 5000);
+    } catch (e) {
+      setLoginStatus("error");
+      setLoginError(typeof e === "string" ? e : (e as Error)?.message || "알 수 없는 오류");
+    }
   }
 
   // 권한 레벨 변경
@@ -1452,6 +1471,64 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       }}
                     >
                       {currentProvider.note}
+                    </div>
+                  )}
+
+                  {/* Max 구독 (claude provider) 전용: claude login 버튼 */}
+                  {currentProvider.noKeyRequired && currentProvider.id === "claude" && (
+                    <div
+                      style={{
+                        marginBottom: "12px",
+                        padding: "10px 12px",
+                        background: "rgba(79, 232, 225, 0.05)",
+                        border: "1px solid rgba(79, 232, 225, 0.2)",
+                        borderRadius: "4px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: "0.85em",
+                          marginBottom: "8px",
+                          opacity: 0.85,
+                        }}
+                      >
+                        Max 구독을 처음 인증하거나 토큰이 만료됐을 때 아래 버튼을 누르면
+                        새 콘솔 창에서 <span className="mono">claude login</span> 이
+                        실행됩니다. 안내에 따라 브라우저 OAuth 를 완료하세요.
+                      </div>
+                      <div className="api-key-actions">
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={handleClaudeLogin}
+                          disabled={loginStatus === "running"}
+                        >
+                          {loginStatus === "running"
+                            ? "콘솔 창 확인…"
+                            : "🔑 claude login 실행"}
+                        </button>
+                        {loginStatus === "running" && (
+                          <span
+                            style={{
+                              fontSize: "0.85em",
+                              opacity: 0.7,
+                              alignSelf: "center",
+                            }}
+                          >
+                            새 콘솔 창에서 OAuth 진행 후 Sidecar 재시작이 필요할 수 있습니다.
+                          </span>
+                        )}
+                        {loginStatus === "error" && loginError && (
+                          <span
+                            style={{
+                              fontSize: "0.85em",
+                              color: "var(--warn, #ff9800)",
+                              alignSelf: "center",
+                            }}
+                          >
+                            ⚠ {loginError}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   )}
 

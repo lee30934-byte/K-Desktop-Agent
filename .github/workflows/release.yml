@@ -86,6 +86,9 @@ jobs:
 
             ## 변경사항
             [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) 참조
-          releaseDraft: true
+          # draft 가 true 면 업데이터 엔드포인트 (.../releases/latest/download/latest.json) 가
+          # 404 를 반환해 자동 업데이트가 동작하지 않는다. K Desktop Agent 는 이 워크플로우가
+          # 곧 publish 까지 끝내야 동작하므로 false 로 둔다.
+          releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
