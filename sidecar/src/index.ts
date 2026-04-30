@@ -14,6 +14,8 @@ import {
   writeFileSync,
   unlinkSync,
   rmSync,
+  readdirSync,
+  readFileSync,
   type WriteStream,
 } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -121,6 +123,101 @@ function resolveClaudeCli(): { resolved: string | null; tried: string[] } {
 
 const claudeCliResolution = resolveClaudeCli();
 const CLAUDE_CLI = claudeCliResolution.resolved ?? "claude";
+
+// ─── 누적 메모리 자동 로딩 (Phase 9 step 1) ─────────────────────
+// `~/.claude/projects/<key>/memory/` 의 모든 .md 파일을 system prompt 끝에 주입.
+// K 가 명시한 선호(feedback_*), 회피해야 할 함정(pitfall_*), 잘 먹힌 패턴(pattern_*) 을
+// 매 턴마다 자동 로드해 같은 실수 반복 / 같은 선호 재설명 부담을 줄인다.
+//
+// 디렉토리 결정 우선순위:
+//   1. KDA_MEMORY_DIR 환경변수 (수동 오버라이드)
+//   2. 추론한 프로젝트 루트 (dev 모드 — sidecar/src 또는 sidecar/dist 의 2단계 위)
+//      → Claude 키 규약 변환: C:\Users\user\Documents\K-Desktop-Agent
+//        → C--Users-user-Documents-K-Desktop-Agent (`:`, `\\` → `-`)
+//      → 그 결과 디렉토리에 memory/ 가 실제 존재하면 채택
+//   3. release 폴백: 하드코드된 K-Desktop-Agent 의 프로젝트 키
+//      (release 에서는 sidecar 가 install 디렉토리에서 실행돼 추론이 틀리므로 필요)
+const HARDCODED_MEMORY_KEY = "C--Users-user-Documents-K-Desktop-Agent";
+
+function getMemoryDir(): string {
+  const envOverride = process.env.KDA_MEMORY_DIR;
+  if (envOverride && existsSync(envOverride)) return envOverride;
+
+  const inferredRoot = path.resolve(__dirname_local, "..", "..");
+  const inferredKey = inferredRoot.replace(/[:\\]/g, "-");
+  const inferredPath = path.join(
+    os.homedir(),
+    ".claude",
+    "projects",
+    inferredKey,
+    "memory",
+  );
+  if (existsSync(inferredPath)) return inferredPath;
+
+  return path.join(
+    os.homedir(),
+    ".claude",
+    "projects",
+    HARDCODED_MEMORY_KEY,
+    "memory",
+  );
+}
+
+interface MemoryContext {
+  count: number;
+  bytes: number;
+  content: string;
+  dir: string;
+}
+
+function loadMemoryContext(): MemoryContext {
+  const dir = getMemoryDir();
+  try {
+    if (!existsSync(dir)) {
+      return { count: 0, bytes: 0, content: "", dir };
+    }
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".md"))
+      .sort();
+    if (files.length === 0) {
+      return { count: 0, bytes: 0, content: "", dir };
+    }
+    const sections: string[] = [];
+    let bytes = 0;
+    for (const f of files) {
+      try {
+        const body = readFileSync(path.join(dir, f), "utf-8");
+        sections.push(`### ${f}\n${body.trim()}`);
+        bytes += body.length;
+      } catch (e) {
+        logToFile(
+          "warn",
+          `memory file read 실패 ${f}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    if (sections.length === 0) {
+      return { count: 0, bytes: 0, content: "", dir };
+    }
+    const content = [
+      "",
+      "",
+      "## K님의 누적 메모리 (memory/)",
+      "",
+      "다음은 이전 세션들에서 K님과 합의했거나 기록한 선호·함정·패턴입니다.",
+      "매 응답에서 자연스럽게 반영하세요. 특히 `pitfall_*` 항목은 동일 패턴을 반복하지 마세요.",
+      "",
+      sections.join("\n\n"),
+    ].join("\n");
+    return { count: sections.length, bytes, content, dir };
+  } catch (e) {
+    logToFile(
+      "warn",
+      `memory load 실패: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return { count: 0, bytes: 0, content: "", dir };
+  }
+}
 
 const SYSTEM_PROMPT = `당신은 K님의 개인 Windows 컴퓨터를 자동화하는 조수입니다.
 
@@ -696,10 +793,12 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     args.push("--disallowed-tools", toolFlags.disallowed.join(","));
   }
 
-  // 시스템 프롬프트 = 기본 + ask 안내 + manual 안내
+  // 시스템 프롬프트 = 기본 + ask 안내 + manual 안내 + 누적 메모리 (memory/)
   const askGuidance = buildAskGuidance(toolFlags.effective);
   const manualGuidance = buildManualGuidance(toolFlags.effective);
-  const fullSystemPrompt = SYSTEM_PROMPT + askGuidance + manualGuidance;
+  const memory = loadMemoryContext();
+  const fullSystemPrompt =
+    SYSTEM_PROMPT + askGuidance + manualGuidance + memory.content;
   args.push("--system-prompt", fullSystemPrompt);
 
   // MCP 설정이 있으면 임시 파일로
@@ -751,7 +850,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   const attachmentsCount = msg.attachments?.length ?? 0;
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hook=overwriteGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""}`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hook=overwriteGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b`
   );
 
   try {
@@ -1084,6 +1183,11 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     .map((m) => ({ role: m.role, content: m.content }));
   oaiMessages.push({ role: "user", content: msg.content });
 
+  // 누적 메모리 주입 — Claude CLI 경로와 동일한 memory/ 디렉토리를 read-only 로 시스템 프롬프트에 합침.
+  // (REST API 는 도구가 없으니 hook 적용 불가 — pitfall_* 도 정보만 전달됨)
+  const memory = loadMemoryContext();
+  const restSystemPrompt = SYSTEM_PROMPT_REST + memory.content;
+
   let endpoint: string;
   let headers: Record<string, string>;
   let body: any;
@@ -1100,7 +1204,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
       body = {
         model,
         max_tokens: 4096,
-        system: SYSTEM_PROMPT_REST,
+        system: restSystemPrompt,
         messages: oaiMessages,
         stream: true,
       };
@@ -1115,7 +1219,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
       };
       body = {
         model,
-        messages: [{ role: "system", content: SYSTEM_PROMPT_REST }, ...oaiMessages],
+        messages: [{ role: "system", content: restSystemPrompt }, ...oaiMessages],
         stream: true,
         stream_options: { include_usage: true },
       };
@@ -1132,7 +1236,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
       };
       body = {
         model,
-        messages: [{ role: "system", content: SYSTEM_PROMPT_REST }, ...oaiMessages],
+        messages: [{ role: "system", content: restSystemPrompt }, ...oaiMessages],
         stream: true,
       };
       format = "openai";
@@ -1151,7 +1255,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
       contents.push({ role: "user", parts: [{ text: msg.content }] });
       body = {
         contents,
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT_REST }] },
+        systemInstruction: { parts: [{ text: restSystemPrompt }] },
       };
       format = "gemini";
       break;
@@ -1172,7 +1276,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
 
   logToFile(
     "info",
-    `REST query start id=${msg.id} provider=${provider} model=${model} historyLen=${history.length}`
+    `REST query start id=${msg.id} provider=${provider} model=${model} historyLen=${history.length} memory=${memory.count}/${memory.bytes}b`
   );
 
   try {
