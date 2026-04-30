@@ -104,10 +104,10 @@ export default function App() {
   // 신규 대화 / 대화 전환 / 압축 시에는 0 으로 리셋.
   const refreshBaselineRef = useRef(0);
 
-  // 대화 컨텍스트 크기 추정 — 자동 갱신 임계치 전용 (display 와 분리).
+  // 대화 컨텍스트 크기 추정 — 자동 갱신 임계치 + Context % 표시 공통 지표.
   // sidecar usage 의 cache_read_input_tokens 는 sub-agent 호출까지 합산되어
   // 한 턴에 1M~4M 까지 쉽게 부풀어 윈도우 점유율로는 부적절. 대신 messages 배열에서
-  // 단조 증가하는 값을 추정 (4자 ≈ 1 토큰) + baseline 50K (시스템 프롬프트 + MCP 도구 정의).
+  // 단조 증가하는 값을 추정 (4자 ≈ 1 토큰) + baseline 20K (시스템 프롬프트 + MCP 도구 정의).
   function estimateConvTokens(msgs: ChatMessage[]): number {
     // 실측: 시스템 프롬프트 + MCP 42개 도구 JSON 스키마 ≈ 15-25K. 20K 가 현실적 중앙값.
     // (이전 50K 은 과도한 보수치 — 신규 대화도 25% 출발이라 임계치 도달이 빨랐음)
