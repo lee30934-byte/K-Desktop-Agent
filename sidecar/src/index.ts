@@ -821,19 +821,28 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     args.push("--resume", msg.agent_id);
   }
 
-  // ─── PreToolUse Hook 주입 (덮어쓰기 가드) ──────────────────────────
-  // file_delete=manual 일 때 Write/Edit/MultiEdit 가 "기존 파일을 덮어쓰는" 행위
-  // (= 의미적으로 데이터 삭제) 를 차단. 신규 파일 생성은 file_write 토글로만 통제.
-  // hook 스크립트는 sidecar/hooks/preToolUse-overwriteGuard.mjs 에 위치.
+  // ─── PreToolUse Hook 주입 ──────────────────────────────────────────
+  // 두 가지 가드:
+  //   (1) overwriteGuard — file_delete=manual 일 때 Write/Edit/MultiEdit 의 "기존 파일 덮어쓰기" 차단.
+  //                        신규 파일 생성은 file_write 토글로만 통제. 의미적으로 데이터 삭제와 동등한 작업 차단.
+  //   (2) pitfallGuard   — memory/pitfall_*.md 에 등록된 K 와 합의된 함정 패턴을 Bash 도구 호출 직전에 감지.
+  //                        (Phase 9 step 4) 동일 실수 반복 방지 + stderr 로 회피책을 모델에 피드백.
   // dev (sidecar/src/index.ts) 와 release (sidecar/dist/index.js) 모두 한 단계 위로 가서 hooks/ 도달.
-  const hookScriptPath = path.resolve(__dirname_local, "..", "hooks", "preToolUse-overwriteGuard.mjs");
+  const overwriteGuardPath = path.resolve(__dirname_local, "..", "hooks", "preToolUse-overwriteGuard.mjs");
+  const pitfallGuardPath = path.resolve(__dirname_local, "..", "hooks", "preToolUse-pitfallGuard.mjs");
   const hookSettings = {
     hooks: {
       PreToolUse: [
         {
           matcher: "Write|Edit|MultiEdit",
           hooks: [
-            { type: "command", command: `node "${hookScriptPath}"` },
+            { type: "command", command: `node "${overwriteGuardPath}"` },
+          ],
+        },
+        {
+          matcher: "Bash",
+          hooks: [
+            { type: "command", command: `node "${pitfallGuardPath}"` },
           ],
         },
       ],
@@ -850,7 +859,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   const attachmentsCount = msg.attachments?.length ?? 0;
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hook=overwriteGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hooks=overwriteGuard+pitfallGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b`
   );
 
   try {
@@ -864,9 +873,10 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
         ...process.env,
         // 터미널 깜빡임 방지
         CLAUDE_CODE_NO_FLICKER: "1",
-        // PreToolUse hook 이 읽는 권한 정보
+        // PreToolUse hook 이 읽는 정보
         KDA_FILE_DELETE_LEVEL: toolFlags.effective.file_delete ?? "auto",
         KDA_OVERWRITE_GUARD: "1",
+        KDA_PITFALL_GUARD: process.env.KDA_PITFALL_GUARD ?? "1",
       },
     });
 
