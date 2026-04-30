@@ -136,17 +136,26 @@
 
 ---
 
-### ⬜ Phase 11 — OpenAI / Google 멀티 프로바이더
+### 🟡 Phase 11 — OpenAI / Google 멀티 프로바이더 (G1 출하, G2~G5 미진행)
 
-**상세 설계: `docs/PHASE-11-MULTI-PROVIDER.md`** (2026-04-30 작성)
+**상세 설계 + 진행 상황: `docs/PHASE-11-MULTI-PROVIDER.md`**
 
 **왜 필요한가**:
 - 모델별 강점 활용 (코드는 Claude, 이미지는 GPT, 검색은 Gemini 등)
 - Claude OAuth 차단 시 폴백 안전망
+- 진정한 멀티 프로바이더 = 같은 자동화 도구를 모든 모델이 쓸 수 있어야 함 (G1 핵심)
 
-**전략 분기 (K 결정 필요)**:
-- (A) 어댑터 레이어 — 같은 채팅에서 모델 토글, MCP 공유 (~5.5일)
-- (B) 사이드카 분리 — 모델별 별도 대화, MCP 도구는 어댑터로 공유 (~4일)
-- (C) 폴백 전용 — Claude 거부/만료 시 자동 재시도, MCP 도구는 Claude 전용 (~1일)
+**G1 — MCP function calling 어댑터 ✅ 출하 (2026-04-30)**:
+- OpenAI / OpenRouter / Gemini REST 경로가 K-Personal MCP 의 45개 도구를 직접 호출 가능
+- 신규 모듈 3개: `sidecar/src/mcpClient.ts`, `toolSchema.ts`, `restTools.ts`
+- `handleViaRestAPI` 가 single-shot → multi-round tool-call 루프로 리팩토링 (MAX_TOOL_ROUNDS=8)
+- 신규 회귀 smoke `smoke-rest-tools.ps1` (Layer 1 mock HTTP 33 어설션 + Layer 2 live MCP 9 어설션) — CI 통합됨
+- Anthropic-via-REST 는 별개 protocol → G1 범위 외 (Claude (Max OAuth) 경로 권장)
+
+**남은 갭 (G2~G5, 미진행)**:
+- G2 — API key 평문 localStorage → OS keyring (~0.5일)
+- G3 — REST 경로 이미지 첨부 (현재 Claude CLI 만, ~1일)
+- G4 — Strategy C 폴백 (Claude 실패 시 자동 GPT/Gemini 재시도, ~0.5일)
+- G5 — 메시지별 모델 picker (현재 글로벌 1개, ~0.5일)
 
 **핵심 제약**: ChatGPT Plus 구독 OAuth 의 API 외부 사용은 ToS 위반 → API key 입력이 정공법 (Gemini 도 동일).

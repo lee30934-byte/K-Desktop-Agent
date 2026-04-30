@@ -23,6 +23,29 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 
+// Phase 11 G1 — MCP-via-REST: lets non-Claude providers reach K-Personal MCP tools.
+import {
+  getKPersonalMCPClient,
+  type MCPClient,
+  type MCPTool,
+} from "./mcpClient.js";
+import {
+  toOpenAITools,
+  toGeminiFunctionDeclarations,
+  namespacedToolName,
+  dispatchModelToolCall,
+} from "./toolSchema.js";
+import {
+  runOpenAIChatRound,
+  runGeminiRound,
+  buildOpenAIAssistantToolMessage,
+  buildOpenAIToolResultMessage,
+  buildGeminiModelToolCallContent,
+  buildGeminiToolResponseContent,
+  type OpenAIMessage,
+  type GeminiContent,
+} from "./restTools.js";
+
 // ─── 파일 로거 ─────────────────────────────────────────
 // release 모드에서는 sidecar 의 stderr 가 소실되므로 `logs/sidecar.log` 에 직접 append.
 // path: <project-root>/logs/sidecar.log — __filename 이 sidecar/src 또는 sidecar/dist 안에 있어서 2단계 위로.
@@ -1095,7 +1118,12 @@ function normalizeToolOutput(content: unknown): string {
 
 // ─── REST API 경로 (OpenAI / Anthropic / Gemini / OpenRouter) ─────────────
 // 각 프로바이더의 SSE 스트리밍 응답을 파싱해 assistant_delta 이벤트로 중계.
-// 도구 사용은 미지원(K-Personal MCP는 Claude CLI 전용).
+//
+// Phase 11 G1 (2026-04-30): OpenAI / OpenRouter / Gemini 는 K-Personal MCP 도구도
+// 호출할 수 있게 됨 (function-calling). 모델이 tool_calls 를 emit 하면 sidecar 가
+// MCP subprocess 에 위임 → 결과를 받아 다음 라운드에 첨부 → 모델이 최종 답변할 때까지 반복.
+// Anthropic-via-REST 는 별개 protocol (tool_use content blocks) 이라 G1 범위 밖이며,
+// 텍스트 전용으로 유지됨 (Anthropic 사용자는 Claude (Max OAuth) provider 로 전환 권장).
 
 type ProviderFormat = "openai" | "anthropic" | "gemini";
 
@@ -1153,6 +1181,42 @@ function parseStreamChunk(parsed: any, format: ProviderFormat): ParsedDelta {
   return {};
 }
 
+// Hard cap on tool-calling rounds per turn. Real Claude agent runs typically settle in
+// 4–6 rounds for non-trivial tasks; 8 is a safety ceiling to bound infinite loops where
+// the model keeps re-calling the same tool. When hit we emit a warning + done.
+const MAX_TOOL_ROUNDS = 8;
+
+// Per-tool-call timeout. K-Personal tools mostly return in <500ms (file ops, screenshot)
+// but `app_launch_preset` of a heavy app can take ~10s. 30s is generous.
+const MCP_CALL_TIMEOUT_MS = 30_000;
+
+/**
+ * Try to load the K-Personal MCP tool catalog for the REST path. Returns null on any
+ * failure (missing server, Python missing, handshake timeout) — caller should degrade
+ * gracefully to text-only mode.
+ */
+async function loadMCPToolsForRest(): Promise<{
+  client: MCPClient;
+  tools: MCPTool[];
+} | null> {
+  if (!cachedMCPHealth.serverPathExists || !cachedMCPHealth.pythonAvailable) {
+    return null;
+  }
+  try {
+    const client = getKPersonalMCPClient({
+      command: PYTHON_EXE,
+      args: [K_PERSONAL_PATH],
+      logger: (level, m) => logToFile(level, m),
+    });
+    const tools = await client.listTools();
+    if (tools.length === 0) return null;
+    return { client, tools };
+  } catch (e) {
+    logToFile("warn", `MCP unavailable for REST turn: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
 async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<void> {
   const apiKey = msg.api_key;
   if (!apiKey || !apiKey.trim()) {
@@ -1168,14 +1232,15 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   const model = (msg.model && msg.model.trim()) || defaultModelFor(provider);
   const history = msg.history ?? [];
 
-  // tool 메시지는 REST API 가 지원 안 하므로 텍스트로 평탄화 후 user 메시지에 합쳐 넣음.
-  // (Resume 시 prior tool 호출 정보를 모델이 인지하도록 — Claude CLI 경로와 동등성 유지)
-  // role: "user"|"assistant" 만 그대로, "tool" 은 직전 메시지에 보조 텍스트로 흡수.
+  // History flattening — same shape as before. Tool messages from prior turns get
+  // text-summarised and absorbed into the previous assistant turn so the OpenAI/Gemini
+  // message arrays stay legal (no role:"tool" without matching tool_call_id from this
+  // exact assistant message). New tool calls in THIS turn are tracked separately and
+  // injected with proper tool_call_id linkage on subsequent rounds.
   const flattened: Array<{ role: "user" | "assistant"; content: string }> = [];
   for (const m of history) {
     if (m.role === "tool") {
       const summary = summarizeToolItem(m);
-      // 직전이 assistant 면 거기에 붙이고, 아니면 새 assistant 항목으로 추가.
       const last = flattened[flattened.length - 1];
       if (last && last.role === "assistant") {
         last.content = `${last.content}\n\n${summary}`;
@@ -1187,179 +1252,306 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     }
   }
 
-  // OpenAI 호환 messages 배열 (openai/openrouter/anthropic 공통 베이스)
-  const oaiMessages = flattened
-    .filter((m) => m.content && m.content.trim())
-    .map((m) => ({ role: m.role, content: m.content }));
-  oaiMessages.push({ role: "user", content: msg.content });
-
-  // 누적 메모리 주입 — Claude CLI 경로와 동일한 memory/ 디렉토리를 read-only 로 시스템 프롬프트에 합침.
-  // (REST API 는 도구가 없으니 hook 적용 불가 — pitfall_* 도 정보만 전달됨)
   const memory = loadMemoryContext();
   const restSystemPrompt = SYSTEM_PROMPT_REST + memory.content;
 
-  let endpoint: string;
-  let headers: Record<string, string>;
-  let body: any;
-  let format: ProviderFormat;
+  // ─── Resolve permission policy & MCP tool catalog ──────────────────────
+  const permFlags = buildToolFlags(msg.permissions, msg.lockedTools);
+  const disallowedSet = new Set(permFlags.disallowed);
 
-  switch (provider) {
-    case "anthropic": {
-      endpoint = "https://api.anthropic.com/v1/messages";
-      headers = {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      };
-      body = {
-        model,
-        max_tokens: 4096,
-        system: restSystemPrompt,
-        messages: oaiMessages,
-        stream: true,
-      };
-      format = "anthropic";
-      break;
-    }
-    case "openai": {
-      endpoint = "https://api.openai.com/v1/chat/completions";
-      headers = {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      };
-      body = {
-        model,
-        messages: [{ role: "system", content: restSystemPrompt }, ...oaiMessages],
-        stream: true,
-        stream_options: { include_usage: true },
-      };
-      format = "openai";
-      break;
-    }
-    case "openrouter": {
-      endpoint = "https://openrouter.ai/api/v1/chat/completions";
-      headers = {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-        "x-title": "K Desktop Agent",
-        "http-referer": "https://github.com/lee30934-byte/K-Desktop-Agent",
-      };
-      body = {
-        model,
-        messages: [{ role: "system", content: restSystemPrompt }, ...oaiMessages],
-        stream: true,
-      };
-      format = "openai";
-      break;
-    }
-    case "gemini": {
-      endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-      headers = { "content-type": "application/json" };
-      // flattened (tool 메시지를 assistant 텍스트로 흡수한 결과) 를 Gemini 형식으로 변환.
-      const contents = flattened
-        .filter((m) => m.content && m.content.trim())
-        .map((m) => ({
-          role: m.role === "assistant" ? "model" : "user",
-          parts: [{ text: m.content }],
-        }));
-      contents.push({ role: "user", parts: [{ text: msg.content }] });
-      body = {
-        contents,
-        systemInstruction: { parts: [{ text: restSystemPrompt }] },
-      };
-      format = "gemini";
-      break;
-    }
-    default: {
-      emit({ type: "error", id: msg.id, message: `Unknown provider: ${provider}` });
-      emit({ type: "done", id: msg.id, agentId: null });
-      return;
+  // Provider-side tool calling is currently scoped to OpenAI-shape and Gemini.
+  // Anthropic-via-REST keeps text-only single-shot for now (G1 scope decision).
+  const supportsTools = provider === "openai" || provider === "openrouter" || provider === "gemini";
+
+  let mcp: { client: MCPClient; tools: MCPTool[] } | null = null;
+  let knownToolNames = new Set<string>();
+  let openaiToolsArr: ReturnType<typeof toOpenAITools> = [];
+  let geminiFnDecls: ReturnType<typeof toGeminiFunctionDeclarations> = [];
+  if (supportsTools) {
+    mcp = await loadMCPToolsForRest();
+    if (mcp) {
+      // Build provider-shaped tool catalogs once per turn (reused across rounds).
+      openaiToolsArr = toOpenAITools(mcp.tools, disallowedSet);
+      geminiFnDecls = toGeminiFunctionDeclarations(mcp.tools, disallowedSet);
+      // knownToolNames = catalog actually exposed THIS turn (after permission filter).
+      // dispatchModelToolCall uses it to reject hallucinated names.
+      for (const t of mcp.tools) {
+        const ns = namespacedToolName(t.name);
+        if (!disallowedSet.has(ns)) knownToolNames.add(ns);
+      }
     }
   }
+
+  // ─── Initial messages array (provider-specific format) ────────────────
+  // For OpenAI-shape: [{role:"system",...}, ...flattened, {role:"user", content: msg.content}]
+  // For Gemini: contents[] with role "user"/"model"; system goes in systemInstruction.
+  const oaiMessages: OpenAIMessage[] = [
+    { role: "system", content: restSystemPrompt },
+    ...flattened
+      .filter((m) => m.content && m.content.trim())
+      .map<OpenAIMessage>((m) => ({ role: m.role, content: m.content })),
+    { role: "user", content: msg.content },
+  ];
+  const geminiContents: GeminiContent[] = [
+    ...flattened
+      .filter((m) => m.content && m.content.trim())
+      .map<GeminiContent>((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+    { role: "user", parts: [{ text: msg.content }] },
+  ];
 
   const controller = new AbortController();
   activeRestTurns.set(msg.id, controller);
 
-  let inputTokens = 0;
-  let outputTokens = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
   let aborted = false;
+  let roundsRun = 0;
+  let totalToolCalls = 0;
 
   logToFile(
     "info",
-    `REST query start id=${msg.id} provider=${provider} model=${model} historyLen=${history.length} memory=${memory.count}/${memory.bytes}b`
+    `REST query start id=${msg.id} provider=${provider} model=${model} historyLen=${history.length} memory=${memory.count}/${memory.bytes}b mcp=${mcp ? `${mcp.tools.length}tools/${knownToolNames.size}exposed` : "off"} maxRounds=${MAX_TOOL_ROUNDS}`
   );
 
+  // Round 0 mirrors the legacy single-shot path; rounds 1..N append tool results and
+  // re-call the model. Anthropic stays at round 0 only.
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    while (roundsRun < MAX_TOOL_ROUNDS) {
+      roundsRun++;
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      throw new Error(`HTTP ${response.status} ${response.statusText}: ${errText.slice(0, 800)}`);
-    }
-    if (!response.body) {
-      throw new Error("응답 body 가 비어있음 (스트리밍 미지원?)");
-    }
+      // Build per-provider request, then dispatch to the correct round runner.
+      let endpoint: string;
+      let headers: Record<string, string>;
+      let body: Record<string, unknown>;
+      let runner: "openai" | "gemini" | "anthropic-singleshot";
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
+      switch (provider) {
+        case "anthropic": {
+          endpoint = "https://api.anthropic.com/v1/messages";
+          headers = {
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+          };
+          // Anthropic stays single-shot (G1 scope) — tools omitted, no loop.
+          body = {
+            model,
+            max_tokens: 4096,
+            system: restSystemPrompt,
+            messages: oaiMessages
+              .filter((m) => m.role !== "system" && typeof m.content === "string")
+              .map((m) => ({ role: m.role, content: m.content as string })),
+            stream: true,
+          };
+          runner = "anthropic-singleshot";
+          break;
+        }
+        case "openai": {
+          endpoint = "https://api.openai.com/v1/chat/completions";
+          headers = {
+            authorization: `Bearer ${apiKey}`,
+            "content-type": "application/json",
+          };
+          body = {
+            model,
+            messages: oaiMessages,
+            stream: true,
+            stream_options: { include_usage: true },
+          };
+          if (openaiToolsArr.length > 0) (body as any).tools = openaiToolsArr;
+          runner = "openai";
+          break;
+        }
+        case "openrouter": {
+          endpoint = "https://openrouter.ai/api/v1/chat/completions";
+          headers = {
+            authorization: `Bearer ${apiKey}`,
+            "content-type": "application/json",
+            "x-title": "K Desktop Agent",
+            "http-referer": "https://github.com/lee30934-byte/K-Desktop-Agent",
+          };
+          body = { model, messages: oaiMessages, stream: true };
+          if (openaiToolsArr.length > 0) (body as any).tools = openaiToolsArr;
+          runner = "openai";
+          break;
+        }
+        case "gemini": {
+          endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+          headers = { "content-type": "application/json" };
+          body = {
+            contents: geminiContents,
+            systemInstruction: { parts: [{ text: restSystemPrompt }] },
+          };
+          if (geminiFnDecls.length > 0) {
+            (body as any).tools = [{ functionDeclarations: geminiFnDecls }];
+          }
+          runner = "gemini";
+          break;
+        }
+        default: {
+          emit({ type: "error", id: msg.id, message: `Unknown provider: ${provider}` });
+          emit({ type: "done", id: msg.id, agentId: null });
+          return;
+        }
+      }
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      // ─── Anthropic single-shot (legacy SSE handling, no tool calls) ────
+      if (runner === "anthropic-singleshot") {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const errText = await response.text().catch(() => "");
+          throw new Error(`HTTP ${response.status} ${response.statusText}: ${errText.slice(0, 800)}`);
+        }
+        if (!response.body) throw new Error("응답 body 가 비어있음 (스트리밍 미지원?)");
 
-      // SSE: 이벤트 경계는 빈 줄(\n\n).
-      let sep: number;
-      while ((sep = buffer.indexOf("\n\n")) !== -1) {
-        const eventBlock = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-
-        // event: 라인은 무시, data: 라인만 추출 (멀티라인 data 도 합침)
-        const dataLines: string[] = [];
-        for (const line of eventBlock.split("\n")) {
-          if (line.startsWith("data:")) {
-            dataLines.push(line.slice(5).replace(/^ /, ""));
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const eventBlock = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const dataLines: string[] = [];
+            for (const line of eventBlock.split("\n")) {
+              if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+            }
+            if (dataLines.length === 0) continue;
+            const data = dataLines.join("\n").trim();
+            if (!data || data === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parseStreamChunk(parsed, "anthropic");
+              if (delta.text) emit({ type: "assistant_delta", id: msg.id, text: delta.text });
+              if (typeof delta.inputTokens === "number") totalInputTokens = delta.inputTokens;
+              if (typeof delta.outputTokens === "number") totalOutputTokens = delta.outputTokens;
+            } catch (e) {
+              logToFile("warn", `REST anthropic SSE parse error: ${data.slice(0, 200)}`);
+            }
           }
         }
-        if (dataLines.length === 0) continue;
-        const data = dataLines.join("\n").trim();
-        if (!data || data === "[DONE]") continue;
+        break; // single-shot — exit loop
+      }
 
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parseStreamChunk(parsed, format);
-          if (delta.text) {
-            emit({ type: "assistant_delta", id: msg.id, text: delta.text });
-          }
-          if (typeof delta.inputTokens === "number") inputTokens = delta.inputTokens;
-          if (typeof delta.outputTokens === "number") outputTokens = delta.outputTokens;
-        } catch (e) {
-          logToFile("warn", `REST SSE parse error: ${data.slice(0, 200)}`);
+      // ─── OpenAI / OpenRouter / Gemini round runner ────────────────────
+      const round = runner === "openai"
+        ? await runOpenAIChatRound({
+            endpoint, headers, body, signal: controller.signal,
+            onDelta: { onText: (t) => emit({ type: "assistant_delta", id: msg.id, text: t }) },
+            logger: (lv, m) => logToFile(lv, m),
+          })
+        : await runGeminiRound({
+            endpoint, headers, body, signal: controller.signal,
+            onDelta: { onText: (t) => emit({ type: "assistant_delta", id: msg.id, text: t }) },
+            logger: (lv, m) => logToFile(lv, m),
+          });
+
+      totalInputTokens += round.inputTokens;
+      totalOutputTokens += round.outputTokens;
+
+      if (round.toolCalls.length === 0) break; // no tools requested → final answer
+
+      if (!mcp) {
+        // Defensive — should never happen since tools weren't sent without mcp.
+        logToFile("warn", `model emitted tool_calls but MCP is unavailable id=${msg.id}`);
+        break;
+      }
+
+      // Execute each tool call sequentially. Concurrent execution is tempting (especially
+      // for read-only tools) but K-Personal includes mouse/keyboard/clipboard ops where
+      // ordering matters. Sequential = predictable.
+      const dispatched: Array<{ id: string; name: string; output: string; isError: boolean }> = [];
+      for (const tc of round.toolCalls) {
+        totalToolCalls++;
+
+        emit({
+          type: "tool_use",
+          id: msg.id,
+          tool_id: tc.id,
+          name: tc.name,
+          input: tc.args,
+        });
+
+        const result = await dispatchModelToolCall({
+          client: mcp.client,
+          namespacedName: tc.name,
+          args: tc.args,
+          disallowed: disallowedSet,
+          knownTools: knownToolNames,
+          callTimeoutMs: MCP_CALL_TIMEOUT_MS,
+        });
+
+        const output = result.ok
+          ? result.text
+          : `[REJECTED] ${result.reason}`;
+        const isError = result.ok ? result.isError : true;
+        dispatched.push({ id: tc.id, name: tc.name, output, isError });
+
+        emit({
+          type: "tool_result",
+          id: msg.id,
+          tool_id: tc.id,
+          output,
+        });
+
+        logToFile(
+          "info",
+          `REST tool dispatch id=${msg.id} round=${roundsRun} name=${tc.name} ok=${result.ok} isError=${isError} outBytes=${output.length}`
+        );
+
+        // Honour aborts mid-batch — stops further tool calls in this round.
+        if (controller.signal.aborted) break;
+      }
+
+      if (controller.signal.aborted) break;
+
+      // Append assistant + tool messages so the next round sees the trace.
+      if (runner === "openai") {
+        oaiMessages.push(buildOpenAIAssistantToolMessage(round.text, round.toolCalls));
+        for (const d of dispatched) {
+          oaiMessages.push(buildOpenAIToolResultMessage(d.id, d.output));
         }
+      } else {
+        geminiContents.push(buildGeminiModelToolCallContent(round.text, round.toolCalls));
+        geminiContents.push(
+          buildGeminiToolResponseContent(dispatched.map((d) => ({ name: d.name, output: d.output })))
+        );
+      }
+
+      // If we just hit the ceiling, surface a warning so K knows the loop was capped.
+      if (roundsRun >= MAX_TOOL_ROUNDS) {
+        const note = `\n\n[round limit] ${MAX_TOOL_ROUNDS}회 도구 호출 후 자동 종료 — 모델이 무한 루프에 빠진 것으로 판단됨.`;
+        emit({ type: "assistant_delta", id: msg.id, text: note });
+        break;
       }
     }
 
     emit({
       type: "done",
       id: msg.id,
-      usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-      computed_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+      usage: { input_tokens: totalInputTokens, output_tokens: totalOutputTokens },
+      computed_usage: { input_tokens: totalInputTokens, output_tokens: totalOutputTokens },
       agentId: null,
     });
   } catch (err) {
     if (controller.signal.aborted) {
       aborted = true;
-      logToFile("info", `REST query aborted id=${msg.id}`);
+      logToFile("info", `REST query aborted id=${msg.id} round=${roundsRun}`);
       emit({ type: "done", id: msg.id, agentId: null });
     } else {
       const message = err instanceof Error ? err.message : String(err);
-      logToFile("error", `REST query error id=${msg.id}: ${message}`);
+      logToFile("error", `REST query error id=${msg.id} round=${roundsRun}: ${message}`);
       emit({ type: "error", id: msg.id, message });
       emit({ type: "done", id: msg.id, agentId: null });
     }
@@ -1367,7 +1559,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     activeRestTurns.delete(msg.id);
     logToFile(
       "info",
-      `REST query end id=${msg.id} aborted=${aborted} in=${inputTokens} out=${outputTokens}`
+      `REST query end id=${msg.id} aborted=${aborted} rounds=${roundsRun} toolCalls=${totalToolCalls} in=${totalInputTokens} out=${totalOutputTokens}`
     );
   }
 }

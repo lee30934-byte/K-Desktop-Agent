@@ -9,6 +9,7 @@
     1. rebuild-release.ps1     — recompile + sync sidecar to install dir
     2. smoke-sidecar.ps1       — verify Phase 9 step 1 (memory) + step 4 (pitfall guard)
     3. smoke-attachment.ps1    — verify attachment plumbing (decode, write, cleanup)
+    4. smoke-rest-tools.ps1    — verify Phase 11 G1 (REST tool-call loops + MCP dispatch)
 
   Designed so K can say "빌드해줘" and the assistant runs this in the background, then
   reports a single PASS / FAIL with all numbers.
@@ -100,18 +101,27 @@ if (-not $SkipBuild) {
 }
 
 # ─── 2. Smoke 1: sidecar diagnostic ───────────────────────────
-Write-Phase "Step 2/3 — smoke-sidecar (Phase 9 step 1 + step 4)"
+Write-Phase "Step 2/4 — smoke-sidecar (Phase 9 step 1 + step 4)"
 $start = Get-Date
 & "$PSScriptRoot\smoke-sidecar.ps1"
 $smoke1 = $LASTEXITCODE -eq 0
 Add-Summary 'smoke-sidecar' $smoke1 ([int]((Get-Date) - $start).TotalSeconds)
 
 # ─── 3. Smoke 2: attachment plumbing ──────────────────────────
-Write-Phase "Step 3/3 — smoke-attachment (attachment plumbing)"
+Write-Phase "Step 3/4 — smoke-attachment (attachment plumbing)"
 $start = Get-Date
 & "$PSScriptRoot\smoke-attachment.ps1"
 $smoke2 = $LASTEXITCODE -eq 0
 Add-Summary 'smoke-attachment' $smoke2 ([int]((Get-Date) - $start).TotalSeconds)
+
+# ─── 4. Smoke 3: REST tool-call loops + live MCP dispatch ──────
+# (Layer 2 of this smoke auto-skips when K-Personal-MCP isn't installed; Layer 1
+#  always runs. This is what gives non-Claude providers parity coverage.)
+Write-Phase "Step 4/4 — smoke-rest-tools (Phase 11 G1: REST tool loops + MCP dispatch)"
+$start = Get-Date
+& "$PSScriptRoot\smoke-rest-tools.ps1"
+$smoke3 = $LASTEXITCODE -eq 0
+Add-Summary 'smoke-rest-tools' $smoke3 ([int]((Get-Date) - $start).TotalSeconds)
 
 # ─── 4. Verdict ───────────────────────────────────────────────
 # (Pure ASCII status markers in this script — PowerShell 5.1 parses .ps1 files using the

@@ -1,6 +1,55 @@
 # Phase 11 — OpenAI / Google 계정 연동 (멀티 프로바이더)
 
-**상태: 설계 (2026-04-30)** — 현재 Claude Agent SDK 단독 → OpenAI(GPT) + Google(Gemini) 추가. K 가 모델 선택 가능.
+**상태: G1 출하 완료 (2026-04-30)** — REST 모드 (OpenAI / OpenRouter / Gemini) 가 K-Personal MCP 도구를 직접 호출할 수 있게 됨. 나머지 갭 (G2~G5) 은 별도 단계로 진행.
+
+## 📊 구현 진행 상황
+
+| 갭 | 내용 | 상태 |
+|---|---|---|
+| **G1** | MCP function calling 어댑터 — GPT/Gemini 가 K-Personal MCP 의 45개 도구를 직접 호출 | ✅ **완료 (2026-04-30)** |
+| **G2** | API key 를 localStorage 평문 → OS keyring 으로 이전 | 미진행 |
+| **G3** | REST 경로에 이미지 첨부 지원 (현재 Claude CLI 만 처리) | 미진행 |
+| **G4** | Strategy C 폴백 — Claude 거부/오류 시 자동 GPT/Gemini 재시도 | 미진행 |
+| **G5** | 메시지별 모델 picker (현재 글로벌 1개) | 미진행 |
+
+### G1 출하 내역 (2026-04-30)
+
+**구현 모듈** (sidecar/src/):
+- `mcpClient.ts` — JSON-RPC 2.0 over stdio MCP 클라이언트 (singleton + lazy spawn + concurrent-safe)
+- `toolSchema.ts` — MCP JSON Schema → OpenAI / Gemini / Anthropic tool schema 변환기 + 라우팅 헬퍼
+- `restTools.ts` — provider-별 streaming round runner (OpenAI 의 fragmented tool_calls 누적, Gemini 의 functionCall 파싱)
+
+**index.ts 변경**: `handleViaRestAPI` 가 single-shot SSE 에서 multi-round tool-call 루프로 리팩토링됨. `MAX_TOOL_ROUNDS=8`, `MCP_CALL_TIMEOUT_MS=30_000`. Anthropic-via-REST 는 별개 protocol (tool_use content blocks) 이라 G1 범위 외 — text-only 유지.
+
+**검증 (smoke-rest-tools)**:
+- Layer 1 (mock HTTP, CI 안전): 33개 어설션 — fragmented JSON args 재조립, parallel tool calls, Gemini functionCall, message builders, namespacing
+- Layer 2 (live K-Personal MCP): 9개 어설션 — 실제 cc_screen_size 호출 → "화면 크기: 1920 x 1080" 반환 ✓
+- 회귀 테스트: 기존 smoke-sidecar / smoke-attachment 둘 다 통과 (Claude CLI 경로 무영향)
+
+**디자인 결정**:
+- 도구 이름은 `mcp__k-personal__fm_list_directory` 형태로 namespacing — 기존 `lockedTools`/`PERM_TOOL_MAP` 정책이 그대로 적용 (REST 와 Claude CLI 권한 일관성)
+- Gemini schema sanitizer 는 OpenAPI 3.0 호환만 통과 (`additionalProperties`, `$schema`, unknown keys 제거). 첫 구현에서 properties 의 KEY 도 화이트리스트로 거른 버그 발견 → 수정 + 회귀 어설션 추가
+- 도구 호출은 sequential (parallel 매력적이지만 mouse/keyboard/clip 순서 의존성 보호)
+- Permission 재확인은 `dispatchModelToolCall` 안에서 defence-in-depth — 모델이 disallowed 도구를 호출하면 MCP 까지 가기 전에 거부
+
+**아키텍처**:
+```
+sidecar (REST 경로)
+  ├─ MCPClient (subprocess) ── k-personal-mcp/server.py
+  │     ├─ initialize handshake (2.6s typical)
+  │     ├─ tools/list  → 45개 schema 캐싱 (2ms)
+  │     └─ tools/call  → 결과 반환
+  ├─ toolSchema 변환기
+  │     ├─ MCP JSON Schema → OpenAI {name, description, parameters}
+  │     └─ MCP JSON Schema → Gemini functionDeclarations
+  └─ multi-round driver (handleViaRestAPI)
+        ├─ OpenAI: fragmented tool_calls delta 누적 → MCP call → role:"tool" 첨가 → 다음 라운드
+        └─ Gemini: functionCall → MCP call → functionResponse → 다음 라운드
+```
+
+---
+
+## ⏭️ 아래는 원래 설계 문서 (2026-04-30 작성, G1 출하 전 작성된 전략 분기)
 
 ## ⚠️ 정직한 시작 — 이건 Phase 4.5 보다 큰 작업
 

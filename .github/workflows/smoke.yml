@@ -71,6 +71,16 @@ jobs:
           KDA_MEMORY_DIR: ${{ github.workspace }}\tests\fixtures\memory
         run: .\scripts\smoke-attachment.ps1
 
+      # Phase 11 G1 — REST tool-call loop coverage.
+      # Layer 1 (mock HTTP runner accumulator + builders + namespacing): always runs,
+      # zero external deps. Layer 2 (live MCP dispatch) auto-skips on hosted runners
+      # because K-Personal-MCP isn't installed there — that's expected; the layer-1
+      # guarantees alone are enough to catch regressions in stream parsing / message
+      # builders / schema translation, which is where the bugs would land.
+      - name: Run smoke-rest-tools (Phase 11 G1)
+        shell: pwsh
+        run: .\scripts\smoke-rest-tools.ps1
+
       # On failure, ship sidecar.log (and the dist that was built) so a remote
       # diagnosis is possible without re-running.
       - name: Upload sidecar.log on failure
