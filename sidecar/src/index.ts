@@ -367,12 +367,15 @@ const PERM_LABEL: Record<string, string> = {
 
 // 기본 권한 정책 — Settings UI DEFAULT_PERMISSIONS 와 동일.
 // permissions 필드가 비어 있을 때(첫 실행 등) 사용.
+// 2026-04-30: K 의 풀 PC 제어 요청에 따라 4개 권한을 ask → auto 로 승급.
+// (file_write/file_delete/app_launch/system_control 모두 auto 가 되면
+//  HIGH_RISK_BUILTINS 정책에 의해 Bash/BashOutput/KillShell 도 자동 해제됨)
 const DEFAULT_PERMISSIONS: Record<string, PermLevel> = {
   file_read: "auto",
-  file_write: "ask",
-  file_delete: "ask",
-  app_launch: "ask",
-  system_control: "ask",
+  file_write: "auto",
+  file_delete: "auto",
+  app_launch: "auto",
+  system_control: "auto",
   screenshot: "auto",
   web_fetch: "auto",
   db_access: "auto",

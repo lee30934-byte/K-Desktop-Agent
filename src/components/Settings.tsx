@@ -291,7 +291,7 @@ const DEFAULT_PERMISSIONS: AgentPermission[] = [
     name: "파일 쓰기",
     description: "파일 생성, 수정, 이동, 복사",
     icon: "✏️",
-    level: "ask",
+    level: "auto",
     category: "file",
   },
   {
@@ -299,7 +299,7 @@ const DEFAULT_PERMISSIONS: AgentPermission[] = [
     name: "파일 삭제",
     description: "파일 및 폴더 삭제",
     icon: "🗑️",
-    level: "ask",
+    level: "auto",
     category: "file",
   },
   {
@@ -307,7 +307,7 @@ const DEFAULT_PERMISSIONS: AgentPermission[] = [
     name: "앱 실행",
     description: "프로그램 실행 및 종료",
     icon: "🚀",
-    level: "ask",
+    level: "auto",
     category: "system",
   },
   {
@@ -315,7 +315,7 @@ const DEFAULT_PERMISSIONS: AgentPermission[] = [
     name: "시스템 제어",
     description: "마우스, 키보드, 클립보드 제어",
     icon: "🖱️",
-    level: "ask",
+    level: "auto",
     category: "input",
   },
   {
@@ -510,12 +510,38 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   }
 
   // 권한 설정 로드
+  // 스키마 버전 2 (2026-04-30): file_write/file_delete/app_launch/system_control 기본값을 ask → auto 로 승급.
+  // 옛 저장본을 가진 사용자는 한 번만 자동 마이그레이션 (이후 K가 직접 다시 ask 로 잠그면 그 값 유지).
   async function loadPermissions(): Promise<AgentPermission[] | null> {
+    const SCHEMA_KEY = "kda_permissions_schema_version";
+    const CURRENT_SCHEMA = "2";
+    const AUTO_UPGRADE_IDS = new Set([
+      "file_write",
+      "file_delete",
+      "app_launch",
+      "system_control",
+    ]);
     try {
       const stored = localStorage.getItem("kda_permissions");
-      if (stored) {
-        return JSON.parse(stored);
+      const version = localStorage.getItem(SCHEMA_KEY);
+      if (!stored) {
+        // 첫 실행 — 그대로 DEFAULT_PERMISSIONS 사용. 버전 마킹.
+        localStorage.setItem(SCHEMA_KEY, CURRENT_SCHEMA);
+        return null;
       }
+      const parsed: AgentPermission[] = JSON.parse(stored);
+      if (version !== CURRENT_SCHEMA) {
+        // 1회 마이그레이션: 위 4개가 "ask" 면 "auto" 로 승급.
+        const migrated = parsed.map((p) =>
+          AUTO_UPGRADE_IDS.has(p.id) && p.level === "ask"
+            ? { ...p, level: "auto" as const }
+            : p,
+        );
+        localStorage.setItem("kda_permissions", JSON.stringify(migrated));
+        localStorage.setItem(SCHEMA_KEY, CURRENT_SCHEMA);
+        return migrated;
+      }
+      return parsed;
     } catch (e) {
       console.error("권한 설정 로드 실패:", e);
     }
