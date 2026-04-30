@@ -78,6 +78,15 @@ export default function App() {
   const isRefreshingSessionRef = useRef(false);
   const [isCompressing, setIsCompressing] = useState(false);
 
+  // ─── 중단된 턴 이어받기 ────────────────────────────────
+  // 마지막 메시지가 user 인데 assistant 응답이 없으면 release rebuild / 강제 종료로
+  // 턴이 끊긴 것으로 간주. 사용자가 [이어서 받기] 클릭하면 같은 user 텍스트로 재요청.
+  // (API 비용은 1턴 다시 듦 — 대신 K 가 같은 질문 재타이핑할 필요 없음)
+  const [pendingResume, setPendingResume] = useState<{
+    convId: string;
+    userMessage: ChatMessage;
+  } | null>(null);
+
   // 메시지 저장 디바운스용 ref
   const pendingSaveRef = useRef<Map<string, ChatMessage>>(new Map());
   const saveTimerRef = useRef<number | null>(null);
@@ -524,6 +533,9 @@ export default function App() {
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
     if ((!text && (!files || files.length === 0)) || isStreaming) return;
 
+    // 새 메시지 시작 → 미완 턴 이어받기 배너는 더 이상 의미 없음
+    setPendingResume(null);
+
     // 활성 대화가 없으면 자동 생성
     let convId = activeConversationId;
     if (!convId && dbReady) {
@@ -747,6 +759,8 @@ export default function App() {
       });
       // 자동 갱신 baseline 도 리셋 — 새 대화는 0 부터 카운트
       refreshBaselineRef.current = 0;
+      // 새 대화 만들면 이전 대화의 이어받기 배너는 숨김
+      setPendingResume(null);
     } catch (err) {
       console.error("[App] 대화 생성 실패:", err);
       pushSystem("대화 생성에 실패했습니다.", "error");
@@ -761,6 +775,8 @@ export default function App() {
     activeConversationIdRef.current = id;
     // 대화 전환 시 baseline 리셋 — 다른 대화는 별개의 누적 컨텍스트
     refreshBaselineRef.current = 0;
+    // 다른 대화로 넘어가면 이전 대화의 이어받기 배너는 숨김
+    setPendingResume(null);
 
     // DB에서 메시지와 메트릭 로드
     try {
@@ -769,6 +785,14 @@ export default function App() {
         getConversationMetrics(id),
       ]);
       setMessages(msgs);
+
+      // 마지막 메시지가 user 면 → 이전 턴이 미완 (assistant 응답이 저장된 적 없음)
+      // = release rebuild / 프로세스 강제 종료로 끊긴 턴. 배너로 이어받기 제안.
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === "user") {
+        setPendingResume({ convId: id, userMessage: last });
+        logger.log(`[Resume] 미완 턴 감지: ${last.content.slice(0, 40)}...`);
+      }
 
       // 저장된 메트릭이 있으면 복원, 없으면 메시지 기반으로 추정
       if (savedMetrics && savedMetrics.totalInputTokens > 0) {
@@ -824,11 +848,137 @@ export default function App() {
         activeConversationIdRef.current = null;
         setMessages([]);
         refreshBaselineRef.current = 0;
+        setPendingResume(null);
       }
     } catch (err) {
       console.error("[App] 대화 삭제 실패:", err);
       pushSystem("대화 삭제에 실패했습니다.", "error");
     }
+  });
+
+  // ─── 중단된 턴 이어받기 ─────────────────────────────────
+  // pendingResume.userMessage 텍스트를 그대로 재전송. user 메시지는 이미 DB/UI 에 있으니
+  // 새로 추가하지 않고, history 에서도 마지막 user 만 제외하고 보낸다 (sidecar 가 current_message
+  // 로 따로 받기 때문). agentId 는 마지막 완료된 턴의 것 (--resume) 또는 null (신규).
+  const handleResumeInterrupted = useStableCallback(async () => {
+    if (!pendingResume) return;
+    if (isStreaming) return;
+    const { convId, userMessage } = pendingResume;
+    if (convId !== activeConversationIdRef.current) {
+      // 사용자가 다른 대화로 옮겨갔으면 무시
+      setPendingResume(null);
+      return;
+    }
+
+    // 배너 닫기 (재시도 클릭은 한 번만)
+    setPendingResume(null);
+
+    const turnId = crypto.randomUUID();
+    setCurrentTurnId(turnId);
+    setIsStreaming(true);
+
+    try {
+      // resume agentId — 마지막 완료된 턴의 것 (DB 에 저장됨). 없으면 신규 세션.
+      let agentId: string | undefined;
+      if (dbReady) {
+        const existingAgentId = await getConversationAgentId(convId);
+        if (existingAgentId) agentId = existingAgentId;
+      }
+
+      // history — 마지막 user 메시지(=재전송 대상) 빼고 직전 20개. tool 은 제외 (용량).
+      // 마지막이 userMessage 와 일치하지 않을 수도 있으니 id 로도 확인.
+      const allMessages = messagesRef.current;
+      const trimmed = allMessages[allMessages.length - 1]?.id === userMessage.id
+        ? allMessages.slice(0, -1)
+        : allMessages;
+      const history = trimmed
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .slice(-20)
+        .map((m) => ({ role: m.role, content: m.content }));
+
+      // provider / model / API key — handleSendMessage 와 동일 로직
+      let provider: string | undefined;
+      let model: string | undefined;
+      let apiKey: string | undefined;
+      try {
+        provider = localStorage.getItem("kda_active_provider") || "claude";
+        model = localStorage.getItem("kda_active_model") || undefined;
+        if (provider !== "claude") {
+          const storedKeys = localStorage.getItem("kda_api_keys");
+          if (storedKeys) {
+            const keys = JSON.parse(storedKeys);
+            apiKey = keys[provider];
+          }
+        }
+      } catch (e) {
+        console.warn("[Resume] provider/model 로드 실패:", e);
+        provider = "claude";
+      }
+
+      // permissions / lockedTools — handleSendMessage 와 동일
+      let permissions: Record<string, string> | undefined;
+      try {
+        const storedPerms = localStorage.getItem("kda_permissions");
+        if (storedPerms) {
+          const arr = JSON.parse(storedPerms);
+          if (Array.isArray(arr)) {
+            permissions = {};
+            for (const p of arr) {
+              if (
+                p &&
+                typeof p.id === "string" &&
+                (p.level === "auto" || p.level === "ask" || p.level === "manual")
+              ) {
+                permissions[p.id] = p.level;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[Resume] permissions 로드 실패:", e);
+      }
+
+      let lockedTools: string[] | undefined;
+      try {
+        const storedLocked = localStorage.getItem("kda_locked_tools");
+        if (storedLocked) {
+          const arr = JSON.parse(storedLocked);
+          if (Array.isArray(arr)) {
+            lockedTools = arr.filter(
+              (t): t is string => typeof t === "string" && t.trim().length > 0
+            );
+            if (lockedTools.length === 0) lockedTools = undefined;
+          }
+        }
+      } catch (e) {
+        console.warn("[Resume] lockedTools 로드 실패:", e);
+      }
+
+      pushSystem("⟳ 중단된 턴 이어받는 중...", "info");
+      logger.log(`[Resume] 재전송: turnId=${turnId}, agentId=${agentId ?? "(신규)"}`);
+
+      await invoke("send_message", {
+        message: userMessage.content,
+        id: turnId,
+        agentId,
+        history: history.length > 0 ? history : undefined,
+        // 첨부파일은 DB 에 base64 저장 안 함 → 재기동 후 복원 불가 (텍스트만 재전송)
+        attachments: undefined,
+        apiKey,
+        provider,
+        model,
+        permissions,
+        lockedTools,
+      });
+    } catch (err) {
+      setIsStreaming(false);
+      setCurrentTurnId(null);
+      pushSystem(`이어받기 실패: ${String(err)}`, "error");
+    }
+  });
+
+  const handleDismissResume = useStableCallback(() => {
+    setPendingResume(null);
   });
 
   // ─── Auto Session Continuity ─────────────────────────────
@@ -1197,6 +1347,37 @@ export default function App() {
         <div className="session-refresh-toast restart-toast">
           <span className="toast-icon">⟳</span>
           <span className="toast-text">{recentRestartInfo}</span>
+        </div>
+      )}
+
+      {/* 중단된 턴 이어받기 배너 — 재기동/강제종료로 assistant 응답 못 받은 user 메시지 감지 시 */}
+      {pendingResume && !isStreaming && (
+        <div className="resume-banner" role="alert">
+          <div className="resume-banner-icon">⟳</div>
+          <div className="resume-banner-body">
+            <div className="resume-banner-title">이전 응답이 중단되었습니다</div>
+            <div className="resume-banner-preview">
+              {pendingResume.userMessage.content.length > 120
+                ? pendingResume.userMessage.content.slice(0, 120) + "…"
+                : pendingResume.userMessage.content}
+            </div>
+          </div>
+          <div className="resume-banner-actions">
+            <button
+              className="resume-btn-primary"
+              onClick={handleResumeInterrupted}
+              title="같은 질문으로 다시 요청합니다 (1턴 토큰 재소모)"
+            >
+              ▶ 이어서 받기
+            </button>
+            <button
+              className="resume-btn-dismiss"
+              onClick={handleDismissResume}
+              title="배너 닫기 (대화 자체는 보존됩니다)"
+            >
+              ✕
+            </button>
+          </div>
         </div>
       )}
     </div>

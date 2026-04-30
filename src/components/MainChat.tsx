@@ -1,4 +1,4 @@
-import { useEffect, useRef, useLayoutEffect, useState, useCallback, memo } from "react";
+import { useEffect, useRef, useLayoutEffect, useState, useCallback, useMemo, memo } from "react";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
@@ -10,6 +10,45 @@ interface MainChatProps {
   isStreaming: boolean;
   onSendMessage: (text: string, files?: FileAttachment[]) => void;
   onInterrupt: () => void;
+}
+
+// 빌트인 도구 → 한국어 라벨 매핑. MCP 도구는 정규식으로 자동 변환 (mcp__server__tool → tool).
+const TOOL_LABELS: Record<string, string> = {
+  Read: "파일 읽기",
+  Write: "파일 쓰기",
+  Edit: "파일 편집",
+  MultiEdit: "파일 편집",
+  NotebookEdit: "노트북 편집",
+  Bash: "명령어 실행",
+  Glob: "파일 검색",
+  Grep: "내용 검색",
+  WebFetch: "웹 가져오기",
+  WebSearch: "웹 검색",
+  Task: "에이전트 작업",
+  TaskOutput: "작업 결과 조회",
+  TaskStop: "작업 중단",
+  TodoWrite: "할일 정리",
+  ToolSearch: "도구 검색",
+  PowerShell: "PowerShell 실행",
+  ExitPlanMode: "계획 모드 종료",
+  EnterPlanMode: "계획 모드 진입",
+  ScheduleWakeup: "예약 호출",
+  CronCreate: "Cron 등록",
+  CronDelete: "Cron 삭제",
+  CronList: "Cron 목록",
+  AskUserQuestion: "사용자 질문",
+  PushNotification: "알림 전송",
+};
+
+function formatToolName(name: string): string {
+  if (TOOL_LABELS[name]) return TOOL_LABELS[name];
+  // MCP 도구 — mcp__k-personal__cc_screenshot → "screenshot"
+  if (name.startsWith("mcp__")) {
+    const parts = name.split("__");
+    const tool = parts[parts.length - 1] ?? name;
+    return tool.replace(/^cc_/, "").replace(/_/g, " ");
+  }
+  return name;
 }
 
 // "맨 아래" 판정 임계값 (px). 사용자가 이 안에 있으면 자동 스크롤 따라감.
@@ -28,7 +67,6 @@ function MainChat({
   // ref 로 들고서 effect 가 stale 안 되게.
   const userScrolledUpRef = useRef(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const [toolPanelOpen, setToolPanelOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
 
   // 대화 내용 복사 함수
@@ -179,12 +217,8 @@ function MainChat({
           </button>
         )}
 
-        {/* Tool 로그 패널 */}
-        <ToolLogPanel
-          messages={messages}
-          isOpen={toolPanelOpen}
-          onToggle={() => setToolPanelOpen(!toolPanelOpen)}
-        />
+        {/* 진행 중 표시 — 스트리밍 중에만 노출, 마지막 pending tool 라벨 표시 */}
+        <ProgressIndicator messages={messages} isStreaming={isStreaming} />
 
         {/* 입력창 */}
         <Composer
@@ -239,63 +273,38 @@ function EmptyState() {
   );
 }
 
-// Tool 로그 패널 컴포넌트
-function ToolLogPanel({
+// 진행 중 표시 — 컴포저 위에 얇은 띠로 표시.
+// isStreaming 일 때만 노출. 마지막 pending tool 이 있으면 그 라벨, 없으면 "응답 생성 중...".
+// (이전의 누적 ToolLogPanel 보다 노이즈가 훨씬 적고 "지금 무슨 작업 중인지" 만 명확히 전달)
+function ProgressIndicator({
   messages,
-  isOpen,
-  onToggle,
+  isStreaming,
 }: {
   messages: ChatMessage[];
-  isOpen: boolean;
-  onToggle: () => void;
+  isStreaming: boolean;
 }) {
-  const toolMessages = messages.filter(
-    (msg): msg is Extract<ChatMessage, { role: "tool" }> => msg.role === "tool"
-  );
+  // 마지막 pending tool 찾기 — 끝에서 거꾸로 스캔 (보통 가장 최근).
+  const currentTool = useMemo(() => {
+    if (!isStreaming) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "tool" && m.status === "pending") {
+        return m;
+      }
+    }
+    return null;
+  }, [messages, isStreaming]);
 
-  const pendingCount = toolMessages.filter((m) => m.status === "pending").length;
-  const recentTools = toolMessages.slice(-10); // 최근 10개만
+  if (!isStreaming) return null;
 
-  if (toolMessages.length === 0) return null;
+  const label = currentTool
+    ? `${formatToolName(currentTool.toolName)} 실행 중...`
+    : "응답 생성 중...";
 
   return (
-    <div className={`tool-log-panel ${isOpen ? "open" : ""}`}>
-      <button className="tool-log-header" onClick={onToggle}>
-        {pendingCount > 0 ? (
-          <span className="tool-log-spinner" />
-        ) : (
-          <span className="tool-log-icon">{isOpen ? "▼" : "▶"}</span>
-        )}
-        <span className="mono">
-          Tool 로그 ({toolMessages.length})
-          {pendingCount > 0 && (
-            <span className="tool-log-pending"> • {pendingCount}개 실행중</span>
-          )}
-        </span>
-      </button>
-      {isOpen && (
-        <div className="tool-log-content">
-          {recentTools.map((tool) => (
-            <div
-              key={tool.id}
-              className={`tool-log-item tool-log-${tool.status}`}
-            >
-              <span className={`tool-log-status tool-log-status-${tool.status}`}>
-                {tool.status === "pending" ? "⏳" : tool.status === "success" ? "✓" : "✗"}
-              </span>
-              <span className="tool-log-name mono">{tool.toolName}</span>
-              <span className="tool-log-time mono">
-                {new Date(tool.timestamp).toLocaleTimeString("ko-KR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                  hour12: false,
-                })}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="progress-indicator" role="status" aria-live="polite">
+      <span className="progress-spinner" aria-hidden="true" />
+      <span className="progress-label mono">{label}</span>
     </div>
   );
 }
