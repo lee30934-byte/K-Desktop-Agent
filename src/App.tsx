@@ -82,8 +82,32 @@ export default function App() {
   // state를 안정된 콜백 안에서 읽기 위한 latest-ref
   const activeConversationIdRef = useRef<string | null>(null);
   const dbReadyRef = useRef(false);
+  const messagesRef = useRef<ChatMessage[]>([]);
   useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
   useEffect(() => { dbReadyRef.current = dbReady; }, [dbReady]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // 자동 갱신 임계치용 baseline — 마지막 갱신 시점의 추정 컨텍스트 크기.
+  // 이 값을 빼면 "갱신 이후 새로 누적된 대화" 만 임계치 비교에 쓰인다.
+  // 신규 대화 / 대화 전환 / 압축 시에는 0 으로 리셋.
+  const refreshBaselineRef = useRef(0);
+
+  // 대화 컨텍스트 크기 추정 — 자동 갱신 임계치 전용 (display 와 분리).
+  // sidecar usage 의 cache_read_input_tokens 는 sub-agent 호출까지 합산되어
+  // 한 턴에 1M~4M 까지 쉽게 부풀어 윈도우 점유율로는 부적절. 대신 messages 배열에서
+  // 단조 증가하는 값을 추정 (4자 ≈ 1 토큰) + baseline 50K (시스템 프롬프트 + MCP 도구 정의).
+  function estimateConvTokens(msgs: ChatMessage[]): number {
+    const baseline = 50_000;
+    return msgs.reduce((sum, m) => {
+      const contentLen = m.content?.length ?? 0;
+      // tool 메시지는 toolInput / toolOutput 도 컨텍스트에 들어감
+      const toolInputLen = (m as any).toolInput
+        ? JSON.stringify((m as any).toolInput).length
+        : 0;
+      const toolOutputLen = ((m as any).toolOutput ?? "").length;
+      return sum + Math.ceil((contentLen + toolInputLen + toolOutputLen) / 4);
+    }, 0) + baseline;
+  }
 
   // ─── 재기동 감지 (dev rebuild 등) ────────────────────
   // 주기적으로 localStorage 에 heartbeat 를 찍고, 기동 시 마지막 heartbeat 와의 갭을 본다.
@@ -367,11 +391,14 @@ export default function App() {
             }).catch((err) => console.error("[App] 메트릭 저장 실패:", err));
           }
 
-          // 임계치 체크 — 누적이 아닌 마지막 턴 컨텍스트 기준 (실제 윈도우 점유율).
-          const ctx = updatedMetrics.currentContextTokens ?? 0;
-          const contextUsage = ctx / MAX_CONTEXT_TOKENS;
+          // 임계치 체크 — display 지표(currentContextTokens)는 sub-agent 호출 합산되어
+          // 한 턴에 1M~4M 까지 부풀어 윈도우 점유율로 부적절. 대신 messages 추정 - baseline
+          // 으로 "마지막 갱신 이후 누적된 실제 대화 크기" 를 본다.
+          const estimated = estimateConvTokens(messagesRef.current);
+          const effective = Math.max(0, estimated - refreshBaselineRef.current);
+          const contextUsage = effective / MAX_CONTEXT_TOKENS;
           if (contextUsage >= CONTEXT_THRESHOLD && !isRefreshingSessionRef.current) {
-            logger.log(`[Session] 컨텍스트 ${(contextUsage * 100).toFixed(1)}% 도달 - 세션 자동 갱신 시작`);
+            logger.log(`[Session] 추정 컨텍스트 ${(contextUsage * 100).toFixed(1)}% (${effective}/${MAX_CONTEXT_TOKENS}) 도달 - 세션 자동 갱신 시작`);
             isRefreshingSessionRef.current = true;
             // 비동기로 세션 갱신 실행
             setTimeout(() => triggerSessionRefresh(), 100);
@@ -713,6 +740,8 @@ export default function App() {
         startedAt: Date.now(),
         currentContextTokens: 0,
       });
+      // 자동 갱신 baseline 도 리셋 — 새 대화는 0 부터 카운트
+      refreshBaselineRef.current = 0;
     } catch (err) {
       console.error("[App] 대화 생성 실패:", err);
       pushSystem("대화 생성에 실패했습니다.", "error");
@@ -725,6 +754,8 @@ export default function App() {
 
     setActiveConversationId(id);
     activeConversationIdRef.current = id;
+    // 대화 전환 시 baseline 리셋 — 다른 대화는 별개의 누적 컨텍스트
+    refreshBaselineRef.current = 0;
 
     // DB에서 메시지와 메트릭 로드
     try {
@@ -787,6 +818,7 @@ export default function App() {
         setActiveConversationId(null);
         activeConversationIdRef.current = null;
         setMessages([]);
+        refreshBaselineRef.current = 0;
       }
     } catch (err) {
       console.error("[App] 대화 삭제 실패:", err);
@@ -868,6 +900,10 @@ export default function App() {
         startedAt: Date.now(),
         currentContextTokens: 0,
       });
+
+      // 3.5 임계치 baseline 갱신 — 현재 messages 추정값을 기준으로 잡아서
+      // 다음 갱신은 "여기서부터 80% 더 누적" 했을 때 발생.
+      refreshBaselineRef.current = estimateConvTokens(messagesRef.current);
 
       // 4. 세션 갱신 완료 토스트 표시
       setSessionRefreshToast(true);
@@ -961,6 +997,8 @@ export default function App() {
         startedAt: Date.now(),
         currentContextTokens: 0,
       });
+      // 압축으로 새 대화로 옮겨갔으니 baseline 리셋
+      refreshBaselineRef.current = 0;
 
       pushSystem(
         `✅ 대화 압축 완료! 새 세션 "${currentConv.title} (continued)"에서 이어갑니다.`,
