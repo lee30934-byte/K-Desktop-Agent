@@ -94,11 +94,46 @@ if (-not (Test-Path $releaseExe)) {
 $size = [math]::Round((Get-Item $releaseExe).Length / 1MB, 1)
 Write-Host "Binary: $releaseExe ($size MB)" -ForegroundColor Gray
 
-# 5. Optional launch
+# 5. Sync to install dir if K is running the installed version
+#    (Tauri single-instance plugin rejects the dev release exe when the install version is alive,
+#     so just re-launching the dev exe doesn't update K's actual workflow. We instead copy the
+#     freshly built sidecar/dist + hooks into the install dir so the next sidecar respawn picks them up.)
+$installSidecar = Join-Path $env:LOCALAPPDATA 'K Desktop Agent\_up_\sidecar'
+$installExe = Join-Path $env:LOCALAPPDATA 'K Desktop Agent\k-desktop-agent.exe'
+$installDistFile = Join-Path $installSidecar 'dist\index.js'
+if (Test-Path $installDistFile) {
+    Write-Step "Sync sidecar to install dir (K's actual runtime)"
+    $installRunning = Get-Process -Name 'k-desktop-agent' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $installExe }
+    if ($installRunning) {
+        Write-Host "  install version running — sidecar respawn picks up new files on next message" -ForegroundColor DarkGray
+    }
+
+    # Backup current dist with timestamp suffix
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    Copy-Item $installDistFile "$installDistFile.before-$stamp" -Force
+    Write-Host "  backup: dist\index.js.before-$stamp" -ForegroundColor DarkGray
+
+    # Sync dist
+    Copy-Item "$projectRoot\sidecar\dist\index.js" $installDistFile -Force
+    $newSize = [int](Get-Item $installDistFile).Length
+    Write-Host "  synced: dist\index.js ($newSize bytes)" -ForegroundColor DarkGray
+
+    # Sync hooks (whole folder mirror)
+    $installHooks = Join-Path $installSidecar 'hooks'
+    New-Item -ItemType Directory -Force -Path $installHooks | Out-Null
+    Get-ChildItem "$projectRoot\sidecar\hooks\*.mjs" -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item $_.FullName $installHooks -Force
+    }
+    $hookCount = (Get-ChildItem "$installHooks\*.mjs" -ErrorAction SilentlyContinue).Count
+    Write-Host "  synced: hooks\ ($hookCount .mjs files)" -ForegroundColor DarkGray
+}
+
+# 6. Optional launch
 if ($Launch) {
     Write-Step "Launch new binary"
     Start-Process -FilePath $releaseExe -WorkingDirectory $projectRoot
-    Write-Host "Launched" -ForegroundColor Green
+    Write-Host "Launched (note: if install version is running, single-instance plugin focuses it instead)" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "Tip: re-run with -Launch to start immediately, or use the desktop shortcut." -ForegroundColor Gray
