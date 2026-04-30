@@ -238,12 +238,27 @@ type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter";
 type PermLevel = "auto" | "ask" | "manual";
 type PermissionsMap = Partial<Record<string, PermLevel>>;
 
+// 대화 히스토리 항목 — Resume 시 tool 메시지까지 같이 실어 보내려고 union 으로 확장.
+type HistoryItem =
+  | { role: "user" | "assistant"; content: string }
+  | {
+      role: "tool";
+      toolName: string;
+      toolInput?: unknown;
+      toolOutput?: string;
+    };
+
 type UserMessage = {
   type: "user_message";
   id: string;
   content: string;
   agent_id?: string;  // resume 지원용 (기존 대화 이어가기)
-  history?: Array<{ role: "user" | "assistant"; content: string }>;
+  // history 항목:
+  //   user/assistant: { role, content } — 일반 대화 메시지
+  //   tool: { role: "tool", toolName, toolInput?, toolOutput? } — 도구 호출/결과 (Resume 시 포함)
+  // tool 항목은 buildPromptWithHistory 에서 [Tool] 라벨로 prior_conversation 에 임베드돼
+  // 모델이 "이미 어떤 도구를 어떤 결과로 호출했는지" 인지 → 같은 도구 중복 호출 방지.
+  history?: Array<HistoryItem>;
   // API 키 (설정에서 입력한 값)
   // - provider === "claude" → Max 구독 OAuth 사용, api_key 무시
   // - 그 외 → REST API 직접 호출에 사용 (필수)
@@ -490,14 +505,43 @@ const SYSTEM_PROMPT_REST = `당신은 K님의 개인 비서입니다. 한국어�
 - 시스템 자동화가 필요하면 K님께 "Claude (Max 구독) 모드로 전환" 을 안내하세요.
 - 코드/명령어를 제외한 모든 답변은 한국어로 작성합니다.`;
 
+// tool 호출 결과를 텍스트로 압축 — base64 폭탄 / 거대 파일 출력 방어.
+// toolInput 은 JSON 으로 직렬화하되 800자, toolOutput 은 1500자에서 절단.
+// (toolOutput 에 base64 이미지가 통째로 들어있으면 1500자만으로도 충분히 "찍었다" 는 의미 전달)
+function summarizeToolItem(item: Extract<HistoryItem, { role: "tool" }>): string {
+  const inputStr = (() => {
+    if (item.toolInput == null) return "";
+    try {
+      const s = typeof item.toolInput === "string"
+        ? item.toolInput
+        : JSON.stringify(item.toolInput);
+      return s.length > 800 ? s.slice(0, 800) + "…(truncated)" : s;
+    } catch {
+      return "[unserializable]";
+    }
+  })();
+  const outputStr = (() => {
+    if (!item.toolOutput) return "(no output / interrupted)";
+    return item.toolOutput.length > 1500
+      ? item.toolOutput.slice(0, 1500) + "…(truncated)"
+      : item.toolOutput;
+  })();
+  const head = `[Tool] ${item.toolName}${inputStr ? `(${inputStr})` : ""}`;
+  return `${head}\n→ ${outputStr}`;
+}
+
 function buildPromptWithHistory(
   content: string,
-  history?: Array<{ role: "user" | "assistant"; content: string }>
+  history?: Array<HistoryItem>
 ): string {
   if (!history || history.length === 0) return content;
 
   const lines: string[] = ["<prior_conversation>"];
   for (const m of history) {
+    if (m.role === "tool") {
+      lines.push(summarizeToolItem(m));
+      continue;
+    }
     const label = m.role === "user" ? "User" : "Assistant";
     // 너무 긴 assistant 메시지는 2000자에서 절단 (컨텍스트 보호)
     const text = m.content.length > 2000 ? m.content.slice(0, 2000) + "…(truncated)" : m.content;
@@ -917,8 +961,27 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   const model = (msg.model && msg.model.trim()) || defaultModelFor(provider);
   const history = msg.history ?? [];
 
+  // tool 메시지는 REST API 가 지원 안 하므로 텍스트로 평탄화 후 user 메시지에 합쳐 넣음.
+  // (Resume 시 prior tool 호출 정보를 모델이 인지하도록 — Claude CLI 경로와 동등성 유지)
+  // role: "user"|"assistant" 만 그대로, "tool" 은 직전 메시지에 보조 텍스트로 흡수.
+  const flattened: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const m of history) {
+    if (m.role === "tool") {
+      const summary = summarizeToolItem(m);
+      // 직전이 assistant 면 거기에 붙이고, 아니면 새 assistant 항목으로 추가.
+      const last = flattened[flattened.length - 1];
+      if (last && last.role === "assistant") {
+        last.content = `${last.content}\n\n${summary}`;
+      } else {
+        flattened.push({ role: "assistant", content: summary });
+      }
+    } else {
+      flattened.push({ role: m.role, content: m.content });
+    }
+  }
+
   // OpenAI 호환 messages 배열 (openai/openrouter/anthropic 공통 베이스)
-  const oaiMessages = history
+  const oaiMessages = flattened
     .filter((m) => m.content && m.content.trim())
     .map((m) => ({ role: m.role, content: m.content }));
   oaiMessages.push({ role: "user", content: msg.content });
@@ -980,7 +1043,8 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     case "gemini": {
       endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
       headers = { "content-type": "application/json" };
-      const contents = history
+      // flattened (tool 메시지를 assistant 텍스트로 흡수한 결과) 를 Gemini 형식으로 변환.
+      const contents = flattened
         .filter((m) => m.content && m.content.trim())
         .map((m) => ({
           role: m.role === "assistant" ? "model" : "user",

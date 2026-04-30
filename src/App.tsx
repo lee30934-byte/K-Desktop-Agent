@@ -78,10 +78,13 @@ export default function App() {
   const isRefreshingSessionRef = useRef(false);
   const [isCompressing, setIsCompressing] = useState(false);
 
-  // ─── 중단된 턴 이어받기 ────────────────────────────────
+  // ─── 중단된 턴 같은 질문 재시도 ────────────────────────────────
   // 마지막 메시지가 user 인데 assistant 응답이 없으면 release rebuild / 강제 종료로
-  // 턴이 끊긴 것으로 간주. 사용자가 [이어서 받기] 클릭하면 같은 user 텍스트로 재요청.
+  // 턴이 끊긴 것으로 간주. 사용자가 [같은 질문 재시도] 클릭하면 같은 user 텍스트로 재요청.
   // (API 비용은 1턴 다시 듦 — 대신 K 가 같은 질문 재타이핑할 필요 없음)
+  // 단, 현재는 끊긴 턴의 partial 응답/도구 호출 정보가 prior_conversation 에 합류해서
+  // 모델이 "어디까지 했는지" 인지하므로 같은 도구 중복 호출은 줄어들지만,
+  // SDK 내부의 실제 turn 상태를 이어받는 것은 아니다 (그건 Step 3 영역).
   const [pendingResume, setPendingResume] = useState<{
     convId: string;
     userMessage: ChatMessage;
@@ -265,6 +268,10 @@ export default function App() {
       }
 
       case "assistant_delta": {
+        // partial assistant 텍스트를 DB 에 incrementally 저장 — 강제 종료/재기동 시
+        // 끊긴 시점까지의 응답이 휘발하지 않도록. queueMessageSave 가 300ms 디바운스라
+        // 매 chunk 마다 DB write 부담은 없음 (같은 id 로 upsert).
+        let savedMsg: ChatMessage | null = null;
         setMessages((prev) => {
           const existingIdx = prev.findIndex(
             (m) => m.id === ev.id && m.role === "assistant"
@@ -273,42 +280,45 @@ export default function App() {
             const next = [...prev];
             const msg = next[existingIdx];
             if (msg.role === "assistant") {
-              next[existingIdx] = {
+              const updated = {
                 ...msg,
                 content: ev.text,
                 streaming: true,
               };
+              next[existingIdx] = updated;
+              savedMsg = updated;
             }
             return next;
           }
-          return [
-            ...prev,
-            {
-              id: ev.id,
-              role: "assistant",
-              content: ev.text,
-              timestamp: Date.now(),
-              streaming: true,
-            },
-          ];
+          const created: ChatMessage = {
+            id: ev.id,
+            role: "assistant",
+            content: ev.text,
+            timestamp: Date.now(),
+            streaming: true,
+          };
+          savedMsg = created;
+          return [...prev, created];
         });
+        if (savedMsg) queueMessageSave(savedMsg);
         break;
       }
 
       case "tool_use": {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `${ev.id}-tool-${ev.tool_id}`,
-            role: "tool",
-            toolId: ev.tool_id,
-            toolName: ev.name,
-            toolInput: ev.input,
-            content: "",
-            status: "pending",
-            timestamp: Date.now(),
-          },
-        ]);
+        // 도구 호출 시점에도 즉시 DB 저장 — 도중에 끊겨도 "어떤 도구를 호출했는지" 가
+        // history 에 남도록 (Resume 시 재호출 방지).
+        const toolMsg: ChatMessage = {
+          id: `${ev.id}-tool-${ev.tool_id}`,
+          role: "tool",
+          toolId: ev.tool_id,
+          toolName: ev.name,
+          toolInput: ev.input,
+          content: "",
+          status: "pending",
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, toolMsg]);
+        queueMessageSave(toolMsg);
         setMetrics((m) => {
           const updated = { ...m, toolCallCount: m.toolCallCount + 1 };
           // DB에도 저장
@@ -327,18 +337,24 @@ export default function App() {
       }
 
       case "tool_result": {
+        // 도구 결과를 즉시 DB 저장 — 끊겨도 "이미 받은 결과" 가 history 에 실려
+        // Resume 시 모델이 같은 도구 다시 호출 안 하고 이어서 답변 생성.
+        let updatedToolMsg: ChatMessage | null = null;
         setMessages((prev) =>
           prev.map((m) => {
             if (m.role === "tool" && m.id === `${ev.id}-tool-${ev.tool_id}`) {
-              return {
+              const next: ChatMessage = {
                 ...m,
                 toolOutput: ev.output,
                 status: "success" as const,
               };
+              updatedToolMsg = next;
+              return next;
             }
             return m;
           })
         );
+        if (updatedToolMsg) queueMessageSave(updatedToolMsg);
         break;
       }
 
@@ -869,10 +885,12 @@ export default function App() {
     }
   });
 
-  // ─── 중단된 턴 이어받기 ─────────────────────────────────
+  // ─── 중단된 턴 같은 질문 재시도 ─────────────────────────────────
   // pendingResume.userMessage 텍스트를 그대로 재전송. user 메시지는 이미 DB/UI 에 있으니
   // 새로 추가하지 않고, history 에서도 마지막 user 만 제외하고 보낸다 (sidecar 가 current_message
   // 로 따로 받기 때문). agentId 는 마지막 완료된 턴의 것 (--resume) 또는 null (신규).
+  // 끊겼던 턴의 partial assistant text + tool 호출은 streaming 중 incrementally DB 에 저장돼 있어
+  // history 에 같이 실리므로 모델이 "이미 한 일" 을 인지한다 (Step 2).
   const handleResumeInterrupted = useStableCallback(async () => {
     if (!pendingResume) return;
     if (isStreaming) return;
@@ -898,16 +916,30 @@ export default function App() {
         if (existingAgentId) agentId = existingAgentId;
       }
 
-      // history — 마지막 user 메시지(=재전송 대상) 빼고 직전 20개. tool 은 제외 (용량).
+      // history — 마지막 user 메시지(=재전송 대상) 빼고 직전 30개. tool 메시지도 포함.
       // 마지막이 userMessage 와 일치하지 않을 수도 있으니 id 로도 확인.
+      // tool 메시지를 같이 보내야 모델이 "끊기 전에 이미 호출한 도구와 결과" 를 인지하고
+      // 같은 도구 중복 호출을 회피한다 (Step 2 핵심).
+      // 단, base64 출력 / 거대 파일 결과로 컨텍스트 폭발하는 걸 막기 위해 sidecar 의
+      // summarizeToolItem 이 toolInput 800자 / toolOutput 1500자로 절단.
       const allMessages = messagesRef.current;
       const trimmed = allMessages[allMessages.length - 1]?.id === userMessage.id
         ? allMessages.slice(0, -1)
         : allMessages;
       const history = trimmed
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .slice(-20)
-        .map((m) => ({ role: m.role, content: m.content }));
+        .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool")
+        .slice(-30)
+        .map((m) => {
+          if (m.role === "tool") {
+            return {
+              role: "tool" as const,
+              toolName: m.toolName,
+              toolInput: m.toolInput,
+              toolOutput: m.toolOutput,
+            };
+          }
+          return { role: m.role, content: m.content };
+        });
 
       // provider / model / API key — handleSendMessage 와 동일 로직
       let provider: string | undefined;
@@ -967,7 +999,7 @@ export default function App() {
         console.warn("[Resume] lockedTools 로드 실패:", e);
       }
 
-      pushSystem("⟳ 중단된 턴 이어받는 중...", "info");
+      pushSystem("↻ 같은 질문 재시도 중... (이전 도구 결과를 컨텍스트에 포함)", "info");
       logger.log(`[Resume] 재전송: turnId=${turnId}, agentId=${agentId ?? "(신규)"}`);
 
       await invoke("send_message", {
@@ -986,7 +1018,7 @@ export default function App() {
     } catch (err) {
       setIsStreaming(false);
       setCurrentTurnId(null);
-      pushSystem(`이어받기 실패: ${String(err)}`, "error");
+      pushSystem(`재시도 실패: ${String(err)}`, "error");
     }
   });
 
@@ -1364,10 +1396,10 @@ export default function App() {
         </div>
       )}
 
-      {/* 중단된 턴 이어받기 배너 — 재기동/강제종료로 assistant 응답 못 받은 user 메시지 감지 시 */}
+      {/* 중단된 턴 같은 질문 재시도 배너 — 재기동/강제종료로 assistant 응답 못 받은 user 메시지 감지 시 */}
       {pendingResume && !isStreaming && (
         <div className="resume-banner" role="alert">
-          <div className="resume-banner-icon">⟳</div>
+          <div className="resume-banner-icon">↻</div>
           <div className="resume-banner-body">
             <div className="resume-banner-title">이전 응답이 중단되었습니다</div>
             <div className="resume-banner-preview">
@@ -1380,9 +1412,9 @@ export default function App() {
             <button
               className="resume-btn-primary"
               onClick={handleResumeInterrupted}
-              title="같은 질문으로 다시 요청합니다 (1턴 토큰 재소모)"
+              title="같은 질문으로 다시 요청합니다. 끊기 전 partial 응답/도구 결과는 컨텍스트에 포함됩니다 (1턴 토큰 재소모)"
             >
-              ▶ 이어서 받기
+              ↻ 같은 질문 재시도
             </button>
             <button
               className="resume-btn-dismiss"
