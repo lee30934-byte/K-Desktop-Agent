@@ -105,21 +105,25 @@ export default function App() {
   const refreshBaselineRef = useRef(0);
 
   // 대화 컨텍스트 크기 추정 — 자동 갱신 임계치 + Context % 표시 공통 지표.
-  // sidecar usage 의 cache_read_input_tokens 는 sub-agent 호출까지 합산되어
-  // 한 턴에 1M~4M 까지 쉽게 부풀어 윈도우 점유율로는 부적절. 대신 messages 배열에서
-  // 단조 증가하는 값을 추정 (4자 ≈ 1 토큰) + baseline 20K (시스템 프롬프트 + MCP 도구 정의).
+  //
+  // 스코프는 sidecar 가 실제로 받는 양과 일치해야 한다:
+  //   handleSendMessage / handleResumeInterrupted 모두
+  //   `messages.filter(role in [user, assistant]).slice(-20)` 만 history 로 보낸다.
+  // 즉 tool 메시지(base64 스크린샷 19MB 누적 등) 와 21번째 이전 메시지는
+  // Claude 의 컨텍스트 윈도우에 들어가지 않으므로 추정에서도 빠져야 한다.
+  //
+  // 과거 버그: 모든 메시지의 toolOutput 까지 합산 → 1705-turn 대화에서 toolOutput 19MB
+  // 누적이 5M 토큰으로 잡혀 화면 % 가 2527% 까지 부풀었음. 이번 수정으로 해결.
+  //
+  // baseline 20K = 시스템 프롬프트 + MCP 42개 도구 JSON 스키마 (실측 15-25K 중앙값).
+  // 4자 ≈ 1 토큰 휴리스틱 — 영어 ±10%, 한글 ±20% 오차이지만 윈도우 점유율 추적용으로 충분.
   function estimateConvTokens(msgs: ChatMessage[]): number {
-    // 실측: 시스템 프롬프트 + MCP 42개 도구 JSON 스키마 ≈ 15-25K. 20K 가 현실적 중앙값.
-    // (이전 50K 은 과도한 보수치 — 신규 대화도 25% 출발이라 임계치 도달이 빨랐음)
     const baseline = 20_000;
-    return msgs.reduce((sum, m) => {
-      const contentLen = m.content?.length ?? 0;
-      // tool 메시지는 toolInput / toolOutput 도 컨텍스트에 들어감
-      const toolInputLen = (m as any).toolInput
-        ? JSON.stringify((m as any).toolInput).length
-        : 0;
-      const toolOutputLen = ((m as any).toolOutput ?? "").length;
-      return sum + Math.ceil((contentLen + toolInputLen + toolOutputLen) / 4);
+    const recent = msgs
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-20);
+    return recent.reduce((sum, m) => {
+      return sum + Math.ceil((m.content?.length ?? 0) / 4);
     }, 0) + baseline;
   }
 
