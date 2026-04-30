@@ -66,9 +66,11 @@ export default function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // ─── Auto Session Continuity ────────────────────────────
-  // Claude Max 기준 약 200K 토큰, 80%에서 갱신 (더 여유있게)
+  // Claude Max 기준 약 200K 토큰. 임계치는 estimateConvTokens(messages) 기반.
+  // 실측 baseline (시스템 프롬프트 + MCP 42개 도구 정의) 은 보통 15-25K 정도라 50K 는 보수적 가드.
+  // 90% 로 완화해 갱신 트리거 시점을 ~110K → ~160K 메시지 콘텐츠 (45% 헤드룸 증가).
   const MAX_CONTEXT_TOKENS = 200000;
-  const CONTEXT_THRESHOLD = 0.8; // 80% (이전: 90%)
+  const CONTEXT_THRESHOLD = 0.9; // 90% (이전: 80%)
   const [sessionSummary, setSessionSummary] = useState<string | null>(null);
   const [sessionRefreshToast, setSessionRefreshToast] = useState(false);
   // dev rebuild 등으로 앱이 순간 종료됐다 복구된 경우를 감지해 표시
@@ -98,7 +100,9 @@ export default function App() {
   // 한 턴에 1M~4M 까지 쉽게 부풀어 윈도우 점유율로는 부적절. 대신 messages 배열에서
   // 단조 증가하는 값을 추정 (4자 ≈ 1 토큰) + baseline 50K (시스템 프롬프트 + MCP 도구 정의).
   function estimateConvTokens(msgs: ChatMessage[]): number {
-    const baseline = 50_000;
+    // 실측: 시스템 프롬프트 + MCP 42개 도구 JSON 스키마 ≈ 15-25K. 20K 가 현실적 중앙값.
+    // (이전 50K 은 과도한 보수치 — 신규 대화도 25% 출발이라 임계치 도달이 빨랐음)
+    const baseline = 20_000;
     return msgs.reduce((sum, m) => {
       const contentLen = m.content?.length ?? 0;
       // tool 메시지는 toolInput / toolOutput 도 컨텍스트에 들어감
