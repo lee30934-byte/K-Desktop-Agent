@@ -1,4 +1,4 @@
-import { useEffect, useState, memo } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import CornerBrackets from "./CornerBrackets";
 import type { SessionMetrics } from "../types";
 
@@ -29,6 +29,12 @@ function MetricsPanel({
   isCompressing = false,
 }: MetricsPanelProps) {
   const [showContextDetails, setShowContextDetails] = useState(false);
+  // 컨텍스트 카드 + 툴팁을 함께 감싸는 컨테이너 ref. 외부 클릭 감지용.
+  // hover 토글에서 클릭 토글로 바꾼 이유: 툴팁이 카드 위로 띄워진 floating 패널이라
+  // 마우스가 카드→툴팁 사이 갭(8px)을 지날 때 mouseLeave 가 발화하면서 닫혀버려
+  // 안의 버튼(세션 초기화 / 대화 압축) 을 클릭할 수 없었음.
+  const contextRef = useRef<HTMLDivElement | null>(null);
+
   // 매초 자체 리렌더 — Session 경과 시간 표시용.
   // 이전엔 App.tsx 의 setTick 으로 전체 트리가 리렌더돼서 메시지 ReactMarkdown 재파싱이
   // 매초 일어났음. 여기로 격리하면 매초 갱신 비용이 footer 한 줄에만 머문다.
@@ -37,6 +43,26 @@ function MetricsPanel({
     const h = window.setInterval(() => setTick((t) => t + 1), 1000);
     return () => window.clearInterval(h);
   }, []);
+
+  // 툴팁 열렸을 때만 외부 클릭 / ESC 감지 — 닫혀있을 땐 리스너 등록 안 해 비용 0.
+  useEffect(() => {
+    if (!showContextDetails) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const root = contextRef.current;
+      if (root && !root.contains(e.target as Node)) {
+        setShowContextDetails(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowContextDetails(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [showContextDetails]);
 
   // 컨텍스트 사용량 — 표시 지표는 messages 배열 기반 추정치 (App 의 estimateConvTokens).
   // sidecar usage 의 cache_read_input_tokens 는 한 턴 안의 모든 내부 model call (sub-agent /
@@ -61,11 +87,21 @@ function MetricsPanel({
         accent="accent"
       />
 
-      {/* 컨텍스트 프로그레스 바 */}
+      {/* 컨텍스트 프로그레스 바 — 클릭하면 상세 툴팁 토글 */}
       <div
+        ref={contextRef}
         className="metric-card context-monitor"
-        onMouseEnter={() => setShowContextDetails(true)}
-        onMouseLeave={() => setShowContextDetails(false)}
+        role="button"
+        tabIndex={0}
+        aria-expanded={showContextDetails}
+        aria-label="컨텍스트 사용량 상세 보기 토글"
+        onClick={() => setShowContextDetails((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setShowContextDetails((v) => !v);
+          }
+        }}
       >
         <div className="eyebrow metric-label">Context</div>
         <div className="context-bar-wrapper">
@@ -83,9 +119,13 @@ function MetricsPanel({
           </span>
         </div>
 
-        {/* 상세 툴팁 */}
+        {/* 상세 툴팁 — 내부 클릭이 카드 onClick 으로 버블링돼 토글이 꺼지는 걸 막는다 */}
         {showContextDetails && (
-          <div className="context-tooltip">
+          <div
+            className="context-tooltip"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
             <div className="context-tooltip-title">컨텍스트 사용량 (추정)</div>
             <div className="context-tooltip-row">
               <span>사용</span>
@@ -122,6 +162,7 @@ function MetricsPanel({
                 onClick={(e) => {
                   e.stopPropagation();
                   onCompressContext();
+                  setShowContextDetails(false);
                 }}
                 disabled={isCompressing}
                 title="대화를 요약하고 새 세션으로 이어서 진행"
@@ -135,6 +176,7 @@ function MetricsPanel({
                 onClick={(e) => {
                   e.stopPropagation();
                   onManualRefresh();
+                  setShowContextDetails(false);
                 }}
                 title="세션 수동 갱신 (대화 초기화)"
               >
