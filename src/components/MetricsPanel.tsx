@@ -7,6 +7,12 @@ interface MetricsPanelProps {
   mcpConnected: boolean;
   currentModel?: string;
   maxContextTokens?: number;
+  /**
+   * 메시지 배열 기반 컨텍스트 추정치 (App 의 estimateConvTokens 결과).
+   * 자동 갱신 트리거와 같은 지표라 표시 % 와 트리거 % 가 일치한다.
+   * 미지정이면 fallback 으로 raw `metrics.currentContextTokens` 를 사용.
+   */
+  estimatedContextTokens?: number;
   onManualRefresh?: () => void;
   onCompressContext?: () => void;
   isCompressing?: boolean;
@@ -17,6 +23,7 @@ function MetricsPanel({
   mcpConnected,
   currentModel = "claude-opus-4.6",
   maxContextTokens = 200000,
+  estimatedContextTokens,
   onManualRefresh,
   onCompressContext,
   isCompressing = false,
@@ -31,13 +38,17 @@ function MetricsPanel({
     return () => window.clearInterval(h);
   }, []);
 
-  // 컨텍스트 사용량 = 마지막 턴에서 모델이 본 전체 토큰 (input + cache_creation + cache_read).
-  // 누적 totalInputTokens 가 아닌 "현재 컨텍스트 윈도우 점유율" — 새 턴마다 갱신됨.
-  // currentContextTokens 가 없으면(첫 메시지 전, 또는 과거 대화 복원 직후) 0 으로 표시.
-  const currentContext = metrics.currentContextTokens ?? 0;
-  const contextUsage = (currentContext / maxContextTokens) * 100;
+  // 컨텍스트 사용량 — 표시 지표는 messages 배열 기반 추정치 (App 의 estimateConvTokens).
+  // sidecar usage 의 cache_read_input_tokens 는 한 턴 안의 모든 내부 model call (sub-agent /
+  // iterative tool 사용) 을 누적 합산해서 1M~4M 까지 부풀어 윈도우 점유율로 부적절했음.
+  // 이제 자동 갱신 트리거와 같은 estimateConvTokens 를 표시에도 사용 → "표시 < 10% 인데
+  // 갑자기 갱신됨" 같은 미스매치 제거.
+  // 툴팁에는 raw 측정치(rawTurnContext) 도 함께 노출해 최근 턴이 실제로 본 합계도 확인 가능.
+  const rawTurnContext = metrics.currentContextTokens ?? 0;
+  const estimatedContext = estimatedContextTokens ?? rawTurnContext;
+  const contextUsage = (estimatedContext / maxContextTokens) * 100;
   const contextColor = contextUsage >= 80 ? "warn" : contextUsage >= 60 ? undefined : "accent";
-  const remainingTokens = Math.max(0, maxContextTokens - currentContext);
+  const remainingTokens = Math.max(0, maxContextTokens - estimatedContext);
 
   return (
     <footer className="metrics">
@@ -75,10 +86,10 @@ function MetricsPanel({
         {/* 상세 툴팁 */}
         {showContextDetails && (
           <div className="context-tooltip">
-            <div className="context-tooltip-title">컨텍스트 사용량</div>
+            <div className="context-tooltip-title">컨텍스트 사용량 (추정)</div>
             <div className="context-tooltip-row">
               <span>사용</span>
-              <span className="mono">{formatTokens(currentContext)}</span>
+              <span className="mono">{formatTokens(estimatedContext)}</span>
             </div>
             <div className="context-tooltip-row">
               <span>최대</span>
@@ -88,6 +99,15 @@ function MetricsPanel({
               <span>남은</span>
               <span className="mono">{formatTokens(remainingTokens)}</span>
             </div>
+            {rawTurnContext > 0 && (
+              <>
+                <div className="context-tooltip-divider" />
+                <div className="context-tooltip-row" title="최근 턴에서 모델이 본 raw 토큰 합 (input + cache_creation + cache_read). 한 턴에 여러 내부 model 호출이 있으면 누적되어 윈도우보다 클 수 있음 — billing 용 지표라 윈도우 점유율과는 다름.">
+                  <span>최근 턴 raw</span>
+                  <span className="mono">{formatTokens(rawTurnContext)}</span>
+                </div>
+              </>
+            )}
             <div className="context-tooltip-divider" />
             <div className="context-tooltip-hint">
               {contextUsage >= 90

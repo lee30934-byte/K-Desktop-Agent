@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
@@ -122,6 +122,15 @@ export default function App() {
       return sum + Math.ceil((contentLen + toolInputLen + toolOutputLen) / 4);
     }, 0) + baseline;
   }
+
+  // 메시지 변경 시에만 재계산 — 현재 대화의 컨텍스트 윈도우 추정 점유량.
+  // MetricsPanel 의 Context % 표시에도 같은 지표를 사용해 자동 갱신 트리거와 일치시킨다.
+  // (raw cache_read 는 sub-agent / iterative tool 호출이 누적 합산되어 한 턴에 1M~4M 까지
+  // 부풀어 윈도우 점유율로 부적절. estimateConvTokens 는 실제 메시지 길이 기반이라 안정적.)
+  const estimatedContextTokens = useMemo(
+    () => estimateConvTokens(messages),
+    [messages]
+  );
 
   // ─── 재기동 감지 (dev rebuild 등) ────────────────────
   // 주기적으로 localStorage 에 heartbeat 를 찍고, 기동 시 마지막 heartbeat 와의 갭을 본다.
@@ -1310,6 +1319,7 @@ export default function App() {
       <MetricsPanel
         metrics={metrics}
         mcpConnected={mcpState.connected}
+        estimatedContextTokens={estimatedContextTokens}
         onManualRefresh={triggerSessionRefresh}
         onCompressContext={handleCompressContext}
         isCompressing={isCompressing}
