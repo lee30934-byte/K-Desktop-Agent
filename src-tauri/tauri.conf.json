@@ -62,7 +62,8 @@
       },
       "nsis": {
         "languages": ["Korean", "English"],
-        "displayLanguageSelector": true
+        "displayLanguageSelector": true,
+        "installerHooks": "installer-hooks.nsh"
       }
     }
   },

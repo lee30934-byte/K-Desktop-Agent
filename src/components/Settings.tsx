@@ -509,10 +509,37 @@ const THEMES: Theme[] = [
   },
 ];
 
+// Phase 16: Settings 탭 분리 — 16개 섹션을 5개 카테고리로 그룹핑
+type SettingsTabId = "ai" | "agent" | "appearance" | "system" | "safety";
+
+const SETTINGS_TABS: { id: SettingsTabId; icon: string; label: string }[] = [
+  { id: "ai", icon: "🤖", label: "AI" },
+  { id: "agent", icon: "🛡️", label: "에이전트" },
+  { id: "appearance", icon: "🎨", label: "외관" },
+  { id: "system", icon: "⚙️", label: "시스템" },
+  { id: "safety", icon: "🆘", label: "안전장치" },
+];
+
+const LS_ACTIVE_SETTINGS_TAB = "kda_active_settings_tab";
+
 export default function Settings({ open, onClose, mcpConnected }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // Phase 16: 활성 탭 (localStorage 영속) — 마지막에 K가 본 탭으로 복귀
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(() => {
+    try {
+      const saved = localStorage.getItem(LS_ACTIVE_SETTINGS_TAB) as SettingsTabId | null;
+      if (saved && SETTINGS_TABS.some((t) => t.id === saved)) return saved;
+    } catch {}
+    return "ai";
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_ACTIVE_SETTINGS_TAB, activeTab);
+    } catch {}
+  }, [activeTab]);
   const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
   const [addingFolder, setAddingFolder] = useState(false);
 
@@ -1239,9 +1266,34 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </button>
         </div>
 
-        <div className="settings-body">
+        {/* Phase 16: 5개 탭 nav — 16 섹션이 5 그룹으로 분리됨 */}
+        <nav className="settings-tabs" role="tablist" aria-label="환경설정 탭">
+          {SETTINGS_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls={`settings-tabpanel-${tab.id}`}
+              className={`settings-tab ${activeTab === tab.id ? "active" : ""}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <span className="settings-tab-icon" aria-hidden="true">
+                {tab.icon}
+              </span>
+              <span className="settings-tab-label">{tab.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div
+          className="settings-body"
+          data-active-tab={activeTab}
+          role="tabpanel"
+          id={`settings-tabpanel-${activeTab}`}
+        >
           {/* UI 테마 섹션 */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="appearance">
             <div className="eyebrow">테마</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -1272,7 +1324,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 말풍선 색상 섹션 */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="appearance">
             <div className="eyebrow">말풍선 색상</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -1370,7 +1422,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 에이전트 권한 섹션 */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="agent">
             <div className="eyebrow">에이전트 권한</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -1511,7 +1563,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="agent">
             <div className="eyebrow">정밀 잠금</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -1690,7 +1742,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* API 키 / 인증 섹션 */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="ai">
             <div className="eyebrow">AI 모델 연동</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -2044,7 +2096,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 현재 활성 모델 표시 */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="ai">
             <div className="eyebrow">활성 모델</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -2066,7 +2118,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 15 — 외부 사용량 페이지 (새 webview 창으로 K-Desktop-Agent 안에서 그대로 보기) */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="ai">
             <div className="eyebrow">사용량 페이지</div>
             <div
               className="settings-row-desc"
@@ -2102,7 +2154,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 자동 업데이트 섹션 */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="system">
             <div className="eyebrow">업데이트</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -2188,7 +2240,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section">
+          <section className="settings-section" data-tab="system">
             <div className="eyebrow">시작</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -2209,7 +2261,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section">
+          <section className="settings-section" data-tab="system">
             <div className="eyebrow">런타임</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -2234,7 +2286,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section">
+          <section className="settings-section" data-tab="system">
             <div className="eyebrow">리소스</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-header">
@@ -2276,7 +2328,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section">
+          <section className="settings-section" data-tab="system">
             <div className="eyebrow">단축키</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -2302,7 +2354,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section">
+          <section className="settings-section" data-tab="system">
             <div className="eyebrow">앱</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -2318,7 +2370,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* ─── 안전장치 (백업/복구) ──────────────────────── */}
-          <section className="settings-section">
+          <section className="settings-section" data-tab="safety">
             <div className="eyebrow">🛡️ 안전장치</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -2394,7 +2446,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section">
+          <section className="settings-section" data-tab="safety">
             <div className="eyebrow">정보</div>
             <div className="settings-meta mono">
               <div>K Desktop Agent v0.4.0</div>

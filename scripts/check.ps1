@@ -91,6 +91,36 @@ Invoke-Step "Sidecar tests (perm-gate + hook + cmdline-limit + context-meter + h
     }
 }
 
+# 4.5 Phase 16 - Settings 5tab split + NSIS shortcut hook install verification
+Invoke-Step "Phase 16 (settings tabs + NSIS shortcut hook)" {
+    # (a) all settings-section in Settings.tsx have data-tab
+    $sectionsAll = (Select-String -Path "src/components/Settings.tsx" -Pattern "settings-section" -SimpleMatch).Count
+    $sectionsTagged = (Select-String -Path "src/components/Settings.tsx" -Pattern "settings-section. data-tab=").Count
+    if ($sectionsAll -ne $sectionsTagged) {
+        throw "Settings sections without data-tab: $($sectionsAll - $sectionsTagged) / $sectionsAll"
+    }
+    Write-Host "  OK Settings.tsx: $sectionsAll sections, all data-tab tagged" -ForegroundColor DarkGray
+
+    # (b) all 5 tab IDs present
+    foreach ($tab in @("ai", "agent", "appearance", "system", "safety")) {
+        $found = Select-String -Path "src/components/Settings.tsx" -Pattern "data-tab=.$tab." -Quiet
+        if (-not $found) { throw "Settings.tsx missing tab: $tab" }
+    }
+    Write-Host "  OK All 5 tab IDs present (ai/agent/appearance/system/safety)" -ForegroundColor DarkGray
+
+    # (c) NSIS hook file + tauri.conf.json registration
+    if (-not (Test-Path "src-tauri/installer-hooks.nsh")) { throw "src-tauri/installer-hooks.nsh missing" }
+    $nshHook = Select-String -Path "src-tauri/installer-hooks.nsh" -Pattern "NSIS_HOOK_PREINSTALL" -SimpleMatch -Quiet
+    if (-not $nshHook) { throw "installer-hooks.nsh missing NSIS_HOOK_PREINSTALL macro" }
+    $nshGuard = Select-String -Path "src-tauri/installer-hooks.nsh" -Pattern "NoShortcutMode" -SimpleMatch -Quiet
+    if (-not $nshGuard) { throw "installer-hooks.nsh missing NoShortcutMode logic" }
+    Write-Host "  OK installer-hooks.nsh has PREINSTALL + NoShortcutMode" -ForegroundColor DarkGray
+
+    $tauriHook = Select-String -Path "src-tauri/tauri.conf.json" -Pattern "installerHooks" -SimpleMatch -Quiet
+    if (-not $tauriHook) { throw "tauri.conf.json missing nsis.installerHooks registration" }
+    Write-Host "  OK tauri.conf.json registers installer-hooks.nsh" -ForegroundColor DarkGray
+}
+
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
 if (-not $SkipDeps) {
     Invoke-Step "npm ls (root, depth=0)" {

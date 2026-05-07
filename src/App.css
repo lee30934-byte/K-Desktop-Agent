@@ -2112,6 +2112,68 @@
   gap: var(--space-sm);
 }
 
+/* Phase 16: 탭 nav — settings 16개 섹션을 5개 카테고리로 분리 */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin: 0 0 var(--space-lg) 0;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+.settings-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-ui-fast);
+}
+
+.settings-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-3);
+}
+
+.settings-tab.active {
+  color: var(--accent);
+  background: var(--accent-glow);
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.settings-tab-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.settings-tab-label {
+  letter-spacing: 0.02em;
+}
+
+/* Phase 16: 활성 탭 외 섹션은 숨김 — data-active-tab + data-tab attribute 매칭 */
+.settings-body[data-active-tab] section[data-tab] {
+  display: none;
+}
+
+.settings-body[data-active-tab="ai"] section[data-tab="ai"],
+.settings-body[data-active-tab="agent"] section[data-tab="agent"],
+.settings-body[data-active-tab="appearance"] section[data-tab="appearance"],
+.settings-body[data-active-tab="system"] section[data-tab="system"],
+.settings-body[data-active-tab="safety"] section[data-tab="safety"] {
+  display: flex;
+}
+
 .settings-row {
   display: flex;
   align-items: center;
