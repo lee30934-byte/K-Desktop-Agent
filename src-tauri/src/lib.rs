@@ -371,26 +371,33 @@ fn project_root() -> Result<PathBuf, String> {
 ///   2. dev project root 폴백 (일부 portable 빌드 포함)
 fn resolve_script_path(name: &str) -> Result<PathBuf, String> {
     let mut tried: Vec<PathBuf> = Vec::new();
-    let mut try_path = |p: PathBuf, tried: &mut Vec<PathBuf>| -> Option<PathBuf> {
+    fn try_path(p: PathBuf, tried: &mut Vec<PathBuf>) -> Option<PathBuf> {
         if p.exists() {
             return Some(p);
         }
         tried.push(p);
         None
-    };
-    // Phase 20 (v0.5.6): Tauri v2 의 bundle.resources 가 install dir 의 어디로 복사되는지
-    // 빌드/플랫폼별로 다름. NSIS 빌드는 install dir 의 `<binary>.exe` 옆 `resources/` 또는
-    // `_up_/` sub-dir 에 두는 경우도 있어 다중 후보로 시도.
+    }
+    // Phase 20 (v0.5.6) / Phase 21 (v0.5.7): Tauri v2 의 bundle.resources (array 형식)
+    // 가 install dir 어디에 정확히 두는지 NSIS/MSI 빌드별로 다름. 다중 후보 시도.
+    //
+    // 가능한 위치 (관찰됨):
+    //   1. <install>/scripts/<name>                              — bundle 이 source 디렉토리 구조 보존
+    //   2. <install>/<name>                                       — bundle 이 source 의 leaf 파일만 복사
+    //   3. <install>/resources/scripts/<name>                     — Tauri 의 resource_dir 내부
+    //   4. <install>/resources/_up_/scripts/<name>                — updater 가 _up_ sub-dir 사용
+    //   5. <install>/_up_/scripts/<name>                          — updater 의 또 다른 layout
+    //   6. <install>/resources/<full-prefix>/scripts/<name>       — source 경로 prefix 보존
     if let Ok(exe) = std::env::current_exe() {
         if let Some(install_dir) = exe.parent() {
-            let candidates = [
+            let candidates = vec![
                 install_dir.join("scripts").join(name),
+                install_dir.join(name),
                 install_dir.join("resources").join("scripts").join(name),
+                install_dir.join("resources").join(name),
                 install_dir.join("resources").join("_up_").join("scripts").join(name),
                 install_dir.join("_up_").join("scripts").join(name),
                 install_dir.join("_up_").join("resources").join("scripts").join(name),
-                // Tauri v2 가 일부 환경에서 'resources/<full-source-prefix>/scripts/...' 패턴 사용
-                install_dir.join("resources").join("scripts").join(name),
             ];
             for c in candidates {
                 if let Some(found) = try_path(c, &mut tried) {
