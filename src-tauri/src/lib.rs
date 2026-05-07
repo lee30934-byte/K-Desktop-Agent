@@ -542,19 +542,26 @@ async fn backup_now(label: Option<String>) -> Result<BackupInfo, String> {
     let script = resolve_script_path("backup.ps1")
         .map_err(|e| format!("backup script 없음: {}", e))?;
     let label_arg = label.unwrap_or_else(|| "settings-ui".to_string());
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script.to_str().unwrap(),
-            "-Label",
-            &label_arg,
-            "-AsJson",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    // Phase 23: Windows 콘솔 창 깜빡임 hide.
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script.to_str().unwrap(),
+        "-Label",
+        &label_arg,
+        "-AsJson",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("backup.ps1 실행 실패: {}", e))?;
@@ -681,10 +688,18 @@ async fn run_install_deps_internal(dry_run: bool) -> Result<String, String> {
     if dry_run {
         args.push("-DryRun".to_string());
     }
-    let output = Command::new("powershell.exe")
-        .args(&args)
+    // Phase 23 (v0.5.9): Windows 콘솔 창 숨김 — Settings 가 열릴 때마다 (DryRun)
+    // PowerShell 깜빡임 UX 함정 해결. CREATE_NO_WINDOW = 0x08000000.
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(&args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("install-deps.ps1 실행 실패: {}", e))?;
@@ -932,17 +947,24 @@ async fn codex_register_mcp(name: Option<String>) -> Result<String, String> {
     let mcp_server = resolve_kpersonal_mcp_server()
         .map_err(|e| format!("K-Personal MCP server.py 없음: {}", e))?;
     let mcp_server_str = mcp_server.to_string_lossy().to_string();
-    let output = Command::new("cmd")
-        .args([
-            "/c",
-            "codex.cmd",
-            "mcp",
-            "add",
-            &mcp_name,
-            "--",
-            "python",
-            &mcp_server_str,
-        ])
+    // Phase 23: Windows 콘솔 창 hide.
+    let mut cmd = Command::new("cmd");
+    cmd.args([
+        "/c",
+        "codex.cmd",
+        "mcp",
+        "add",
+        &mcp_name,
+        "--",
+        "python",
+        &mcp_server_str,
+    ]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("codex mcp add spawn 실패: {}", e))?;
