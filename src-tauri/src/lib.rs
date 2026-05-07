@@ -359,6 +359,78 @@ fn project_root() -> Result<PathBuf, String> {
     Err("can't locate project root".into())
 }
 
+/// Phase 19 (release path resolution): scripts/<name> 의 절대 경로를 release/dev 자동 분기로 해석.
+///
+/// 함정 (v0.5.4): `project_root()` 가 release 환경에서 fail 하면 cwd (= K 가 KDA 자동시작/트레이로
+/// 띄울 때의 `C:\WINDOWS\system32`) 를 root 로 박아 `C:\WINDOWS\system32\scripts\install-deps.ps1`
+/// 같은 잘못된 경로 만들어냄. Tauri release 에선 install dir 의 `scripts/` 가 정답
+/// (bundle.resources 에 의해 install dir 에 자동 복사). dev 에선 project root 의 scripts/.
+///
+/// 우선순위:
+///   1. `current_exe().parent()` 의 scripts 폴더 (release path)
+///   2. dev project root 폴백 (일부 portable 빌드 포함)
+fn resolve_script_path(name: &str) -> Result<PathBuf, String> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(install_dir) = exe.parent() {
+            let p = install_dir.join("scripts").join(name);
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+    }
+    let root = project_root()?;
+    let p = root.join("scripts").join(name);
+    if p.exists() {
+        return Ok(p);
+    }
+    Err(format!(
+        "script 못 찾음: {} (install dir + project root 모두에 없음)",
+        name
+    ))
+}
+
+/// K-Personal MCP server.py 절대 경로 해석. sidecar 의 K_PERSONAL_PATH 와 동일한 우선순위
+/// 패턴 — release 환경에서도 일관되게 동작하도록.
+///
+/// 우선순위:
+///   1. 환경변수 `K_PERSONAL_MCP_PATH` 명시 지정
+///   2. `~/Documents/K-Personal-MCP/server.py` (K 의 평소 위치)
+///   3. `~/K-Personal-MCP/server.py`
+///   4. project_root().parent()/K-Personal-MCP/server.py (dev 환경의 sibling 폴더)
+fn resolve_kpersonal_mcp_server() -> Result<PathBuf, String> {
+    if let Ok(env_path) = std::env::var("K_PERSONAL_MCP_PATH") {
+        let p = PathBuf::from(&env_path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let candidates = [
+            PathBuf::from(&home)
+                .join("Documents")
+                .join("K-Personal-MCP")
+                .join("server.py"),
+            PathBuf::from(&home)
+                .join("K-Personal-MCP")
+                .join("server.py"),
+        ];
+        for c in &candidates {
+            if c.exists() {
+                return Ok(c.clone());
+            }
+        }
+    }
+    if let Ok(root) = project_root() {
+        if let Some(parent) = root.parent() {
+            let p = parent.join("K-Personal-MCP").join("server.py");
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+    }
+    Err("K-Personal MCP server.py 못 찾음 (USERPROFILE/Documents 또는 ~ 또는 dev sibling 모두 없음)".into())
+}
+
 /// UTF-8 BOM (`\u{FEFF}`) 이 있으면 떼어낸 슬라이스 반환.
 /// 도입 배경 (2026-05-06): scripts/backup.ps1 의 PowerShell 5.1 `Set-Content -Encoding UTF8`
 /// 가 latest.txt + manifest.json 첫 3바이트에 BOM (EF BB BF) 을 자동 주입 → `.trim()` 은 BOM 을
@@ -432,11 +504,8 @@ async fn list_backups() -> Result<Vec<BackupInfo>, String> {
 #[tauri::command]
 async fn backup_now(label: Option<String>) -> Result<BackupInfo, String> {
     log_lifecycle("runtime.log", "backup_now invoked");
-    let root = project_root()?;
-    let script = root.join("scripts").join("backup.ps1");
-    if !script.exists() {
-        return Err(format!("backup script 없음: {}", script.display()));
-    }
+    let script = resolve_script_path("backup.ps1")
+        .map_err(|e| format!("backup script 없음: {}", e))?;
     let label_arg = label.unwrap_or_else(|| "settings-ui".to_string());
     let output = Command::new("powershell.exe")
         .args([
@@ -478,11 +547,8 @@ async fn backup_now(label: Option<String>) -> Result<BackupInfo, String> {
 #[tauri::command]
 async fn rollback_now(app: AppHandle) -> Result<(), String> {
     log_lifecycle("shutdown.log", "rollback_now invoked — spawning rollback.ps1 then exiting self");
-    let root = project_root()?;
-    let script = root.join("scripts").join("rollback.ps1");
-    if !script.exists() {
-        return Err(format!("rollback script 없음: {}", script.display()));
-    }
+    let script = resolve_script_path("rollback.ps1")
+        .map_err(|e| format!("rollback script 없음: {}", e))?;
     // detached spawn — 자기 자신이 죽어도 PowerShell 프로세스는 살아남아야 함.
     // Windows 에선 CREATE_NEW_PROCESS_GROUP + CREATE_BREAKAWAY_FROM_JOB 필요할 수 있으나
     // start /B 로 우회.
@@ -567,11 +633,8 @@ async fn run_install_deps_internal(dry_run: bool) -> Result<String, String> {
         "runtime.log",
         &format!("run_install_deps invoked dry_run={}", dry_run),
     );
-    let root = project_root()?;
-    let script = root.join("scripts").join("install-deps.ps1");
-    if !script.exists() {
-        return Err(format!("install-deps script 없음: {}", script.display()));
-    }
+    let script = resolve_script_path("install-deps.ps1")
+        .map_err(|e| format!("install-deps script 없음: {}", e))?;
     let mut args = vec![
         "-NoProfile".to_string(),
         "-ExecutionPolicy".to_string(),
@@ -815,16 +878,11 @@ async fn codex_fetch_usage() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn codex_register_mcp(name: Option<String>) -> Result<String, String> {
     let mcp_name = name.unwrap_or_else(|| "k-personal".to_string());
-    // K-Personal MCP server.py 경로 — 프로젝트 루트의 형제 폴더 K-Personal-MCP 안에 있음.
-    let root = project_root()?;
-    let mcp_server = root
-        .parent()
-        .ok_or("project root has no parent")?
-        .join("K-Personal-MCP")
-        .join("server.py");
-    if !mcp_server.exists() {
-        return Err(format!("K-Personal MCP server.py 없음: {}", mcp_server.display()));
-    }
+    // K-Personal MCP server.py — release/dev 자동 분기 (Phase 19).
+    // 옛 패턴: `project_root().parent()/K-Personal-MCP/server.py` 는 release 환경에서
+    // project_root() 가 cwd (= C:\WINDOWS\system32) 로 fallback 시 잘못된 경로 만들어냄.
+    let mcp_server = resolve_kpersonal_mcp_server()
+        .map_err(|e| format!("K-Personal MCP server.py 없음: {}", e))?;
     let mcp_server_str = mcp_server.to_string_lossy().to_string();
     let output = Command::new("cmd")
         .args([

@@ -206,6 +206,43 @@ Invoke-Step "Phase 18 (python detect + install-deps + first-run wizard)" {
     Write-Host "  OK App.tsx auto-opens Settings on first-run (with seen-guard)" -ForegroundColor DarkGray
 }
 
+# 4.8 Phase 19 - release path resolution: scripts/ + K-Personal MCP path 자동 분기
+Invoke-Step "Phase 19 (release path resolution + bundle resources)" {
+    # (a) lib.rs 의 resolve_script_path / resolve_kpersonal_mcp_server helper
+    foreach ($fn in @("resolve_script_path", "resolve_kpersonal_mcp_server")) {
+        $found = Select-String -Path "src-tauri/src/lib.rs" -Pattern "fn $fn" -SimpleMatch -Quiet
+        if (-not $found) { throw "lib.rs missing fn $fn (Phase 19)" }
+    }
+    Write-Host "  OK lib.rs has Phase 19 path resolver helpers" -ForegroundColor DarkGray
+
+    # (b) 4개 site 모두 helper 사용 (옛 'project_root().join("scripts")' 패턴 잔존 X)
+    $oldPattern = (Select-String -Path "src-tauri/src/lib.rs" -Pattern 'project_root.*scripts' -CaseSensitive | Measure-Object).Count
+    if ($oldPattern -gt 0) {
+        throw "lib.rs still has $oldPattern occurrences of project_root()/scripts/ — should use resolve_script_path helper"
+    }
+    $callerCount = (Select-String -Path "src-tauri/src/lib.rs" -Pattern "resolve_script_path\(" | Measure-Object).Count
+    if ($callerCount -lt 3) { throw "lib.rs has only $callerCount resolve_script_path() callers (expected >=3 for backup/rollback/install-deps)" }
+    Write-Host "  OK lib.rs all script call sites use resolve_script_path ($callerCount callers)" -ForegroundColor DarkGray
+
+    # (c) codex_register_mcp 가 resolve_kpersonal_mcp_server 사용
+    # 옛 caller 패턴 (Phase 19 전): `project root has no parent` 라는 unique error string 사용했음.
+    # 이 문구가 caller 영역에 남아있으면 옛 코드 잔존.
+    $oldKPersonalCaller = Select-String -Path "src-tauri/src/lib.rs" -Pattern '"project root has no parent"' -Quiet
+    if ($oldKPersonalCaller) {
+        throw "lib.rs still has old caller pattern with 'project root has no parent' — should use resolve_kpersonal_mcp_server helper"
+    }
+    $kPersonalCaller = Select-String -Path "src-tauri/src/lib.rs" -Pattern "resolve_kpersonal_mcp_server\(\)" -Quiet
+    if (-not $kPersonalCaller) { throw "lib.rs codex_register_mcp not using resolve_kpersonal_mcp_server" }
+    Write-Host "  OK codex_register_mcp uses resolve_kpersonal_mcp_server" -ForegroundColor DarkGray
+
+    # (d) tauri.conf.json bundle.resources 에 scripts/*.ps1 3종 모두 등록
+    foreach ($script in @("install-deps.ps1", "backup.ps1", "rollback.ps1")) {
+        $found = Select-String -Path "src-tauri/tauri.conf.json" -Pattern "scripts/$script" -SimpleMatch -Quiet
+        if (-not $found) { throw "tauri.conf.json bundle.resources missing scripts/$script" }
+    }
+    Write-Host "  OK tauri.conf.json bundles 3 scripts (install-deps + backup + rollback)" -ForegroundColor DarkGray
+}
+
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
 if (-not $SkipDeps) {
     Invoke-Step "npm ls (root, depth=0)" {
