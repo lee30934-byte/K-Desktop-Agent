@@ -2657,6 +2657,7 @@
 
 .api-provider-tabs {
   display: flex;
+  flex-wrap: wrap;            /* Phase 18 fix: 6개 카드(Claude/Anthropic/OpenAI/Google/OpenRouter/Codex) 가 좁은 폭에선 줄바꿈 — 마지막 Codex 가 잘리던 문제 해결 */
   gap: var(--space-sm);
   padding: var(--space-sm) 0;
   border-bottom: 1px solid var(--border-subtle);
@@ -2677,6 +2678,8 @@
   cursor: pointer;
   transition: var(--transition-ui-fast);
   position: relative;
+  flex: 0 0 auto;             /* 자체 크기 유지 — flex 컨테이너 폭이 모자라도 카드 크기 안 줄어들게 (글자 잘림 방지) */
+  white-space: nowrap;        /* "Claude Max" 같은 라벨이 한 단어로 유지 */
 }
 
 .api-provider-tab:hover {
