@@ -630,6 +630,8 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     after: DepsBefore;
     nextSteps?: string[];
     fatal?: string;
+    // Phase 24 (v0.5.10): winget 없고 도구도 없을 때 missing[] 으로 명확히 알림
+    missing?: string[];
   };
   const [depsResult, setDepsResult] = useState<DepsResult | null>(null);
   const [depsBusy, setDepsBusy] = useState<"idle" | "checking" | "installing">("idle");
@@ -2301,6 +2303,11 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   {depsResult.fatal && (
                     <div className="update-error-section" style={{ marginTop: "0.5rem" }}>
                       <div className="update-status update-error">⚠ {depsResult.fatal}</div>
+                      {depsResult.missing && depsResult.missing.length > 0 && (
+                        <div className="settings-row-desc" style={{ marginTop: "0.3rem" }}>
+                          누락된 도구: {depsResult.missing.join(", ")} — winget 또는 직접 다운로드로 설치 필요
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

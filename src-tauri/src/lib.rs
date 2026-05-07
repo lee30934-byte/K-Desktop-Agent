@@ -706,25 +706,29 @@ async fn run_install_deps_internal(dry_run: bool) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stdout_trimmed = stdout.trim();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // exit code 0/1 모두 valid result (1=partial). 2=fatal (winget 없음).
     let code = output.status.code().unwrap_or(-1);
-    if code == 2 || stdout_trimmed.is_empty() {
-        return Err(format!(
-            "install-deps.ps1 fatal (exit={}) — stderr: {}",
-            code,
-            stderr.trim()
-        ));
+    // Phase 24 (v0.5.10): stdout 에 valid JSON 이 있으면 exit code 무관하게 그대로 반환.
+    // PS 스크립트는 fatal 시에도 (winget 없음 등) JSON 결과를 stdout 에 박으므로 UI 가
+    // missing[] / fatal 필드 보고 의미있는 메시지를 렌더할 수 있음.
+    // exit=2 만 stderr 만 보고 fatal 처리하던 옛 로직은 stdout 이 풍부할 때 손실 큼.
+    if !stdout_trimmed.is_empty() && stdout_trimmed.starts_with('{') {
+        log_lifecycle(
+            "runtime.log",
+            &format!(
+                "install-deps.ps1 done exit={} stdout_len={} stderr_len={}",
+                code,
+                stdout_trimmed.len(),
+                stderr.len()
+            ),
+        );
+        return Ok(stdout_trimmed.to_string());
     }
-    log_lifecycle(
-        "runtime.log",
-        &format!(
-            "install-deps.ps1 done exit={} stdout_len={} stderr_len={}",
-            code,
-            stdout_trimmed.len(),
-            stderr.len()
-        ),
-    );
-    Ok(stdout_trimmed.to_string())
+    // stdout 비어있거나 JSON 아님 → 진짜 fatal. stderr 가 깨졌어도 일단 그대로 보고.
+    Err(format!(
+        "install-deps.ps1 실행 실패 (exit={}, stdout 비어있음) — stderr: {}",
+        code,
+        stderr.trim()
+    ))
 }
 
 #[tauri::command]
