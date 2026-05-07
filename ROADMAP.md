@@ -159,3 +159,87 @@
 - G5 — 메시지별 모델 picker (현재 글로벌 1개, ~0.5일)
 
 **핵심 제약**: ChatGPT Plus 구독 OAuth 의 API 외부 사용은 ToS 위반 → API key 입력이 정공법 (Gemini 도 동일).
+
+---
+
+### ✅ Phase 13 — Headless Automation (UIA + Playwright) — 2026-05-06
+
+**왜 필요한가**:
+K 가 RDP 로 같은 PC 를 쓰는 동안 에이전트가 `cc_*` (pyautogui SendInput) 로 자동화하면
+K님 마우스/키보드/화면을 점유해 충돌. "나는 나대로 너는 너대로" 가 안 됨.
+헤드리스 경로(UIA + Playwright)로 가면 K님 입력 0 점유, 화면 픽셀 캡처 0 → 충돌 없음.
+스냅샷=문서 패턴(accessibility tree 텍스트화) 으로 컨텍스트도 더 효율적이고 좌표 추정도 불필요.
+
+**구현 완료**:
+- K-Personal MCP 신규 모듈 2개:
+  - `modules/uia_control.py` — Windows UI Automation (uiautomation 패키지). 9개 도구
+    (`ui_dump_tree` / `ui_find` / `ui_click_by_name` / `ui_click_by_id` / `ui_set_text` /
+     `ui_get_text` / `ui_focus_control` / `ui_invoke` / `ui_list_windows`).
+    InvokePattern → SelectionItem → Toggle → ExpandCollapse 폴백 체인. ValuePattern.SetValue
+    로 IME 우회 한글 입력. 트리 dump 는 max_depth/max_nodes 로 컨텍스트 보호.
+  - `modules/web_automation.py` — Playwright 헤드리스 chromium. 9개 도구
+    (`web_open` / `web_snapshot` / `web_click` / `web_fill` / `web_get_text` / `web_screenshot` /
+     `web_evaluate` / `web_url` / `web_close`). 브라우저는 K님 화면 안 뜸. accessibility
+    snapshot 텍스트 자동 반환 (스크린샷 대신).
+- `requirements.txt` 에 `uiautomation>=2.0.18`, `playwright>=1.40.0` 추가. 외부 패키지
+  미설치 환경에서도 K-Personal MCP 자체는 살아남는 지연 import 패턴.
+- sidecar `PERM_TOOL_MAP` / `PERM_LABEL` / `DEFAULT_PERMISSIONS` 에 `ui_automation`,
+  `web_automation` 카테고리 신설 (cc_* 와 분리). 둘 다 기본 auto — K 입력 안 점유라 안전.
+- 시스템 프롬프트에 자동화 우선순위 박힘: ① web_*  ② ui_*  ③ cc_* (마지막 수단).
+- Settings UI (`src/components/Settings.tsx`) `TOOL_CATALOG` + `DEFAULT_PERMISSIONS` 에
+  새 카테고리 2개 노출. 카테고리 토글 + 정밀 잠금(개별 도구 체크박스) 모두 지원.
+- 회귀 테스트:
+  - `sidecar/test-perm-gate.mjs` 11/11 (Phase 13 케이스 4개 추가)
+  - `sidecar/test-headless-mcp.mjs` 11/11 (모듈 import + sidecar/Settings 동기화 검증)
+- `scripts/check.ps1` 에 `test-headless-mcp.mjs` 결합. preflight 가 sidecar/MCP/UI 3곳의
+  도구 이름 동기화를 매번 검증 → "한쪽만 바꾸고 다른 쪽 잊는" 패턴 사전 차단.
+
+**브라우저 바이너리 설치** (1회):
+```powershell
+python -m playwright install chromium
+```
+
+### ✅ Phase 15 — Codex CLI + 외부 사용량 페이지 — 2026-05-07
+
+**문제:** K 가 ChatGPT Pro 구독 토큰을 K-Desktop-Agent 에서 사용 + 사용량 페이지를 앱 안에서 진입.
+
+**핵심:**
+- **15.1 외부 사용량 페이지** — 처음엔 Tauri `WebviewWindowBuilder` 새 창으로 `console.anthropic.com/usage`
+  띄웠으나 Google OAuth 가 embedded webview 차단 (2021 정책) → `lib.rs` 의 `open_external_webview` 를
+  `tauri-plugin-opener` 로 교체해서 K 시스템 기본 브라우저로 흘림. URL 도 정정: Anthropic Max 구독자는
+  `claude.ai/settings` (console.anthropic.com 은 API 키 사용자 전용).
+- **15.2~15.4 Codex CLI 통합** — `codex exec --json --skip-git-repo-check` non-interactive spawn,
+  JSONL 이벤트 (`turn.started` / `item.completed` / `turn.completed`) 파싱. `~/.codex/auth.json`
+  OAuth 토큰을 codex CLI 가 관리. Tauri commands: `codex_login` (background spawn, 콘솔 hidden),
+  `codex_login_status`, `codex_register_mcp`. Settings.tsx 의 `API_PROVIDERS` 에 Codex 카드
+  (`noKeyRequired`) + 외부 webview 섹션 + Codex 인증 섹션. Codex 도 MCP 표준 준수 → K-Personal MCP
+  도구 (uia_*, web_*, fm_*, db_*) 그대로 사용 가능.
+- **회귀 테스트** — `sidecar/test-codex-integration.mjs` 41/41 (Phase 15 + 15.5 모두 검증).
+
+### ✅ Phase 15.5 — Rate Limit Dashboard — 2026-05-07
+
+**문제:** "5h 한도 + 주간 한도 사용량 + 각각 reset 까지 남은 시간" K 명시 요구.
+
+**경로 결정 과정 (시행착오 기록):**
+1. 처음엔 SSE `rate_limit_event` 페이로드 사용 시도 → `{status:"allowed", resetsAt, rateLimitType:"five_hour"}`
+   만 박혀 옴 (used% 와 주간 정보 없음).
+2. Claude Code 의 `statusLine` JSON 에 `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}`
+   가 정확히 박힘을 발견 → `~/.kda/statusline.mjs` install + `~/.claude/settings.json` 등록.
+3. 그러나 **K-Desktop-Agent 의 `claude -p` (non-interactive) 에서는 statusLine trigger 안 됨**
+   (interactive REPL 전용). statusLine 은 dormant 로 남김 (K 가 외부 터미널에서 interactive 쓰면 자동 작동).
+4. **최종 path: `npx ccusage@latest` 통합** — `blocks --active --json` (5h block) +
+   `weekly --json` 5분 간격 polling. `~/.claude/projects/` session 파일 파싱이라 statusLine 무관.
+
+**Codex 쪽:**
+- `chatgpt.com/backend-api/codex/usage` GET (Bearer from `~/.codex/auth.json`).
+- 비공식 endpoint — `lib.rs` 의 `codex_fetch_usage` Tauri command (reqwest + rustls-tls), silently fail.
+- 응답 필드: `primary_window` / `secondary_window` 둘 다 `utilization_percent` + `reset_at` 정확히 박힘.
+
+**UI:**
+- `MetricsPanel` 의 `RateLimitCard` — 5h ⏳ + Week ⏳ 카드 (⏳ = 한도 % 아님 명시).
+- Anthropic 은 한도 비공개라 **시간 진행률** (block_start ~ block_end 사이 위치) 을 % bar 로 표시.
+- Codex 는 정확한 한도 % 표시.
+- 토큰 누적 + ⏱ reset countdown + burn rate 위험 시 자동 warn 색.
+- localStorage 영속 (provider 별 분리).
+
+**회귀 테스트:** `sidecar/test-codex-integration.mjs` 41/41.

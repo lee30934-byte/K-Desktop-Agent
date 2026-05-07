@@ -66,8 +66,13 @@ export default function Composer({
           base64: base64.split(",")[1], // data:...;base64, 제거
         };
 
-        // 이미지면 미리보기 URL 생성
-        if (file.type.startsWith("image/")) {
+        // 이미지/비디오/오디오 모두 미리보기 URL 생성
+        // — 비디오는 첫 프레임, 오디오는 미니 플레이어로 렌더링됨
+        if (
+          file.type.startsWith("image/") ||
+          file.type.startsWith("video/") ||
+          file.type.startsWith("audio/")
+        ) {
           attachment.preview = URL.createObjectURL(file);
         }
 
@@ -277,8 +282,28 @@ export default function Composer({
         <div className="file-preview-list">
           {files.map((file) => (
             <div key={file.id} className="file-preview-item">
-              {file.preview ? (
+              {file.preview && file.type.startsWith("image/") ? (
                 <img src={file.preview} alt={file.name} className="file-thumbnail" />
+              ) : file.preview && file.type.startsWith("video/") ? (
+                <video
+                  src={file.preview}
+                  className="file-thumbnail file-thumbnail-video"
+                  muted
+                  preload="metadata"
+                  controls
+                  // 첫 프레임 강제로 보이게 (Chromium 은 #t=0.1 으로 metadata 시점 프레임 표시)
+                  onLoadedMetadata={(e) => {
+                    const v = e.currentTarget;
+                    if (v.currentTime === 0) v.currentTime = 0.1;
+                  }}
+                />
+              ) : file.preview && file.type.startsWith("audio/") ? (
+                <audio
+                  src={file.preview}
+                  className="file-audio-preview"
+                  controls
+                  preload="metadata"
+                />
               ) : (
                 <span className="file-icon">{getFileIcon(file.type)}</span>
               )}
@@ -311,7 +336,7 @@ export default function Composer({
           className="composer-attach-btn"
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled || isStreaming}
-          title="파일 첨부 (이미지, 문서, 압축파일 등)"
+          title="파일 첨부 (이미지, 비디오, 오디오, 문서, 압축파일 등)"
         >
           📎
         </button>
@@ -321,7 +346,7 @@ export default function Composer({
           multiple
           onChange={handleFileSelect}
           style={{ display: "none" }}
-          accept="image/*,application/pdf,.doc,.docx,.txt,.md,.json,.xml,.csv,.zip,.rar,.7z,.tar,.gz,.js,.ts,.py,.java,.c,.cpp,.html,.css"
+          accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.txt,.md,.json,.xml,.csv,.zip,.rar,.7z,.tar,.gz,.js,.ts,.py,.java,.c,.cpp,.html,.css"
         />
 
         <div className="composer-prefix mono">{">"}</div>

@@ -16,6 +16,8 @@ import type {
   FileAttachment,
   ElicitationRequest,
   ElicitationResponse,
+  RateLimitInfo,
+  RateLimitWindow,
 } from "./types";
 import ElicitationDialog from "./components/ElicitationDialog";
 import CommandPalette from "./components/CommandPalette";
@@ -39,6 +41,90 @@ import {
 import "./App.css";
 import logger from "./utils/logger";
 import { useStableCallback } from "./utils/useStableCallback";
+
+// ─── Rate Limit Normalization (Phase 15.5) ────────────────────────────────
+//
+// provider 별 raw payload → 표준 RateLimitInfo 로 변환.
+// 첫 빌드 후 sidecar.log 에서 실제 필드명 확인되면 매핑 정밀화 가능 — 지금은
+// 가능한 패턴들을 다 시도하는 defensive parser.
+function readWindow(obj: any): RateLimitWindow | undefined {
+  if (!obj || typeof obj !== "object") return undefined;
+  // Claude Code statusLine: used_percentage + resets_at (ISO string)
+  // OpenAI Codex backend-api/codex/usage: utilization_percent + reset_at (epoch sec)
+  // Anthropic Claude Code SSE rate_limit_event: resetsAt (epoch sec) — used% 없음
+  const usedRaw =
+    obj.used_percentage ??
+    obj.used_pct ??
+    obj.utilization_percent ??
+    obj.utilization ??
+    obj.percent_used ??
+    (typeof obj.remaining === "number" && typeof obj.limit === "number"
+      ? ((obj.limit - obj.remaining) / obj.limit) * 100
+      : undefined);
+  const resetRaw =
+    obj.resets_at ??
+    obj.reset_at ??
+    obj.resetsAt ??
+    obj.reset_time ??
+    (typeof obj.resets_in_seconds === "number" ? Date.now() + obj.resets_in_seconds * 1000 : undefined) ??
+    (typeof obj.next_reset === "number" ? obj.next_reset : undefined);
+  const used = typeof usedRaw === "number" ? usedRaw : undefined;
+  // resetRaw 가 ISO string 이면 Date.parse, 작은 epoch(sec) 이면 *1000
+  let reset: number | undefined;
+  if (typeof resetRaw === "number") {
+    reset = resetRaw < 1e12 ? resetRaw * 1000 : resetRaw;
+  } else if (typeof resetRaw === "string") {
+    const parsed = Date.parse(resetRaw);
+    if (!Number.isNaN(parsed)) reset = parsed;
+  }
+  if (used === undefined && reset === undefined && obj.used_tokens === undefined) return undefined;
+
+  // 시간 진행률 (Phase 15.5 🅑) — block_start ~ block_end / weekly 의 week_start ~ +7d 사이 현재 위치.
+  // ccusage path 에서 used_pct 못 받을 때 UI 의 진행률 bar 로 사용. "한도 %" 가 아니라 "시간 %".
+  let timePct: number | undefined;
+  const blockStartRaw = obj.block_start ?? obj.week_start;
+  const blockEndRaw = obj.block_end ?? (obj.week_start ? new Date(new Date(obj.week_start).getTime() + 7 * 24 * 3600 * 1000).toISOString() : undefined);
+  if (blockStartRaw && blockEndRaw) {
+    const startMs = typeof blockStartRaw === "string" ? Date.parse(blockStartRaw) : blockStartRaw;
+    const endMs = typeof blockEndRaw === "string" ? Date.parse(blockEndRaw) : blockEndRaw;
+    if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs) {
+      const now = Date.now();
+      const pct = ((now - startMs) / (endMs - startMs)) * 100;
+      timePct = Math.max(0, Math.min(100, pct));
+    }
+  }
+
+  return {
+    used_pct: used !== undefined ? Math.max(0, Math.min(100, used)) : undefined,
+    reset_at: reset ?? 0,
+    used_tokens: obj.used_tokens ?? obj.used,
+    limit_tokens: obj.limit_tokens ?? obj.limit,
+    time_pct: timePct,
+    burn_rate_per_min: obj.burn_rate,
+    projection_remaining_min: obj.projection_remaining_min,
+  };
+}
+
+function normalizeRateLimit(
+  provider: "anthropic" | "codex",
+  payload: unknown,
+  receivedAt: number
+): RateLimitInfo | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as any;
+  // 가능한 컨테이너 필드들
+  const primary = readWindow(p.primary ?? p.five_hour ?? p.hourly ?? p["5h"]) ??
+    // rate_limits 배열인 경우
+    (Array.isArray(p.rate_limits)
+      ? readWindow(p.rate_limits.find((r: any) => /5|hour|primary/i.test(r?.type ?? r?.window ?? "")))
+      : undefined);
+  const secondary = readWindow(p.secondary ?? p.weekly ?? p.seven_day ?? p["7d"]) ??
+    (Array.isArray(p.rate_limits)
+      ? readWindow(p.rate_limits.find((r: any) => /week|7d|secondary/i.test(r?.type ?? r?.window ?? "")))
+      : undefined);
+  if (!primary && !secondary) return null;
+  return { provider, primary, secondary, receivedAt, rawPayload: payload };
+}
 
 export default function App() {
   // ─── 상태 ───────────────────────────────────────────
@@ -65,11 +151,29 @@ export default function App() {
   const elicitationResolveRef = useRef<((response: ElicitationResponse) => void) | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
+  // ─── Phase 15.5 — Rate Limit Info ────────────────────────
+  // Anthropic / Codex 의 5h primary + 7d secondary 한도. provider 별로 별도 state.
+  // localStorage 영속 — 앱 재시작 후에도 마지막 본 값 유지.
+  const [rateLimitAnthropic, setRateLimitAnthropic] = useState<RateLimitInfo | null>(() => {
+    try {
+      const raw = localStorage.getItem("kda_rate_limit_anthropic");
+      return raw ? (JSON.parse(raw) as RateLimitInfo) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [rateLimitCodex, setRateLimitCodex] = useState<RateLimitInfo | null>(() => {
+    try {
+      const raw = localStorage.getItem("kda_rate_limit_codex");
+      return raw ? (JSON.parse(raw) as RateLimitInfo) : null;
+    } catch {
+      return null;
+    }
+  });
+
   // ─── Auto Session Continuity ────────────────────────────
-  // Claude Max 기준 약 200K 토큰. 임계치는 estimateConvTokens(messages) 기반.
-  // 실측 baseline (시스템 프롬프트 + MCP 42개 도구 정의) 은 보통 15-25K 정도라 50K 는 보수적 가드.
-  // 90% 로 완화해 갱신 트리거 시점을 ~110K → ~160K 메시지 콘텐츠 (45% 헤드룸 증가).
-  const MAX_CONTEXT_TOKENS = 200000;
+  // 분모는 모델별 동적 (currentModelMaxTokens — Claude default = 1M, 그 외 = 200K). 90% 트리거.
+  // (이전엔 200K 고정이었으나 Phase 12 — Context Meter v2 로 모델별 분리.)
   const CONTEXT_THRESHOLD = 0.9; // 90% (이전: 80%)
   const [sessionSummary, setSessionSummary] = useState<string | null>(null);
   const [sessionRefreshToast, setSessionRefreshToast] = useState(false);
@@ -138,6 +242,88 @@ export default function App() {
     () => estimateConvTokens(messages),
     [messages]
   );
+
+  // ─── 활성 provider/model 추적 (MetricsPanel 표시 + Settings 변경 즉시 반영) ───
+  // localStorage 의 kda_active_provider / kda_active_model 가 진실 소스. Settings 가 저장하면
+  // 같은 탭에서는 storage 이벤트가 안 오므로, App 안에서도 'kda-active-changed' custom 이벤트로
+  // 알려주는 패턴 + 'storage' 이벤트(다른 탭/창 변경) 양쪽 모두 듣는다.
+  const [activeProvider, setActiveProvider] = useState<string>(
+    () => localStorage.getItem("kda_active_provider") || "claude"
+  );
+  const [activeModelId, setActiveModelId] = useState<string>(
+    () => localStorage.getItem("kda_active_model") || "default"
+  );
+  useEffect(() => {
+    function refreshActive() {
+      setActiveProvider(localStorage.getItem("kda_active_provider") || "claude");
+      setActiveModelId(localStorage.getItem("kda_active_model") || "default");
+    }
+    window.addEventListener("storage", refreshActive);
+    window.addEventListener("kda-active-changed", refreshActive);
+    return () => {
+      window.removeEventListener("storage", refreshActive);
+      window.removeEventListener("kda-active-changed", refreshActive);
+    };
+  }, []);
+
+  // provider/model → MetricsPanel 에 표시할 짧은 라벨.
+  // claude(Max) 의 model="default" 는 OAuth 가 자동 선택하는 최신 Opus 5.7 / 1M ctx 모델.
+  // 다른 provider/model 은 ID 그대로 (mono 폰트로 가독성 OK).
+  const currentModelLabel = useMemo(() => {
+    if (activeProvider === "claude" && (!activeModelId || activeModelId === "default")) {
+      return "Opus 5.7 · 1M";
+    }
+    return activeModelId || "default";
+  }, [activeProvider, activeModelId]);
+
+  // 모델별 컨텍스트 윈도우 분모 — Context % 표시용.
+  // - Claude Max default(Opus 5.7) : 1M
+  // - Anthropic claude-* : 200K (Sonnet 4.5 등) — sonnet-4-5 도 1M 베타가 있으나 일반은 200K
+  // - 기타 (OpenAI / Gemini / OpenRouter) : 200K 기본 (모델별 정확값은 Phase 13 이후)
+  const currentModelMaxTokens = useMemo(() => {
+    if (activeProvider === "claude" && (!activeModelId || activeModelId === "default")) {
+      return 1_000_000;
+    }
+    // 모델 ID 에 1m / 1M / 1m-context 등 1M 시그널이 들어있으면 1M.
+    const id = (activeModelId || "").toLowerCase();
+    if (id.includes("1m")) return 1_000_000;
+    return 200_000;
+  }, [activeProvider, activeModelId]);
+
+  // ─── Phase 15.5 — Codex usage polling ────────────────────
+  // provider="codex" 일 때만 활성. 기동 직후 1번 + 5분마다.
+  // 비공식 endpoint 라 실패 시 silently swallow + 마지막 성공 값 유지 (localStorage).
+  // Anthropic 은 sidecar 가 매 turn rate_limit_event 로 자동 emit 하므로 polling 불필요.
+  useEffect(() => {
+    if (activeProvider !== "codex") return;
+    let cancelled = false;
+    async function pollCodexUsage() {
+      try {
+        const json = await invoke<unknown>("codex_fetch_usage");
+        if (cancelled) return;
+        const info = normalizeRateLimit("codex", json, Date.now());
+        if (info) {
+          setRateLimitCodex(info);
+          try { localStorage.setItem("kda_rate_limit_codex", JSON.stringify(info)); } catch {}
+          logger.log(
+            `[codex_usage] OK primary=${info.primary?.used_pct?.toFixed(1)}% secondary=${info.secondary?.used_pct?.toFixed(1)}%`
+          );
+        } else {
+          logger.warn("[codex_usage] normalize 실패 — raw:", json);
+        }
+      } catch (e) {
+        // 401 (login 만료) / 네트워크 / 비공식 endpoint 변경 모두 silently
+        logger.warn("[codex_usage] fetch 실패:", e);
+      }
+    }
+    // 즉시 1번 + 5분 interval (300_000ms)
+    pollCodexUsage();
+    const handle = window.setInterval(pollCodexUsage, 300_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [activeProvider]);
 
   // ─── 재기동 감지 (dev rebuild 등) ────────────────────
   // 주기적으로 localStorage 에 heartbeat 를 찍고, 기동 시 마지막 heartbeat 와의 갭을 본다.
@@ -263,6 +449,25 @@ export default function App() {
         });
         if (ev.error) {
           pushSystem(`MCP 설정 문제: ${ev.error}`, "warn");
+        }
+        break;
+      }
+
+      case "rate_limit": {
+        // Phase 15.5 — provider 의 5h primary + 7d secondary 한도.
+        // payload 구조가 provider 마다 달라 normalize 필요. raw 도 보관 (디버깅).
+        const info = normalizeRateLimit(ev.provider, ev.payload, ev.receivedAt);
+        if (info) {
+          if (ev.provider === "anthropic") {
+            setRateLimitAnthropic(info);
+            try { localStorage.setItem("kda_rate_limit_anthropic", JSON.stringify(info)); } catch {}
+          } else if (ev.provider === "codex") {
+            setRateLimitCodex(info);
+            try { localStorage.setItem("kda_rate_limit_codex", JSON.stringify(info)); } catch {}
+          }
+          logger.log(`[rate_limit] ${ev.provider} primary=${info.primary?.used_pct?.toFixed(1)}% secondary=${info.secondary?.used_pct?.toFixed(1)}%`);
+        } else {
+          logger.warn(`[rate_limit] ${ev.provider} normalize 실패 — raw:`, ev.payload);
         }
         break;
       }
@@ -409,8 +614,13 @@ export default function App() {
         const cacheRead = usage?.cache_read_input_tokens ?? 0;
         const turnContextTokens = newInputTokens + cacheCreation + cacheRead;
 
+        // Phase 12 — Context Meter v2: turn 내 message_start 들의 최댓값.
+        // sidecar 가 별도 필드로 전달. result.usage 의 누적 부풀음 회피한 정확한 윈도우 점유율.
+        const maxTurn = ev.maxTurnUsage ?? null;
+        const maxTurnCtxTokens = maxTurn?.total_context_tokens ?? 0;
+
         logger.log(
-          `[Metrics] Turn IN: ${newInputTokens} (+cc:${cacheCreation} +cr:${cacheRead} = ctx:${turnContextTokens}), OUT: ${newOutputTokens}`
+          `[Metrics] Turn IN: ${newInputTokens} (+cc:${cacheCreation} +cr:${cacheRead} = ctx:${turnContextTokens}), OUT: ${newOutputTokens}, displayCtx: ${maxTurnCtxTokens || "(none)"}`
         );
 
         setMetrics((m) => {
@@ -421,6 +631,9 @@ export default function App() {
             totalOutputTokens: m.totalOutputTokens + newOutputTokens,
             // 마지막 턴 컨텍스트 점유량 (누적 아님, 그 턴 한 번)
             currentContextTokens: turnContextTokens > 0 ? turnContextTokens : m.currentContextTokens,
+            // Phase 12 — turn 내 max(input + cc + cr). 이 값이 있으면 표시 % 의 우선 소스.
+            // 0 인 turn (REST 경로 / sub-agent 없음 등) 에는 그대로 둬서 직전 값 유지.
+            maxTurnContextTokens: maxTurnCtxTokens > 0 ? maxTurnCtxTokens : m.maxTurnContextTokens,
           };
 
           // DB에 메트릭 저장 (비동기)
@@ -434,14 +647,38 @@ export default function App() {
             }).catch((err) => console.error("[App] 메트릭 저장 실패:", err));
           }
 
-          // 임계치 체크 — display 지표(currentContextTokens)는 sub-agent 호출 합산되어
-          // 한 턴에 1M~4M 까지 부풀어 윈도우 점유율로 부적절. 대신 messages 추정 - baseline
-          // 으로 "마지막 갱신 이후 누적된 실제 대화 크기" 를 본다.
+          // 2026-05-06: 대화 재진입 시 첫 query 전에 컨텍스트 % 를 정확히 표시하기 위해
+          // 마지막 maxTurnUsage 를 conversation 별로 localStorage 에 영속.
+          // (DB 스키마 변경 회피 — Phase 4 의 conversation 메트릭과 별도로 가벼운 cache)
+          if (convIdForMetrics && maxTurnCtxTokens > 0 && maxTurn) {
+            try {
+              localStorage.setItem(
+                `kda_max_ctx_${convIdForMetrics}`,
+                JSON.stringify({
+                  total: maxTurnCtxTokens,
+                  input: maxTurn.input_tokens ?? 0,
+                  cc: maxTurn.cache_creation_input_tokens ?? 0,
+                  cr: maxTurn.cache_read_input_tokens ?? 0,
+                  ts: Date.now(),
+                }),
+              );
+            } catch {
+              // localStorage 실패 — quota 등. 무시 (다음 turn 에 다시 시도)
+            }
+          }
+
+          // 임계치 체크 — Phase 12 부터는 maxTurnContextTokens (sidecar message_start max)
+          // 가 있으면 정확한 측정치라 그걸 우선 사용. 없으면 estimateConvTokens fallback.
+          // 분모는 모델별 (Claude default = 1M, 그 외 = 200K) 동적 적용.
           const estimated = estimateConvTokens(messagesRef.current);
-          const effective = Math.max(0, estimated - refreshBaselineRef.current);
-          const contextUsage = effective / MAX_CONTEXT_TOKENS;
+          const measured = maxTurnCtxTokens || updatedMetrics.maxTurnContextTokens || 0;
+          const effectiveTokens = measured > 0
+            ? measured
+            : Math.max(0, estimated - refreshBaselineRef.current);
+          const ctxDenominator = currentModelMaxTokens;
+          const contextUsage = effectiveTokens / ctxDenominator;
           if (contextUsage >= CONTEXT_THRESHOLD && !isRefreshingSessionRef.current) {
-            logger.log(`[Session] 추정 컨텍스트 ${(contextUsage * 100).toFixed(1)}% (${effective}/${MAX_CONTEXT_TOKENS}) 도달 - 세션 자동 갱신 시작`);
+            logger.log(`[Session] 컨텍스트 ${(contextUsage * 100).toFixed(1)}% (${effectiveTokens}/${ctxDenominator}, source=${measured > 0 ? "maxTurn" : "estimate"}) 도달 - 세션 자동 갱신 시작`);
             isRefreshingSessionRef.current = true;
             // 비동기로 세션 갱신 실행
             setTimeout(() => triggerSessionRefresh(), 100);
@@ -592,11 +829,23 @@ export default function App() {
         : `📎 첨부: ${fileNames}`;
     }
 
+    // 첨부 파일을 메시지 bubble 에 보존 — Message.tsx 가 미리보기 렌더링.
+    // base64 는 화면 표시 (data URL) 용. preview (URL.createObjectURL) 는 Composer 가
+    // unmount 되면서 revoke 될 수 있어 fallback 으로 base64 를 동시 보유.
+    const messageAttachments = files?.map((f) => ({
+      name: f.name,
+      type: f.type,
+      size: f.size,
+      base64: f.base64,
+      preview: f.preview,
+    }));
+
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
       content: displayContent,
       timestamp: Date.now(),
+      attachments: messageAttachments,
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -823,6 +1072,22 @@ export default function App() {
         logger.log(`[Resume] 미완 턴 감지: ${last.content.slice(0, 40)}...`);
       }
 
+      // 2026-05-06: 마지막 maxTurnUsage 복원 — 대화 재진입 시 첫 query 전부터 정확한 % 표시.
+      // localStorage 에서 conversation 별로 읽음 (done 이벤트에서 저장).
+      let restoredMaxCtx = 0;
+      try {
+        const stored = localStorage.getItem(`kda_max_ctx_${id}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (typeof parsed?.total === "number" && parsed.total > 0) {
+            restoredMaxCtx = parsed.total;
+            logger.log(`[App] maxTurnContext 복원: ${restoredMaxCtx} (대화 ${id.slice(0, 8)})`);
+          }
+        }
+      } catch {
+        // 파싱 실패 — 무시
+      }
+
       // 저장된 메트릭이 있으면 복원, 없으면 메시지 기반으로 추정
       if (savedMetrics && savedMetrics.totalInputTokens > 0) {
         setMetrics({
@@ -833,6 +1098,8 @@ export default function App() {
           startedAt: Date.now(),
           // currentContextTokens 는 다음 턴에서 자연스럽게 갱신됨 (영속 불필요)
           currentContextTokens: 0,
+          // Phase 12 — 마지막 turn 의 maxTurnContextTokens 복원 → 첫 표시부터 정확한 %.
+          maxTurnContextTokens: restoredMaxCtx,
         });
         logger.log(`[App] 메트릭 복원: IN ${savedMetrics.totalInputTokens}, OUT ${savedMetrics.totalOutputTokens}`);
       } else {
@@ -848,6 +1115,7 @@ export default function App() {
           toolCallCount: toolMessages,
           startedAt: Date.now(),
           currentContextTokens: 0,
+          maxTurnContextTokens: restoredMaxCtx,
         });
         logger.log(`[App] 메트릭 추정: ${estimatedTokens} tokens (${msgs.length} messages)`);
       }
@@ -1355,10 +1623,19 @@ export default function App() {
       <MetricsPanel
         metrics={metrics}
         mcpConnected={mcpState.connected}
+        currentModel={currentModelLabel}
+        maxContextTokens={currentModelMaxTokens}
         estimatedContextTokens={estimatedContextTokens}
         onManualRefresh={triggerSessionRefresh}
         onCompressContext={handleCompressContext}
         isCompressing={isCompressing}
+        rateLimit={
+          activeProvider === "codex"
+            ? rateLimitCodex
+            : activeProvider === "claude"
+              ? rateLimitAnthropic
+              : null
+        }
       />
 
       <Settings

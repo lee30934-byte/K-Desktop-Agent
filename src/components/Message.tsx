@@ -140,8 +140,90 @@ function Message({ message }: MessageProps) {
           message.content
         )}
       </div>
+      {message.role === "user" && (message as any).attachments?.length > 0 && (
+        <AttachmentPreviewList attachments={(message as any).attachments} />
+      )}
     </div>
   );
+}
+
+// ─── 사용자 메시지의 첨부 파일 미리보기 ────────────────────────
+// 이미지: 썸네일 (data:base64 또는 preview URL)
+// 비디오/오디오: <video>/<audio> controls 박스
+// 그 외: 파일 아이콘 + 이름 + 크기
+function AttachmentPreviewList({
+  attachments,
+}: {
+  attachments: Array<{ name: string; type: string; size: number; base64?: string; preview?: string }>;
+}) {
+  return (
+    <div className="msg-attachments">
+      {attachments.map((att, idx) => {
+        // 우선 preview (URL.createObjectURL) 사용, 없거나 revoke 됐으면 base64 data URL fallback.
+        const dataUrl = att.preview || (att.base64 ? `data:${att.type};base64,${att.base64}` : null);
+        const isImage = att.type.startsWith("image/");
+        const isVideo = att.type.startsWith("video/");
+        const isAudio = att.type.startsWith("audio/");
+        return (
+          <div key={idx} className="msg-attachment-item">
+            {dataUrl && isImage ? (
+              <img
+                src={dataUrl}
+                alt={att.name}
+                className="msg-attachment-image"
+                onError={(e) => {
+                  // preview 가 revoke 된 경우 base64 fallback
+                  if (att.base64 && !e.currentTarget.dataset.fallback) {
+                    e.currentTarget.dataset.fallback = "1";
+                    e.currentTarget.src = `data:${att.type};base64,${att.base64}`;
+                  }
+                }}
+              />
+            ) : dataUrl && isVideo ? (
+              <video
+                src={dataUrl}
+                className="msg-attachment-video"
+                controls
+                preload="metadata"
+              />
+            ) : dataUrl && isAudio ? (
+              <audio
+                src={dataUrl}
+                className="msg-attachment-audio"
+                controls
+                preload="metadata"
+              />
+            ) : (
+              <span className="msg-attachment-icon">{getAttachmentIcon(att.type)}</span>
+            )}
+            <div className="msg-attachment-info mono">
+              <span className="msg-attachment-name">{att.name}</span>
+              <span className="msg-attachment-size">{formatBytes(att.size)}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function getAttachmentIcon(type: string): string {
+  if (type.startsWith("image/")) return "🖼️";
+  if (type.startsWith("video/")) return "🎬";
+  if (type.startsWith("audio/")) return "🎵";
+  if (type.includes("pdf")) return "📕";
+  if (type.includes("zip") || type.includes("rar") || type.includes("7z") || type.includes("tar")) return "📦";
+  if (type.includes("word") || type.includes("document")) return "📄";
+  if (type.includes("sheet") || type.includes("excel") || type.includes("csv")) return "📊";
+  if (type.includes("json") || type.includes("xml") || type.includes("yaml")) return "📋";
+  if (type.includes("text") || type.includes("javascript") || type.includes("typescript")) return "📝";
+  return "📎";
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function ToolMessageView({ message }: { message: Extract<ChatMessage, { role: "tool" }> }) {

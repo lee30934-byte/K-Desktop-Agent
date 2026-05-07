@@ -60,12 +60,37 @@ const PERM_TOOL_MAP = {
     "mcp__k-personal__db_habit_add", "mcp__k-personal__db_habit_check",
     "mcp__k-personal__db_habit_list",
   ],
+  // Phase 13 — Headless Automation
+  ui_automation: [
+    "mcp__k-personal__ui_dump_tree",
+    "mcp__k-personal__ui_find",
+    "mcp__k-personal__ui_click_by_name",
+    "mcp__k-personal__ui_click_by_id",
+    "mcp__k-personal__ui_set_text",
+    "mcp__k-personal__ui_get_text",
+    "mcp__k-personal__ui_focus_control",
+    "mcp__k-personal__ui_invoke",
+    "mcp__k-personal__ui_list_windows",
+  ],
+  web_automation: [
+    "mcp__k-personal__web_open",
+    "mcp__k-personal__web_snapshot",
+    "mcp__k-personal__web_click",
+    "mcp__k-personal__web_fill",
+    "mcp__k-personal__web_get_text",
+    "mcp__k-personal__web_screenshot",
+    "mcp__k-personal__web_evaluate",
+    "mcp__k-personal__web_url",
+    "mcp__k-personal__web_close",
+  ],
 };
 
+// 사이드카의 DEFAULT_PERMISSIONS 와 1:1 미러. (sidecar/src/index.ts 와 함께 갱신)
 const DEFAULT_PERMISSIONS = {
-  file_read: "auto", file_write: "ask", file_delete: "ask",
-  app_launch: "ask", system_control: "ask", screenshot: "auto",
+  file_read: "auto", file_write: "auto", file_delete: "auto",
+  app_launch: "auto", system_control: "auto", screenshot: "auto",
   web_fetch: "auto", db_access: "auto",
+  ui_automation: "auto", web_automation: "auto",
 };
 
 const HIGH_RISK_BUILTINS = ["Bash", "BashOutput", "KillShell"];
@@ -110,6 +135,7 @@ const allAuto = {
   file_read: "auto", file_write: "auto", file_delete: "auto",
   app_launch: "auto", system_control: "auto", screenshot: "auto",
   web_fetch: "auto", db_access: "auto",
+  ui_automation: "auto", web_automation: "auto",
 };
 
 const cases = [
@@ -188,6 +214,60 @@ const cases = [
     perms: { ...allAuto, file_write: "ask" },
     locked: [],
     expectIncludes: ["Bash", "BashOutput", "KillShell"],
+  },
+  // ─── Phase 13 회귀 테스트 (헤드리스 자동화 카테고리 분리) ───
+  {
+    name: "[8] Phase 13: 모두 auto + 새 카테고리도 auto → ui_/web_ 통과",
+    perms: allAuto,
+    locked: [],
+    expectExcludes: [
+      "mcp__k-personal__ui_dump_tree",
+      "mcp__k-personal__ui_click_by_name",
+      "mcp__k-personal__web_open",
+      "mcp__k-personal__web_snapshot",
+      "mcp__k-personal__web_evaluate",
+    ],
+  },
+  {
+    name: "[9] Phase 13: ui_automation=manual 만 선택적 차단 (web_/cc_ 영향 X)",
+    perms: { ...allAuto, ui_automation: "manual" },
+    locked: [],
+    expectIncludes: [
+      "mcp__k-personal__ui_dump_tree",
+      "mcp__k-personal__ui_click_by_name",
+      "mcp__k-personal__ui_set_text",
+      "mcp__k-personal__ui_invoke",
+    ],
+    expectExcludes: [
+      "mcp__k-personal__web_open",       // web_automation=auto → 통과
+      "mcp__k-personal__cc_screenshot",  // screenshot=auto → 통과
+      "mcp__k-personal__cc_mouse_click", // system_control=auto → 통과
+    ],
+  },
+  {
+    name: "[10] Phase 13: web_automation=manual 만 차단",
+    perms: { ...allAuto, web_automation: "manual" },
+    locked: [],
+    expectIncludes: [
+      "mcp__k-personal__web_open",
+      "mcp__k-personal__web_evaluate",
+      "mcp__k-personal__web_close",
+    ],
+    expectExcludes: [
+      "mcp__k-personal__ui_dump_tree",   // ui_automation=auto
+      "WebFetch",                        // web_fetch=auto
+    ],
+  },
+  {
+    name: "[11] Phase 13: 정밀 잠금 — web_evaluate 만 잠그고 나머지 web_/ui_ 통과",
+    perms: allAuto,
+    locked: ["mcp__k-personal__web_evaluate"],
+    expectIncludes: ["mcp__k-personal__web_evaluate"],
+    expectExcludes: [
+      "mcp__k-personal__web_open",
+      "mcp__k-personal__web_snapshot",
+      "mcp__k-personal__ui_click_by_name",
+    ],
   },
 ];
 

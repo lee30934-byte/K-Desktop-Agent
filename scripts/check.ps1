@@ -4,12 +4,15 @@
   Preflight 검증 — Phase 완료 또는 커밋 전에 전체 빌드/타입 체크.
 
 .DESCRIPTION
-  아래 네 가지를 순서대로 검증합니다. 실패 시 비-제로 종료코드.
+  아래 항목을 순서대로 검증합니다. 실패 시 비-제로 종료코드.
 
   1. Rust   : cargo check --manifest-path src-tauri/Cargo.toml --all-targets
   2. Front  : tsc --noEmit (tsconfig.json)
   3. Sidecar: tsc --noEmit (sidecar/tsconfig.json)
-  4. Deps   : package.json 과 실제 설치 상태 일치 여부 (npm ls)
+  4. Tests  : sidecar/test-perm-gate.mjs, test-hook-overwriteGuard.mjs, test-cmdline-limit.mjs,
+              test-context-meter.mjs, test-headless-mcp.mjs (Phase 13),
+              test-codex-integration.mjs (Phase 15)
+  5. Deps   : package.json 과 실제 설치 상태 일치 여부 (npm ls)
 
 .EXAMPLE
   .\scripts\check.ps1
@@ -68,7 +71,27 @@ Invoke-Step "Sidecar tsc --noEmit" {
     npx --yes tsc --noEmit --project sidecar/tsconfig.json
 }
 
-# 4. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
+# 4. sidecar 회귀 테스트들 — 권한 게이트 / 덮어쓰기 hook / cmdline 길이 한계 / 컨텍스트 미터 / Phase 13.
+#    한 번이라도 실패하면 Phase 완료 / 커밋 / release 빌드 금지.
+Invoke-Step "Sidecar tests (perm-gate + hook + cmdline-limit + context-meter + headless-mcp + codex)" {
+    $testFiles = @(
+        "sidecar/test-perm-gate.mjs",
+        "sidecar/test-hook-overwriteGuard.mjs",
+        "sidecar/test-cmdline-limit.mjs",
+        "sidecar/test-context-meter.mjs",
+        "sidecar/test-headless-mcp.mjs",
+        "sidecar/test-codex-integration.mjs"
+    )
+    foreach ($t in $testFiles) {
+        Write-Host "  • $t" -ForegroundColor DarkGray
+        node $t
+        if ($LASTEXITCODE -ne 0) {
+            throw "test failed: $t (exit $LASTEXITCODE)"
+        }
+    }
+}
+
+# 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
 if (-not $SkipDeps) {
     Invoke-Step "npm ls (root, depth=0)" {
         # npm ls 는 extraneous/missing 이 있으면 exit 1. 우리는 missing 만 문제 삼으므로 경고를 필터링.

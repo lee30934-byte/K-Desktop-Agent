@@ -66,21 +66,26 @@ if ($existing) {
 }
 
 # 3. Sidecar build (TS -> dist/index.js)
+# cmd /c 경유 — PowerShell 5.1 의 native command stderr wrapping 함정 회피.
 Write-Step "Sidecar build (tsc)"
 Push-Location "$projectRoot\sidecar"
 try {
-    npm run build
-    if ($LASTEXITCODE -ne 0) { throw "sidecar build failed" }
+    & cmd.exe /c "npm run build 2>&1"
+    if ($LASTEXITCODE -ne 0) { throw "sidecar build failed (exit $LASTEXITCODE)" }
 } finally {
     Pop-Location
 }
 
 # 4. Tauri release build (no bundle)
+# cmd.exe 경유로 호출 — Tauri/cargo/node 가 stderr 에 정보 메시지를 뿌리는데
+# Windows PowerShell 5.1 은 native command 의 stderr 라인을 NativeCommandError 로 wrap 해서
+# ErrorActionPreference="Stop" 환경에선 정보 메시지 한 줄에 throw 됨. cmd 내부에서 2>&1 로
+# 합치면 stderr 가 PowerShell 까지 안 올라와 함정 회피.
 Write-Step "Tauri release build (no-bundle)"
 $buildStart = Get-Date
-npm run tauri build -- --no-bundle
+& cmd.exe /c "npm run tauri build -- --no-bundle 2>&1"
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Build failed" -ForegroundColor Red
+    Write-Host "Build failed (exit $LASTEXITCODE)" -ForegroundColor Red
     exit 1
 }
 $buildSecs = [int]((Get-Date) - $buildStart).TotalSeconds

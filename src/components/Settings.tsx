@@ -51,6 +51,23 @@ interface Theme {
   background: string;
 }
 
+// 안전장치 — 백업 메타데이터 (Tauri command get_latest_backup / list_backups 의 응답 형식과 동일)
+interface BackupFile {
+  name: string;
+  size: number;
+  sha256: string | null;
+  src: string;
+  missing?: boolean;
+}
+interface BackupInfo {
+  timestamp: string;
+  label: string;
+  createdBy: string;
+  files: BackupFile[];
+  total_size?: number;
+  dir_path?: string;
+}
+
 const API_PROVIDERS: APIProvider[] = [
   {
     id: "claude",
@@ -62,7 +79,7 @@ const API_PROVIDERS: APIProvider[] = [
     noKeyRequired: true,
     note: "Max 구독을 Claude Code CLI 로 인증해 사용 — K-Personal MCP 도구 (스크린샷·마우스·키보드·앱 실행 등) 풀 사용 가능. API 키 불필요. 아래 [claude login] 버튼으로 터미널에서 OAuth 진행.",
     models: [
-      { id: "default", label: "Max 기본 모델 (Opus 4.7 / 1M ctx)" },
+      { id: "default", label: "Max 기본 모델 (Opus 5.7 / 1M ctx)" },
     ],
   },
   {
@@ -126,6 +143,59 @@ const API_PROVIDERS: APIProvider[] = [
       { id: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B" },
       { id: "qwen/qwen-2.5-72b-instruct", label: "Qwen 2.5 72B" },
     ],
+  },
+  {
+    id: "codex",
+    name: "Codex (ChatGPT Plus/Pro OAuth)",
+    icon: "🟢",
+    keyName: "(none)",
+    placeholder: "ChatGPT 구독 OAuth — codex login",
+    docsUrl: "https://developers.openai.com/codex/cli",
+    noKeyRequired: true,
+    note: "OpenAI Codex CLI 를 ChatGPT Plus/Pro 구독 OAuth 로 인증해 사용. K-Personal MCP 도구도 그대로 통합 (codex mcp add 한 번 등록 필요). 아래 [codex login] 버튼으로 시스템 브라우저 OAuth 진행 — 외부 PowerShell 안 거침.",
+    models: [
+      { id: "default", label: "ChatGPT 구독 기본 모델 (GPT-5)" },
+      { id: "gpt-5", label: "GPT-5" },
+      { id: "gpt-4.1", label: "GPT-4.1" },
+      { id: "o3", label: "o3 (추론)" },
+    ],
+  },
+];
+
+// ─── Phase 15 — 외부 webview 사용량 페이지 ────────────────────────
+// K-Desktop-Agent 안에서 새 webview 창으로 열어 인증 cookie 가 영속됨.
+interface ExternalUsagePage {
+  id: string;
+  label: string;          // 창 label — 같은 label 은 새 창 대신 focus
+  title: string;          // 창 타이틀
+  url: string;            // 진입 URL
+  icon: string;
+  description: string;
+}
+const EXTERNAL_USAGE_PAGES: ExternalUsagePage[] = [
+  {
+    id: "anthropic-usage",
+    label: "kda-claude-account",
+    title: "Claude.ai 계정",
+    url: "https://claude.ai/settings",
+    icon: "💠",
+    description: "Claude Max 구독 상태 + Plan & Usage. (Max 는 공식 사용량 대시보드가 없어 정보 부분적 — 정확한 토큰은 K-Desktop-Agent 컨텍스트 미터.)",
+  },
+  {
+    id: "chatgpt-account",
+    label: "kda-chatgpt-account",
+    title: "ChatGPT Account",
+    url: "https://chatgpt.com/#settings/Account",
+    icon: "🟢",
+    description: "ChatGPT Plus/Pro 구독 상태 및 사용량.",
+  },
+  {
+    id: "openai-platform-usage",
+    label: "kda-openai-usage",
+    title: "OpenAI Platform Usage",
+    url: "https://platform.openai.com/usage",
+    icon: "🧠",
+    description: "OpenAI API (별도 결제) 사용량 — Codex/ChatGPT 구독과 무관.",
   },
 ];
 
@@ -238,6 +308,38 @@ const TOOL_CATALOG: ToolCategory[] = [
     ],
   },
   {
+    permId: "ui_automation",
+    title: "UI 자동화 (백그라운드, 입력 점유 X)",
+    icon: "🪟",
+    tools: [
+      { name: "mcp__k-personal__ui_dump_tree", label: "ui_dump_tree", desc: "창 트리 텍스트 덤프" },
+      { name: "mcp__k-personal__ui_find", label: "ui_find", desc: "이름/role/id 로 검색" },
+      { name: "mcp__k-personal__ui_click_by_name", label: "ui_click_by_name", desc: "이름으로 클릭", destructive: true },
+      { name: "mcp__k-personal__ui_click_by_id", label: "ui_click_by_id", desc: "AutomationId 로 클릭", destructive: true },
+      { name: "mcp__k-personal__ui_set_text", label: "ui_set_text", desc: "입력란에 텍스트", destructive: true },
+      { name: "mcp__k-personal__ui_get_text", label: "ui_get_text", desc: "컨트롤 값 읽기" },
+      { name: "mcp__k-personal__ui_focus_control", label: "ui_focus_control", desc: "컨트롤 포커스" },
+      { name: "mcp__k-personal__ui_invoke", label: "ui_invoke", desc: "InvokePattern 호출", destructive: true },
+      { name: "mcp__k-personal__ui_list_windows", label: "ui_list_windows", desc: "창 목록 (상세)" },
+    ],
+  },
+  {
+    permId: "web_automation",
+    title: "웹 자동화 (헤드리스 브라우저)",
+    icon: "🌍",
+    tools: [
+      { name: "mcp__k-personal__web_open", label: "web_open", desc: "URL 열기" },
+      { name: "mcp__k-personal__web_snapshot", label: "web_snapshot", desc: "페이지 a11y 트리 텍스트" },
+      { name: "mcp__k-personal__web_click", label: "web_click", desc: "selector/role 로 클릭", destructive: true },
+      { name: "mcp__k-personal__web_fill", label: "web_fill", desc: "입력란 채우기", destructive: true },
+      { name: "mcp__k-personal__web_get_text", label: "web_get_text", desc: "selector 텍스트" },
+      { name: "mcp__k-personal__web_screenshot", label: "web_screenshot", desc: "페이지 PNG (디버그)" },
+      { name: "mcp__k-personal__web_evaluate", label: "web_evaluate", desc: "JS 실행", destructive: true },
+      { name: "mcp__k-personal__web_url", label: "web_url", desc: "현재 URL" },
+      { name: "mcp__k-personal__web_close", label: "web_close", desc: "브라우저 종료" },
+    ],
+  },
+  {
     permId: "web_fetch",
     title: "웹 요청",
     icon: "🌐",
@@ -342,6 +444,23 @@ const DEFAULT_PERMISSIONS: AgentPermission[] = [
     level: "auto",
     category: "system",
   },
+  // Phase 13 — Headless Automation (K님 입력/화면 안 점유)
+  {
+    id: "ui_automation",
+    name: "UI 자동화",
+    description: "백그라운드 컨트롤 조작 (마우스 안 움직임)",
+    icon: "🪟",
+    level: "auto",
+    category: "system",
+  },
+  {
+    id: "web_automation",
+    name: "웹 자동화",
+    description: "헤드리스 브라우저 (화면 안 뜸)",
+    icon: "🌍",
+    level: "auto",
+    category: "network",
+  },
 ];
 
 // 테마 목록
@@ -435,6 +554,19 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [loginStatus, setLoginStatus] = useState<"idle" | "running" | "error">("idle");
   const [loginError, setLoginError] = useState<string | null>(null);
 
+  // Phase 15 — Codex 로그인 / MCP 등록 / 인증 상태
+  const [codexLoginStatus, setCodexLoginStatus] = useState<"idle" | "running" | "error">("idle");
+  const [codexLoginError, setCodexLoginError] = useState<string | null>(null);
+  const [codexAuth, setCodexAuth] = useState<{
+    authenticated: boolean;
+    cli_available: boolean;
+    auth_path: string;
+  } | null>(null);
+  const [codexMcpRegistering, setCodexMcpRegistering] = useState(false);
+  const [codexMcpResult, setCodexMcpResult] = useState<string | null>(null);
+  // 외부 webview (사용량 페이지 등) 진입 상태
+  const [webviewOpening, setWebviewOpening] = useState<string | null>(null);
+
   // 자동 업데이트 상태
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
@@ -443,12 +575,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string>("");
 
+  // 안전장치 (백업/복구) 상태
+  const [latestBackup, setLatestBackup] = useState<BackupInfo | null>(null);
+  const [backupBusy, setBackupBusy] = useState<"idle" | "backing-up" | "rolling-back">("idle");
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
+
   // 앱 버전은 한 번만 동적으로 로딩 (tauri.conf.json 의 단일 진실원)
   useEffect(() => {
     getVersion()
       .then(setAppVersion)
       .catch(() => setAppVersion("unknown"));
   }, []);
+
+  // Settings 모달이 열릴 때마다 latest 백업 정보 fresh 로드
+  useEffect(() => {
+    if (!open) return;
+    invoke<BackupInfo | null>("get_latest_backup")
+      .then((info) => {
+        setLatestBackup(info);
+        setBackupError(null);
+      })
+      .catch((e) => {
+        console.error("get_latest_backup 실패:", e);
+        setBackupError(String(e));
+      });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -486,11 +638,18 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   }, [open]);
 
   // 활성 provider/model 저장
+  // App.tsx 가 같은 탭의 변경을 받기 위해 'kda-active-changed' custom 이벤트도 발행.
+  // (브라우저 'storage' 이벤트는 같은 탭에선 발화 안 함)
   function saveActiveProvider(providerId: string, modelId: string) {
     setChatProvider(providerId);
     setChatModel(modelId);
     localStorage.setItem(LS_ACTIVE_PROVIDER, providerId);
     localStorage.setItem(LS_ACTIVE_MODEL, modelId);
+    try {
+      window.dispatchEvent(new Event("kda-active-changed"));
+    } catch {
+      // ignore — 발행 실패해도 저장은 됐고 다음 새로고침이면 반영됨
+    }
   }
 
   // provider 바꾸면 해당 provider 의 첫 모델로 자동 선택
@@ -803,6 +962,83 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     }
   }
 
+  // Phase 15 — Codex 인증 상태 한 번 조회 + 주기 poll (Settings 열려 있는 동안만)
+  async function refreshCodexAuth() {
+    try {
+      const status = await invoke<{
+        authenticated: boolean;
+        cli_available: boolean;
+        auth_path: string;
+      }>("codex_login_status");
+      setCodexAuth(status);
+    } catch (e) {
+      setCodexAuth({
+        authenticated: false,
+        cli_available: false,
+        auth_path: typeof e === "string" ? e : "",
+      });
+    }
+  }
+
+  // Settings 열릴 때 codex 인증 상태 로드 + login 진행 중이면 짧은 주기 poll
+  useEffect(() => {
+    if (!open) return;
+    refreshCodexAuth();
+    if (codexLoginStatus !== "running") return;
+    const handle = setInterval(refreshCodexAuth, 3000);
+    return () => clearInterval(handle);
+  }, [open, codexLoginStatus]);
+
+  // Codex 인증 — 백그라운드 codex login spawn (시스템 브라우저 자동 열림)
+  async function handleCodexLogin() {
+    setCodexLoginStatus("running");
+    setCodexLoginError(null);
+    try {
+      await invoke("codex_login");
+      // codex login 은 K 가 브라우저에서 OAuth 끝낼 때까지 시간이 걸림.
+      // poll 효과는 위 useEffect 가 처리. 60초 후 자동 idle 복귀 (그 사이 인증 완료 시
+      // refreshCodexAuth 가 authenticated=true 로 표시).
+      setTimeout(() => {
+        setCodexLoginStatus((prev) => (prev === "running" ? "idle" : prev));
+        refreshCodexAuth();
+      }, 60_000);
+    } catch (e) {
+      setCodexLoginStatus("error");
+      setCodexLoginError(typeof e === "string" ? e : (e as Error)?.message || "알 수 없는 오류");
+    }
+  }
+
+  // Codex 에 K-Personal MCP 등록 — codex mcp add 한 번 실행 (idempotent — 이미 있으면 ok 메시지)
+  async function handleCodexRegisterMcp() {
+    setCodexMcpRegistering(true);
+    setCodexMcpResult(null);
+    try {
+      const result = await invoke<string>("codex_register_mcp");
+      setCodexMcpResult(result || "✓ 등록 완료");
+    } catch (e) {
+      setCodexMcpResult("⚠ " + (typeof e === "string" ? e : (e as Error)?.message || "등록 실패"));
+    } finally {
+      setCodexMcpRegistering(false);
+    }
+  }
+
+  // 외부 URL 을 새 webview 창으로 — Tauri command open_external_webview
+  async function openExternalUsage(page: ExternalUsagePage) {
+    setWebviewOpening(page.id);
+    try {
+      await invoke("open_external_webview", {
+        url: page.url,
+        label: page.label,
+        title: page.title,
+      });
+    } catch (e) {
+      console.error("open_external_webview failed:", e);
+    } finally {
+      // 짧은 시간 후 idle (UX feedback 용)
+      setTimeout(() => setWebviewOpening(null), 800);
+    }
+  }
+
   // 권한 레벨 변경
   function updatePermission(permId: string, level: PermissionLevel) {
     const updated = permissions.map(p =>
@@ -882,6 +1118,50 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     } catch {
       // ignore
     }
+  }
+
+  // ─── 안전장치 (백업/복구) 핸들러 ───────────────────────────
+  async function handleBackupNow() {
+    setBackupBusy("backing-up");
+    setBackupError(null);
+    try {
+      const info = await invoke<BackupInfo>("backup_now", { label: "settings-ui" });
+      setLatestBackup(info);
+    } catch (e) {
+      console.error("backup_now 실패:", e);
+      setBackupError(String(e));
+    } finally {
+      setBackupBusy("idle");
+    }
+  }
+
+  async function handleRollback() {
+    // 1차 확인은 showRollbackConfirm state 로 이미 받음.
+    setBackupBusy("rolling-back");
+    setBackupError(null);
+    try {
+      await invoke("rollback_now");
+      // 이 시점부터 backend 가 0.5초 뒤 자기 자신 종료 → rollback.ps1 가 옛 바이너리로 재기동.
+      // UI 는 아무것도 더 못 함 (프로세스가 곧 죽음). 사용자에게 한 줄 안내.
+      setShowRollbackConfirm(false);
+    } catch (e) {
+      console.error("rollback_now 실패:", e);
+      setBackupError(String(e));
+      setBackupBusy("idle");
+    }
+  }
+
+  // 백업 시각 yyyy-MM-dd HH:mm:ss 로 표시 (timestamp = "yyyyMMdd-HHmmss")
+  function formatBackupTime(ts: string): string {
+    const m = ts.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/);
+    if (!m) return ts;
+    return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}`;
+  }
+  function formatBytes(n: number | undefined): string {
+    if (!n) return "—";
+    if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${n} bytes`;
   }
 
   async function handleAddWatchFolder() {
@@ -1474,6 +1754,130 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     </div>
                   )}
 
+                  {/* Codex (ChatGPT OAuth) 전용 — codex login + MCP 등록 + 인증 상태 */}
+                  {currentProvider.noKeyRequired && currentProvider.id === "codex" && (
+                    <div
+                      style={{
+                        marginBottom: "12px",
+                        padding: "10px 12px",
+                        background: "rgba(34, 197, 94, 0.05)",
+                        border: "1px solid rgba(34, 197, 94, 0.2)",
+                        borderRadius: "4px",
+                      }}
+                    >
+                      {/* CLI / 인증 상태 표시 */}
+                      <div style={{ fontSize: "0.85em", marginBottom: "10px" }}>
+                        <div style={{ marginBottom: "4px" }}>
+                          <span style={{ opacity: 0.7 }}>Codex CLI: </span>
+                          <span
+                            className="mono"
+                            style={{
+                              color: codexAuth?.cli_available
+                                ? "var(--accent)"
+                                : "var(--warn, #ff9800)",
+                            }}
+                          >
+                            {codexAuth?.cli_available ? "✓ 사용 가능" : "✗ 미설치 (npm i -g @openai/codex)"}
+                          </span>
+                        </div>
+                        <div>
+                          <span style={{ opacity: 0.7 }}>인증 상태: </span>
+                          <span
+                            className="mono"
+                            style={{
+                              color: codexAuth?.authenticated
+                                ? "var(--accent)"
+                                : "var(--warn, #ff9800)",
+                            }}
+                          >
+                            {codexAuth?.authenticated
+                              ? "✓ 로그인됨 (~/.codex/auth.json)"
+                              : "✗ 로그인 필요"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: "0.85em",
+                          marginBottom: "8px",
+                          opacity: 0.85,
+                        }}
+                      >
+                        아래 [codex login] 버튼을 누르면 백그라운드에서 codex login 이 실행되고
+                        시스템 브라우저가 자동으로 열려 ChatGPT OAuth 페이지로 이동합니다.
+                        브라우저에서 로그인 완료 후 이 화면의 인증 상태가 자동 갱신됩니다.
+                      </div>
+
+                      <div className="api-key-actions" style={{ flexWrap: "wrap", gap: 8 }}>
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={handleCodexLogin}
+                          disabled={
+                            codexLoginStatus === "running" ||
+                            !codexAuth?.cli_available
+                          }
+                          title={
+                            codexAuth?.cli_available
+                              ? "백그라운드 codex login + 브라우저 OAuth"
+                              : "Codex CLI 가 PATH 에 없음"
+                          }
+                        >
+                          {codexLoginStatus === "running"
+                            ? "브라우저 확인 중…"
+                            : codexAuth?.authenticated
+                            ? "🔄 codex login 다시"
+                            : "🔑 codex login 실행"}
+                        </button>
+                        <button
+                          className="settings-btn"
+                          onClick={handleCodexRegisterMcp}
+                          disabled={
+                            codexMcpRegistering ||
+                            !codexAuth?.cli_available ||
+                            !codexAuth?.authenticated
+                          }
+                          title="codex mcp add k-personal — Codex 도 K-Personal MCP 도구 사용"
+                        >
+                          {codexMcpRegistering
+                            ? "등록 중…"
+                            : "🔌 K-Personal MCP 등록"}
+                        </button>
+                        <button
+                          className="settings-btn"
+                          onClick={refreshCodexAuth}
+                          title="인증 상태 다시 조회"
+                        >
+                          ↻ 새로고침
+                        </button>
+                      </div>
+
+                      {codexLoginStatus === "error" && codexLoginError && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontSize: "0.85em",
+                            color: "var(--warn, #ff9800)",
+                          }}
+                        >
+                          ⚠ {codexLoginError}
+                        </div>
+                      )}
+                      {codexMcpResult && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontSize: "0.85em",
+                            opacity: 0.85,
+                          }}
+                          className="mono"
+                        >
+                          {codexMcpResult}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Max 구독 (claude provider) 전용: claude login 버튼 */}
                   {currentProvider.noKeyRequired && currentProvider.id === "claude" && (
                     <div
@@ -1651,13 +2055,50 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 <div className="settings-row-desc">
                   모델: <span className="mono">{chatModel}</span>
                   {chatProvider === "claude" && " · Max 구독 OAuth · MCP 도구 사용 가능"}
-                  {chatProvider !== "claude" && " · REST API 직접 호출 · 텍스트 전용"}
+                  {chatProvider === "codex" && " · ChatGPT Plus/Pro OAuth · MCP 도구 통합 가능"}
+                  {chatProvider !== "claude" && chatProvider !== "codex" && " · REST API 직접 호출 · 텍스트 전용"}
                 </div>
               </div>
               <div className="model-status">
                 <span className="model-badge active">활성</span>
               </div>
             </div>
+          </section>
+
+          {/* Phase 15 — 외부 사용량 페이지 (새 webview 창으로 K-Desktop-Agent 안에서 그대로 보기) */}
+          <section className="settings-section">
+            <div className="eyebrow">사용량 페이지</div>
+            <div
+              className="settings-row-desc"
+              style={{ marginBottom: 12, opacity: 0.8 }}
+            >
+              구독 사용량/계정 페이지를 새 창으로 엽니다. 외부 브라우저 안 거치고
+              K-Desktop-Agent 안에서 직접 — cookie 가 영속되어 한 번 로그인하면 다음에 자동 입장.
+            </div>
+            {EXTERNAL_USAGE_PAGES.map((page) => (
+              <div className="settings-row" key={page.id}>
+                <div className="settings-row-info">
+                  <div className="settings-row-title">
+                    {page.icon} {page.title}
+                  </div>
+                  <div className="settings-row-desc">{page.description}</div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: "0.78em", opacity: 0.5, marginTop: 4 }}
+                  >
+                    {page.url}
+                  </div>
+                </div>
+                <button
+                  className="settings-btn"
+                  onClick={() => openExternalUsage(page)}
+                  disabled={webviewOpening === page.id}
+                  title="새 창으로 열기"
+                >
+                  {webviewOpening === page.id ? "여는 중…" : "🪟 열기"}
+                </button>
+              </div>
+            ))}
           </section>
 
           {/* 자동 업데이트 섹션 */}
@@ -1873,6 +2314,83 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               <button className="settings-btn settings-btn-danger" onClick={handleQuit}>
                 종료
               </button>
+            </div>
+          </section>
+
+          {/* ─── 안전장치 (백업/복구) ──────────────────────── */}
+          <section className="settings-section">
+            <div className="eyebrow">🛡️ 안전장치</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">백업 / 복구</div>
+                <div className="settings-row-desc">
+                  패치·업데이트 전 백업해두면, 동작 불능 시 단일 클릭으로 복원할 수 있습니다.
+                  바탕화면 <span className="mono">"K-Desktop-Agent 비상복구"</span> 바로가기는 앱이 안 뜰 때 비상용.
+                </div>
+              </div>
+
+              {latestBackup ? (
+                <div className="settings-meta mono" style={{ marginTop: 8 }}>
+                  <div>마지막 백업: {formatBackupTime(latestBackup.timestamp)} ({latestBackup.label})</div>
+                  <div>총 크기 : {formatBytes(latestBackup.total_size)} · 파일 {latestBackup.files.length}개</div>
+                  {latestBackup.files.map((f) => (
+                    <div key={f.name} style={{ opacity: f.missing ? 0.4 : 0.7, fontSize: "0.85em" }}>
+                      · {f.name} {f.missing ? "(원본 없음)" : `${formatBytes(f.size)}`}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="settings-meta mono" style={{ marginTop: 8, opacity: 0.6 }}>
+                  마지막 백업: 없음 — 아래 버튼으로 첫 백업을 만드세요
+                </div>
+              )}
+
+              {backupError && (
+                <div className="settings-meta mono" style={{ marginTop: 8, color: "var(--warn, #f59e0b)" }}>
+                  ⚠️ {backupError}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                <button
+                  className="settings-btn"
+                  onClick={handleBackupNow}
+                  disabled={backupBusy !== "idle"}
+                >
+                  {backupBusy === "backing-up" ? "💾 백업 중..." : "💾 지금 백업하기"}
+                </button>
+
+                {!showRollbackConfirm ? (
+                  <button
+                    className="settings-btn settings-btn-danger"
+                    onClick={() => setShowRollbackConfirm(true)}
+                    disabled={!latestBackup || backupBusy !== "idle"}
+                    title={!latestBackup ? "백업이 없으면 복구 불가" : "마지막 백업 시점으로 되돌립니다"}
+                  >
+                    ↩️ 이전 백업으로 복구
+                  </button>
+                ) : (
+                  <>
+                    <span className="mono" style={{ alignSelf: "center", opacity: 0.8 }}>
+                      정말 복구? 앱이 종료되고 자동 재기동됩니다 →
+                    </span>
+                    <button
+                      className="settings-btn settings-btn-danger"
+                      onClick={handleRollback}
+                      disabled={backupBusy !== "idle"}
+                    >
+                      {backupBusy === "rolling-back" ? "복원 중..." : "✓ 확인 — 복구"}
+                    </button>
+                    <button
+                      className="settings-btn"
+                      onClick={() => setShowRollbackConfirm(false)}
+                      disabled={backupBusy !== "idle"}
+                    >
+                      취소
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           </section>
 

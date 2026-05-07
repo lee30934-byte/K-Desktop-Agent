@@ -13,6 +13,8 @@
     "core:app:allow-version",
     "core:event:default",
     "shell:allow-open",
+    "opener:default",
+    "opener:allow-open-url",
     "sql:default",
     "sql:allow-execute",
     "sql:allow-load",

@@ -306,6 +306,443 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+// ────────── Safety net (백업/복구) ──────────
+//
+// "LLM 통신 불능 시에도 K 가 단독 복구 가능" 보장을 위한 이중 방벽.
+//   진입점 1: Settings UI 의 "안전장치" 섹션 → 이 모듈의 Tauri command 호출
+//   진입점 2: 바탕화면 "K-Desktop-Agent 비상복구.lnk" → scripts/rollback.ps1 직접 실행
+// 두 경로 모두 결국 같은 PowerShell 스크립트 (backup.ps1 / rollback.ps1) 를 호출 →
+// 로직 한 곳에 모이고 진입점만 다중화.
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct BackupFile {
+    name: String,
+    size: u64,
+    sha256: Option<String>,
+    src: String,
+    #[serde(default)]
+    missing: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct BackupInfo {
+    timestamp: String,
+    label: String,
+    #[serde(rename = "createdBy")]
+    created_by: String,
+    files: Vec<BackupFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    total_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dir_path: Option<String>,
+}
+
+/// 프로젝트 루트 (logs/ 와 같은 로직 재사용).
+fn project_root() -> Result<PathBuf, String> {
+    if let Ok(exe) = std::env::current_exe() {
+        let mut current = exe.parent();
+        while let Some(p) = current {
+            if p.join("package.json").exists() || p.join("src-tauri").exists() {
+                return Ok(p.to_path_buf());
+            }
+            current = p.parent();
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.file_name().map(|n| n == "src-tauri").unwrap_or(false) {
+            if let Some(parent) = cwd.parent() {
+                return Ok(parent.to_path_buf());
+            }
+        }
+        return Ok(cwd);
+    }
+    Err("can't locate project root".into())
+}
+
+/// UTF-8 BOM (`\u{FEFF}`) 이 있으면 떼어낸 슬라이스 반환.
+/// 도입 배경 (2026-05-06): scripts/backup.ps1 의 PowerShell 5.1 `Set-Content -Encoding UTF8`
+/// 가 latest.txt + manifest.json 첫 3바이트에 BOM (EF BB BF) 을 자동 주입 → `.trim()` 은 BOM 을
+/// 공백으로 안 보고 그대로 둠 → label 이 "\u{FEFF}20260506-..." 가 되어 폴더 못 찾는 회귀 발생.
+/// backup.ps1 은 UTF8NoBom 으로 패치됐지만, 외부 도구가 BOM 박힌 파일을 만들 가능성에 대한 안전망.
+fn strip_bom(s: &str) -> &str {
+    s.strip_prefix('\u{FEFF}').unwrap_or(s)
+}
+
+/// 백업 폴더의 manifest.json 파싱 + 편의 필드 보강.
+fn read_manifest(backup_dir: &std::path::Path) -> Result<BackupInfo, String> {
+    let manifest_path = backup_dir.join("manifest.json");
+    let raw = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("manifest.json 읽기 실패 ({:?}): {}", manifest_path, e))?;
+    let raw_no_bom = strip_bom(&raw);
+    let mut info: BackupInfo = serde_json::from_str(raw_no_bom)
+        .map_err(|e| format!("manifest.json 파싱 실패: {}", e))?;
+    info.dir_path = Some(backup_dir.to_string_lossy().to_string());
+    info.total_size = Some(info.files.iter().filter(|f| !f.missing).map(|f| f.size).sum());
+    Ok(info)
+}
+
+/// 마지막(latest) 백업 정보. 없으면 None.
+#[tauri::command]
+async fn get_latest_backup() -> Result<Option<BackupInfo>, String> {
+    let root = project_root()?;
+    let latest_file = root.join(".backups").join("latest.txt");
+    if !latest_file.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&latest_file).map_err(|e| e.to_string())?;
+    // BOM strip → trim — 순서 중요. trim 만으론 BOM 안 떨어짐.
+    let label = strip_bom(&raw).trim().to_string();
+    if label.is_empty() {
+        return Ok(None);
+    }
+    let backup_dir = root.join(".backups").join(&label);
+    if !backup_dir.exists() {
+        return Ok(None);
+    }
+    Ok(Some(read_manifest(&backup_dir)?))
+}
+
+/// 모든 백업 스냅샷 목록 (최신순).
+#[tauri::command]
+async fn list_backups() -> Result<Vec<BackupInfo>, String> {
+    let root = project_root()?;
+    let backups_root = root.join(".backups");
+    if !backups_root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&backups_root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let dir = entry.path();
+        if dir.join("manifest.json").exists() {
+            if let Ok(info) = read_manifest(&dir) {
+                out.push(info);
+            }
+        }
+    }
+    // 최신 timestamp 가 위로
+    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(out)
+}
+
+/// 새 백업 생성. scripts/backup.ps1 -AsJson 호출 → 결과 JSON 그대로 BackupInfo 로.
+#[tauri::command]
+async fn backup_now(label: Option<String>) -> Result<BackupInfo, String> {
+    log_lifecycle("runtime.log", "backup_now invoked");
+    let root = project_root()?;
+    let script = root.join("scripts").join("backup.ps1");
+    if !script.exists() {
+        return Err(format!("backup script 없음: {}", script.display()));
+    }
+    let label_arg = label.unwrap_or_else(|| "settings-ui".to_string());
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script.to_str().unwrap(),
+            "-Label",
+            &label_arg,
+            "-AsJson",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("backup.ps1 실행 실패: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("backup.ps1 종료 코드 {} — stderr: {}", output.status, stderr.trim()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout_trimmed = stdout.trim();
+    if stdout_trimmed.is_empty() {
+        return Err("backup.ps1 빈 응답".to_string());
+    }
+    let info: BackupInfo = serde_json::from_str(stdout_trimmed)
+        .map_err(|e| format!("backup.ps1 응답 JSON 파싱 실패: {} (응답: {})", e, stdout_trimmed))?;
+    log_lifecycle(
+        "runtime.log",
+        &format!("backup_now ok: label={} size={}", info.label, info.total_size.unwrap_or(0)),
+    );
+    Ok(info)
+}
+
+/// 마지막 백업 시점으로 복원.
+/// rollback.ps1 -Yes 를 detached 로 spawn 하고 자기 자신은 종료.
+/// (release 바이너리 자체 swap 이 필요해서 외부 프로세스가 처리해야 함)
+#[tauri::command]
+async fn rollback_now(app: AppHandle) -> Result<(), String> {
+    log_lifecycle("shutdown.log", "rollback_now invoked — spawning rollback.ps1 then exiting self");
+    let root = project_root()?;
+    let script = root.join("scripts").join("rollback.ps1");
+    if !script.exists() {
+        return Err(format!("rollback script 없음: {}", script.display()));
+    }
+    // detached spawn — 자기 자신이 죽어도 PowerShell 프로세스는 살아남아야 함.
+    // Windows 에선 CREATE_NEW_PROCESS_GROUP + CREATE_BREAKAWAY_FROM_JOB 필요할 수 있으나
+    // start /B 로 우회.
+    std::process::Command::new("cmd")
+        .args([
+            "/c",
+            "start",
+            "",
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script.to_str().unwrap(),
+            "-Yes",
+        ])
+        .spawn()
+        .map_err(|e| format!("rollback.ps1 spawn 실패: {}", e))?;
+
+    // 사용자에게 "복원 시작됨" 알림 후 자기 자신 종료.
+    let _ = app.emit(
+        "sidecar-event",
+        serde_json::json!({
+            "type": "rolling-back",
+            "message": "복원 진행 중 — 잠시 후 옛 버전으로 자동 재기동됩니다."
+        }),
+    );
+    // 0.5초 정도 frontend 알림 시간 확보 후 exit
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    INTENTIONAL_SHUTDOWN.store(true, Ordering::SeqCst);
+    app.exit(0);
+    Ok(())
+}
+
+// ────────── Phase 15 — 외부 webview 창 + Codex 통합 ──────────
+//
+// K 의 의도: K-Desktop-Agent 안에서 모든 게 완결.
+//   - 사용량 페이지: console.anthropic.com / chatgpt.com 등을 새 webview 창으로 열어서 그대로 보기
+//   - Codex 로그인: 백그라운드로 codex login spawn (시스템 브라우저 자동 열림) — 외부 PowerShell 안 거침
+//   - K-Personal MCP 등록: codex mcp add 한 번 실행해서 codex 도 같은 도구 쓰게
+//
+// 새 webview 창은 main 과 별개 cookie storage 를 갖고, K가 한 번 로그인하면 영속.
+
+/// 외부 URL 을 K 의 시스템 기본 브라우저로 엶 (사용량 페이지, OAuth 페이지 등).
+///
+/// 원래 Phase 15 초기 설계는 새 webview 창으로 띄우는 거였으나 — Google OAuth 가
+/// embedded webview (Tauri/Electron) 에서의 로그인을 보안 정책으로 차단함 (2021~).
+/// "로그인 중 오류가 발생했습니다" 페이지가 떠서 K 가 anthropic / chatgpt 로그인 못함.
+///
+/// 회피책: 시스템 기본 브라우저 (Edge/Chrome/Firefox) 로 열기 — Google OAuth 제약 없음 +
+/// K 평소 브라우저의 cookie 영속 → 다음에 그 브라우저에서 anthropic 들어갈 때도 자동 로그인.
+///
+/// frontend 호출 시그니처는 backward compat 위해 유지 (label, title 은 무시).
+/// 함수명도 그대로 — frontend invoke 부분 변경 안 해도 됨.
+#[tauri::command]
+async fn open_external_webview(
+    app: AppHandle,
+    url: String,
+    label: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    // URL validate — 비정상 URL 로 OS 핸들러에 흘리는 거 방지
+    let _ = url::Url::parse(&url).map_err(|e| format!("invalid URL: {}", e))?;
+    log_lifecycle(
+        "runtime.log",
+        &format!(
+            "open_external_webview → system browser url={} label={} title={:?}",
+            url, label, title
+        ),
+    );
+    // 두 번째 인자 None = OS 기본 핸들러 (Edge/Chrome/Firefox 중 K 의 default).
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("system browser open 실패: {}", e))?;
+    Ok(())
+}
+
+/// Codex CLI 가 PATH 에 있는지.
+fn codex_cli_path() -> Option<String> {
+    // Windows: codex.cmd, codex.ps1, codex.exe 순으로 시도.
+    // npm 글로벌 install 위치는 보통 %APPDATA%/npm 안에 codex.cmd 가 있음.
+    let appdata = std::env::var("APPDATA").ok()?;
+    let candidates = [
+        format!("{}/npm/codex.cmd", appdata),
+        format!("{}/npm/codex.ps1", appdata),
+        "codex.cmd".to_string(),
+        "codex".to_string(),
+    ];
+    candidates.into_iter().find(|p| std::path::Path::new(p).exists() || p == "codex.cmd" || p == "codex")
+}
+
+/// `codex login` 을 background spawn — 시스템 브라우저가 자동으로 OAuth 페이지 열림.
+/// 실행 직후 즉시 반환. 진행 상황은 codex_login_status 로 poll.
+#[tauri::command]
+async fn codex_login() -> Result<(), String> {
+    log_lifecycle("runtime.log", "codex_login spawning");
+    // Windows: cmd /c codex.cmd login (npm 글로벌 install 위치).
+    // 콘솔 창은 안 보이게 — CREATE_NO_WINDOW (0x08000000) flag.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/c", "codex.cmd", "login"])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| format!("codex login spawn 실패: {}", e))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("codex")
+            .arg("login")
+            .spawn()
+            .map_err(|e| format!("codex login spawn 실패: {}", e))?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+struct CodexLoginStatus {
+    authenticated: bool,
+    cli_available: bool,
+    auth_path: String,
+}
+
+/// Codex 인증 상태 — Settings UI 가 poll 해서 표시.
+#[tauri::command]
+async fn codex_login_status() -> Result<CodexLoginStatus, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    let auth = std::path::Path::new(&home).join(".codex").join("auth.json");
+    Ok(CodexLoginStatus {
+        authenticated: auth.exists(),
+        cli_available: codex_cli_path().is_some(),
+        auth_path: auth.to_string_lossy().to_string(),
+    })
+}
+
+// ────────── Phase 15.5 — Codex Usage API ──────────
+//
+// `https://chatgpt.com/backend-api/codex/usage` 는 ChatGPT 백엔드의 비공식 endpoint.
+// `~/.codex/auth.json` 의 OAuth access_token 을 Bearer 로 보내면 5h primary + 7d secondary
+// rate limit 을 JSON 으로 받음. Anthropic 의 rate_limit_event 와 동등한 데이터.
+//
+// 비공식이라 깨질 위험 있음 → 호출 실패는 silently 처리 (UI 가 stale 표시).
+// 토큰은 hourly expire — refresh 는 codex CLI 가 별도로 처리하므로 우리는 현재 access_token
+// 만 읽어 사용. 401 받으면 K 가 codex login 다시 해야 한다는 신호.
+
+#[derive(serde::Deserialize)]
+struct CodexAuthFile {
+    tokens: Option<CodexAuthTokens>,
+    #[serde(rename = "access_token")]
+    access_token_top: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CodexAuthTokens {
+    access_token: Option<String>,
+}
+
+fn read_codex_access_token() -> Result<String, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "HOME/USERPROFILE 환경변수 없음".to_string())?;
+    let path = std::path::Path::new(&home).join(".codex").join("auth.json");
+    if !path.exists() {
+        return Err(format!("auth.json 없음 ({}). codex login 먼저 필요.", path.display()));
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("auth.json 읽기 실패: {}", e))?;
+    let parsed: CodexAuthFile = serde_json::from_str(&raw)
+        .map_err(|e| format!("auth.json JSON 파싱 실패: {}", e))?;
+    // 형식 변동성: 최상위 access_token 또는 tokens.access_token 둘 다 시도.
+    parsed
+        .tokens
+        .and_then(|t| t.access_token)
+        .or(parsed.access_token_top)
+        .ok_or_else(|| "auth.json 안 access_token 없음".to_string())
+}
+
+/// Codex 의 5h+주간 한도 정보 가져오기.
+/// 응답 raw JSON 그대로 반환 — frontend 가 normalize.
+/// 실패 (네트워크, 401, parsing) 는 Err 로 — frontend 는 silently swallow.
+#[tauri::command]
+async fn codex_fetch_usage() -> Result<serde_json::Value, String> {
+    let token = read_codex_access_token()?;
+    let resp = reqwest::Client::new()
+        .get("https://chatgpt.com/backend-api/codex/usage")
+        .bearer_auth(&token)
+        .header("User-Agent", "K-Desktop-Agent/0.4.6 (codex-usage-poll)")
+        .send()
+        .await
+        .map_err(|e| format!("HTTP 요청 실패: {}", e))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("응답 읽기 실패: {}", e))?;
+    if !status.is_success() {
+        let snippet: String = body.chars().take(200).collect();
+        return Err(format!(
+            "HTTP {} — {} (codex login 만료됐을 수 있음)",
+            status.as_u16(),
+            snippet
+        ));
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("응답 JSON 파싱 실패: {}", e))?;
+    log_lifecycle(
+        "runtime.log",
+        &format!(
+            "codex_fetch_usage OK status={} bodyLen={}",
+            status.as_u16(),
+            body.len()
+        ),
+    );
+    Ok(json)
+}
+
+/// `codex mcp add k-personal -- python <K-Personal-MCP/server.py>` 한 번 실행.
+/// 이미 등록돼있으면 에러 — 그래도 무시 (idempotent).
+#[tauri::command]
+async fn codex_register_mcp(name: Option<String>) -> Result<String, String> {
+    let mcp_name = name.unwrap_or_else(|| "k-personal".to_string());
+    // K-Personal MCP server.py 경로 — 프로젝트 루트의 형제 폴더 K-Personal-MCP 안에 있음.
+    let root = project_root()?;
+    let mcp_server = root
+        .parent()
+        .ok_or("project root has no parent")?
+        .join("K-Personal-MCP")
+        .join("server.py");
+    if !mcp_server.exists() {
+        return Err(format!("K-Personal MCP server.py 없음: {}", mcp_server.display()));
+    }
+    let mcp_server_str = mcp_server.to_string_lossy().to_string();
+    let output = Command::new("cmd")
+        .args([
+            "/c",
+            "codex.cmd",
+            "mcp",
+            "add",
+            &mcp_name,
+            "--",
+            "python",
+            &mcp_server_str,
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("codex mcp add spawn 실패: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if output.status.success() {
+        Ok(format!("등록 성공: {} → {}", mcp_name, mcp_server_str))
+    } else {
+        // 이미 등록된 경우도 여기로 옴. stderr 메시지 그대로 반환 (UI 가 표시).
+        Err(format!("codex mcp add 실패 (이미 등록됐을 수 있음): {} {}", stdout.trim(), stderr.trim()))
+    }
+}
+
 // ────────── Resources (파일 감시) ──────────
 
 /// 폴더 감시 시작
@@ -831,6 +1268,7 @@ pub fn run_with_options(start_minimized: bool) {
             }
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -934,6 +1372,17 @@ pub fn run_with_options(start_minimized: bool) {
             hide_main_window,
             quit_app,
             run_claude_login,
+            // Safety net (백업/복구) — Settings UI 의 안전장치 섹션이 사용
+            get_latest_backup,
+            list_backups,
+            backup_now,
+            rollback_now,
+            // Phase 15 — 외부 webview 창 + Codex 통합
+            open_external_webview,
+            codex_login,
+            codex_login_status,
+            codex_register_mcp,
+            codex_fetch_usage,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,

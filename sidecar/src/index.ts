@@ -45,6 +45,8 @@ import {
   type OpenAIMessage,
   type GeminiContent,
 } from "./restTools.js";
+import { STATUSLINE_SOURCE } from "./statusLineSource.js";
+import { statSync, renameSync } from "node:fs";
 
 // ─── 파일 로거 ─────────────────────────────────────────
 // release 모드에서는 sidecar 의 stderr 가 소실되므로 `logs/sidecar.log` 에 직접 append.
@@ -146,6 +148,57 @@ function resolveClaudeCli(): { resolved: string | null; tried: string[] } {
 
 const claudeCliResolution = resolveClaudeCli();
 const CLAUDE_CLI = claudeCliResolution.resolved ?? "claude";
+
+/**
+ * Codex CLI 실행 파일 (Phase 15).
+ *
+ * 환경변수 CODEX_CLI 가 있으면 그걸 우선 사용. 없으면 후보 경로들을
+ * 순차적으로 `--version` 으로 검사.
+ *
+ * 후보 우선순위 (Claude CLI 와 동일 패턴):
+ *   1. %APPDATA%\npm\codex.cmd
+ *   2. codex.cmd
+ *   3. codex
+ */
+function getCodexCliCandidates(): string[] {
+  if (process.env.CODEX_CLI) {
+    return [process.env.CODEX_CLI];
+  }
+  const list: string[] = [];
+  const appdata = process.env.APPDATA;
+  if (appdata) {
+    list.push(path.join(appdata, "npm", "codex.cmd"));
+  }
+  list.push("codex.cmd", "codex");
+  return list;
+}
+
+function probeCodexCli(exe: string): boolean {
+  try {
+    const result = spawnSync(exe, ["--version"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      shell: true,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function resolveCodexCli(): { resolved: string | null; tried: string[] } {
+  const tried: string[] = [];
+  for (const candidate of getCodexCliCandidates()) {
+    tried.push(candidate);
+    if (probeCodexCli(candidate)) {
+      return { resolved: candidate, tried };
+    }
+  }
+  return { resolved: null, tried };
+}
+
+const codexCliResolution = resolveCodexCli();
+const CODEX_CLI = codexCliResolution.resolved ?? "codex";
 
 // ─── 누적 메모리 자동 로딩 (Phase 9 step 1) ─────────────────────
 // `~/.claude/projects/<key>/memory/` 의 모든 .md 파일을 system prompt 끝에 주입.
@@ -251,12 +304,22 @@ const SYSTEM_PROMPT = `당신은 K님의 개인 Windows 컴퓨터를 자동화�
 - 한 번에 여러 도구를 병렬로 호출할 수 있으면 그렇게 합니다.
 
 [사용 가능한 도구 (k-personal MCP)]
-- 화면: 스크린샷(전체/영역), 마우스 클릭/드래그/이동, 키보드 타이핑/단축키
+- UI 자동화 (ui_*) ⭐ 우선 사용: dump_tree / find / click_by_name / set_text / focus / invoke / list_windows
+  → 데스크톱 앱 제어 시 K님 마우스/키보드/화면을 안 건드림. 백그라운드 창에도 작동.
+- 웹 자동화 (web_*) ⭐ 우선 사용: open / snapshot / click / fill / get_text / evaluate / url / close
+  → 헤드리스 브라우저로 K님 화면 밖에서 작동. accessibility tree 가 텍스트로 제공돼 정확.
+- 화면 (cc_*, 마지막 수단): 스크린샷, 마우스 클릭, 키보드 타이핑 — K님 마우스/키보드를 점유하므로 ui_/web_ 으로 안 풀릴 때만.
 - 창: 실행 중 창 목록, 특정 창 활성화, 화면 크기
 - 파일: 폴더 탐색, 검색, 최근 수정 파일, 이동/복사, 확장자별 자동 정리
 - 앱: 실행/종료, URL 열기, 별명 등록한 앱 실행, 프리셋 실행
 - 클립보드: 읽기/쓰기/붙여넣기, 스니펫 관리
 - 개인 DB: 할 일 CRUD, 메모, 습관 체크
+
+[자동화 우선순위 — Phase 13]
+1. 웹 작업 → web_open + web_snapshot + web_click/fill (스크린샷 X, 항상 헤드리스)
+2. 데스크톱 앱 → ui_dump_tree → ui_click_by_name / ui_set_text (스크린샷 X)
+3. 위 둘이 안 먹는 캔버스/게임/DRM 화면 → cc_screenshot + cc_mouse_click (K님 입력 점유)
+   ※ K님이 같은 PC 를 동시에 쓰는 중일 수 있으므로 cc_* 호출 전엔 한 줄 고지.
 
 [출력 스타일]
 - 한국어로, 간결하게.
@@ -264,7 +327,10 @@ const SYSTEM_PROMPT = `당신은 K님의 개인 Windows 컴퓨터를 자동화�
 - 에러가 나면 그대로 보고하고 해결책 제안.
 
 [이전 대화 컨텍스트]
-사용자 메시지에 <prior_conversation>...</prior_conversation> 블록이 있으면 그건 지금 진행 중인 대화의 과거 턴 기록입니다. 이를 참고해서 자연스럽게 이어서 답하세요. 실제로 처리해야 할 새 질문은 <current_message>...</current_message> 블록 안에 있습니다. 블록 태그 자체는 사용자에게 언급하지 마세요.`;
+사용자 메시지에 <prior_conversation>...</prior_conversation> 블록이 있으면 그건 지금 진행 중인 대화의 과거 턴 기록입니다. 이를 참고해서 자연스럽게 이어서 답하세요. 실제로 처리해야 할 새 질문은 <current_message>...</current_message> 블록 안에 있습니다. 블록 태그 자체는 사용자에게 언급하지 마세요.
+
+[누적 메모리]
+사용자 메시지에 <memory_context>...</memory_context> 블록이 있으면 그건 이전 세션들에서 K님과 합의했거나 기록한 선호·함정·패턴입니다. 시스템 컨텍스트로 취급하고 매 응답에 자연스럽게 반영하세요. 특히 \`pitfall_*\` 항목은 동일 패턴을 반복하지 마세요. 블록 자체는 사용자에게 언급하지 마세요.`;
 
 // ─── MCP 설정 및 헬스체크 ──────────────────────────────
 
@@ -348,7 +414,7 @@ function log(level: "info" | "warn" | "error", message: string): void {
 
 // ─── 턴 관리 ───────────────────────────────────────────
 
-type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter";
+type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter" | "codex";
 
 // 권한 레벨 — Settings UI 와 동일.
 //   auto    : 자동 승인 (도구 즉시 사용 가능)
@@ -482,6 +548,35 @@ const PERM_TOOL_MAP: Record<string, string[]> = {
     "mcp__k-personal__db_habit_check",
     "mcp__k-personal__db_habit_list",
   ],
+  // Phase 13 — Headless Automation
+  // ui_*: Windows UI Automation 트리 직접 조작. 마우스/키보드/스크린샷 안 씀,
+  //       백그라운드 창에도 작동. K님이 같은 PC 를 동시에 써도 충돌 0.
+  //       cc_* (system_control/screenshot) 와 별도 카테고리로 분리해
+  //       "K 입력 점유 여부" 단위로 토글 가능.
+  ui_automation: [
+    "mcp__k-personal__ui_dump_tree",
+    "mcp__k-personal__ui_find",
+    "mcp__k-personal__ui_click_by_name",
+    "mcp__k-personal__ui_click_by_id",
+    "mcp__k-personal__ui_set_text",
+    "mcp__k-personal__ui_get_text",
+    "mcp__k-personal__ui_focus_control",
+    "mcp__k-personal__ui_invoke",
+    "mcp__k-personal__ui_list_windows",
+  ],
+  // web_*: Playwright 헤드리스 브라우저. K님 화면에 안 뜸.
+  //        web_fetch (단순 GET) 와 분리 — 이쪽은 클릭/입력까지 가능한 풀 자동화.
+  web_automation: [
+    "mcp__k-personal__web_open",
+    "mcp__k-personal__web_snapshot",
+    "mcp__k-personal__web_click",
+    "mcp__k-personal__web_fill",
+    "mcp__k-personal__web_get_text",
+    "mcp__k-personal__web_screenshot",
+    "mcp__k-personal__web_evaluate",
+    "mcp__k-personal__web_url",
+    "mcp__k-personal__web_close",
+  ],
 };
 
 // 권한 ID → 한국어 라벨 (시스템 프롬프트 안내문에 사용).
@@ -494,6 +589,8 @@ const PERM_LABEL: Record<string, string> = {
   screenshot: "화면 캡처",
   web_fetch: "웹 요청",
   db_access: "개인 DB",
+  ui_automation: "UI 자동화 (백그라운드 컨트롤 조작)",
+  web_automation: "웹 자동화 (헤드리스 브라우저)",
 };
 
 // 기본 권한 정책 — Settings UI DEFAULT_PERMISSIONS 와 동일.
@@ -510,6 +607,9 @@ const DEFAULT_PERMISSIONS: Record<string, PermLevel> = {
   screenshot: "auto",
   web_fetch: "auto",
   db_access: "auto",
+  // Phase 13 — 헤드리스 자동화는 K님 입력/화면을 안 건드리므로 기본 auto
+  ui_automation: "auto",
+  web_automation: "auto",
 };
 
 // Bash, BashOutput, KillShell 같은 high-risk built-in.
@@ -666,9 +766,20 @@ function summarizeToolItem(item: Extract<HistoryItem, { role: "tool" }>): string
 
 function buildPromptWithHistory(
   content: string,
-  history?: Array<HistoryItem>
+  history?: Array<HistoryItem>,
+  memoryContent?: string,
 ): string {
-  if (!history || history.length === 0) return content;
+  // memory 가 있으면 stdin 의 시작에 시스템 컨텍스트 블록으로 prepend.
+  // 이유: --system-prompt 인자에 memory 를 박으면 Windows cmd.exe 의 8191자 한계를 넘겨
+  //       "명령줄이 너무 깁니다" 로 spawn 자체가 실패한다 (memory 가 6KB+ 누적되면 발생).
+  //       stdin 은 길이 한계가 없으므로 memory 는 stdin 으로 흘리는 것이 안전.
+  // SYSTEM_PROMPT 의 "[누적 메모리]" 안내가 이 블록을 시스템 컨텍스트로 취급하도록 모델을 안내함.
+  const memoryBlock =
+    memoryContent && memoryContent.trim()
+      ? `<memory_context>\n${memoryContent.trim()}\n</memory_context>\n\n`
+      : "";
+
+  if (!history || history.length === 0) return memoryBlock + content;
 
   const lines: string[] = ["<prior_conversation>"];
   for (const m of history) {
@@ -686,7 +797,7 @@ function buildPromptWithHistory(
   lines.push("<current_message>");
   lines.push(content);
   lines.push("</current_message>");
-  return lines.join("\n");
+  return memoryBlock + lines.join("\n");
 }
 
 const activeTurns = new Map<string, ChildProcess>();
@@ -699,6 +810,9 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
   const provider: Provider = msg.provider ?? "claude";
   if (provider === "claude") {
     return handleViaClaudeCLI(msg);
+  }
+  if (provider === "codex") {
+    return handleViaCodexCLI(msg);
   }
   return handleViaRestAPI(msg, provider);
 }
@@ -777,7 +891,13 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   const baseContent = attachmentsGuidance
     ? `${msg.content}${attachmentsGuidance}`
     : msg.content;
-  const promptWithHistory = buildPromptWithHistory(baseContent, msg.history);
+  // memory 는 stdin (prompt) 으로 흘려보낸다 — 명령행 길이 한계 회피.
+  const memory = loadMemoryContext();
+  const promptWithHistory = buildPromptWithHistory(
+    baseContent,
+    msg.history,
+    memory.content,
+  );
 
   // ─── 명령행 길이 절약 ───────────────────────────────────────
   // Windows cmd.exe 의 명령행 길이 한계는 약 8191자.
@@ -808,6 +928,11 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     "-p",  // prompt 는 stdin 으로 받음 (인자 생략)
     "--output-format", "stream-json",
     "--verbose",
+    // 2026-05-06: Claude CLI 2.1.122 기준 stream-json 모드에서도 partial messages
+    // (message_start / content_block_delta 등)는 이 옵션 켜야 emit 됨.
+    // 안 켜면 result 만 와서 Phase 12 의 maxTurnUsage 캡처가 0 으로 박힘 → 컨텍스트 % 가
+    // 100턴 가도 안 올라가는 회귀 발생 (이번 세션 displayCtx=0 이 그 증상).
+    "--include-partial-messages",
     // bypass 모드 — interactive prompt 우회. 실제 게이트는 disallowed-tools 가 담당.
     "--permission-mode", "bypassPermissions",
   ];
@@ -816,27 +941,105 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     args.push("--disallowed-tools", toolFlags.disallowed.join(","));
   }
 
-  // 시스템 프롬프트 = 기본 + ask 안내 + manual 안내 + 누적 메모리 (memory/)
+  // 시스템 프롬프트 = 기본 + ask 안내 + manual 안내.
+  // 누적 메모리(memory/) 는 길이가 누적되어 cmd.exe 의 8191자 한계를 깨므로
+  // --system-prompt 인자에 박지 않는다 — 대신 stdin(prompt) 의 <memory_context> 블록으로 흘려보냄.
+  // SYSTEM_PROMPT 의 "[누적 메모리]" 안내가 모델에게 그 블록을 시스템 컨텍스트로 취급하도록 함.
   const askGuidance = buildAskGuidance(toolFlags.effective);
   const manualGuidance = buildManualGuidance(toolFlags.effective);
-  const memory = loadMemoryContext();
-  const fullSystemPrompt =
-    SYSTEM_PROMPT + askGuidance + manualGuidance + memory.content;
-  args.push("--system-prompt", fullSystemPrompt);
+  const fullSystemPrompt = SYSTEM_PROMPT + askGuidance + manualGuidance;
 
-  // MCP 설정이 있으면 임시 파일로
-  if (Object.keys(mcpConfig).length > 0) {
-    try {
-      const tmpPath = path.join(os.tmpdir(), `kda-mcp-${msg.id}.json`);
-      writeFileSync(tmpPath, JSON.stringify(mcpConfig), "utf-8");
-      mcpConfigFile = tmpPath;
-      args.push("--mcp-config", tmpPath);
-    } catch (e) {
-      // 임시 파일 작성 실패 시 inline JSON 폴백
-      logToFile("warn", `mcp-config 임시 파일 작성 실패, inline 으로 폴백: ${e instanceof Error ? e.message : String(e)}`);
-      args.push("--mcp-config", JSON.stringify(mcpConfig));
-      mcpConfigFile = null;
+  // ─── 큰 인자 자동 파일 외화 ─────────────────────────────────────────
+  // 임계치(LARGE_ARG_THRESHOLD) 이상의 인자 값은 임시 파일로 빼고 path 인자로 전환.
+  // Claude CLI 는 다음을 모두 지원:
+  //   --system-prompt <text>     ↔ --system-prompt-file <path>
+  //   --settings     <text|path> (둘 다 같은 인자, file path 도 OK)
+  //   --mcp-config   <text|path>
+  // 임계치를 넘지 않으면 inline 으로 두어 디스크 I/O 부담 회피.
+  // 모든 외화 파일은 finally 에서 cleanup.
+  const tmpFiles: string[] = [];
+  const LARGE_ARG_THRESHOLD = 1500;  // 1.5KB 이상은 파일로 — 큰 인자 4-5개 합쳐도 안전선 안.
+
+  function pushOrMaterialize(
+    inlineFlag: string,
+    fileFlag: string | null,
+    value: string,
+    suffix: string,
+  ): void {
+    if (value.length < LARGE_ARG_THRESHOLD || !fileFlag) {
+      // 작거나 file 변형이 없으면 inline.
+      // (file 변형이 있어도 작으면 inline 이 빠름)
+      args.push(inlineFlag, value);
+      return;
     }
+    try {
+      const tmpPath = path.join(os.tmpdir(), `kda-${suffix}-${msg.id}.txt`);
+      writeFileSync(tmpPath, value, "utf-8");
+      tmpFiles.push(tmpPath);
+      args.push(fileFlag, tmpPath);
+    } catch (e) {
+      // 파일 쓰기 실패 시 inline 폴백 — 길이 검증에서 다시 잡힘.
+      logToFile(
+        "warn",
+        `${suffix} 임시 파일 외화 실패, inline 폴백: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      args.push(inlineFlag, value);
+    }
+  }
+
+  pushOrMaterialize("--system-prompt", "--system-prompt-file", fullSystemPrompt, "system-prompt");
+
+  // ─── JSON 인자 외화 + read-back 검증 헬퍼 ─────────────────────────
+  // 도입 배경 (2026-05-06): Phase 13 직후 비결정적으로 발생한 두 종류 사고
+  //   - "Invalid JSON provided to --settings"
+  //   - "Invalid MCP configuration: mcpServers: Does not adhere to ... schema"
+  // 원인 가설: writeFileSync 는 동기지만 OS 디스크 cache flush 까지 보장 X →
+  //          Claude CLI 가 spawn 직후 너무 빨리 읽으면 빈/부분 파일을 보고 거부.
+  // 대책: 작성 직후 read-back → JSON.parse + 길이 일치 → 두 번 실패하면 inline 폴백.
+  const materializeJsonArg = (opts: {
+    inlineFlag: string;
+    jsonString: string;
+    suffix: string;
+  }): { ok: boolean; mode: "file" | "inline-fallback"; tmpPath: string | null; bytes: number } => {
+    const tmpPath = path.join(os.tmpdir(), `kda-${opts.suffix}-${msg.id}.json`);
+    let lastErr: unknown = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        writeFileSync(tmpPath, opts.jsonString, "utf-8");
+        const readBack = readFileSync(tmpPath, "utf-8");
+        if (readBack.length !== opts.jsonString.length) {
+          throw new Error(`length mismatch: written=${opts.jsonString.length} readback=${readBack.length}`);
+        }
+        JSON.parse(readBack); // throw on invalid
+        args.push(opts.inlineFlag, tmpPath);
+        tmpFiles.push(tmpPath);
+        return { ok: true, mode: "file", tmpPath, bytes: opts.jsonString.length };
+      } catch (e) {
+        lastErr = e;
+        logToFile(
+          "warn",
+          `${opts.suffix} 외화 검증 실패 (시도 ${attempt}/2): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    const head50 = opts.jsonString.length > 50 ? opts.jsonString.slice(0, 50) + "..." : opts.jsonString;
+    logToFile(
+      "error",
+      `${opts.suffix} 외화 2회 실패 → inline 폴백. lastErr=${lastErr instanceof Error ? lastErr.message : String(lastErr)} head=${head50}`,
+    );
+    args.push(opts.inlineFlag, opts.jsonString);
+    return { ok: false, mode: "inline-fallback", tmpPath: null, bytes: opts.jsonString.length };
+  };
+
+  // MCP 설정 외화 (Claude CLI v2 expects top-level { mcpServers: {...} } wrapper)
+  let mcpBytes = 0;
+  let mcpHead50 = "";
+  if (Object.keys(mcpConfig).length > 0) {
+    const mcpJson = JSON.stringify({ mcpServers: mcpConfig });
+    mcpBytes = mcpJson.length;
+    mcpHead50 = mcpJson.length > 50 ? mcpJson.slice(0, 50) + "..." : mcpJson;
+    const r = materializeJsonArg({ inlineFlag: "--mcp-config", jsonString: mcpJson, suffix: "mcp" });
+    mcpConfigFile = r.ok ? r.tmpPath : null;
   }
 
   // 세션 ID가 있으면 이어가기
@@ -871,18 +1074,90 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
       ],
     },
   };
-  // --settings 는 file path 또는 inline JSON 둘 다 가능. inline 으로 전달 (임시 파일 부담 없음).
-  args.push("--settings", JSON.stringify(hookSettings));
+  // --settings: 항상 파일로 외화 + read-back 검증 (materializeJsonArg 사용).
+  // Reason: shell:true + inline JSON triggers Windows cmd.exe double-quote quirk,
+  // making CLI see malformed JSON ("Invalid JSON provided to --settings").
+  // 추가로 OS disk-cache flush race 까지 read-back 으로 차단.
+  const settingsJson = JSON.stringify(hookSettings);
+  const settingsBytes = settingsJson.length;
+  const settingsHead50 = settingsJson.length > 50 ? settingsJson.slice(0, 50) + "..." : settingsJson;
+  materializeJsonArg({ inlineFlag: "--settings", jsonString: settingsJson, suffix: "settings" });
 
   // 권한 정책 요약 — 어느 카테고리가 어떻게 처리됐는지 진단 가능.
   const permSummary = Object.entries(toolFlags.effective)
     .map(([k, v]) => `${k}=${v}`)
     .join(",");
 
+  // ─── 인자 합산 길이 검증 (Windows cmd.exe 8191자 한계 회귀 방지) ────────
+  // shell:true 로 spawn 하면 "cmd /d /s /c <CLAUDE_CLI> <args...>" 형태로 합쳐져 cmd.exe 가 처리.
+  // 위 자동 외화로 큰 인자(--system-prompt, --settings, --mcp-config) 는 이미 path 로 줄어들었지만,
+  // 향후 어떤 코드가 새로운 큰 인자를 추가해도 spawn 전에 잡히도록 3단 방어선:
+  //   1. WARN  (≥6500): 로그만 남기고 진행 — 인자 추가 흔적 추적용
+  //   2. FAIL  (≥7800): spawn 안 함, error 이벤트로 명확히 표면화 + 인자별 길이 dump
+  //   3. cmd.exe 8191 자체 한계 — FAIL 임계치가 마진 포함이라 사실상 도달 안 함
+  const argsTotalLen =
+    CLAUDE_CLI.length + args.reduce((acc, a) => acc + a.length + 3, 0); // +3 = " " + 양쪽 quote 여유
+  const ARGS_WARN_THRESHOLD = 6500;
+  const ARGS_FAIL_THRESHOLD = 7800;  // 8191 - 391 마진 (cmd /d /s /c, 환경변수 inheritance 등)
+
+  function dumpArgLengths(): string {
+    // 이름/값 페어로 나눠 길이 분석. 진단 시 어떤 인자가 비대한지 즉시 파악 가능.
+    const parts: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a.startsWith("--") || a === "-p") {
+        const next = args[i + 1];
+        if (next && !next.startsWith("--") && next !== "-p") {
+          parts.push(`${a}=${next.length}`);
+          i++;
+        } else {
+          parts.push(`${a}`);
+        }
+      } else {
+        parts.push(`<bare:${a.length}>`);
+      }
+    }
+    return parts.join(" ");
+  }
+
+  if (argsTotalLen >= ARGS_FAIL_THRESHOLD) {
+    const dump = dumpArgLengths();
+    const errMsg =
+      `CLI args length ${argsTotalLen} exceeds safety threshold ${ARGS_FAIL_THRESHOLD} ` +
+      `(Windows cmd.exe 한계 8191). 자동 파일 외화 후에도 인자가 비대 — spawn 차단. ` +
+      `인자별 길이: ${dump}`;
+    logToFile("error", errMsg);
+    // 외화 임시 파일들 cleanup (spawn 안 했으므로 finally 안 거침)
+    for (const f of tmpFiles) {
+      try { unlinkSync(f); } catch { /* cleanup error ignored */ }
+    }
+    if (attachmentsDir) {
+      try { rmSync(attachmentsDir, { recursive: true, force: true }); } catch { /* cleanup error ignored */ }
+    }
+    emit({
+      type: "error",
+      id: msg.id,
+      message: `명령행 길이 초과 (${argsTotalLen}자). 누군가 큰 인자를 추가했을 가능성 — sidecar.log 의 "CLI args length" 진단 라인 확인. 자세한 로그: ${dump}`,
+    });
+    emit({ type: "done", id: msg.id, agentId: null });
+    return;
+  }
+  if (argsTotalLen >= ARGS_WARN_THRESHOLD) {
+    logToFile(
+      "warn",
+      `CLI args length ${argsTotalLen} approaches Windows cmd.exe 8191-char limit (threshold=${ARGS_WARN_THRESHOLD}). 인자별 길이: ${dumpArgLengths()}`
+    );
+  }
+
   const attachmentsCount = msg.attachments?.length ?? 0;
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hooks=overwriteGuard+pitfallGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} argsLen=${argsTotalLen} tmpFiles=${tmpFiles.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} settingsBytes=${settingsBytes} mcpBytes=${mcpBytes} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hooks=overwriteGuard+pitfallGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b`
+  );
+  // 진단용 head50 (Phase F 2026-05-06 사고 재발 시 즉시 원인 잡기 위해)
+  logToFile(
+    "info",
+    `CLI query head50 id=${msg.id} settingsHead=${JSON.stringify(settingsHead50)} mcpHead=${JSON.stringify(mcpHead50 || "(no mcp)")}`,
   );
 
   try {
@@ -917,6 +1192,17 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     let currentText = "";
     let sessionId: string | null = null;
     let sawResult = false;
+
+    // ─── Per-turn usage 추적 (Phase 12 — Context Meter v2) ───────────────────
+    // 한 turn 안에서 sub-agent / iterative tool 호출 등으로 model call 이 N번 일어나면,
+    // result.usage 는 그 N번을 누적 합산한 값이라 1M~4M 까지 부풀어 윈도우 점유율로 부적절.
+    // 반면 각 model call 시작 직전의 SSE message_start 의 usage 는 "그 시점에 모델이 실제로
+    // 본 컨텍스트 크기" (input + cache_creation + cache_read) 라, turn 안에서 최댓값을 취하면
+    // 그 turn 의 가장 큰 단일 model call 컨텍스트 = 윈도우 점유율의 정확한 척도.
+    let maxTurnInputTokens = 0;
+    let maxTurnCacheCreation = 0;
+    let maxTurnCacheRead = 0;
+    let maxTurnContextTokens = 0; // = max over message_starts of (input + cc + cr)
 
     // stderr 캡처: CLI 가 비정상 종료할 때 진짜 원인을 파악.
     // Windows 한국어 콘솔은 cp949(euc-kr) 로 출력하므로 해당 인코딩으로 디코드.
@@ -1019,27 +1305,100 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
           case "result": {
             // 완료 이벤트
             sawResult = true;
+            // 안전망: 마지막 chunk 가 race / 누락 등으로 빠졌을 가능성 대비.
+            // currentText 가 비어있지 않으면 최종 텍스트로 한 번 더 emit (frontend 가 replace).
+            // 2026-05-06 회귀: chunk 단위 emit → 마지막 chunk 만 화면에 남는 사고가 있었기에 추가.
+            if (currentText) {
+              emit({ type: "assistant_delta", id: msg.id, text: currentText });
+            }
+            // result.usage 는 한 turn 안 모든 model call 의 누적 합산이라 윈도우 점유율로
+            // 부적절. 대신 turn 동안 캡처한 message_start 들의 최댓값(maxTurnUsage)을
+            // 별도 필드로 함께 emit — 클라이언트가 이걸 정확한 컨텍스트 측정치로 사용.
             emit({
               type: "done",
               id: msg.id,
               usage: event.usage ?? null,
               computed_usage: event.usage ?? null,
+              maxTurnUsage:
+                maxTurnContextTokens > 0
+                  ? {
+                      input_tokens: maxTurnInputTokens,
+                      cache_creation_input_tokens: maxTurnCacheCreation,
+                      cache_read_input_tokens: maxTurnCacheRead,
+                      total_context_tokens: maxTurnContextTokens,
+                    }
+                  : null,
               agentId: event.session_id ?? sessionId,
             });
+            // 다음 turn 을 위해 진단 로그 한 줄 — 표시(maxTurn)와 raw(result.usage)를
+            // 동시 박아 회귀 시 갭 추적 가능.
+            const ru = event.usage ?? {};
+            const rawCtx =
+              (ru.input_tokens ?? 0) +
+              (ru.cache_creation_input_tokens ?? 0) +
+              (ru.cache_read_input_tokens ?? 0);
+            logToFile(
+              "info",
+              `CLI turn end id=${msg.id} displayCtx=${maxTurnContextTokens} rawCtx=${rawCtx} (input=${maxTurnInputTokens} cc=${maxTurnCacheCreation} cr=${maxTurnCacheRead})`
+            );
             break;
           }
 
           case "stream_event": {
             // 부분 응답 이벤트 (실시간 스트리밍)
-            const delta = event.event?.delta;
+            const inner = event.event;
+            // ── (a) text_delta — 화면에 흘려 보냄 ───────────────────
+            const delta = inner?.delta;
             if (delta?.type === "text_delta" && delta.text) {
+              // 2026-05-06 회귀 fix: --include-partial-messages 옵션을 켜면서
+              // text_delta 가 chunk 단위로 잘게 옴. 프론트는 assistant_delta 의 text 를
+              // *전체 내용으로 replace* 하는 정책이라 chunk 만 보내면 마지막 chunk 만 화면에 남고
+              // 응답이 잘린 것처럼 보임. → 누적값(currentText) 을 보낸다.
+              currentText += delta.text;
               emit({
                 type: "assistant_delta",
                 id: msg.id,
-                text: delta.text,
+                text: currentText,
               });
-              currentText += delta.text;
             }
+            // ── (b) message_start — turn 내 단일 model call 의 컨텍스트 크기 캡처 ──
+            //   sub-agent / iterative tool 호출이 있으면 한 turn 에 여러 번 옴.
+            //   각 시점의 (input + cache_creation + cache_read) 중 최댓값 = 윈도우 점유율.
+            if (inner?.type === "message_start") {
+              const u = inner.message?.usage;
+              if (u) {
+                const inputT = u.input_tokens ?? 0;
+                const cc = u.cache_creation_input_tokens ?? 0;
+                const cr = u.cache_read_input_tokens ?? 0;
+                const ctx = inputT + cc + cr;
+                if (ctx > maxTurnContextTokens) {
+                  maxTurnInputTokens = inputT;
+                  maxTurnCacheCreation = cc;
+                  maxTurnCacheRead = cr;
+                  maxTurnContextTokens = ctx;
+                }
+              }
+            }
+            break;
+          }
+
+          case "rate_limit_event": {
+            // Phase 15.5 — Anthropic Max 의 rate limit 정보 (매 turn 박혀 옴)
+            //   5h primary 한도 + 7d secondary(weekly) 한도 + 각각 reset_at + 사용%.
+            //   지금까진 type 만 로깅했지만, payload 안에 핵심 데이터 다 있음.
+            //   frontend 가 5h/주간 bar + reset countdown 표시 가능.
+            const payload = (event as any).event ?? event;
+            // raw payload 도 sidecar.log 에 — 첫 빌드에서 실제 필드명 검증용
+            logToFile(
+              "info",
+              `CLI event: rate_limit_event payload=${JSON.stringify(payload).slice(0, 500)}`
+            );
+            emit({
+              type: "rate_limit",
+              provider: "anthropic",
+              payload,
+              receivedAt: Date.now(),
+            });
             break;
           }
 
@@ -1083,10 +1442,11 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   } finally {
     logToFile("info", `CLI query end id=${msg.id}`);
     activeTurns.delete(msg.id);
-    // 임시 mcp-config 파일 정리
-    if (mcpConfigFile) {
+    // 외화한 임시 인자 파일들 통째 정리 — system-prompt-file, settings, mcp-config 모두.
+    // tmpFiles 가 mcpConfigFile 도 포함하므로 별도 처리 불필요.
+    for (const f of tmpFiles) {
       try {
-        unlinkSync(mcpConfigFile);
+        unlinkSync(f);
       } catch {
         // cleanup error ignored
       }
@@ -1116,6 +1476,300 @@ function normalizeToolOutput(content: unknown): string {
   return JSON.stringify(content);
 }
 
+// ─── Codex CLI 경로 (ChatGPT Plus/Pro OAuth — Phase 15) ──────────────────
+//
+// Codex CLI 의 `codex exec --json` 은 다음 JSONL 이벤트들을 stdout 으로 emit:
+//   - {"type":"thread.started", "thread_id":"<uuid>"}        — session 시작
+//   - {"type":"turn.started"}                                — turn 시작
+//   - {"type":"item.completed", "item":{ "id":..., "type":"agent_message", "text":... }}
+//                                                            — 최종 응답 또는 중간 텍스트
+//   - {"type":"item.completed", "item":{ "type":"reasoning",       "text":...}} — 추론
+//   - {"type":"item.completed", "item":{ "type":"command_exec",    ...}}        — Bash 호출
+//   - {"type":"item.completed", "item":{ "type":"mcp_tool_call",   ...}}        — MCP 도구 호출
+//   - {"type":"item.completed", "item":{ "type":"file_change",     ...}}        — 파일 편집
+//   - {"type":"item.delta",     "item":{...}}                — 스트리밍 델타 (text)
+//   - {"type":"turn.completed", "usage":{ "input_tokens":..., "cached_input_tokens":...,
+//                                          "output_tokens":..., "reasoning_output_tokens":... }}
+//
+// Claude CLI 와 차이:
+//   1. session_id 자리는 thread_id. resume 은 `codex exec resume <thread_id>` subcommand.
+//   2. usage 는 turn.completed 에 한 번만 옴 (sub-agent 누적 부풀음 없음 → 그대로 maxTurnUsage 로 사용).
+//   3. K-Personal MCP 등록은 Codex 가 자체 관리 (~/.codex/config.toml + `codex mcp add`).
+//      sidecar 는 mcp-config 인자를 안 넘김 — Codex CLI 가 자기 config 의 mcp_servers 를 자동으로 사용.
+//   4. 권한 게이트: Codex 는 자체 sandbox + approvals 시스템. K-Desktop-Agent 의 PermLevel 은
+//      sandbox 모드로 매핑 (auto → workspace-write, ask → read-only, manual → 자체 거부).
+//      향후 정밀 매핑은 별도 phase. 현재는 --dangerously-bypass-approvals-and-sandbox 로
+//      stdin 프로토콜 호환성 우선 (Claude CLI 의 bypassPermissions 와 동등).
+async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
+  // 첨부 파일은 Claude 와 같은 방식으로 임시 폴더 + 안내 텍스트
+  const { dir: attachmentsDir, guidance: attachmentsGuidance } =
+    materializeAttachments(msg);
+  const baseContent = attachmentsGuidance
+    ? `${msg.content}${attachmentsGuidance}`
+    : msg.content;
+  const memory = loadMemoryContext();
+  const promptWithHistory = buildPromptWithHistory(
+    baseContent,
+    msg.history,
+    memory.content,
+  );
+
+  // Codex CLI 인자 — `codex exec` 의 sub-form.
+  // resume 은 별도 subcommand 라 case 분기로 처리.
+  const args: string[] = [];
+
+  if (msg.agent_id) {
+    // `codex exec resume <thread_id>` — 기존 세션 이어가기.
+    args.push("exec", "resume", msg.agent_id, "--json");
+  } else {
+    args.push("exec", "--json");
+  }
+
+  // 공통 옵션
+  args.push(
+    "--skip-git-repo-check",                          // 프로젝트 루트가 git repo 가 아니어도 진행
+    "--dangerously-bypass-approvals-and-sandbox",      // Claude 의 bypassPermissions 등가 (stdin 프로토콜)
+    "-",                                               // prompt = stdin
+  );
+
+  // 모델 지정 — Settings 의 chatModel 과 동기화. "default" 면 안 박음 (config.toml 기본값 사용).
+  if (msg.model && msg.model.trim() && msg.model !== "default") {
+    // -c model="..." 형식 (TOML literal). Codex 는 TOML 파싱 후 dotted-path override.
+    args.unshift(`model="${msg.model}"`);
+    args.unshift("-c");
+  }
+
+  logToFile(
+    "info",
+    `Codex query start id=${msg.id} model=${msg.model ?? "default"} resume=${msg.agent_id ?? "none"} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} attachments=${msg.attachments?.length ?? 0}`,
+  );
+
+  // Per-turn usage 집계 — Codex 는 turn.completed 에 정확한 컨텍스트 크기 한 번 옴.
+  let maxTurnInputTokens = 0;
+  let maxTurnCacheCreation = 0;
+  let maxTurnCacheRead = 0;
+  let maxTurnContextTokens = 0;
+
+  let sessionId: string | null = null;
+  let currentText = "";
+  let sawCompletion = false;
+  let stderrTail = "";
+  const STDERR_KEEP = 4096;
+
+  try {
+    const proc = spawn(CODEX_CLI, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: true,
+      env: { ...process.env },
+    });
+
+    activeTurns.set(msg.id, proc);
+
+    if (proc.stdin) {
+      proc.stdin.on("error", (e) => {
+        logToFile("warn", `Codex stdin error: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      proc.stdin.write(promptWithHistory, "utf-8");
+      proc.stdin.end();
+    }
+
+    if (proc.stderr) {
+      proc.stderr.on("data", (chunk: Buffer) => {
+        const decoded = chunk.toString("utf-8");
+        stderrTail += decoded;
+        if (stderrTail.length > STDERR_KEEP) {
+          stderrTail = stderrTail.slice(-STDERR_KEEP);
+        }
+        logToFile("warn", `Codex stderr: ${decoded.trimEnd()}`);
+      });
+    }
+
+    const rl = readline.createInterface({
+      input: proc.stdout,
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        switch (event.type) {
+          case "thread.started": {
+            if (event.thread_id) sessionId = event.thread_id;
+            break;
+          }
+          case "turn.started": {
+            // 신호용 — 현재는 별도 처리 없음
+            break;
+          }
+          case "item.delta": {
+            // 스트리밍 델타. agent_message 의 text 누적 (Claude 의 stream_event/text_delta 와 동일).
+            const it = event.item;
+            if (it?.type === "agent_message" && typeof it.text === "string") {
+              currentText += it.text;
+              emit({ type: "assistant_delta", id: msg.id, text: currentText });
+            }
+            break;
+          }
+          case "item.completed": {
+            const it = event.item;
+            if (!it) break;
+            if (it.type === "agent_message" && typeof it.text === "string") {
+              // 일부 호출은 delta 없이 한 번에 옴 — 최종 텍스트 replace.
+              if (it.text !== currentText) {
+                currentText = it.text;
+                emit({ type: "assistant_delta", id: msg.id, text: currentText });
+              }
+            } else if (it.type === "command_exec") {
+              // Codex 자체 Bash 도구 호출. Claude 의 tool_use 패턴으로 중계.
+              emit({
+                type: "tool_use",
+                id: msg.id,
+                tool_id: it.id ?? `codex-${Date.now()}`,
+                name: it.command_name ?? "Bash",
+                input: { command: it.command ?? it.text ?? "" },
+              });
+              if (it.output != null) {
+                emit({
+                  type: "tool_result",
+                  id: msg.id,
+                  tool_id: it.id ?? `codex-${Date.now()}`,
+                  output: typeof it.output === "string" ? it.output : JSON.stringify(it.output),
+                });
+              }
+            } else if (it.type === "mcp_tool_call") {
+              // MCP 도구 호출 — name 은 보통 "<server>__<tool>" 형식.
+              const toolName = it.tool ?? it.name ?? "mcp_tool";
+              emit({
+                type: "tool_use",
+                id: msg.id,
+                tool_id: it.id ?? `codex-mcp-${Date.now()}`,
+                name: toolName,
+                input: it.arguments ?? it.input ?? {},
+              });
+              if (it.result != null) {
+                emit({
+                  type: "tool_result",
+                  id: msg.id,
+                  tool_id: it.id ?? `codex-mcp-${Date.now()}`,
+                  output: typeof it.result === "string" ? it.result : JSON.stringify(it.result),
+                });
+              }
+            } else if (it.type === "file_change") {
+              emit({
+                type: "tool_use",
+                id: msg.id,
+                tool_id: it.id ?? `codex-file-${Date.now()}`,
+                name: "FileEdit",
+                input: { path: it.path, change: it.change ?? "edit" },
+              });
+            }
+            // reasoning 등 다른 타입은 일단 로그만.
+            else {
+              logToFile("info", `Codex item.completed type=${it.type}`);
+            }
+            break;
+          }
+          case "turn.completed": {
+            sawCompletion = true;
+            // Codex usage 형식 → Anthropic usage 형식으로 매핑.
+            //   input_tokens          ← input_tokens (모두 새로 본 input)
+            //   cached_input_tokens   ← cache_read_input_tokens
+            //   (Codex 는 cache_creation 분리 안 함 — 0 으로 둠)
+            const u = event.usage ?? {};
+            const inp = (u.input_tokens ?? 0) - (u.cached_input_tokens ?? 0);
+            const cr = u.cached_input_tokens ?? 0;
+            maxTurnInputTokens = Math.max(0, inp);
+            maxTurnCacheRead = cr;
+            maxTurnContextTokens = (u.input_tokens ?? 0); // = 그 turn 모델이 본 컨텍스트 크기
+            // 마지막 안전망 — 누적 텍스트가 있으면 한 번 더 emit (Claude 와 동일 정책).
+            if (currentText) {
+              emit({ type: "assistant_delta", id: msg.id, text: currentText });
+            }
+            emit({
+              type: "done",
+              id: msg.id,
+              usage: {
+                input_tokens: maxTurnInputTokens,
+                output_tokens: u.output_tokens ?? 0,
+                cache_read_input_tokens: cr,
+              },
+              computed_usage: {
+                input_tokens: maxTurnInputTokens,
+                output_tokens: u.output_tokens ?? 0,
+                cache_read_input_tokens: cr,
+              },
+              maxTurnUsage:
+                maxTurnContextTokens > 0
+                  ? {
+                      input_tokens: maxTurnInputTokens,
+                      cache_creation_input_tokens: maxTurnCacheCreation,
+                      cache_read_input_tokens: maxTurnCacheRead,
+                      total_context_tokens: maxTurnContextTokens,
+                    }
+                  : null,
+              agentId: sessionId,
+            });
+            logToFile(
+              "info",
+              `Codex turn end id=${msg.id} displayCtx=${maxTurnContextTokens} (input=${maxTurnInputTokens} cr=${maxTurnCacheRead} out=${u.output_tokens ?? 0})`,
+            );
+            break;
+          }
+          case "error": {
+            const errMsg = event.message ?? event.error ?? "Codex error";
+            logToFile("error", `Codex error event: ${errMsg}`);
+            emit({ type: "error", id: msg.id, message: String(errMsg) });
+            break;
+          }
+          default: {
+            logToFile("info", `Codex event: ${event.type}`);
+          }
+        }
+      } catch (parseErr) {
+        logToFile("warn", `Codex JSON parse error: ${line}`);
+      }
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      proc.on("close", (code) => {
+        if (code === 0 || sawCompletion) {
+          resolve();
+        } else {
+          const tail = stderrTail.trim();
+          const detail = tail
+            ? `\nstderr (tail):\n${tail}`
+            : "\n(stderr 비어있음 — codex --version 으로 CLI 직접 동작 확인 권장)";
+          reject(new Error(`Codex CLI exited with code ${code}${detail}`));
+        }
+      });
+      proc.on("error", reject);
+    });
+
+    if (!sawCompletion && activeTurns.has(msg.id)) {
+      emit({ type: "done", id: msg.id, agentId: sessionId });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    logToFile("error", `Codex query error id=${msg.id}: ${message}${stack ? `\n${stack}` : ""}`);
+    emit({ type: "error", id: msg.id, message });
+  } finally {
+    logToFile("info", `Codex query end id=${msg.id}`);
+    activeTurns.delete(msg.id);
+    if (attachmentsDir) {
+      try {
+        rmSync(attachmentsDir, { recursive: true, force: true });
+      } catch (e) {
+        logToFile(
+          "warn",
+          `Codex attachment dir 정리 실패: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+}
+
 // ─── REST API 경로 (OpenAI / Anthropic / Gemini / OpenRouter) ─────────────
 // 각 프로바이더의 SSE 스트리밍 응답을 파싱해 assistant_delta 이벤트로 중계.
 //
@@ -1133,6 +1787,7 @@ function defaultModelFor(provider: Provider): string {
     case "openai": return "gpt-4o-mini";
     case "gemini": return "gemini-2.0-flash";
     case "openrouter": return "openai/gpt-4o-mini";
+    case "codex": return "default";
     default: return "";
   }
 }
@@ -1640,9 +2295,195 @@ rl.on("close", () => {
   process.exit(0);
 });
 
+// ─── Phase 15.5 — Claude Code statusLine 설치 + rate limit polling ──────────────
+//
+// SSE rate_limit_event 는 reset 시간만 주고 used% 는 안 줌. 사용% 는 statusLine 의 stdin
+// JSON 에만 박힘. 그래서 우리 helper(statusLineSource.ts)를 K 의 ~/.kda/statusline.mjs 에
+// install + claude code 의 settings.json 에 등록 → claude 가 매 update 마다 mjs 호출 →
+// mjs 가 %TEMP%/kda-rate-limits.json 에 atomic write → sidecar 가 5초 polling.
+//
+// 기존 statusLine 이 있으면 덮어쓰지 않고 skip + log warn (안전).
+
+const KDA_STATUSLINE_PATH = path.join(os.homedir(), ".kda", "statusline.mjs");
+const KDA_RATE_LIMITS_TMP = path.join(os.tmpdir(), "kda-rate-limits.json");
+
+function installStatusLine(): void {
+  try {
+    // 1. statusline.mjs dump (매번 overwrite — version 비교 안 해도 atomic)
+    mkdirSync(path.dirname(KDA_STATUSLINE_PATH), { recursive: true });
+    writeFileSync(KDA_STATUSLINE_PATH, STATUSLINE_SOURCE, "utf-8");
+
+    // 2. ~/.claude/settings.json 에 등록 (없으면 생성, 다른 statusLine 있으면 skip)
+    const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+    let settings: Record<string, unknown> = {};
+    if (existsSync(settingsPath)) {
+      try {
+        const raw = readFileSync(settingsPath, "utf-8");
+        const stripped = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+        settings = JSON.parse(stripped) as Record<string, unknown>;
+      } catch (err) {
+        log("warn", `settings.json 파싱 실패 (statusLine install skip): ${err}`);
+        return;
+      }
+    }
+    const expectedCommand = `node "${KDA_STATUSLINE_PATH}"`;
+    const current = (settings.statusLine ?? null) as { command?: string } | null;
+    if (current?.command && current.command !== expectedCommand && !current.command.includes("kda")) {
+      log(
+        "warn",
+        `settings.json 에 다른 statusLine 이미 설정됨: ${current.command} — KDA 등록 skip`
+      );
+      return;
+    }
+    if (current?.command === expectedCommand) {
+      log("info", "statusLine 이미 등록됨 (idempotent)");
+      return;
+    }
+    settings.statusLine = {
+      type: "command",
+      command: expectedCommand,
+      padding: 0,
+    };
+    mkdirSync(path.dirname(settingsPath), { recursive: true });
+    // atomic write — tmp + rename
+    const tmp = settingsPath + ".tmp." + process.pid;
+    writeFileSync(tmp, JSON.stringify(settings, null, 2), "utf-8");
+    renameSync(tmp, settingsPath);
+    log("info", `statusLine 등록 완료: ${expectedCommand}`);
+  } catch (err) {
+    log("warn", `statusLine install 실패: ${err}`);
+  }
+}
+
+function startRateLimitPolling(): void {
+  // (a) statusLine path — interactive Claude 세션이 있으면 statusLine 이 temp file 박음.
+  //     non-interactive `claude -p` 에선 안 부르지만, K 가 별도 터미널에서 interactive 쓰면 작동.
+  let lastMtime = 0;
+  setInterval(() => {
+    try {
+      const stat = statSync(KDA_RATE_LIMITS_TMP);
+      if (stat.mtimeMs <= lastMtime) return;
+      lastMtime = stat.mtimeMs;
+      const raw = readFileSync(KDA_RATE_LIMITS_TMP, "utf-8");
+      const data = JSON.parse(raw);
+      emit({
+        type: "rate_limit",
+        provider: "anthropic",
+        payload: data.rate_limits ?? data,
+        receivedAt: typeof data.receivedAt === "number" ? data.receivedAt : Date.now(),
+      } as any);
+      log(
+        "info",
+        `rate_limit polled (statusLine): ${JSON.stringify(data.rate_limits ?? {}).slice(0, 200)}`
+      );
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") {
+        log("warn", `rate_limit poll 실패: ${err}`);
+      }
+    }
+  }, 5000);
+
+  // (b) ccusage path — non-interactive 환경(K-Desktop-Agent)에서 정확한 토큰/시간 수집.
+  //     `npx ccusage blocks --active --json` (5h primary) + `npx ccusage weekly --json` (주간 secondary).
+  //     5분 간격 + 기동 직후 1회. ccusage 가 ~/.claude/projects/ session 파일 파싱 → statusLine 무관.
+  pollCcusageOnce();
+  setInterval(pollCcusageOnce, 5 * 60 * 1000);
+}
+
+function spawnNpx(args: string[], timeoutMs: number): { stdout: string; ok: boolean } {
+  // Windows 의 npx 는 npx.cmd 셸 wrapper — cmd /c 로 호출해야 PATH 해석됨.
+  const isWin = process.platform === "win32";
+  const cmd = isWin ? "cmd" : "npx";
+  const fullArgs = isWin ? ["/c", "npx", ...args] : args;
+  const res = spawnSync(cmd, fullArgs, {
+    encoding: "utf-8",
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
+  return {
+    stdout: res.stdout ?? "",
+    ok: res.status === 0 && !!res.stdout,
+  };
+}
+
+function pollCcusageOnce(): void {
+  try {
+    const blocks = spawnNpx(["ccusage@latest", "blocks", "--active", "--json"], 30_000);
+    const weekly = spawnNpx(["ccusage@latest", "weekly", "--json", "--order", "desc"], 30_000);
+
+    let primary: any = null;
+    let secondary: any = null;
+
+    if (blocks.ok) {
+      try {
+        const j = JSON.parse(blocks.stdout);
+        const active = Array.isArray(j.blocks) ? j.blocks.find((b: any) => b.isActive) : null;
+        if (active) {
+          primary = {
+            // ccusage 가 used% 직접 안 줌 — 토큰 + projection 으로 추정.
+            // projection.remainingMinutes 가 있으면 "burn rate 기준 한도 도달까지 X분" → 시간 진행률.
+            // 폴백: block 시간 진행률 (시작~end 사이 현재 위치).
+            used_tokens: active.totalTokens,
+            reset_at: active.endTime, // ISO string — App.tsx normalize 가 처리
+            // burn rate / projection 도 future use 용으로 보존
+            burn_rate: active.burnRate?.tokensPerMinute,
+            projection_remaining_min: active.projection?.remainingMinutes,
+            block_start: active.startTime,
+            block_end: active.endTime,
+          };
+        }
+      } catch (err) {
+        log("warn", `ccusage blocks JSON 파싱 실패: ${err}`);
+      }
+    }
+
+    if (weekly.ok) {
+      try {
+        const j = JSON.parse(weekly.stdout);
+        const current = Array.isArray(j.weekly) && j.weekly.length > 0 ? j.weekly[0] : null;
+        if (current) {
+          // weekly entry 의 `week` 는 ISO date (YYYY-MM-DD). 다음 reset = week + 7일 0:00.
+          const weekStart = new Date(current.week);
+          const nextReset = new Date(weekStart);
+          nextReset.setDate(nextReset.getDate() + 7);
+          secondary = {
+            used_tokens: current.totalTokens,
+            reset_at: nextReset.toISOString(),
+            week_start: current.week,
+          };
+        }
+      } catch (err) {
+        log("warn", `ccusage weekly JSON 파싱 실패: ${err}`);
+      }
+    }
+
+    if (primary || secondary) {
+      emit({
+        type: "rate_limit",
+        provider: "anthropic",
+        payload: { primary, secondary, source: "ccusage" },
+        receivedAt: Date.now(),
+      } as any);
+      log(
+        "info",
+        `rate_limit polled (ccusage): primary_tokens=${primary?.used_tokens ?? "n/a"} secondary_tokens=${secondary?.used_tokens ?? "n/a"}`
+      );
+    } else {
+      log("warn", "ccusage 폴링 — primary/secondary 모두 못 받음 (ccusage 미설치 또는 ~/.claude/projects/ 비어있을 가능성)");
+    }
+  } catch (err) {
+    log("warn", `pollCcusageOnce 실패: ${err}`);
+  }
+}
+
 // ─── 기동 ──────────────────────────────────────────────
 
 cachedMCPHealth = checkMCPHealth();
+
+// statusLine install (idempotent — 매 sidecar 시작마다 mjs overwrite, settings 는 한 번만)
+installStatusLine();
+// rate limit polling start
+startRateLimitPolling();
 
 emit({ type: "ready", version: "0.4.0" });
 

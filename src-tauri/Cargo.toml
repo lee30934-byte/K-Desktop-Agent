@@ -16,6 +16,9 @@ tauri-build = { version = "2.0.3", features = [] }
 [dependencies]
 tauri = { version = "2.1.1", features = ["tray-icon", "image-png"] }
 tauri-plugin-shell = "2.0.2"
+# Phase 15.1 — open_external_webview 가 시스템 기본 브라우저로 URL 열 때 사용.
+# tauri-plugin-shell::open 이 deprecated 라 tauri-plugin-opener 로 교체.
+tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2.0.0"
 tauri-plugin-sql = { version = "2.0.1", features = ["sqlite"] }
 tauri-plugin-single-instance = "2.0.1"
@@ -32,6 +35,12 @@ tokio = { version = "1", features = ["full"] }
 notify = { version = "=6.1.1", default-features = false, features = ["macos_kqueue"] }
 notify-debouncer-mini = "=0.4.1"
 uuid = { version = "=1.23.1", features = ["v4"] }
+# Phase 15 — open_external_webview 가 URL 파싱에 사용. tauri 가 transitive 로 이미 가져옴.
+url = "2"
+# Phase 15.5 — Codex usage API 호출 (https://chatgpt.com/backend-api/codex/usage).
+# 비공식 endpoint 라 OpenAI 변경 시 깨질 수 있으므로 호출 측은 silently fail + UI 가 stale 표시.
+# rustls-tls 사용 — Windows 의 schannel 의존 회피, 빌드 환경 일관성.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [profile.release]
 panic = "abort"

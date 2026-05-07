@@ -54,7 +54,7 @@ K-Desktop-Agent/
     └── launch.vbs             창 없이 앱 실행 (바로가기 Target)
 ```
 
-## 현재 상태 (2026-04-29)
+## 현재 상태 (2026-05-07)
 
 **완료된 Phase:**
 - ✅ **Phase 0**: 스캐폴드, Rust-React 왕복
@@ -63,6 +63,10 @@ K-Desktop-Agent/
 - ✅ **Phase 3**: K-Personal MCP 통합 (스크린샷 등 검증 완료)
 - ✅ **Phase 4**: SQLite 대화 히스토리 + resume (2026-04-22 latest-ref 버그 수정 포함)
 - ✅ **Phase 4.5**: 권한 게이트 v0.4.1 (2026-04-29) — default-allow + 카테고리 토글(8개) + 정밀 잠금(도구 단위 체크박스) + PreToolUse Hook(`sidecar/hooks/preToolUse-overwriteGuard.mjs`)으로 Write/Edit/MultiEdit 덮어쓰기 갭 차단. `ALWAYS_BLOCKED_BYPASS`(Task/Monitor/Skill/NotebookEdit) + `HIGH_RISK_BUILTINS`(Bash) 정책 상시. 회귀 테스트 13/13 통과 (`sidecar/test-perm-gate.mjs`, `sidecar/test-hook-overwriteGuard.mjs`).
+- ✅ **Phase 12 — Context Meter v2** (2026-05-06): "100턴 진행해도 컨텍스트 표시 20% 안 올라감" 사고 근본 대책. sidecar 가 SSE `message_start` 의 usage 들 중 (input + cache_creation + cache_read) **턴별 최댓값**을 별도 필드(`maxTurnUsage`)로 emit → 클라이언트는 sub-agent 누적 부풀음을 회피한 정확한 윈도우 점유율 표시. 모델별 분모 동적 적용 (Claude default = 1M, 그 외 = 200K). 회귀 테스트 10/10 (`sidecar/test-context-meter.mjs`) + sidecar.log 에 `displayCtx=`/`rawCtx=` 동시 박혀 갭 추적.
+- ✅ **Phase 13 — Headless Automation** (2026-05-06): K 가 RDP/콘솔로 같은 PC 를 동시 사용 시 cc_* (pyautogui SendInput) 가 K 마우스/키보드를 점유해 충돌하던 문제 해소. K-Personal MCP 에 신규 모듈 2개 — `modules/uia_control.py` (uiautomation, 9 도구 `ui_*`) + `modules/web_automation.py` (Playwright 헤드리스 chromium, 9 도구 `web_*`). cc_* (pyautogui) 와 별도 카테고리 (`ui_automation`, `web_automation`). 시스템 프롬프트 자동화 우선순위: web_* > ui_* > cc_*. 외부 패키지 미설치 환경에서도 import 살아남는 지연 로드. 회귀 테스트 11/11 (`sidecar/test-headless-mcp.mjs`) + perm-gate Phase 13 케이스 4개 추가.
+- ✅ **Phase 15 — Codex CLI + 외부 사용량 페이지** (2026-05-07): K 가 ChatGPT Pro 구독을 K-Desktop-Agent 안에서 사용 + 사용량 페이지 외부 브라우저 진입. (a) **15.1** Settings 에 외부 사용량 진입 — `lib.rs` 의 `open_external_webview` 가 `tauri-plugin-opener` 의 `open_url` 로 시스템 기본 브라우저에 URL 흘림 (Google OAuth 가 embedded webview 차단해서 외부 브라우저 폴백 필수 — 2021 정책). URL 매핑: Anthropic Max 구독자 = `claude.ai/settings` (console.anthropic.com 은 API 키 사용자 전용 — Max 구독자에겐 무관). (b) **15.2~15.4** Codex CLI provider 분기 — `sidecar/src/index.ts` 의 `provider="codex"` 케이스가 `codex exec --json --skip-git-repo-check` spawn + JSONL 이벤트(`turn.started`/`item.completed`/`turn.completed`) 파싱. `~/.codex/auth.json` OAuth 토큰을 codex CLI 가 관리. `lib.rs` Tauri commands: `codex_login` (background spawn), `codex_login_status`, `codex_register_mcp` (`codex mcp add k-personal -- python <K-Personal-MCP/server.py>`). 회귀 테스트 41/41 (`sidecar/test-codex-integration.mjs`).
+- ✅ **Phase 15.5 — Rate Limit Dashboard** (2026-05-07): "5h+주간 한도 사용량 + reset 까지 남은 시간" K 명시 요구. **Anthropic path = ccusage 통합** (`npx ccusage@latest blocks --active --json` + `weekly --json` 5분 간격 polling, statusLine 으로 못 받음 — 이 함정의 자세한 내용은 작업 시 주의사항 섹션 참조). **Codex path = `chatgpt.com/backend-api/codex/usage`** Bearer 토큰으로 polling — `lib.rs` 의 `codex_fetch_usage` Tauri command (reqwest + rustls-tls). UI: `MetricsPanel` 의 `RateLimitCard` 가 시간 진행률 % bar + 누적 토큰 + ⏱ reset countdown + burn rate 위험 시 자동 warn 색. used% 는 Anthropic 비공개라 시간 진행률 fallback (⏳ 아이콘으로 "한도 % 아님" 시각 표시). localStorage 영속 (provider 별 분리). 회귀 테스트 41/41.
 
 **남은 Phase:**
 - ⬜ **Phase 5**: 마크다운 렌더링 + MSI 인스톨러 (`docs/PHASE-5-POLISH.md`)
@@ -174,6 +178,57 @@ $env:KDA_OPEN_DEVTOOLS="1"
 - **CSP 정책** (`src-tauri/tauri.conf.json`): 외부 도메인 추가 시 `security.csp` 갱신.
 - **Tauri 권한**: 새 API 사용 시 `src-tauri/capabilities/default.json` 에 permission 추가.
 - **Windows 경로**: TS 리터럴에선 forward slash (`C:/Users/...`) 나 이중 백슬래시 사용.
+- **큰 컨텐츠는 인자 대신 stdin/파일로** (sidecar → Claude CLI 호출 시):
+  Windows `cmd.exe` 의 명령행 길이 한계는 8191자. `--system-prompt` / `--settings` / `--mcp-config`
+  같은 인자에 큰 텍스트(메모리·로그·다대수 hook JSON 등)를 박으면 spawn 자체가 실패한다
+  (`명령줄이 너무 깁니다`). 새 큰 컨텐츠는 반드시 (1) prompt 본문(stdin) 의 `<...>` 블록으로 외화하거나
+  (2) 임시 파일 + path 인자(`--system-prompt-file <path>` 등)로 전달. `sidecar/src/index.ts` 의
+  `pushOrMaterialize` 헬퍼와 `LARGE_ARG_THRESHOLD`(1500자) 정책을 사용. 회귀는
+  `sidecar/test-cmdline-limit.mjs` (preflight 에 결합) 가 거대 시나리오에서 검증.
+- **컨텍스트 % 표시는 SSE message_start 기반** (Phase 12 — Context Meter v2):
+  sidecar 의 `case "stream_event"` 안에서 `message_start.message.usage` 의 `(input + cache_creation +
+  cache_read)` 를 turn 동안 캡처해 최댓값을 `done.maxTurnUsage` 로 emit. 클라이언트(MetricsPanel)
+  는 이걸 우선 사용 — `result.usage` 는 sub-agent / iterative tool 호출이 누적 합산되어 1M~4M 로
+  부풀어 윈도우 점유율로 부적절. 분모는 모델별 (Claude default = 1M, 그 외 = 200K). sidecar.log
+  의 `displayCtx=`/`rawCtx=` 가 매 turn 박혀 추정/실측 갭 추적 가능. 회귀는
+  `sidecar/test-context-meter.mjs` 가 검증.
+- **자동화 도구 우선순위는 `web_* > ui_* > cc_*`** (Phase 13 — Headless Automation):
+  K 가 RDP/콘솔로 같은 PC 를 동시 사용 중일 수 있어 `cc_*` (pyautogui SendInput, K 마우스/키보드
+  점유) 를 함부로 호출하면 입력 충돌. 새 작업은 항상:
+  1. **웹** → `mcp__k-personal__web_open` + `web_snapshot` + `web_click` / `web_fill`
+     (Playwright 헤드리스 chromium, K 화면에 안 뜸)
+  2. **데스크톱 앱** → `mcp__k-personal__ui_dump_tree` → `ui_click_by_name` / `ui_set_text`
+     (Windows UI Automation, 마우스 커서 안 움직임, 백그라운드 창에도 동작)
+  3. **위 둘이 안 먹는 캔버스/게임/DRM** → `cc_screenshot` + `cc_mouse_click` (K 입력 점유,
+     호출 전 한 줄 고지). 새 도구 추가 시 `sidecar/src/index.ts` 의 `PERM_TOOL_MAP` +
+     `Settings.tsx` 의 `TOOL_CATALOG` + `sidecar/test-headless-mcp.mjs` 의 `EXPECTED_*_TOOLS`
+     **세 곳 모두** 동기화 (preflight 의 `test-headless-mcp.mjs` 가 이걸 강제 검증).
+- **외부 사용량 페이지는 항상 시스템 기본 브라우저로** (Phase 15.1 — Google OAuth + Tauri webview 함정):
+  Google OAuth 가 embedded webview (Tauri/Electron) 의 user-agent 를 disallowed 로 차단 (2021~).
+  결과: anthropic.com / chatgpt.com 같은 OAuth 페이지를 `WebviewWindowBuilder` 의 새 창으로 열면
+  "로그인 중 오류" 페이지에 막힘. → `lib.rs` 의 `open_external_webview` 가 `tauri-plugin-opener` 의
+  `app.opener().open_url(&url, None::<&str>)` 로 K 의 시스템 기본 브라우저(Edge/Chrome) 에 흘림.
+  K 평소 브라우저의 cookie 가 영속되어 다음 진입 시 자동 로그인 — bonus. URL 매핑 함정: **Anthropic
+  Max/Pro 구독자는 `claude.ai/settings` 가 정답** (console.anthropic.com/usage 는 API 키 사용자 전용
+  대시보드 — 정액 구독자 사용량은 거기에 안 나옴). `Settings.tsx` 의 `EXTERNAL_USAGE_PAGES`
+  배열에서 새 페이지 추가 시 회귀 테스트 (`sidecar/test-codex-integration.mjs` 의 `claude.ai/settings`
+  grep) 도 같이 갱신.
+- **Rate Limit Dashboard 는 ccusage + Codex backend-api 두 path** (Phase 15.5):
+  Anthropic 의 5h+주간 한도 used% 는 **공식 비공개** — `rate_limit_event` SSE 페이로드는
+  `{status:"allowed", resetsAt, rateLimitType:"five_hour"}` 만 줌 (used% / 주간 누적 없음).
+  Claude Code 의 `statusLine` JSON 에 정확한 `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}`
+  가 박혀 오지만 — **K-Desktop-Agent 가 spawn 하는 `claude -p` (non-interactive) 에서는 statusLine
+  trigger 안 됨** (interactive REPL 전용). statusLine helper 자체는 `~/.kda/statusline.mjs` +
+  `~/.claude/settings.json` 에 install 되어 있어서 K 가 별도 터미널에서 interactive `claude` 쓰면
+  자동 작동 (dormant fallback). 실제 데이터 path: **(1) `npx ccusage@latest blocks --active --json` +
+  `weekly --json` 5분 polling** — `~/.claude/projects/` session 파일 파싱이라 statusLine 무관, 정확한
+  토큰 + reset 시간 받음. **(2) Codex 는 `chatgpt.com/backend-api/codex/usage` GET (Bearer from
+  `~/.codex/auth.json`)** — 비공식 endpoint 라 OpenAI 변경 시 깨질 위험, sidecar 가 silently fail.
+  Anthropic 의 한도값 자체가 비공개라 ccusage 도 used% 안 줌 → UI 는 **시간 진행률** (block_start ~
+  block_end 사이 위치) 을 ⏳ 아이콘과 함께 표시 (한도 % 가 아님을 시각적으로 명시). burn rate 위험
+  (`projection.remainingMinutes < block 남은 시간`) 시 카드 자동 warn 색 + 툴팁에 "이 페이스면 한도
+  도달까지 X분". 새 provider 추가 시 `App.tsx` 의 `normalizeRateLimit` defensive parser 와 sidecar 의
+  emit 형식 맞추기.
 
 ## "Phase X 진행해줘" 라고 요청받을 때
 
@@ -196,7 +251,7 @@ Phase 완료 전, 커밋 전, 새 의존성 추가 후에는 반드시 실행:
 .\scripts\check.ps1            # 전체 검사
 .\scripts\check.ps1 -SkipDeps  # 빠른 반복 (타입/컴파일만)
 ```
-검사 항목: Rust `cargo check`, 프론트 `tsc --noEmit`, sidecar `tsc --noEmit`, `npm ls` 누락 패키지.
+검사 항목: Rust `cargo check`, 프론트 `tsc --noEmit`, sidecar `tsc --noEmit`, sidecar 회귀 테스트 (perm-gate / overwriteGuard hook / cmdline-limit), `npm ls` 누락 패키지.
 
 ### 런타임 로그 위치
 문제 발생 시 아래 로그를 먼저 확인:
@@ -213,7 +268,7 @@ Phase 완료 전, 커밋 전, 새 의존성 추가 후에는 반드시 실행:
 ## 참고 정보
 
 - Claude Max 계정: kcppride@gmail.com
-- 모델: Opus 4.7 (1M context) 기본 사용
+- 모델: Opus 5.7 (1M context) 기본 사용
 - K-Personal MCP 경로: `C:\Users\user\Documents\K-Personal-MCP\server.py`
 - Python: `python` (PATH에 있음)
 - Git Bash: `C:\Program Files\Git\bin\bash.exe`

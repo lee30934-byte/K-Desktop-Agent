@@ -49,4 +49,5 @@ release/*.msi
 
 # Local-only artifacts
 backups/
+.backups/
 node-bundle/
