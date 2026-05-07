@@ -2320,15 +2320,19 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 >
                   상태 새로고침
                 </button>
-                {depsResult && !depsResult.fullyReady && (
+                {/* Phase 20 (v0.5.6): depsResult 가 fatal 에러로 null 일 때도 버튼 표시 — K 가
+                    [자동 설치 실행] 누를 길 자체가 없었던 함정 회피. fullyReady 일 때만 숨김. */}
+                {(!depsResult || !depsResult.fullyReady) && (
                   <button
                     className="settings-btn settings-btn-primary"
                     onClick={handleInstallDeps}
                     disabled={depsBusy !== "idle"}
+                    title={depsError ? `의존성 검사 중 에러: ${depsError}\n\n그래도 실행은 가능 — 클릭하면 시도합니다.` : undefined}
                   >
                     자동 설치 실행
                   </button>
                 )}
+                {/* Claude/Codex 로그인 버튼은 CLI 가 실제 ready 일 때만 표시 (없으면 클릭해봐야 fail) */}
                 {depsResult?.after?.claudeCli && (
                   <button
                     className="settings-btn"
@@ -2355,6 +2359,19 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     첫 셋업 완료 표시
                   </button>
                 )}
+                {/* Phase 20: 마법사 자동 오픈 sessionStorage 가드 강제 초기화 — K 가 닫고 다시 보고 싶을 때 */}
+                <button
+                  className="settings-btn"
+                  onClick={() => {
+                    try {
+                      sessionStorage.removeItem("kda_firstrun_wizard_seen_v2");
+                      console.info("[first-run] sessionStorage 가드 초기화 완료 — KDA 재시작 시 마법사 다시 표시");
+                    } catch {}
+                  }}
+                  title="KDA 재시작 시 first-run 마법사가 다시 자동으로 뜨게 함 (디버그용)"
+                >
+                  마법사 가드 초기화
+                </button>
               </div>
             </div>
           </section>

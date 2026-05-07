@@ -370,22 +370,50 @@ fn project_root() -> Result<PathBuf, String> {
 ///   1. `current_exe().parent()` 의 scripts 폴더 (release path)
 ///   2. dev project root 폴백 (일부 portable 빌드 포함)
 fn resolve_script_path(name: &str) -> Result<PathBuf, String> {
+    let mut tried: Vec<PathBuf> = Vec::new();
+    let mut try_path = |p: PathBuf, tried: &mut Vec<PathBuf>| -> Option<PathBuf> {
+        if p.exists() {
+            return Some(p);
+        }
+        tried.push(p);
+        None
+    };
+    // Phase 20 (v0.5.6): Tauri v2 의 bundle.resources 가 install dir 의 어디로 복사되는지
+    // 빌드/플랫폼별로 다름. NSIS 빌드는 install dir 의 `<binary>.exe` 옆 `resources/` 또는
+    // `_up_/` sub-dir 에 두는 경우도 있어 다중 후보로 시도.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(install_dir) = exe.parent() {
-            let p = install_dir.join("scripts").join(name);
-            if p.exists() {
-                return Ok(p);
+            let candidates = [
+                install_dir.join("scripts").join(name),
+                install_dir.join("resources").join("scripts").join(name),
+                install_dir.join("resources").join("_up_").join("scripts").join(name),
+                install_dir.join("_up_").join("scripts").join(name),
+                install_dir.join("_up_").join("resources").join("scripts").join(name),
+                // Tauri v2 가 일부 환경에서 'resources/<full-source-prefix>/scripts/...' 패턴 사용
+                install_dir.join("resources").join("scripts").join(name),
+            ];
+            for c in candidates {
+                if let Some(found) = try_path(c, &mut tried) {
+                    return Ok(found);
+                }
             }
         }
     }
-    let root = project_root()?;
-    let p = root.join("scripts").join(name);
-    if p.exists() {
-        return Ok(p);
+    if let Ok(root) = project_root() {
+        let p = root.join("scripts").join(name);
+        if let Some(found) = try_path(p, &mut tried) {
+            return Ok(found);
+        }
     }
     Err(format!(
-        "script 못 찾음: {} (install dir + project root 모두에 없음)",
-        name
+        "script '{}' 못 찾음. 시도한 경로 ({}): [{}]",
+        name,
+        tried.len(),
+        tried
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     ))
 }
 
@@ -779,15 +807,28 @@ struct CodexLoginStatus {
 }
 
 /// Codex 인증 상태 — Settings UI 가 poll 해서 표시.
+///
+/// Phase 20 (v0.5.6) 강화:
+/// 옛 동작은 `auth.exists()` 만 체크 → false positive (예: OneDrive 로 다른 PC 의 auth.json
+/// 동기화됐거나, codex CLI 깔지 않았는데도 옛 잔존 파일 있는 경우 "✓ 로그인됨" 표시되어
+/// K 가 실제 채팅 보내면 fail).
+///
+/// 새 동작:
+///   1. cli_available = codex_cli_path().is_some() (CLI 자체 없으면 무조건 not authenticated)
+///   2. authenticated = cli_available && auth.exists() && (auth.json 안 access_token 추출 가능)
+///   3. 둘 중 하나 fail 이어도 false 반환 — UI 가 정확한 상태 표시
 #[tauri::command]
 async fn codex_login_status() -> Result<CodexLoginStatus, String> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
     let auth = std::path::Path::new(&home).join(".codex").join("auth.json");
+    let cli_available = codex_cli_path().is_some();
+    // Valid 검증: 파일 있고 + JSON 파싱되고 + access_token 필드 추출 가능해야 진짜 인증됨
+    let authenticated = cli_available && auth.exists() && read_codex_access_token().is_ok();
     Ok(CodexLoginStatus {
-        authenticated: auth.exists(),
-        cli_available: codex_cli_path().is_some(),
+        authenticated,
+        cli_available,
         auth_path: auth.to_string_lossy().to_string(),
     })
 }

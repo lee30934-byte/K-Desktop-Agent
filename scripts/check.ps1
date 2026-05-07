@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Preflight 검증 — Phase 완료 또는 커밋 전에 전체 빌드/타입 체크.
@@ -241,6 +241,35 @@ Invoke-Step "Phase 19 (release path resolution + bundle resources)" {
         if (-not $found) { throw "tauri.conf.json bundle.resources missing scripts/$script" }
     }
     Write-Host "  OK tauri.conf.json bundles 3 scripts (install-deps + backup + rollback)" -ForegroundColor DarkGray
+}
+
+# 4.9 Phase 20 - resolve_script_path 다중 후보 + codex valid 검증 + first-run 마법사 진단 강화
+Invoke-Step "Phase 20 (multi-candidate path + codex valid + first-run diagnostics)" {
+    # (a) resolve_script_path 다중 후보 — install_dir/scripts/, install_dir/resources/scripts/ 등
+    $multiCandidate = Select-String -Path "src-tauri/src/lib.rs" -Pattern 'install_dir\.join\("resources"\)' -Quiet
+    if (-not $multiCandidate) { throw "lib.rs resolve_script_path missing 'install_dir/resources/scripts' candidate (Phase 20)" }
+    $upDir = Select-String -Path "src-tauri/src/lib.rs" -Pattern 'install_dir\.join\("_up_"\)' -Quiet
+    if (-not $upDir) { throw "lib.rs resolve_script_path missing '_up_/scripts' candidate" }
+    Write-Host "  OK resolve_script_path has multi-candidate paths (install_dir + resources + _up_)" -ForegroundColor DarkGray
+
+    # (b) codex_login_status 가 read_codex_access_token 으로 valid 검증 (단순 auth.exists 만 X)
+    $codexValid = Select-String -Path "src-tauri/src/lib.rs" -Pattern 'cli_available && auth\.exists\(\) && read_codex_access_token' -Quiet
+    if (-not $codexValid) { throw "lib.rs codex_login_status missing valid token check (still uses simple auth.exists?)" }
+    Write-Host "  OK codex_login_status validates with read_codex_access_token" -ForegroundColor DarkGray
+
+    # (c) App.tsx first-run useEffect 가 sessionStorage 가드 (localStorage 영구 봉인 함정 회피)
+    $sessionGuard = Select-String -Path "src/App.tsx" -Pattern 'kda_firstrun_wizard_seen_v2' -SimpleMatch -Quiet
+    if (-not $sessionGuard) { throw "App.tsx missing v2 sessionStorage first-run guard (Phase 20)" }
+    $diagnoseLog = Select-String -Path "src/App.tsx" -Pattern '[first-run]' -SimpleMatch -Quiet
+    if (-not $diagnoseLog) { throw "App.tsx missing [first-run] diagnostic console logs" }
+    Write-Host "  OK App.tsx uses sessionStorage v2 guard + diagnostic logs" -ForegroundColor DarkGray
+
+    # (d) Settings.tsx Install button always shown on fatal error + reset wizard guard button
+    $alwaysInstallBtn = Select-String -Path "src/components/Settings.tsx" -Pattern '!depsResult \|\| !depsResult\.fullyReady' -Quiet
+    if (-not $alwaysInstallBtn) { throw "Settings.tsx install button hidden when depsResult=null (fatal error path)" }
+    $resetGuardBtn = Select-String -Path "src/components/Settings.tsx" -Pattern 'kda_firstrun_wizard_seen_v2' -SimpleMatch -Quiet
+    if (-not $resetGuardBtn) { throw "Settings.tsx missing kda_firstrun_wizard_seen_v2 reset button" }
+    Write-Host "  OK Settings.tsx install btn always visible + wizard guard reset" -ForegroundColor DarkGray
 }
 
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)

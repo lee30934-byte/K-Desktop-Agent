@@ -266,36 +266,47 @@ export default function App() {
     };
   }, []);
 
-  // ─── Phase 18 — First-run 자동 감지 → Settings 자동 열기 ────────
+  // ─── Phase 18/20 — First-run 자동 감지 → Settings 자동 열기 ────────
   // ~/.kda/first-run-completed.flag 가 없으면 첫 실행으로 간주 → Settings 의
   // 시스템 탭 ("필수 도구" 섹션) 으로 자동 이동해서 K 가 의존성 셋업할 수 있게.
-  // 이미 K-Desktop-Agent 를 잘 쓰고 있는 K PC (sentinel 만 없는 경우) 도 한 번
-  // Settings 가 떴다 닫히면서 K 가 [첫 셋업 완료 표시] 누르면 다시는 안 뜸.
+  //
+  // Phase 20 (v0.5.6) 강화:
+  //   - localStorage → sessionStorage 가드: KDA 프로세스가 살아있는 동안 한 번만,
+  //     재시작하면 다시 시도. localStorage 였을 땐 K 가 한 번 닫고 KDA 재시작해도
+  //     영구 봉인되어 마법사 다시 못 보는 함정 있었음 (K PC v0.5.3 시점 발견).
+  //   - 1초 지연 + 명시적 console 로깅 으로 useEffect timing/silent throw 진단 가능.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const firstRun = await invoke<boolean>("is_first_run");
-        if (cancelled) return;
-        if (firstRun) {
-          // localStorage 에 "이전에 마법사 봤음" 표시도 같이 검사 — 한 세션에 한 번만 자동 오픈
-          const seenKey = "kda_firstrun_wizard_seen_v1";
-          if (!localStorage.getItem(seenKey)) {
-            localStorage.setItem(seenKey, "1");
-            // 활성 탭을 시스템으로 미리 박아 Settings 가 열리자마자 그 탭이 뜨게.
-            try {
-              localStorage.setItem("kda_active_settings_tab", "system");
-            } catch {}
-            setSettingsOpen(true);
+    const timer = setTimeout(() => {
+      (async () => {
+        try {
+          console.info("[first-run] is_first_run 호출 시작");
+          const firstRun = await invoke<boolean>("is_first_run");
+          console.info("[first-run] is_first_run 결과:", firstRun);
+          if (cancelled) return;
+          if (firstRun) {
+            const seenKey = "kda_firstrun_wizard_seen_v2";
+            if (!sessionStorage.getItem(seenKey)) {
+              sessionStorage.setItem(seenKey, "1");
+              try {
+                localStorage.setItem("kda_active_settings_tab", "system");
+              } catch {}
+              console.info("[first-run] Settings 자동 오픈 (system 탭)");
+              setSettingsOpen(true);
+            } else {
+              console.info("[first-run] sessionStorage 가드 — 이번 세션 이미 표시함, skip");
+            }
+          } else {
+            console.info("[first-run] sentinel 박혀있음, skip");
           }
+        } catch (e) {
+          console.warn("[first-run] 감지 실패:", e);
         }
-      } catch (e) {
-        // is_first_run 자체가 실패하면 silent — 마법사 안 띄움 (K 의 평소 흐름 안 막음)
-        console.warn("first-run 감지 실패:", e);
-      }
-    })();
+      })();
+    }, 1000);  // 1초 지연 — sidecar 부팅 + db init 충돌 회피
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, []);
 
