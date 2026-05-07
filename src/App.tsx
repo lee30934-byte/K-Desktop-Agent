@@ -693,7 +693,28 @@ export default function App() {
         setIsStreaming(false);
         setCurrentTurnId(null);
         setStatus("error");
-        pushSystem(`Error: ${ev.message}`, "error");
+        // Phase 17: --resume target 이 없어진 경우 자동 회복 — 해당 conversation 의
+        // agent_id 를 클리어해 다음 메시지부터 신규 session 으로 시작.
+        const errAny = ev as any;
+        if (errAny.code === "resume_session_missing") {
+          const convIdForErr = activeConversationIdRef.current;
+          if (convIdForErr && dbReadyRef.current) {
+            updateConversationAgentId(convIdForErr, null)
+              .then(() => {
+                setConversations((prev) =>
+                  prev.map((c) =>
+                    c.id === convIdForErr ? { ...c, agentId: null } : c
+                  )
+                );
+              })
+              .catch((e) =>
+                console.error("[App] resume_session_missing 회복 — agentId 클리어 실패:", e),
+              );
+          }
+          pushSystem(`⚠️ ${ev.message}`, "warn");
+        } else {
+          pushSystem(`Error: ${ev.message}`, "error");
+        }
         break;
       }
 

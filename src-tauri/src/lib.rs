@@ -953,10 +953,38 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
     eprintln!("{}", spawn_msg);
     log_lifecycle("runtime.log", &spawn_msg);
 
+    // Claude CLI 의 transcript 저장소는 cwd 기반으로 ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
+    // 처럼 sharded 된다. 인앱 업데이트가 sidecar 의 설치 경로를 _up_/sidecar 로 옮기면 sharded
+    // 폴더가 바뀌어 옛 session ID 의 --resume 이 "No conversation found" 로 즉사하는 사고가
+    // v0.5.0→0.5.1 사이클에 발생 (pitfall_claude_cli_session_sharding.md). 사용자 홈 안에
+    // 안정된 cwd 를 박아 어떤 버전이든 같은 sharded 폴더로 모이게 한다.
+    let claude_cwd = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())
+        .map(|h| std::path::PathBuf::from(h).join(".kda").join("cwd"));
+    let final_cwd: PathBuf = if let Some(p) = claude_cwd.as_ref() {
+        match std::fs::create_dir_all(p) {
+            Ok(_) => p.clone(),
+            Err(e) => {
+                log_lifecycle(
+                    "runtime.log",
+                    &format!("warn: claude_cwd 생성 실패 ({}) — sidecar_dir 폴백", e),
+                );
+                sidecar_dir.clone()
+            }
+        }
+    } else {
+        sidecar_dir.clone()
+    };
+    log_lifecycle(
+        "runtime.log",
+        &format!("[sidecar] claude_cwd (transcript shard) = {}", final_cwd.display()),
+    );
+
     let mut command = Command::new(&cmd_name);
     command
         .args(&args)
-        .current_dir(&sidecar_dir)
+        .current_dir(&final_cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1109,7 +1137,132 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
         *guard = Some(tx);
     }
 
+    // 1회성 자동 마이그레이션: 옛 sharded 폴더 (이전 버전의 sidecar cwd 들) 에 박힌 transcript
+    // 들을 새 cwd 의 sharded 폴더로 머지. v0.5.1→0.5.2 사이클의 K 케이스 + 향후 어느 버전에서
+    // 들어와도 한 번만 이주하면 끝나도록 sentinel 파일로 idempotent. background task — 첫 query
+    // 가 sharded 폴더를 만들 시간을 주고 1.5초 후 실행.
+    let migration_cwd = final_cwd.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        match migrate_legacy_claude_sessions(&migration_cwd).await {
+            Ok(0) => {
+                // nothing to do (이미 이주 완료 또는 옛 폴더 없음)
+            }
+            Ok(n) => {
+                log_lifecycle(
+                    "runtime.log",
+                    &format!("[migration] claude session 이주 완료: {} files merged", n),
+                );
+            }
+            Err(e) => {
+                log_lifecycle(
+                    "runtime.log",
+                    &format!("[migration] claude session 이주 실패 (무시 가능): {}", e),
+                );
+            }
+        }
+    });
+
     Ok(())
+}
+
+/// 옛 ~/.claude/projects/<old-shard>/ 의 *.jsonl 들을 새 <new-shard>/ 로 1회성 머지.
+///
+/// `new_cwd` 는 sidecar 의 새 cwd (예: `~/.kda/cwd`). Claude CLI 가 한번 spawn 되면
+/// `~/.claude/projects/<encoded-new-cwd>/` 폴더를 자동 생성한다. mtime 가장 최근 폴더를
+/// 새 sharded 라고 추정하고, 같은 부모 디렉터리 안의 다른 `*K-Desktop-Agent*sidecar*` 패턴
+/// 폴더들에서 jsonl 만 머지 (덮어쓰기 X — 같은 session ID 면 skip).
+///
+/// idempotent: 새 폴더에 `.kda-migrated` sentinel 박아 두 번 안 돈다.
+async fn migrate_legacy_claude_sessions(new_cwd: &std::path::Path) -> Result<usize, String> {
+    let home = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())
+        .ok_or("HOME/USERPROFILE 환경변수 없음")?;
+    let projects_dir = std::path::PathBuf::from(home).join(".claude").join("projects");
+    if !projects_dir.exists() {
+        return Ok(0); // claude CLI 미사용 환경 — 이주할 것 없음
+    }
+
+    // new_cwd 의 expected sharded 폴더명 추측. Claude CLI 의 인코딩 룰을 정확히 모르므로
+    // mtime 가장 최근 + new_cwd path 의 일부 토큰 포함 폴더로 fuzzy 매칭.
+    let new_cwd_str = new_cwd.to_string_lossy().to_lowercase();
+    let new_cwd_tokens: Vec<String> = new_cwd_str
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty() && s.len() >= 3)
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    for entry in std::fs::read_dir(&projects_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        entries.push((entry.path(), mtime));
+    }
+    entries.sort_by(|a, b| b.1.cmp(&a.1)); // 최신 순
+
+    // 새 sharded 폴더 후보: new_cwd_tokens 중 ".kda" 또는 "cwd" 같은 토큰 모두 포함하면서
+    // 가장 최근에 수정된 폴더. fallback: 그냥 가장 최근 폴더.
+    let new_shard = entries.iter().find(|(p, _)| {
+        let name = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+        new_cwd_tokens.iter().all(|tok| name.contains(tok))
+    });
+    let new_shard = match new_shard {
+        Some((p, _)) => p.clone(),
+        None => {
+            // 새 폴더 아직 안 만들어짐 — 다음 spawn 까지 대기 (이번 round 는 skip)
+            return Ok(0);
+        }
+    };
+
+    let sentinel = new_shard.join(".kda-migrated");
+    if sentinel.exists() {
+        return Ok(0); // 이미 이주 완료
+    }
+
+    // 옛 sharded 폴더 후보: K-Desktop-Agent + sidecar 토큰 포함하는 다른 폴더들.
+    let mut migrated = 0usize;
+    for (old_path, _) in &entries {
+        if *old_path == new_shard {
+            continue;
+        }
+        let name = old_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        if !name.contains("k-desktop-agent") || !name.contains("sidecar") {
+            continue;
+        }
+        // *.jsonl 머지 — 같은 파일명 있으면 skip (같은 session ID 라 의미적으로 동일)
+        let read_iter = match std::fs::read_dir(old_path) {
+            Ok(it) => it,
+            Err(_) => continue,
+        };
+        for f in read_iter.flatten() {
+            let p = f.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let dst = new_shard.join(p.file_name().unwrap_or_default());
+            if dst.exists() {
+                continue;
+            }
+            if std::fs::copy(&p, &dst).is_ok() {
+                migrated += 1;
+            }
+        }
+    }
+
+    // sentinel
+    let _ = std::fs::write(&sentinel, b"migrated\n");
+    Ok(migrated)
 }
 
 fn find_sidecar_dir(

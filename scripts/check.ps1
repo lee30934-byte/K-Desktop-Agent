@@ -39,6 +39,8 @@ function Write-Section($title) {
 function Invoke-Step($name, $scriptBlock) {
     Write-Host "▶ $name ..." -ForegroundColor Yellow
     $start = Get-Date
+    # 이전 step 의 native exit code 잔존이 다음 step 의 throw 트리거를 잘못 작동시키는 것 방지.
+    $global:LASTEXITCODE = 0
     try {
         & $scriptBlock
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
@@ -119,6 +121,35 @@ Invoke-Step "Phase 16 (settings tabs + NSIS shortcut hook)" {
     $tauriHook = Select-String -Path "src-tauri/tauri.conf.json" -Pattern "installerHooks" -SimpleMatch -Quiet
     if (-not $tauriHook) { throw "tauri.conf.json missing nsis.installerHooks registration" }
     Write-Host "  OK tauri.conf.json registers installer-hooks.nsh" -ForegroundColor DarkGray
+}
+
+# 4.6 Phase 17 - sidecar fixed cwd + resume_session_missing recovery + UpdateChecker re-check button
+Invoke-Step "Phase 17 (fixed sidecar cwd + resume recovery + update re-check)" {
+    # (a) lib.rs spawns sidecar with fixed cwd ~/.kda/cwd (transcript shard pin)
+    $libFixed = Select-String -Path "src-tauri/src/lib.rs" -Pattern "transcript shard" -SimpleMatch -Quiet
+    if (-not $libFixed) { throw "lib.rs missing fixed claude_cwd pin (Phase 17)" }
+    $libCwdVar = Select-String -Path "src-tauri/src/lib.rs" -Pattern ".kda" -SimpleMatch -Quiet
+    if (-not $libCwdVar) { throw "lib.rs missing .kda cwd anchor" }
+    $libMigration = Select-String -Path "src-tauri/src/lib.rs" -Pattern "migrate_legacy_claude_sessions" -SimpleMatch -Quiet
+    if (-not $libMigration) { throw "lib.rs missing migrate_legacy_claude_sessions function" }
+    Write-Host "  OK lib.rs pins sidecar cwd + has migration helper" -ForegroundColor DarkGray
+
+    # (b) sidecar detects "No conversation found" stderr -> emits resume_session_missing error
+    $sidecarStderr = Select-String -Path "sidecar/src/index.ts" -Pattern "No conversation found with session ID" -SimpleMatch -Quiet
+    if (-not $sidecarStderr) { throw "sidecar/src/index.ts missing 'No conversation found' stderr detector" }
+    $sidecarErrCode = Select-String -Path "sidecar/src/index.ts" -Pattern "resume_session_missing" -SimpleMatch -Quiet
+    if (-not $sidecarErrCode) { throw "sidecar/src/index.ts missing resume_session_missing error code emit" }
+    Write-Host "  OK sidecar emits resume_session_missing on stale --resume" -ForegroundColor DarkGray
+
+    # (c) App.tsx auto-recovers (clears agentId) on resume_session_missing
+    $appRecovery = Select-String -Path "src/App.tsx" -Pattern "resume_session_missing" -SimpleMatch -Quiet
+    if (-not $appRecovery) { throw "src/App.tsx missing resume_session_missing recovery branch" }
+    Write-Host "  OK App.tsx auto-clears agentId on resume_session_missing" -ForegroundColor DarkGray
+
+    # (d) Settings.tsx 'latest' state has re-check button (다시 확인)
+    $reCheck = Select-String -Path "src/components/Settings.tsx" -Pattern "update-latest-section" -SimpleMatch -Quiet
+    if (-not $reCheck) { throw "Settings.tsx missing update-latest-section (re-check button)" }
+    Write-Host "  OK Settings.tsx 'latest' state has re-check button" -ForegroundColor DarkGray
 }
 
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)

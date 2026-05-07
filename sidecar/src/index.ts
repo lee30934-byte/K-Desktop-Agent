@@ -1215,6 +1215,11 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     } catch {
       stderrDecoder = null; // ICU 미지원 환경에선 utf-8 폴백
     }
+    // Phase 17: --resume 이 fail 한 케이스를 stderr 패턴으로 감지.
+    // Claude CLI 는 "No conversation found with session ID: <id>" 메시지를 stderr 에 박은 뒤
+    // exit 0 + 빈 result 로 마무리한다. 이 경우 frontend 가 빈 응답 + 사라지는 작업 표시 만 보고
+    // 원인을 모르니, 명시적 에러로 변환해 자동 회복 흐름 (agent_id 클리어 + 재시도) 트리거.
+    let resumeSessionMissing = false;
     if (proc.stderr) {
       proc.stderr.on("data", (chunk: Buffer) => {
         const decoded = stderrDecoder
@@ -1223,6 +1228,16 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
         stderrTail += decoded;
         if (stderrTail.length > STDERR_KEEP) {
           stderrTail = stderrTail.slice(-STDERR_KEEP);
+        }
+        if (
+          !resumeSessionMissing &&
+          /No conversation found with session ID/i.test(decoded)
+        ) {
+          resumeSessionMissing = true;
+          logToFile(
+            "warn",
+            `CLI resume target missing — agent_id=${msg.agent_id ?? "?"} 새 session 으로 자동 회복 안내 emit 예정`,
+          );
         }
         logToFile("warn", `CLI stderr: ${decoded.trimEnd()}`);
       });
@@ -1305,6 +1320,32 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
           case "result": {
             // 완료 이벤트
             sawResult = true;
+            // Phase 17: --resume target 이 stderr "No conversation found" 였으면 빈 응답이
+            // 그대로 done 으로 가서 frontend 가 작업 표시만 사라진 채 멍해짐. 명시적 에러로
+            // 변환 + agentId=null 로 보내 frontend 가 새 session 시작하도록 안내.
+            if (resumeSessionMissing && !currentText) {
+              emit({
+                type: "error",
+                id: msg.id,
+                message:
+                  "이전 대화 세션을 찾을 수 없어요 (앱 업데이트로 위치가 바뀌었을 가능성). 다음 메시지부터는 새 세션으로 자동 이어집니다.",
+                code: "resume_session_missing",
+                agentId: null,
+              } as any);
+              emit({
+                type: "done",
+                id: msg.id,
+                usage: null,
+                computed_usage: null,
+                maxTurnUsage: null,
+                agentId: null, // 클리어 — frontend 가 다음 turn 부터 새 session 으로 시작
+              });
+              logToFile(
+                "info",
+                `CLI turn end (resume missing recovery) id=${msg.id} clearedAgentId=${msg.agent_id}`,
+              );
+              break;
+            }
             // 안전망: 마지막 chunk 가 race / 누락 등으로 빠졌을 가능성 대비.
             // currentText 가 비어있지 않으면 최종 텍스트로 한 번 더 emit (frontend 가 replace).
             // 2026-05-06 회귀: chunk 단위 emit → 마지막 chunk 만 화면에 남는 사고가 있었기에 추가.

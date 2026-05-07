@@ -2193,9 +2193,14 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   </div>
                 )}
                 {updateStatus === "latest" && (
-                  <div className="update-status update-latest">
-                    <span className="update-icon">✓</span>
-                    최신 버전입니다!
+                  <div className="update-latest-section">
+                    <div className="update-status update-latest">
+                      <span className="update-icon">✓</span>
+                      최신 버전입니다!
+                    </div>
+                    <button className="settings-btn" onClick={checkForUpdate}>
+                      다시 확인
+                    </button>
                   </div>
                 )}
                 {updateStatus === "available" && (
