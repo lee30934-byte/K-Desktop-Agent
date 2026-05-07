@@ -266,6 +266,39 @@ export default function App() {
     };
   }, []);
 
+  // ─── Phase 18 — First-run 자동 감지 → Settings 자동 열기 ────────
+  // ~/.kda/first-run-completed.flag 가 없으면 첫 실행으로 간주 → Settings 의
+  // 시스템 탭 ("필수 도구" 섹션) 으로 자동 이동해서 K 가 의존성 셋업할 수 있게.
+  // 이미 K-Desktop-Agent 를 잘 쓰고 있는 K PC (sentinel 만 없는 경우) 도 한 번
+  // Settings 가 떴다 닫히면서 K 가 [첫 셋업 완료 표시] 누르면 다시는 안 뜸.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const firstRun = await invoke<boolean>("is_first_run");
+        if (cancelled) return;
+        if (firstRun) {
+          // localStorage 에 "이전에 마법사 봤음" 표시도 같이 검사 — 한 세션에 한 번만 자동 오픈
+          const seenKey = "kda_firstrun_wizard_seen_v1";
+          if (!localStorage.getItem(seenKey)) {
+            localStorage.setItem(seenKey, "1");
+            // 활성 탭을 시스템으로 미리 박아 Settings 가 열리자마자 그 탭이 뜨게.
+            try {
+              localStorage.setItem("kda_active_settings_tab", "system");
+            } catch {}
+            setSettingsOpen(true);
+          }
+        }
+      } catch (e) {
+        // is_first_run 자체가 실패하면 silent — 마법사 안 띄움 (K 의 평소 흐름 안 막음)
+        console.warn("first-run 감지 실패:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // provider/model → MetricsPanel 에 표시할 짧은 라벨.
   // claude(Max) 의 model="default" 는 OAuth 가 자동 선택하는 최신 Opus 5.7 / 1M ctx 모델.
   // 다른 provider/model 은 ID 그대로 (mono 폰트로 가독성 OK).

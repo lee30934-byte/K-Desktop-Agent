@@ -152,6 +152,60 @@ Invoke-Step "Phase 17 (fixed sidecar cwd + resume recovery + update re-check)" {
     Write-Host "  OK Settings.tsx 'latest' state has re-check button" -ForegroundColor DarkGray
 }
 
+# 4.7 Phase 18 - Python detect fallback + dependency auto-install + first-run wizard
+Invoke-Step "Phase 18 (python detect + install-deps + first-run wizard)" {
+    # (a) sidecar/src/index.ts has Python candidate fallback (resolvePython + py.exe priority)
+    $resolvePython = Select-String -Path "sidecar/src/index.ts" -Pattern "function resolvePython" -SimpleMatch -Quiet
+    if (-not $resolvePython) { throw "sidecar/src/index.ts missing resolvePython function (Phase 18-D)" }
+    $pyExeFirst = Select-String -Path "sidecar/src/index.ts" -Pattern '"py\.exe"' -Quiet
+    if (-not $pyExeFirst) { throw "sidecar/src/index.ts missing py.exe candidate (Phase 18-D)" }
+    Write-Host "  OK sidecar resolvePython + py.exe fallback" -ForegroundColor DarkGray
+
+    # (b) sidecar logs resolved python at boot
+    $pyLog = Select-String -Path "sidecar/src/index.ts" -Pattern "resolved python:" -SimpleMatch -Quiet
+    if (-not $pyLog) { throw "sidecar/src/index.ts missing 'resolved python:' init log" }
+    Write-Host "  OK sidecar logs resolved python at init" -ForegroundColor DarkGray
+
+    # (c) install-deps.ps1 exists with required functions
+    if (-not (Test-Path "scripts/install-deps.ps1")) { throw "scripts/install-deps.ps1 missing" }
+    foreach ($fn in @("Resolve-PythonExe", "Find-KPersonalMCP", "Install-WingetPackage", "Install-NpmGlobal")) {
+        $found = Select-String -Path "scripts/install-deps.ps1" -Pattern "function $fn" -SimpleMatch -Quiet
+        if (-not $found) { throw "install-deps.ps1 missing function: $fn" }
+    }
+    Write-Host "  OK install-deps.ps1 has all required functions" -ForegroundColor DarkGray
+
+    # (d) install-deps.ps1 has UTF-8 BOM (PowerShell 5.1 reads .ps1 with Hangul correctly only with BOM)
+    $bytes = [System.IO.File]::ReadAllBytes("scripts/install-deps.ps1")
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    if (-not $hasBom) { throw "scripts/install-deps.ps1 missing UTF-8 BOM (Hangul will mojibake on PS 5.1)" }
+    Write-Host "  OK install-deps.ps1 has UTF-8 BOM" -ForegroundColor DarkGray
+
+    # (e) lib.rs has 4 Phase 18 Tauri commands + invoke_handler registration
+    foreach ($cmd in @("is_first_run", "mark_first_run_complete", "check_dependencies", "run_install_deps")) {
+        $defFound = Select-String -Path "src-tauri/src/lib.rs" -Pattern "fn $cmd" -SimpleMatch -Quiet
+        if (-not $defFound) { throw "lib.rs missing fn $cmd (Phase 18)" }
+        $regFound = (Select-String -Path "src-tauri/src/lib.rs" -Pattern "^\s+$cmd," -CaseSensitive | Measure-Object).Count -gt 0
+        if (-not $regFound) { throw "lib.rs invoke_handler missing $cmd registration" }
+    }
+    Write-Host "  OK lib.rs has 4 Phase 18 commands + invoke_handler entries" -ForegroundColor DarkGray
+
+    # (f) Settings.tsx invokes the new commands + has firstrun marker class
+    foreach ($call in @("check_dependencies", "run_install_deps", "is_first_run", "mark_first_run_complete")) {
+        $callFound = Select-String -Path "src/components/Settings.tsx" -Pattern "invoke.+`"$call`"" -Quiet
+        if (-not $callFound) { throw "Settings.tsx not invoking $call" }
+    }
+    $firstRunMarker = Select-String -Path "src/components/Settings.tsx" -Pattern 'data-firstrun=' -SimpleMatch -Quiet
+    if (-not $firstRunMarker) { throw "Settings.tsx missing data-firstrun attribute (Phase 18 first-run marker)" }
+    Write-Host "  OK Settings.tsx invokes Phase 18 commands + has first-run marker" -ForegroundColor DarkGray
+
+    # (g) App.tsx auto-detects first-run -> opens Settings on system tab
+    $appFirstRun = Select-String -Path "src/App.tsx" -Pattern 'invoke.+"is_first_run"' -Quiet
+    if (-not $appFirstRun) { throw "src/App.tsx not detecting first-run via is_first_run" }
+    $appAutoOpen = Select-String -Path "src/App.tsx" -Pattern "kda_firstrun_wizard_seen_v1" -SimpleMatch -Quiet
+    if (-not $appAutoOpen) { throw "src/App.tsx missing first-run wizard auto-open guard" }
+    Write-Host "  OK App.tsx auto-opens Settings on first-run (with seen-guard)" -ForegroundColor DarkGray
+}
+
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
 if (-not $SkipDeps) {
     Invoke-Step "npm ls (root, depth=0)" {

@@ -608,6 +608,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [backupError, setBackupError] = useState<string | null>(null);
   const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
 
+  // Phase 18 — 의존성 자동 셋업 상태 (install-deps.ps1 결과 캐시)
+  // 결과 JSON 스키마는 install-deps.ps1 의 $result 와 동일.
+  type DepsBefore = {
+    winget?: boolean;
+    node?: boolean;
+    npm?: boolean;
+    git?: boolean;
+    python?: string | null;
+    claudeCli?: boolean;
+    codexCli?: boolean;
+    kPersonalMcp?: string | null;
+  };
+  type DepsResult = {
+    ready: boolean;
+    fullyReady: boolean;
+    dryRun: boolean;
+    before: DepsBefore;
+    after: DepsBefore;
+    nextSteps?: string[];
+    fatal?: string;
+  };
+  const [depsResult, setDepsResult] = useState<DepsResult | null>(null);
+  const [depsBusy, setDepsBusy] = useState<"idle" | "checking" | "installing">("idle");
+  const [depsError, setDepsError] = useState<string | null>(null);
+  const [isFirstRun, setIsFirstRun] = useState<boolean>(false);
+
   // 앱 버전은 한 번만 동적으로 로딩 (tauri.conf.json 의 단일 진실원)
   useEffect(() => {
     getVersion()
@@ -627,6 +653,28 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         console.error("get_latest_backup 실패:", e);
         setBackupError(String(e));
       });
+  }, [open]);
+
+  // Phase 18 — Settings 가 열릴 때마다 의존성 상태 + first-run sentinel 검사.
+  // 결과는 system 탭의 "필수 도구" 섹션이 사용. fail 해도 silent — UI 만 빈 상태 유지.
+  useEffect(() => {
+    if (!open) return;
+    invoke<boolean>("is_first_run")
+      .then(setIsFirstRun)
+      .catch(() => setIsFirstRun(false));
+    setDepsBusy("checking");
+    setDepsError(null);
+    invoke<string>("check_dependencies")
+      .then((json) => {
+        try {
+          const parsed = JSON.parse(json) as DepsResult;
+          setDepsResult(parsed);
+        } catch (e) {
+          setDepsError(`JSON 파싱 실패: ${String(e)}`);
+        }
+      })
+      .catch((e) => setDepsError(String(e)))
+      .finally(() => setDepsBusy("idle"));
   }, [open]);
 
   useEffect(() => {
@@ -1175,6 +1223,44 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       console.error("rollback_now 실패:", e);
       setBackupError(String(e));
       setBackupBusy("idle");
+    }
+  }
+
+  // ─── Phase 18 — 의존성 자동 셋업 핸들러 ───
+  async function handleCheckDeps() {
+    setDepsBusy("checking");
+    setDepsError(null);
+    try {
+      const json = await invoke<string>("check_dependencies");
+      setDepsResult(JSON.parse(json) as DepsResult);
+    } catch (e) {
+      setDepsError(String(e));
+    } finally {
+      setDepsBusy("idle");
+    }
+  }
+
+  async function handleInstallDeps() {
+    setDepsBusy("installing");
+    setDepsError(null);
+    try {
+      // install-deps.ps1 은 winget 호출 → 필요 시 UAC 자동. 길게 걸릴 수 있어
+      // K 한테는 spinner 만 보여주고 결과 도착 시 갱신.
+      const json = await invoke<string>("run_install_deps");
+      setDepsResult(JSON.parse(json) as DepsResult);
+    } catch (e) {
+      setDepsError(String(e));
+    } finally {
+      setDepsBusy("idle");
+    }
+  }
+
+  async function handleMarkFirstRunComplete() {
+    try {
+      await invoke("mark_first_run_complete");
+      setIsFirstRun(false);
+    } catch (e) {
+      console.error("mark_first_run_complete 실패:", e);
     }
   }
 
@@ -2151,6 +2237,124 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </button>
               </div>
             ))}
+          </section>
+
+          {/* Phase 18 — 필수 도구 (의존성) 셋업 섹션 */}
+          <section className="settings-section" data-tab="system" data-firstrun={isFirstRun ? "true" : "false"}>
+            <div className="eyebrow">
+              필수 도구 {isFirstRun && <span style={{ color: "var(--accent)" }}>· 첫 셋업</span>}
+            </div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">외부 의존성 자동 설치</div>
+                <div className="settings-row-desc">
+                  Node.js / Git / Python / Claude CLI / Codex CLI — winget + npm 으로 자동 설치.
+                  이미 있으면 skip. OAuth 로그인은 K 가 직접 (보안상 자동화 불가).
+                </div>
+              </div>
+
+              {depsBusy === "checking" && (
+                <div className="update-status update-checking">
+                  <span className="update-spinner">⟳</span> 의존성 검사 중...
+                </div>
+              )}
+
+              {depsBusy === "installing" && (
+                <div className="update-downloading-section">
+                  <div className="update-status update-downloading">
+                    설치 진행 중... (winget UAC 동의 필요할 수 있음 — 잠시 기다려주세요)
+                  </div>
+                  <div className="update-progress-bar">
+                    <div className="update-progress-fill" style={{ width: "100%" }} />
+                  </div>
+                </div>
+              )}
+
+              {depsBusy === "idle" && depsResult && (
+                <div className="deps-result">
+                  <div
+                    className="update-status"
+                    style={{
+                      color: depsResult.fullyReady
+                        ? "var(--success, #4ec9b0)"
+                        : depsResult.ready
+                          ? "var(--warning, #d7ba7d)"
+                          : "var(--danger, #f48771)",
+                    }}
+                  >
+                    {depsResult.fullyReady
+                      ? "✓ 모든 의존성 ready"
+                      : depsResult.ready
+                        ? "⚠ 부분 ready — Claude 또는 Codex 둘 중 하나만 사용 가능"
+                        : "✗ 의존성 미흡 — 자동 설치 필요"}
+                  </div>
+                  <div className="settings-row-desc" style={{ marginTop: "0.4rem" }}>
+                    Node: {depsResult.after.node ? "✓" : "✗"} ·
+                    {" "}Git: {depsResult.after.git ? "✓" : "✗"} ·
+                    {" "}Python: {depsResult.after.python ? `✓ ${depsResult.after.python}` : "✗"} ·
+                    {" "}Claude CLI: {depsResult.after.claudeCli ? "✓" : "✗"} ·
+                    {" "}Codex CLI: {depsResult.after.codexCli ? "✓" : "✗"} ·
+                    {" "}K-Personal MCP: {depsResult.after.kPersonalMcp ? "✓" : "—"}
+                  </div>
+                  {depsResult.fatal && (
+                    <div className="update-error-section" style={{ marginTop: "0.5rem" }}>
+                      <div className="update-status update-error">⚠ {depsResult.fatal}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {depsError && (
+                <div className="update-error-section">
+                  <div className="update-status update-error">⚠ {depsError}</div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
+                <button
+                  className="settings-btn"
+                  onClick={handleCheckDeps}
+                  disabled={depsBusy !== "idle"}
+                >
+                  상태 새로고침
+                </button>
+                {depsResult && !depsResult.fullyReady && (
+                  <button
+                    className="settings-btn settings-btn-primary"
+                    onClick={handleInstallDeps}
+                    disabled={depsBusy !== "idle"}
+                  >
+                    자동 설치 실행
+                  </button>
+                )}
+                {depsResult?.after?.claudeCli && (
+                  <button
+                    className="settings-btn"
+                    onClick={handleClaudeLogin}
+                    disabled={depsBusy !== "idle"}
+                  >
+                    Claude 로그인
+                  </button>
+                )}
+                {depsResult?.after?.codexCli && (
+                  <button
+                    className="settings-btn"
+                    onClick={handleCodexLogin}
+                    disabled={depsBusy !== "idle"}
+                  >
+                    Codex 로그인
+                  </button>
+                )}
+                {isFirstRun && depsResult?.ready && (
+                  <button
+                    className="settings-btn settings-btn-primary"
+                    onClick={handleMarkFirstRunComplete}
+                  >
+                    첫 셋업 완료 표시
+                  </button>
+                )}
+              </div>
+            </div>
           </section>
 
           {/* 자동 업데이트 섹션 */}

@@ -74,6 +74,14 @@ K-Desktop-Agent/
   3. **명시적 회복 흐름** (`sidecar/src/index.ts` + `App.tsx`): stderr `"No conversation found with session ID"` 감지 → `resume_session_missing` 에러 코드 + agentId=null emit → frontend 가 자동으로 그 conversation 의 agent_id 클리어 + 토스트 안내 → 다음 메시지부터 새 session 으로 자연 회복 (사용자 액션 불필요).
   - **추가 UX**: Settings 의 "최신 버전입니다" 표시 옆에 "다시 확인" 버튼 (`update-latest-section`) — 한번 클릭 후 다시 누를 수 없던 K 불편 해소.
   - 회귀 테스트: `check.ps1` Phase 17 블록 — `lib.rs` cwd pin + migration + sidecar `resume_session_missing` emit + App.tsx 자동 회복 분기 + Settings 다시 확인 버튼 5종 grep.
+- ✅ **Phase 18 — 의존성 자동 셋업 + Python detect fallback + First-run 마법사** (2026-05-07): K 의 "다른 PC 에서 setup.exe 만 깔고도 한 번에 사용 가능" 요구. **5단 대책**:
+  1. **Python detect fallback** (`sidecar/src/index.ts::resolvePython`): Claude/Codex CLI 와 동일 패턴. 후보 6개 순차 probe — `py.exe` → `py` → `python3.exe` → `python3` → `python.exe` → `python`. K PC 처럼 `python` 명령이 PATH 에 없는 환경 (Python 인스톨러의 "Add to PATH" 가 기본 OFF) 도 `py.exe` (Windows Python Launcher) 로 자동 fallback. health check 에러 메시지에 시도한 6개 후보 노출. module 초기화 직후 `resolved python: py.exe tried=[...]` 진단 로그.
+  2. **install-deps.ps1** (`scripts/install-deps.ps1`): winget 으로 Node.js LTS / Git / Python 3.11 자동 설치 + `npm i -g` 로 Claude/Codex CLI + K-Personal-MCP 폴더 detect + Python 의존성 자동 설치. idempotent (이미 있으면 skip). `-DryRun` 모드는 검사만 (Settings 가 호출 시 사용). `-AsJson` 으로 결과 JSON stdout (사람용 메시지는 stderr). UTF-8 BOM 인코딩 (PS 5.1 한글 깨짐 회피).
+  3. **First-run sentinel** (`~/.kda/first-run-completed.flag`): NSIS 가 안 박음 — 신규 PC / 신규 user 면 자연스럽게 없음. K 가 [첫 셋업 완료 표시] 누르면 박힘. 업데이트 시점엔 이미 sentinel 있어서 마법사 안 뜸.
+  4. **Tauri commands + Settings UI** (`lib.rs`: `is_first_run` / `mark_first_run_complete` / `check_dependencies` / `run_install_deps`): 4개 command + `Settings.tsx` 의 system 탭 첫 섹션에 "필수 도구" UI ([상태 새로고침] / [자동 설치 실행] / [Claude 로그인] / [Codex 로그인] / [첫 셋업 완료 표시] 버튼). Settings 가 열릴 때마다 `check_dependencies` 자동 호출 → 단계별 status 표시.
+  5. **App.tsx first-run 자동 감지**: 앱 시작 시 `is_first_run` 호출 → true 면 한 번만 (localStorage `kda_firstrun_wizard_seen_v1` guard) Settings 모달을 system 탭으로 자동 오픈.
+  - **자동화 안 하는 것**: Claude / Codex 의 OAuth 로그인 (K 계정 정보 필요 — 보안상 자동화 불가). 옛 PC 데이터 이주 (K 요청에 따라 제외).
+  - 회귀 테스트: `check.ps1` Phase 18 블록 — `resolvePython` + `py.exe` fallback + init log + install-deps.ps1 함수 4종 + UTF-8 BOM + lib.rs 4 command + Settings invoke + first-run guard 7종 grep.
 
 **남은 Phase:**
 - ⬜ **Phase 5**: 마크다운 렌더링 + MSI 인스톨러 (`docs/PHASE-5-POLISH.md`)

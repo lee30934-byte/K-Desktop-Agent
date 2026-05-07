@@ -91,10 +91,59 @@ const K_PERSONAL_PATH =
   "C:/Users/user/Documents/K-Personal-MCP/server.py";
 
 /**
- * Python 실행 파일. 환경변수 PYTHON_EXE 로 덮어쓸 수 있음.
- * Windows에선 python.exe가 PATH에 있으면 그냥 "python"으로 찾아짐.
+ * Python 실행 파일.
+ *
+ * 환경변수 PYTHON_EXE 가 있으면 그걸 우선 사용. 없으면 후보 경로들을
+ * 순차적으로 `--version` 으로 검사해 처음 0 리턴 나오는 걸 채택.
+ *
+ * 후보 우선순위 (Windows 우선, K PC 환경 — `python` 없고 `py.exe` 만 있음):
+ *   1. py.exe              (Windows Python Launcher — Python 설치 시 기본 박힘)
+ *   2. py
+ *   3. python3.exe
+ *   4. python3
+ *   5. python.exe
+ *   6. python              (마지막 폴백)
+ *
+ * 시도한 경로 목록은 진단용으로 보존 (헬스체크 에러 메시지에 포함).
+ *
+ * 함정 (Phase 18 발견): 단순 "python" 으로만 박으면 K PC 처럼 PATH 에
+ * `python.exe` 가 없는 환경에서 K-Personal MCP 가 영구히 spawn 못 함 →
+ * cc_/ui_/web_/fm_/db_/app_ 도구 전부 사라짐. Claude/Codex CLI 와 동일하게
+ * 후보 검출 패턴으로 확장.
  */
-const PYTHON_EXE = process.env.PYTHON_EXE ?? "python";
+function getPythonCandidates(): string[] {
+  if (process.env.PYTHON_EXE) {
+    return [process.env.PYTHON_EXE];
+  }
+  return ["py.exe", "py", "python3.exe", "python3", "python.exe", "python"];
+}
+
+function probePython(exe: string): boolean {
+  try {
+    const result = spawnSync(exe, ["--version"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      shell: true,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function resolvePython(): { resolved: string | null; tried: string[] } {
+  const tried: string[] = [];
+  for (const candidate of getPythonCandidates()) {
+    tried.push(candidate);
+    if (probePython(candidate)) {
+      return { resolved: candidate, tried };
+    }
+  }
+  return { resolved: null, tried };
+}
+
+const pythonResolution = resolvePython();
+const PYTHON_EXE = pythonResolution.resolved ?? "python";
 
 /**
  * Claude Code CLI 실행 파일.
@@ -199,6 +248,30 @@ function resolveCodexCli(): { resolved: string | null; tried: string[] } {
 
 const codexCliResolution = resolveCodexCli();
 const CODEX_CLI = codexCliResolution.resolved ?? "codex";
+
+// ─── 초기 진단 로그 (Phase 18) ──────────────────────────────────
+// CLI/Python resolution 결과를 sidecar.log 에 즉시 박아 K PC 환경별
+// 어떤 후보가 채택됐는지 한눈에 진단 가능하게 함.
+// "MCP NOT configured" 같은 모호한 메시지의 원인을 sidecar.log 만 보고
+// 즉시 좁힐 수 있도록 (env vs PATH vs missing) 결과를 명시적으로 박는다.
+logToFile(
+  "info",
+  `resolved python: ${pythonResolution.resolved ?? "(none)"} ` +
+    `tried=[${pythonResolution.tried.join(", ")}] ` +
+    `env_PYTHON_EXE=${process.env.PYTHON_EXE ?? "(unset)"}`,
+);
+logToFile(
+  "info",
+  `resolved claude_cli: ${claudeCliResolution.resolved ?? "(none)"} ` +
+    `tried=[${claudeCliResolution.tried.join(", ")}] ` +
+    `env_CLAUDE_CLI=${process.env.CLAUDE_CLI ?? "(unset)"}`,
+);
+logToFile(
+  "info",
+  `resolved codex_cli: ${codexCliResolution.resolved ?? "(none)"} ` +
+    `tried=[${codexCliResolution.tried.join(", ")}] ` +
+    `env_CODEX_CLI=${process.env.CODEX_CLI ?? "(unset)"}`,
+);
 
 // ─── 누적 메모리 자동 로딩 (Phase 9 step 1) ─────────────────────
 // `~/.claude/projects/<key>/memory/` 의 모든 .md 파일을 system prompt 끝에 주입.
@@ -345,17 +418,10 @@ interface MCPStatus {
 function checkMCPHealth(): MCPStatus {
   const serverPathExists = existsSync(K_PERSONAL_PATH);
 
-  let pythonAvailable = false;
-  try {
-    const result = spawnSync(PYTHON_EXE, ["--version"], {
-      encoding: "utf-8",
-      timeout: 5000,
-      shell: true, // Windows에서 python.bat 등도 잡히게
-    });
-    pythonAvailable = result.status === 0;
-  } catch {
-    pythonAvailable = false;
-  }
+  // Python 사용 가능 여부 확인.
+  // 모듈 로드 시 resolvePython() 가 한 번 돌아 후보를 검증했으므로,
+  // resolved 가 null 이 아니면 사용 가능. (Claude/Codex CLI 와 동일 패턴.)
+  const pythonAvailable = pythonResolution.resolved !== null;
 
   // Claude CLI 사용 가능 여부 확인.
   // 모듈 로드 시 resolveClaudeCli() 가 한 번 돌아 후보를 검증했으므로,
@@ -369,6 +435,12 @@ function checkMCPHealth(): MCPStatus {
       `설치 확인: 'npm i -g @anthropic-ai/claude-code' 후 앱 재시작.`
     : undefined;
 
+  const pythonError = !pythonAvailable
+    ? `Python 실행 안 됨. 시도한 경로: [${pythonResolution.tried.join(", ")}]. ` +
+      `Windows Python Launcher (py.exe) 또는 python.exe 설치 확인 후 앱 재시작. ` +
+      `또는 환경변수 PYTHON_EXE 로 명시 지정 가능.`
+    : undefined;
+
   return {
     configured: serverPathExists && pythonAvailable && claudeCliAvailable,
     serverPathExists,
@@ -377,9 +449,7 @@ function checkMCPHealth(): MCPStatus {
     error: claudeCliError
       ?? (!serverPathExists
         ? `K-Personal 서버 없음: ${K_PERSONAL_PATH}`
-        : !pythonAvailable
-          ? `Python 실행 안 됨: ${PYTHON_EXE}`
-          : undefined),
+        : pythonError),
   };
 }
 

@@ -517,6 +517,113 @@ async fn rollback_now(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ────────── Phase 18 — 의존성 자동 셋업 + First-run 마법사 ──────────
+//
+// 다른 PC 에서 setup.exe 만 깔고도 K-Desktop-Agent 가 곧장 동작 가능하도록
+// install-deps.ps1 을 호출해 Node/Git/Python/Claude/Codex CLI 등을 자동 설치.
+// OAuth 로그인은 K 가 직접 1회 — 보안상 자동화 불가.
+//
+// First-run sentinel = `~/.kda/first-run-completed.flag`
+//   - 없으면: KDA 첫 실행으로 간주 → Settings 의 first-run 마법사 표시
+//   - 있으면: 이미 셋업 완료 → 마법사 안 뜸 (Settings 에서 수동 트리거 가능)
+// NSIS 가 sentinel 안 박음 — 신규 설치든 업데이트든 K 의 home 에 sentinel 없으면
+// 마법사가 자연스럽게 표시. 업데이트 후엔 이미 sentinel 있어서 안 뜸.
+
+fn first_run_sentinel_path() -> Result<PathBuf, String> {
+    let home = std::env::var("USERPROFILE")
+        .map_err(|e| format!("USERPROFILE 환경변수 없음: {}", e))?;
+    Ok(PathBuf::from(home).join(".kda").join("first-run-completed.flag"))
+}
+
+#[tauri::command]
+fn is_first_run() -> Result<bool, String> {
+    let sentinel = first_run_sentinel_path()?;
+    Ok(!sentinel.exists())
+}
+
+#[tauri::command]
+fn mark_first_run_complete() -> Result<(), String> {
+    let sentinel = first_run_sentinel_path()?;
+    if let Some(parent) = sentinel.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("~/.kda 폴더 생성 실패: {}", e))?;
+    }
+    let now = chrono_lite_now();
+    std::fs::write(&sentinel, format!("first-run completed at {}\n", now))
+        .map_err(|e| format!("sentinel 파일 작성 실패: {}", e))?;
+    log_lifecycle(
+        "runtime.log",
+        &format!("first-run sentinel created at {}", sentinel.display()),
+    );
+    Ok(())
+}
+
+/// install-deps.ps1 실행 (DryRun=true 면 detect 만, false 면 실제 설치).
+///
+/// JSON 결과는 PS 스크립트가 stdout 에 박은 그대로 frontend 에 전달 — Settings UI 가
+/// 파싱해서 단계별 status / next steps 를 렌더. Rust 쪽에선 schema 까지 신경 안 씀.
+async fn run_install_deps_internal(dry_run: bool) -> Result<String, String> {
+    log_lifecycle(
+        "runtime.log",
+        &format!("run_install_deps invoked dry_run={}", dry_run),
+    );
+    let root = project_root()?;
+    let script = root.join("scripts").join("install-deps.ps1");
+    if !script.exists() {
+        return Err(format!("install-deps script 없음: {}", script.display()));
+    }
+    let mut args = vec![
+        "-NoProfile".to_string(),
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
+        "-File".to_string(),
+        script.to_str().unwrap().to_string(),
+        "-AsJson".to_string(),
+    ];
+    if dry_run {
+        args.push("-DryRun".to_string());
+    }
+    let output = Command::new("powershell.exe")
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("install-deps.ps1 실행 실패: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout_trimmed = stdout.trim();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // exit code 0/1 모두 valid result (1=partial). 2=fatal (winget 없음).
+    let code = output.status.code().unwrap_or(-1);
+    if code == 2 || stdout_trimmed.is_empty() {
+        return Err(format!(
+            "install-deps.ps1 fatal (exit={}) — stderr: {}",
+            code,
+            stderr.trim()
+        ));
+    }
+    log_lifecycle(
+        "runtime.log",
+        &format!(
+            "install-deps.ps1 done exit={} stdout_len={} stderr_len={}",
+            code,
+            stdout_trimmed.len(),
+            stderr.len()
+        ),
+    );
+    Ok(stdout_trimmed.to_string())
+}
+
+#[tauri::command]
+async fn check_dependencies() -> Result<String, String> {
+    run_install_deps_internal(true).await
+}
+
+#[tauri::command]
+async fn run_install_deps() -> Result<String, String> {
+    run_install_deps_internal(false).await
+}
+
 // ────────── Phase 15 — 외부 webview 창 + Codex 통합 ──────────
 //
 // K 의 의도: K-Desktop-Agent 안에서 모든 게 완결.
@@ -1536,6 +1643,11 @@ pub fn run_with_options(start_minimized: bool) {
             codex_login_status,
             codex_register_mcp,
             codex_fetch_usage,
+            // Phase 18 — 의존성 자동 셋업 + First-run 마법사
+            is_first_run,
+            mark_first_run_complete,
+            check_dependencies,
+            run_install_deps,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,
