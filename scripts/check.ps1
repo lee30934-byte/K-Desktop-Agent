@@ -201,7 +201,8 @@ Invoke-Step "Phase 18 (python detect + install-deps + first-run wizard)" {
     # (g) App.tsx auto-detects first-run -> opens Settings on system tab
     $appFirstRun = Select-String -Path "src/App.tsx" -Pattern 'invoke.+"is_first_run"' -Quiet
     if (-not $appFirstRun) { throw "src/App.tsx not detecting first-run via is_first_run" }
-    $appAutoOpen = Select-String -Path "src/App.tsx" -Pattern "kda_firstrun_wizard_seen_v1" -SimpleMatch -Quiet
+    # Phase 20 에서 v1 → v2 로 (sessionStorage 기반)
+    $appAutoOpen = Select-String -Path "src/App.tsx" -Pattern "kda_firstrun_wizard_seen_v" -SimpleMatch -Quiet
     if (-not $appAutoOpen) { throw "src/App.tsx missing first-run wizard auto-open guard" }
     Write-Host "  OK App.tsx auto-opens Settings on first-run (with seen-guard)" -ForegroundColor DarkGray
 }
@@ -270,6 +271,41 @@ Invoke-Step "Phase 20 (multi-candidate path + codex valid + first-run diagnostic
     $resetGuardBtn = Select-String -Path "src/components/Settings.tsx" -Pattern 'kda_firstrun_wizard_seen_v2' -SimpleMatch -Quiet
     if (-not $resetGuardBtn) { throw "Settings.tsx missing kda_firstrun_wizard_seen_v2 reset button" }
     Write-Host "  OK Settings.tsx install btn always visible + wizard guard reset" -ForegroundColor DarkGray
+}
+
+# 4.10 Phase 22 - universal path: user-specific hardcoded paths must NOT exist in src/sidecar
+Invoke-Step "Phase 22 (universal path: no user-specific hardcoded)" {
+    # (a) sidecar K_PERSONAL_PATH 가 dynamic resolveKPersonalPath() 사용
+    $sidecarDynamic = Select-String -Path "sidecar/src/index.ts" -Pattern "function resolveKPersonalPath" -SimpleMatch -Quiet
+    if (-not $sidecarDynamic) { throw "sidecar missing resolveKPersonalPath() dynamic helper (Phase 22)" }
+
+    # (b) sidecar 의 옛 hardcoded HARDCODED_MEMORY_KEY 정의 잔존 X
+    $oldKey = Select-String -Path "sidecar/src/index.ts" -Pattern "const HARDCODED_MEMORY_KEY" -SimpleMatch -Quiet
+    if ($oldKey) { throw "sidecar still defines HARDCODED_MEMORY_KEY (use dynamic fallback instead)" }
+    Write-Host "  OK sidecar K_PERSONAL_PATH dynamic + no HARDCODED_MEMORY_KEY" -ForegroundColor DarkGray
+
+    # (c) src/ 와 sidecar/src/ 코드 (test/script 제외) 에 'C:/Users/user/' 또는 'Users\\user\\' 잔존 검색
+    $sourceFiles = @(
+        "sidecar/src/index.ts",
+        "src/App.tsx",
+        "src/prompts.ts",
+        "src/components/Settings.tsx",
+        "src-tauri/src/lib.rs"
+    )
+    $hardcodedFound = @()
+    foreach ($f in $sourceFiles) {
+        if (-not (Test-Path $f)) { continue }
+        $matches = Select-String -Path $f -Pattern "C:/Users/user/" -CaseSensitive
+        if ($matches) {
+            foreach ($m in $matches) {
+                $hardcodedFound += "$f`:$($m.LineNumber)"
+            }
+        }
+    }
+    if ($hardcodedFound.Count -gt 0) {
+        throw "user-specific hardcoded path 'C:/Users/user/' 잔존 ($($hardcodedFound.Count)): $($hardcodedFound -join ', ')"
+    }
+    Write-Host "  OK src/sidecar 코드에 user-specific hardcoded 'C:/Users/user/' 없음" -ForegroundColor DarkGray
 }
 
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)

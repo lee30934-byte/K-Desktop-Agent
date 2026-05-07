@@ -84,11 +84,33 @@ process.on("unhandledRejection", (reason) => {
 
 /**
  * K-Personal MCP 서버 경로.
- * 환경변수 K_PERSONAL_MCP_PATH 가 있으면 그걸 사용, 없으면 기본값.
+ *
+ * Phase 22 (v0.5.8): user-specific hardcoded path 제거. 이전엔 절대 경로
+ * 형식 'C:/Users/<특정사용자>/Documents/K-Personal-MCP/server.py' 가 fallback
+ * 이라 사용자명이 다른 PC 에선 absolute path 가 엉뚱한 디렉토리 가리켜
+ * always fail. 이제 USERPROFILE 환경변수 기반 dynamic + 다중 후보 시도.
+ *
+ * 우선순위:
+ *   1. 환경변수 K_PERSONAL_MCP_PATH (있으면 그대로)
+ *   2. <USERPROFILE>/Documents/K-Personal-MCP/server.py
+ *   3. <USERPROFILE>/K-Personal-MCP/server.py
+ *   4. (검사 fail 후) 폴더 자체 없으니 MCP NOT configured 정상 표시
  */
-const K_PERSONAL_PATH =
-  process.env.K_PERSONAL_MCP_PATH ??
-  "C:/Users/user/Documents/K-Personal-MCP/server.py";
+function resolveKPersonalPath(): string {
+  if (process.env.K_PERSONAL_MCP_PATH) return process.env.K_PERSONAL_MCP_PATH;
+  const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
+  if (!home) return "K-Personal-MCP/server.py"; // last-resort relative
+  const candidates = [
+    path.join(home, "Documents", "K-Personal-MCP", "server.py"),
+    path.join(home, "K-Personal-MCP", "server.py"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  // 첫 후보를 default 로 반환 — 존재 안 해도 health check 가 알아서 NOT configured 표시
+  return candidates[0];
+}
+const K_PERSONAL_PATH = resolveKPersonalPath();
 
 /**
  * Python 실행 파일.
@@ -278,15 +300,18 @@ logToFile(
 // K 가 명시한 선호(feedback_*), 회피해야 할 함정(pitfall_*), 잘 먹힌 패턴(pattern_*) 을
 // 매 턴마다 자동 로드해 같은 실수 반복 / 같은 선호 재설명 부담을 줄인다.
 //
+// Phase 22 (v0.5.8): user-specific hardcoded fallback 제거. 이전엔
+// `C--Users-user-Documents-K-Desktop-Agent` 가 release 폴백이라 다른 PC 에선
+// 그 사용자명 디렉토리가 없어서 항상 fail. 이제 inferred 가 fail 하면 빈
+// 디렉토리 (메모리 없음) 로 처리 — universal.
+//
 // 디렉토리 결정 우선순위:
 //   1. KDA_MEMORY_DIR 환경변수 (수동 오버라이드)
 //   2. 추론한 프로젝트 루트 (dev 모드 — sidecar/src 또는 sidecar/dist 의 2단계 위)
-//      → Claude 키 규약 변환: C:\Users\user\Documents\K-Desktop-Agent
-//        → C--Users-user-Documents-K-Desktop-Agent (`:`, `\\` → `-`)
+//      → Claude 키 규약 변환: C:\Users\<user>\Documents\K-Desktop-Agent
+//        → C--Users-<user>-Documents-K-Desktop-Agent (`:`, `\\` → `-`)
 //      → 그 결과 디렉토리에 memory/ 가 실제 존재하면 채택
-//   3. release 폴백: 하드코드된 K-Desktop-Agent 의 프로젝트 키
-//      (release 에서는 sidecar 가 install 디렉토리에서 실행돼 추론이 틀리므로 필요)
-const HARDCODED_MEMORY_KEY = "C--Users-user-Documents-K-Desktop-Agent";
+//   3. 추론 fail 시 — 빈 path 반환 (메모리 디렉토리 없음 = 컨텍스트 빈 상태)
 
 function getMemoryDir(): string {
   const envOverride = process.env.KDA_MEMORY_DIR;
@@ -303,13 +328,14 @@ function getMemoryDir(): string {
   );
   if (existsSync(inferredPath)) return inferredPath;
 
-  return path.join(
-    os.homedir(),
-    ".claude",
-    "projects",
-    HARDCODED_MEMORY_KEY,
-    "memory",
-  );
+  // Phase 22 fallback: USERPROFILE 기반 dynamic 키 generate — 사용자명에 무관.
+  // 이전엔 hardcoded "C--Users-user-Documents-K-Desktop-Agent" 였는데 다른 PC
+  // (HP-HP 등) 에선 그 키 디렉토리 없어서 의미 없는 fallback.
+  // 이제 home dir + 가장 흔한 위치 (Documents/K-Desktop-Agent) 조합으로 키 만듦.
+  const home = os.homedir();
+  const fallbackProjectPath = path.join(home, "Documents", "K-Desktop-Agent");
+  const fallbackKey = fallbackProjectPath.replace(/[:\\]/g, "-");
+  return path.join(home, ".claude", "projects", fallbackKey, "memory");
 }
 
 interface MemoryContext {
