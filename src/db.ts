@@ -1,24 +1,44 @@
 // ═══════════════════════════════════════════════════════════════
 // SQLite Database Helper for K Desktop Agent
 // Phase 4: 대화 히스토리 영구 저장
+// Phase 25 (v0.5.11): Portable data dir — DB path 는 lib.rs 의 data_root()
+// 가 결정. invoke('get_data_dir_info') 로 절대 경로 받아 sqlite:<abs> 형식 사용.
 // ═══════════════════════════════════════════════════════════════
 
 import Database from "@tauri-apps/plugin-sql";
+import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage, Conversation } from "./types";
 import logger from "./utils/logger";
 
 // 싱글톤 DB 인스턴스
 let db: Database | null = null;
 
+interface DataDirInfo {
+  data_root: string;
+  db_path: string;
+  db_exists: boolean;
+}
+
 /**
  * DB 초기화 및 스키마 마이그레이션
- * %APPDATA%/K Desktop Agent/conversations.db에 저장됨
+ * data_root()/conversations.db 에 저장됨 (Phase 25 — K 가 Settings 에서 변경 가능)
  */
 export async function initDB(): Promise<Database> {
   if (db) return db;
 
-  // Tauri SQL 플러그인이 자동으로 앱 데이터 디렉토리에 저장
-  db = await Database.load("sqlite:conversations.db");
+  // Phase 25: data_root() 의 절대 경로 사용. invoke fail 시 옛 default 폴백.
+  let dbUrl = "sqlite:conversations.db"; // legacy fallback
+  try {
+    const info = await invoke<DataDirInfo>("get_data_dir_info");
+    if (info?.db_path) {
+      // Windows path 의 backslash 는 SQLite URI 에서도 허용 (Tauri plugin 이 처리)
+      dbUrl = `sqlite:${info.db_path}`;
+      logger.info(`[db] using portable DB path: ${info.db_path}`);
+    }
+  } catch (e) {
+    logger.warn(`[db] get_data_dir_info 실패 — legacy default 사용: ${String(e)}`);
+  }
+  db = await Database.load(dbUrl);
 
   // 스키마 마이그레이션 (테이블이 없으면 생성)
   await db.execute(`

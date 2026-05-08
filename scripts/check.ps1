@@ -308,6 +308,69 @@ Invoke-Step "Phase 22 (universal path: no user-specific hardcoded)" {
     Write-Host "  OK src/sidecar 코드에 user-specific hardcoded 'C:/Users/user/' 없음" -ForegroundColor DarkGray
 }
 
+# 4.11 Phase 25 - portable data dir: data_root() helper + commands + UI 일관성
+Invoke-Step "Phase 25 (portable data dir + migration)" {
+    # (a) lib.rs 에 data_root + data_pointer_path + migrate_legacy_db_if_needed 정의
+    $libContent = Get-Content "src-tauri/src/lib.rs" -Raw
+    foreach ($fn in @("fn data_root", "fn data_pointer_path", "fn install_dir", "fn migrate_legacy_db_if_needed", "fn copy_dir_recursive")) {
+        if ($libContent -notmatch [regex]::Escape($fn)) { throw "lib.rs missing helper: $fn (Phase 25)" }
+    }
+    Write-Host "  OK lib.rs has Phase 25 data_root helpers" -ForegroundColor DarkGray
+
+    # (b) 두 새 Tauri command (get_data_dir_info, change_data_dir) 가 정의 + invoke_handler 등록
+    foreach ($cmd in @("get_data_dir_info", "change_data_dir")) {
+        $defOk = $libContent -match "fn $cmd"
+        $regOk = $libContent -match "(?s)invoke_handler.*$cmd"
+        if (-not $defOk) { throw "lib.rs: command $cmd 정의 없음 (Phase 25)" }
+        if (-not $regOk) { throw "lib.rs: command $cmd invoke_handler 등록 없음 (Phase 25)" }
+    }
+    Write-Host "  OK lib.rs Phase 25 commands defined + registered" -ForegroundColor DarkGray
+
+    # (c) first_run_sentinel + claude_cwd 가 data_root() 사용 (~/.kda hardcode 잔존 X)
+    if ($libContent -notmatch "data_root\(\)\.join\(`"first-run-completed\.flag`"\)") {
+        throw "lib.rs first_run_sentinel_path: data_root() 미사용 (Phase 25)"
+    }
+    if ($libContent -notmatch "data_root\(\)\.join\(`"cwd`"\)") {
+        throw "lib.rs claude_cwd: data_root() 미사용 (Phase 25)"
+    }
+    Write-Host "  OK lib.rs sentinel + claude_cwd use data_root()" -ForegroundColor DarkGray
+
+    # (d) backup.ps1 가 -DataRoot 인자 받음
+    $backupContent = Get-Content "scripts/backup.ps1" -Raw
+    if ($backupContent -notmatch '\[string\]\$DataRoot') { throw "backup.ps1 missing -DataRoot param (Phase 25)" }
+    Write-Host "  OK backup.ps1 accepts -DataRoot" -ForegroundColor DarkGray
+
+    # (e) lib.rs backup_now 가 -DataRoot 인자 넘김
+    if ($libContent -notmatch '"-DataRoot"') { throw "lib.rs backup_now: -DataRoot 인자 미전달 (Phase 25)" }
+    Write-Host "  OK lib.rs backup_now passes -DataRoot to PS" -ForegroundColor DarkGray
+
+    # (f) db.ts 가 invoke('get_data_dir_info') 사용해 절대경로 DB path
+    $dbContent = Get-Content "src/db.ts" -Raw
+    if ($dbContent -notmatch 'get_data_dir_info') { throw "db.ts: get_data_dir_info 미호출 (Phase 25)" }
+    if ($dbContent -notmatch 'sqlite:\$\{') { throw "db.ts: sqlite:`${...} dynamic path 미사용 (Phase 25)" }
+    Write-Host "  OK db.ts uses dynamic absolute SQLite path" -ForegroundColor DarkGray
+
+    # (g) Settings.tsx 가 데이터 폴더 섹션 + handleChangeDataDir 박힘
+    $settingsContent = Get-Content "src/components/Settings.tsx" -Raw
+    if ($settingsContent -notmatch 'handleChangeDataDir') { throw "Settings.tsx missing handleChangeDataDir (Phase 25)" }
+    if ($settingsContent -notmatch 'refreshDataDirInfo') { throw "Settings.tsx missing refreshDataDirInfo (Phase 25)" }
+    if ($settingsContent -notmatch 'get_data_dir_info') { throw "Settings.tsx missing get_data_dir_info invoke (Phase 25)" }
+    Write-Host "  OK Settings.tsx has data dir section + handler" -ForegroundColor DarkGray
+
+    # (h) installer-hooks.nsh 가 data-pointer.txt 박는 매크로 포함
+    $nshContent = Get-Content "src-tauri/installer-hooks.nsh" -Raw
+    if ($nshContent -notmatch 'data-pointer\.txt') { throw "installer-hooks.nsh missing data-pointer.txt setup (Phase 25)" }
+    if ($nshContent -notmatch 'NSIS_HOOK_POSTINSTALL') { throw "installer-hooks.nsh missing POSTINSTALL hook (Phase 25)" }
+    Write-Host "  OK installer-hooks.nsh has POSTINSTALL data-pointer setup" -ForegroundColor DarkGray
+
+    # (i) tauri.conf.json 의 NSIS installMode = currentUser (사용자 path 선택 가능)
+    $confContent = Get-Content "src-tauri/tauri.conf.json" -Raw
+    if ($confContent -notmatch '"installMode":\s*"currentUser"') {
+        throw "tauri.conf.json: NSIS installMode currentUser 미설정 (Phase 25)"
+    }
+    Write-Host "  OK tauri.conf.json NSIS installMode = currentUser" -ForegroundColor DarkGray
+}
+
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
 if (-not $SkipDeps) {
     Invoke-Step "npm ls (root, depth=0)" {

@@ -638,6 +638,73 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [depsError, setDepsError] = useState<string | null>(null);
   const [isFirstRun, setIsFirstRun] = useState<boolean>(false);
 
+  // Phase 25 (v0.5.11): Portable data dir
+  type DataDirInfo = {
+    data_root: string;
+    pointer_path?: string | null;
+    pointer_exists: boolean;
+    install_dir?: string | null;
+    default_data_dir?: string | null;
+    data_root_exists: boolean;
+    db_path: string;
+    db_exists: boolean;
+  };
+  const [dataDirInfo, setDataDirInfo] = useState<DataDirInfo | null>(null);
+  const [dataDirBusy, setDataDirBusy] = useState<boolean>(false);
+  const [dataDirMsg, setDataDirMsg] = useState<string | null>(null);
+  const [dataDirError, setDataDirError] = useState<string | null>(null);
+
+  async function refreshDataDirInfo() {
+    try {
+      const info = await invoke<DataDirInfo>("get_data_dir_info");
+      setDataDirInfo(info);
+    } catch (e) {
+      setDataDirError(String(e));
+    }
+  }
+
+  async function handleChangeDataDir(target: "default" | "pick") {
+    setDataDirBusy(true);
+    setDataDirError(null);
+    setDataDirMsg(null);
+    try {
+      let newPath: string | undefined;
+      if (target === "default") {
+        newPath = dataDirInfo?.default_data_dir ?? undefined;
+        if (!newPath) {
+          setDataDirError("기본 위치를 결정 못 함 (install_dir 인식 실패)");
+          return;
+        }
+      } else {
+        const picked = await openDialog({
+          directory: true,
+          multiple: false,
+          title: "K-Desktop-Agent 데이터 폴더 선택",
+          defaultPath: dataDirInfo?.data_root ?? undefined,
+        });
+        if (!picked || Array.isArray(picked)) return; // 취소
+        newPath = picked;
+      }
+      const migrate = window.confirm(
+        `데이터 폴더를 다음 위치로 변경합니다:\n\n${newPath}\n\n` +
+        `[확인] = 기존 데이터 (DB / 백업 / cwd / 로그) 도 함께 이동\n` +
+        `[취소] = 변경 취소\n\n` +
+        `※ 변경 후 KDA 를 한 번 재시작해야 새 위치의 DB 가 활성화됩니다.`,
+      );
+      if (!migrate) return;
+      const updated = await invoke<DataDirInfo>("change_data_dir", {
+        newPath,
+        migrate: true,
+      });
+      setDataDirInfo(updated);
+      setDataDirMsg("✅ 데이터 폴더 변경 완료 — KDA 를 재시작하세요");
+    } catch (e) {
+      setDataDirError(String(e));
+    } finally {
+      setDataDirBusy(false);
+    }
+  }
+
   // 앱 버전은 한 번만 동적으로 로딩 (tauri.conf.json 의 단일 진실원)
   useEffect(() => {
     getVersion()
@@ -679,6 +746,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       })
       .catch((e) => setDepsError(String(e)))
       .finally(() => setDepsBusy("idle"));
+
+    // Phase 25 (v0.5.11): 데이터 폴더 상태 동기 로드
+    refreshDataDirInfo();
   }, [open]);
 
   useEffect(() => {
@@ -2380,6 +2450,70 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   마법사 가드 초기화
                 </button>
               </div>
+            </div>
+          </section>
+
+          {/* Phase 25 (v0.5.11) — 데이터 폴더 (portable) */}
+          <section className="settings-section" data-tab="system">
+            <div className="eyebrow">데이터 폴더</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">📂 현재 위치</div>
+                <div className="settings-row-desc" style={{ fontFamily: "monospace", wordBreak: "break-all" }}>
+                  {dataDirInfo?.data_root ?? "로딩 중..."}
+                </div>
+                {dataDirInfo && (
+                  <div className="settings-row-desc" style={{ marginTop: "0.4rem", fontSize: "0.85em" }}>
+                    DB: {dataDirInfo.db_exists ? "✓" : "—"}{" "}
+                    <span style={{ fontFamily: "monospace" }}>{dataDirInfo.db_path}</span>
+                    <br />
+                    pointer: {dataDirInfo.pointer_exists
+                      ? `✓ ${dataDirInfo.pointer_path}`
+                      : "없음 (기본 fallback ~/.kda 사용 중)"}
+                  </div>
+                )}
+              </div>
+            </div>
+            {dataDirMsg && (
+              <div className="update-status update-success" style={{ marginTop: "0.3rem" }}>
+                {dataDirMsg}
+              </div>
+            )}
+            {dataDirError && (
+              <div className="update-error-section" style={{ marginTop: "0.3rem" }}>
+                <div className="update-status update-error">⚠ {dataDirError}</div>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
+              <button
+                className="settings-btn settings-btn-primary"
+                onClick={() => handleChangeDataDir("pick")}
+                disabled={dataDirBusy}
+                title="폴더 선택 다이얼로그를 열어 새 위치를 고릅니다. 기존 데이터는 자동으로 이동됩니다."
+              >
+                폴더 변경
+              </button>
+              {dataDirInfo?.default_data_dir && (
+                <button
+                  className="settings-btn"
+                  onClick={() => handleChangeDataDir("default")}
+                  disabled={dataDirBusy || dataDirInfo.data_root === dataDirInfo.default_data_dir}
+                  title={`설치 드라이브와 통일된 기본 위치 (${dataDirInfo.default_data_dir})`}
+                >
+                  기본 위치로 (설치 드라이브)
+                </button>
+              )}
+              <button
+                className="settings-btn"
+                onClick={refreshDataDirInfo}
+                disabled={dataDirBusy}
+              >
+                상태 새로고침
+              </button>
+            </div>
+            <div className="settings-row-desc" style={{ marginTop: "0.5rem", fontSize: "0.85em", opacity: 0.8 }}>
+              ※ 변경 시 기존 데이터 (DB / 백업 / cwd / 로그) 가 새 위치로 자동 복사되고 KDA 재시작 후 활성화됩니다.
+              {" "}OneDrive 동기화 폴더 / Program Files 같은 read-only 위치는 피해주세요 (DB lock 충돌 위험).
             </div>
           </section>
 

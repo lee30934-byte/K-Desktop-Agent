@@ -14,15 +14,29 @@
 #>
 param(
   [string]$Label = 'manual',
-  [switch]$AsJson
+  [switch]$AsJson,
+  # Phase 25 (v0.5.11): K-Desktop-Agent 의 portable data root.
+  # 비어있으면 옛 동작 유지 (project root 의 .backups + APPDATA 의 conversations.db)
+  [string]$DataRoot = '',
+  # 옵션 — DB 파일들 직접 경로 지정 가능. 안 주면 $DataRoot/conversations.db 우선 → APPDATA 폴백.
+  [string]$DbPath = ''
 )
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $PSScriptRoot
+# UTF-8 콘솔 인코딩 — pitfall_powershell_secret_bom 의 stderr 변종 방어 (v0.5.10 박힌 패턴)
+try {
+  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+} catch { }
+
+$projectRoot = Split-Path -Parent $PSScriptRoot
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
 $folderLabel = "$ts-$Label"
-$backupDir = Join-Path $root ".backups\$folderLabel"
-$latestFile = Join-Path $root ".backups\latest.txt"
+
+# 백업 base 결정: -DataRoot 우선, 없으면 옛 project root 동작
+$backupBase = if ($DataRoot) { $DataRoot } else { $projectRoot }
+$backupDir = Join-Path $backupBase ".backups\$folderLabel"
+$latestFile = Join-Path $backupBase ".backups\latest.txt"
 
 function Out-Status($msg, $color = 'Gray') {
   if (-not $AsJson) { Write-Host $msg -ForegroundColor $color }
@@ -30,12 +44,27 @@ function Out-Status($msg, $color = 'Gray') {
 
 New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
 
+# DB 위치 결정: -DbPath > $DataRoot/conversations.db > APPDATA fallback
+$dbCandidates = @()
+if ($DbPath) { $dbCandidates += $DbPath }
+if ($DataRoot) { $dbCandidates += (Join-Path $DataRoot 'conversations.db') }
+$dbCandidates += "$env:APPDATA\com.k.desktop-agent\conversations.db"
+
+$dbResolved = $null
+foreach ($c in $dbCandidates) {
+  if (Test-Path $c) { $dbResolved = $c; break }
+}
+if (-not $dbResolved) { $dbResolved = $dbCandidates[0] }  # missing 표시용
+
+$dbDir = Split-Path -Parent $dbResolved
+$dbBase = Split-Path -Leaf $dbResolved
+
 $targets = @(
-  @{ Name='k-desktop-agent.exe';    Src="$root\src-tauri\target\release\k-desktop-agent.exe" },
-  @{ Name='sidecar-dist-index.js';  Src="$root\sidecar\dist\index.js" },
-  @{ Name='conversations.db';       Src="$env:APPDATA\com.k.desktop-agent\conversations.db" },
-  @{ Name='conversations.db-shm';   Src="$env:APPDATA\com.k.desktop-agent\conversations.db-shm" },
-  @{ Name='conversations.db-wal';   Src="$env:APPDATA\com.k.desktop-agent\conversations.db-wal" }
+  @{ Name='k-desktop-agent.exe';    Src="$projectRoot\src-tauri\target\release\k-desktop-agent.exe" },
+  @{ Name='sidecar-dist-index.js';  Src="$projectRoot\sidecar\dist\index.js" },
+  @{ Name='conversations.db';       Src=$dbResolved },
+  @{ Name='conversations.db-shm';   Src=(Join-Path $dbDir "$dbBase-shm") },
+  @{ Name='conversations.db-wal';   Src=(Join-Path $dbDir "$dbBase-wal") }
 )
 
 $manifestFiles = @()

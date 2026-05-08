@@ -120,6 +120,68 @@ fn chrono_lite_now() -> String {
     format!("epoch={}", secs)
 }
 
+// ────────── Phase 25 (v0.5.11): portable data root ──────────
+//
+// K 의 요구: "설치 경로 + DB 도 같은 드라이브" — 진짜 portable.
+//
+// 설계:
+//   - `<install_dir>\data-pointer.txt` 에 데이터 폴더의 절대 경로 한 줄 박음 (UTF-8, no BOM).
+//   - 인스톨러가 default 로 `<install_dir>\..\data` 박지만 K 가 Settings 에서 변경 가능.
+//   - pointer 파일이 없거나 깨졌으면 `~/.kda` 폴백 (이전 v0.5.10 동작 유지 — 회귀 안전).
+//
+// 이 helper 가 모든 path 의 single source of truth:
+//   data_root()/cwd                       → sidecar cwd (Claude session sharding 안정용)
+//   data_root()/.backups                  → 백업
+//   data_root()/logs                      → 런타임 로그
+//   data_root()/conversations.db          → SQLite DB
+//   data_root()/first-run-completed.flag  → 첫 실행 sentinel
+
+/// install 디렉토리 (current_exe 부모). dev 환경에선 target/debug 같은 곳.
+fn install_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf()))
+}
+
+/// install 폴더 옆의 data-pointer.txt 경로. 인스톨러도 같은 위치를 알아야 한다.
+fn data_pointer_path() -> Option<PathBuf> {
+    install_dir().map(|d| d.join("data-pointer.txt"))
+}
+
+/// 데이터 폴더 (포인터 → 폴백). pure function — side effect 없음.
+/// 후속 호출자가 create_dir_all 직접 함.
+fn data_root() -> PathBuf {
+    // 1순위: data-pointer.txt
+    if let Some(pointer) = data_pointer_path() {
+        if let Ok(raw) = std::fs::read_to_string(&pointer) {
+            // BOM strip + trim — `pitfall_powershell_secret_bom` 함정 방어
+            let trimmed = strip_bom(&raw).trim().to_string();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(&trimmed);
+                // 절대 경로만 인정 (상대 경로는 cwd 가 다르면 깨짐)
+                if p.is_absolute() {
+                    return p;
+                }
+            }
+        }
+    }
+    // 2순위: ~/.kda (옛 default — 회귀 안전망)
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        return PathBuf::from(home).join(".kda");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".kda");
+    }
+    // 3순위: cwd 의 .kda (마지막 fallback)
+    PathBuf::from(".kda")
+}
+
+/// 데이터 폴더가 존재하지 않으면 생성. 초기 부트 + 마이그레이션 후 호출.
+fn ensure_data_root() -> Result<PathBuf, String> {
+    let root = data_root();
+    std::fs::create_dir_all(&root)
+        .map_err(|e| format!("data root 생성 실패 ({}): {}", root.display(), e))?;
+    Ok(root)
+}
+
 // ────────── Commands ──────────
 
 #[tauri::command]
@@ -491,7 +553,8 @@ fn read_manifest(backup_dir: &std::path::Path) -> Result<BackupInfo, String> {
 /// 마지막(latest) 백업 정보. 없으면 None.
 #[tauri::command]
 async fn get_latest_backup() -> Result<Option<BackupInfo>, String> {
-    let root = project_root()?;
+    // Phase 25 (v0.5.11): 백업은 데이터에 속함 → data_root().
+    let root = data_root();
     let latest_file = root.join(".backups").join("latest.txt");
     if !latest_file.exists() {
         return Ok(None);
@@ -512,7 +575,7 @@ async fn get_latest_backup() -> Result<Option<BackupInfo>, String> {
 /// 모든 백업 스냅샷 목록 (최신순).
 #[tauri::command]
 async fn list_backups() -> Result<Vec<BackupInfo>, String> {
-    let root = project_root()?;
+    let root = data_root();
     let backups_root = root.join(".backups");
     if !backups_root.exists() {
         return Ok(Vec::new());
@@ -542,7 +605,9 @@ async fn backup_now(label: Option<String>) -> Result<BackupInfo, String> {
     let script = resolve_script_path("backup.ps1")
         .map_err(|e| format!("backup script 없음: {}", e))?;
     let label_arg = label.unwrap_or_else(|| "settings-ui".to_string());
+    let data_root_str = ensure_data_root().unwrap_or_else(|_| data_root()).display().to_string();
     // Phase 23: Windows 콘솔 창 깜빡임 hide.
+    // Phase 25 (v0.5.11): -DataRoot 인자 추가 — backup.ps1 가 portable data root 안에서 백업/DB 찾음.
     let mut cmd = Command::new("powershell.exe");
     cmd.args([
         "-NoProfile",
@@ -552,6 +617,8 @@ async fn backup_now(label: Option<String>) -> Result<BackupInfo, String> {
         script.to_str().unwrap(),
         "-Label",
         &label_arg,
+        "-DataRoot",
+        &data_root_str,
         "-AsJson",
     ])
     .stdout(Stdio::piped())
@@ -638,9 +705,8 @@ async fn rollback_now(app: AppHandle) -> Result<(), String> {
 // 마법사가 자연스럽게 표시. 업데이트 후엔 이미 sentinel 있어서 안 뜸.
 
 fn first_run_sentinel_path() -> Result<PathBuf, String> {
-    let home = std::env::var("USERPROFILE")
-        .map_err(|e| format!("USERPROFILE 환경변수 없음: {}", e))?;
-    Ok(PathBuf::from(home).join(".kda").join("first-run-completed.flag"))
+    // Phase 25 (v0.5.11): data_root() 로 일원화 — 옛 ~/.kda 경로도 data_root() 기본 fallback 이라 회귀 안전.
+    Ok(data_root().join("first-run-completed.flag"))
 }
 
 #[tauri::command]
@@ -654,7 +720,7 @@ fn mark_first_run_complete() -> Result<(), String> {
     let sentinel = first_run_sentinel_path()?;
     if let Some(parent) = sentinel.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| format!("~/.kda 폴더 생성 실패: {}", e))?;
+            .map_err(|e| format!("data root 폴더 생성 실패: {}", e))?;
     }
     let now = chrono_lite_now();
     std::fs::write(&sentinel, format!("first-run completed at {}\n", now))
@@ -663,6 +729,186 @@ fn mark_first_run_complete() -> Result<(), String> {
         "runtime.log",
         &format!("first-run sentinel created at {}", sentinel.display()),
     );
+    Ok(())
+}
+
+// ────────── Phase 25 (v0.5.11) — Portable data dir ──────────
+//
+// data-pointer.txt 를 통해 K 가 데이터 폴더를 자유롭게 선택하게 한다.
+// 마이그레이션은 모든 데이터 (DB / .backups / cwd / logs / sentinel) 를 통째로 이동.
+
+#[derive(serde::Serialize)]
+struct DataDirInfo {
+    /// 현재 데이터 폴더 절대 경로
+    data_root: String,
+    /// install_dir/data-pointer.txt 절대 경로 (없을 수 있음)
+    pointer_path: Option<String>,
+    /// pointer 파일 존재 여부 (없으면 fallback 동작 중)
+    pointer_exists: bool,
+    /// install 디렉토리 절대 경로
+    install_dir: Option<String>,
+    /// 추천 default 데이터 폴더 (install_dir/../data) — UI 가 [기본값으로] 버튼에 사용
+    default_data_dir: Option<String>,
+    /// 데이터 폴더 자체가 실제 존재하는지
+    data_root_exists: bool,
+    /// SQLite DB 경로 (data_root/conversations.db)
+    db_path: String,
+    /// DB 파일 존재 여부
+    db_exists: bool,
+}
+
+fn default_data_dir_for(install: &PathBuf) -> PathBuf {
+    install.parent().map(|p| p.join("data")).unwrap_or_else(|| install.join("data"))
+}
+
+#[tauri::command]
+fn get_data_dir_info() -> Result<DataDirInfo, String> {
+    let install = install_dir();
+    let pointer = data_pointer_path();
+    let root = data_root();
+    let db = root.join("conversations.db");
+    Ok(DataDirInfo {
+        data_root: root.display().to_string(),
+        pointer_path: pointer.as_ref().map(|p| p.display().to_string()),
+        pointer_exists: pointer.as_ref().map(|p| p.exists()).unwrap_or(false),
+        install_dir: install.as_ref().map(|p| p.display().to_string()),
+        default_data_dir: install.as_ref().map(|p| default_data_dir_for(p).display().to_string()),
+        data_root_exists: root.exists(),
+        db_path: db.display().to_string(),
+        db_exists: db.exists(),
+    })
+}
+
+/// 데이터 폴더 변경. 옵션으로 기존 데이터 마이그레이션.
+///
+/// 흐름:
+///   1. new_path 검증 (절대 경로, 존재 가능, write 가능)
+///   2. migrate=true 면 옛 data_root() 의 모든 항목을 new_path 로 복사
+///      (DB 는 SQLite WAL 때문에 K 가 KDA 재시작해야 lock 해제됨 → 옛 DB 삭제는 안 함)
+///   3. data-pointer.txt 갱신 (UTF-8 no BOM)
+///   4. K 가 KDA 재시작 시 new_path 가 data_root() 가 됨
+///
+/// 안전장치:
+///   - new_path 가 install_dir 자체이면 거부 (인앱 updater 가 install_dir 정리 시 데이터 삭제 위험)
+///   - new_path 부모가 read-only (Program Files 등) 면 경고만 띄우고 K 가 결정
+///   - 마이그레이션 도중 에러 — 옛 데이터는 그대로 두고 pointer 갱신 안 함 (회귀 안전)
+#[tauri::command]
+fn change_data_dir(new_path: String, migrate: bool) -> Result<DataDirInfo, String> {
+    let new_root = PathBuf::from(&new_path);
+    if !new_root.is_absolute() {
+        return Err(format!("절대 경로만 허용 (받은 값: {})", new_path));
+    }
+    // install_dir 안에 직접 박는 건 위험 (updater 가 _up_/ 정리 중에 실수로 청소될 수 있음)
+    if let Some(install) = install_dir() {
+        if new_root == install {
+            return Err("install 폴더 자체는 데이터 폴더로 사용 불가 (인앱 update 시 손실 위험)".to_string());
+        }
+    }
+    let pointer = data_pointer_path()
+        .ok_or_else(|| "install_dir 못 찾음 — data-pointer.txt 위치 결정 불가".to_string())?;
+
+    // 1. 새 폴더 생성
+    std::fs::create_dir_all(&new_root)
+        .map_err(|e| format!("새 데이터 폴더 생성 실패 ({}): {}", new_root.display(), e))?;
+
+    // 2. 마이그레이션 (옛 → 새)
+    let old_root = data_root();
+    if migrate && old_root != new_root && old_root.exists() {
+        log_lifecycle(
+            "runtime.log",
+            &format!("data dir migration: {} → {}", old_root.display(), new_root.display()),
+        );
+        copy_dir_recursive(&old_root, &new_root)
+            .map_err(|e| format!("마이그레이션 실패 ({}): {} — pointer 갱신 안 함", e, old_root.display()))?;
+    }
+
+    // 3. pointer 파일 갱신 (UTF-8 no BOM)
+    let pointer_content = new_root.display().to_string();
+    if let Some(parent) = pointer.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("pointer 폴더 생성 실패: {}", e))?;
+    }
+    std::fs::write(&pointer, pointer_content.as_bytes())
+        .map_err(|e| format!("data-pointer.txt 작성 실패 ({}): {}", pointer.display(), e))?;
+    log_lifecycle(
+        "runtime.log",
+        &format!("data-pointer.txt updated → {}", new_root.display()),
+    );
+
+    // 4. 새 정보 반환 (UI 가 즉시 갱신)
+    get_data_dir_info()
+}
+
+/// 옛 K 의 SQLite DB (%APPDATA%\com.k.desktop-agent\conversations.db*) 가 새 data_root()
+/// 에 없으면 자동 복사. v0.5.10 → v0.5.11 update 시 K 의 대화 보존.
+/// 이미 새 위치에 있으면 skip (idempotent).
+fn migrate_legacy_db_if_needed() {
+    let new_root = data_root();
+    let new_db = new_root.join("conversations.db");
+    if new_db.exists() {
+        return; // 이미 마이그레이션됨
+    }
+    let appdata = match std::env::var("APPDATA") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let legacy_dir = PathBuf::from(appdata).join("com.k.desktop-agent");
+    let legacy_db = legacy_dir.join("conversations.db");
+    if !legacy_db.exists() {
+        return; // 옛 DB 도 없음 — fresh install
+    }
+    if let Err(e) = std::fs::create_dir_all(&new_root) {
+        log_lifecycle("runtime.log", &format!("warn: data_root 생성 실패 (legacy migration): {}", e));
+        return;
+    }
+    let mut moved = 0u32;
+    for name in &["conversations.db", "conversations.db-shm", "conversations.db-wal"] {
+        let src = legacy_dir.join(name);
+        let dst = new_root.join(name);
+        if src.exists() && !dst.exists() {
+            match std::fs::copy(&src, &dst) {
+                Ok(_) => { moved += 1; }
+                Err(e) => log_lifecycle(
+                    "runtime.log",
+                    &format!("warn: legacy db copy 실패 {} → {}: {}", src.display(), dst.display(), e),
+                ),
+            }
+        }
+    }
+    log_lifecycle(
+        "runtime.log",
+        &format!("legacy db migration: {} files copied to {}", moved, new_root.display()),
+    );
+}
+
+/// 옛 데이터 폴더 → 새 데이터 폴더 재귀 복사. 같은 파일 있으면 skip (idempotent).
+/// SQLite WAL/SHM 같은 lock 잡힌 파일은 fail 시 skip 하고 진행 (K 가 재시작 후 자연스럽게 처리).
+fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let s = entry.path();
+        let d = dst.join(entry.file_name());
+        let ft = entry.file_type().map_err(|e| e.to_string())?;
+        if ft.is_dir() {
+            copy_dir_recursive(&s, &d)?;
+        } else if ft.is_file() {
+            // 이미 있으면 skip (재실행 안전)
+            if d.exists() {
+                continue;
+            }
+            // SQLite WAL/SHM lock 가능 — fail 해도 다음 파일로 진행
+            if let Err(e) = std::fs::copy(&s, &d) {
+                log_lifecycle(
+                    "runtime.log",
+                    &format!("warn: copy skip {} ({})", s.display(), e),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1197,10 +1443,8 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
     // 폴더가 바뀌어 옛 session ID 의 --resume 이 "No conversation found" 로 즉사하는 사고가
     // v0.5.0→0.5.1 사이클에 발생 (pitfall_claude_cli_session_sharding.md). 사용자 홈 안에
     // 안정된 cwd 를 박아 어떤 버전이든 같은 sharded 폴더로 모이게 한다.
-    let claude_cwd = std::env::var("USERPROFILE")
-        .ok()
-        .or_else(|| std::env::var("HOME").ok())
-        .map(|h| std::path::PathBuf::from(h).join(".kda").join("cwd"));
+    // Phase 25 (v0.5.11): data_root() 로 일원화. 옛 fallback 도 ~/.kda 라 기존 K 의 session 그대로 회복.
+    let claude_cwd: Option<PathBuf> = Some(data_root().join("cwd"));
     let final_cwd: PathBuf = if let Some(p) = claude_cwd.as_ref() {
         match std::fs::create_dir_all(p) {
             Ok(_) => p.clone(),
@@ -1674,6 +1918,11 @@ pub fn run_with_options(start_minimized: bool) {
         .setup(move |app| {
             let handle = app.handle().clone();
 
+            // Phase 25 (v0.5.11): 옛 K 의 데이터 (%APPDATA%\com.k.desktop-agent\conversations.db)
+            // 가 새 data_root() 에 없으면 자동 한 번 복사 — v0.5.10→v0.5.11 update 시 K 의
+            // 대화 손실 방지. idempotent — 이미 새 위치에 있으면 skip.
+            migrate_legacy_db_if_needed();
+
             // Tray
             if let Err(e) = setup_tray(&handle) {
                 eprintln!("tray setup failed: {}", e);
@@ -1780,6 +2029,9 @@ pub fn run_with_options(start_minimized: bool) {
             mark_first_run_complete,
             check_dependencies,
             run_install_deps,
+            // Phase 25 — Portable data dir
+            get_data_dir_info,
+            change_data_dir,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,
