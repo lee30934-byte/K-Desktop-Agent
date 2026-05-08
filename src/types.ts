@@ -153,6 +153,23 @@ export interface Conversation {
   totalOutputTokens?: number;
   turnCount?: number;
   toolCallCount?: number;
+  // Phase 32 — 폴더 트리 + 즐겨찾기 + 색상/아이콘
+  folderId?: string | null;
+  position?: number;
+  isFavorite?: boolean;
+  color?: string | null;
+  icon?: string | null;
+}
+
+// Phase 32 — 폴더 (N단계 중첩 가능)
+export interface Folder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  color?: string | null;
+  icon?: string | null;
+  position: number;
+  createdAt: number;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";

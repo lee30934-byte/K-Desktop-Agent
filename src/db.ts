@@ -69,6 +69,33 @@ export async function initDB(): Promise<Database> {
     await db.execute(`ALTER TABLE conversations ADD COLUMN tool_call_count INTEGER DEFAULT 0`);
   } catch { /* 이미 존재하면 무시 */ }
 
+  // Phase 32 (v0.5.20) — 폴더 트리 + 즐겨찾기 + 색상/아이콘
+  // folders: 폴더 자체 테이블. parent_id 가 null = root 폴더, 아니면 다른 folder.id 참조 (N단계 중첩)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS folders (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      parent_id TEXT,
+      color TEXT,
+      icon TEXT,
+      position INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE SET NULL
+    )
+  `);
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)
+  `);
+  // conversations 에 folder_id / position / is_favorite / color / icon 컬럼 추가
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN folder_id TEXT`); } catch {}
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN position INTEGER DEFAULT 0`); } catch {}
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN is_favorite INTEGER DEFAULT 0`); } catch {}
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN color TEXT`); } catch {}
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN icon TEXT`); } catch {}
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_conversations_folder ON conversations(folder_id)
+  `);
+
   await db.execute(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
@@ -116,6 +143,12 @@ export interface DBConversation {
   total_output_tokens: number;
   turn_count: number;
   tool_call_count: number;
+  // Phase 32
+  folder_id?: string | null;
+  position?: number;
+  is_favorite?: number;
+  color?: string | null;
+  icon?: string | null;
 }
 
 /**
@@ -141,7 +174,252 @@ export async function getAllConversations(): Promise<Conversation[]> {
     totalOutputTokens: row.total_output_tokens ?? 0,
     turnCount: row.turn_count ?? 0,
     toolCallCount: row.tool_call_count ?? 0,
+    // Phase 32
+    folderId: row.folder_id ?? null,
+    position: row.position ?? 0,
+    isFavorite: row.is_favorite === 1,
+    color: row.color ?? null,
+    icon: row.icon ?? null,
   }));
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 32 — Folders + Tree + Drag&Drop + Favorites + Color/Icon
+// ─────────────────────────────────────────────────────────────────
+
+export interface DBFolder {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  color: string | null;
+  icon: string | null;
+  position: number;
+  created_at: number;
+}
+
+export interface FolderRecord {
+  id: string;
+  name: string;
+  parentId: string | null;
+  color: string | null;
+  icon: string | null;
+  position: number;
+  createdAt: number;
+}
+
+function rowToFolder(row: DBFolder): FolderRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    parentId: row.parent_id ?? null,
+    color: row.color ?? null,
+    icon: row.icon ?? null,
+    position: row.position ?? 0,
+    createdAt: row.created_at,
+  };
+}
+
+export async function getAllFolders(): Promise<FolderRecord[]> {
+  const database = await initDB();
+  const rows = await database.select<DBFolder[]>(
+    `SELECT * FROM folders ORDER BY parent_id, position ASC, created_at ASC`,
+  );
+  return rows.map(rowToFolder);
+}
+
+export async function createFolder(
+  name: string,
+  parentId: string | null = null,
+  color: string | null = null,
+  icon: string | null = null,
+): Promise<FolderRecord> {
+  const database = await initDB();
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  // 같은 부모의 마지막 position +1 로 append
+  const rows = await database.select<{ max_pos: number | null }[]>(
+    `SELECT MAX(position) as max_pos FROM folders WHERE ${parentId === null ? "parent_id IS NULL" : "parent_id = ?"}`,
+    parentId === null ? [] : [parentId],
+  );
+  const nextPos = (rows[0]?.max_pos ?? -1) + 1;
+  await database.execute(
+    `INSERT INTO folders (id, name, parent_id, color, icon, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, name, parentId, color, icon, nextPos, now],
+  );
+  return { id, name, parentId, color, icon, position: nextPos, createdAt: now };
+}
+
+export async function renameFolder(id: string, name: string): Promise<void> {
+  const database = await initDB();
+  await database.execute(`UPDATE folders SET name = ? WHERE id = ?`, [name, id]);
+}
+
+export async function setFolderColor(id: string, color: string | null): Promise<void> {
+  const database = await initDB();
+  await database.execute(`UPDATE folders SET color = ? WHERE id = ?`, [color, id]);
+}
+
+export async function setFolderIcon(id: string, icon: string | null): Promise<void> {
+  const database = await initDB();
+  await database.execute(`UPDATE folders SET icon = ? WHERE id = ?`, [icon, id]);
+}
+
+/**
+ * 폴더 삭제. 기본 동작: 안 든 대화/하위폴더는 부모(또는 root)로 옮긴 뒤 폴더만 제거.
+ * mode === "deleteAll" 이면 안에 있는 대화도 같이 삭제 (cascade — messages 까지).
+ */
+export async function deleteFolder(
+  id: string,
+  mode: "moveToParent" | "deleteAll" = "moveToParent",
+): Promise<void> {
+  const database = await initDB();
+
+  // 자기 자신의 parent_id 알아내기
+  const rows = await database.select<DBFolder[]>(
+    `SELECT * FROM folders WHERE id = ?`,
+    [id],
+  );
+  if (rows.length === 0) return;
+  const parentId = rows[0].parent_id ?? null;
+
+  if (mode === "deleteAll") {
+    // 재귀적으로 자손 폴더 다 모은 뒤 그 폴더들의 conversation 다 삭제
+    const allFolders = await getAllFolders();
+    const descendants: string[] = [];
+    const stack = [id];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      descendants.push(cur);
+      for (const f of allFolders) {
+        if (f.parentId === cur) stack.push(f.id);
+      }
+    }
+    // 그 폴더들에 든 대화 ID 모음 → CASCADE 삭제
+    for (const fid of descendants) {
+      const convRows = await database.select<{ id: string }[]>(
+        `SELECT id FROM conversations WHERE folder_id = ?`,
+        [fid],
+      );
+      for (const cr of convRows) {
+        await database.execute(`DELETE FROM messages WHERE conversation_id = ?`, [cr.id]);
+        await database.execute(`DELETE FROM conversations WHERE id = ?`, [cr.id]);
+      }
+      await database.execute(`DELETE FROM folders WHERE id = ?`, [fid]);
+    }
+  } else {
+    // 자식 폴더의 parent_id 를 내 parent 로 승격
+    await database.execute(
+      `UPDATE folders SET parent_id = ? WHERE parent_id = ?`,
+      [parentId, id],
+    );
+    // 안의 대화는 내 parent 로 이동
+    await database.execute(
+      `UPDATE conversations SET folder_id = ? WHERE folder_id = ?`,
+      [parentId, id],
+    );
+    // 폴더 자체 삭제
+    await database.execute(`DELETE FROM folders WHERE id = ?`, [id]);
+  }
+}
+
+/**
+ * 폴더 이동 — 새 부모 + 새 position 으로.
+ * 사이클 방지: newParentId 가 자기 자신 또는 자손이면 reject (sidebar 가 호출 전 검증해도, 여기서도 안전망).
+ */
+export async function moveFolder(
+  id: string,
+  newParentId: string | null,
+  newPosition: number,
+): Promise<void> {
+  const database = await initDB();
+
+  // 사이클 방지
+  if (newParentId === id) throw new Error("폴더를 자기 자신 안에 넣을 수 없습니다");
+  if (newParentId !== null) {
+    const allFolders = await getAllFolders();
+    const descendants = new Set<string>();
+    const stack = [id];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      descendants.add(cur);
+      for (const f of allFolders) {
+        if (f.parentId === cur) stack.push(f.id);
+      }
+    }
+    if (descendants.has(newParentId)) {
+      throw new Error("폴더를 자기 자손 폴더 안에 넣을 수 없습니다");
+    }
+  }
+
+  await database.execute(
+    `UPDATE folders SET parent_id = ?, position = ? WHERE id = ?`,
+    [newParentId, newPosition, id],
+  );
+}
+
+/**
+ * 대화 → 폴더 이동 (folderId = null 이면 root)
+ */
+export async function moveConversationToFolder(
+  conversationId: string,
+  folderId: string | null,
+  position: number = 0,
+): Promise<void> {
+  const database = await initDB();
+  await database.execute(
+    `UPDATE conversations SET folder_id = ?, position = ? WHERE id = ?`,
+    [folderId, position, conversationId],
+  );
+}
+
+export async function toggleConversationFavorite(id: string): Promise<boolean> {
+  const database = await initDB();
+  const rows = await database.select<{ is_favorite: number }[]>(
+    `SELECT is_favorite FROM conversations WHERE id = ?`,
+    [id],
+  );
+  if (rows.length === 0) return false;
+  const next = rows[0].is_favorite === 1 ? 0 : 1;
+  await database.execute(
+    `UPDATE conversations SET is_favorite = ? WHERE id = ?`,
+    [next, id],
+  );
+  return next === 1;
+}
+
+export async function setConversationColor(id: string, color: string | null): Promise<void> {
+  const database = await initDB();
+  await database.execute(`UPDATE conversations SET color = ? WHERE id = ?`, [color, id]);
+}
+
+export async function setConversationIcon(id: string, icon: string | null): Promise<void> {
+  const database = await initDB();
+  await database.execute(`UPDATE conversations SET icon = ? WHERE id = ?`, [icon, id]);
+}
+
+/**
+ * 대화 검색 — 제목 + 메시지 본문 매칭. SQLite LIKE 기반 (case-insensitive).
+ * 결과: 일치한 대화의 id 셋 (sidebar 에서 필터링 시 사용).
+ */
+export async function searchConversations(query: string): Promise<Set<string>> {
+  const database = await initDB();
+  const trimmed = query.trim();
+  if (!trimmed) return new Set();
+  const pat = `%${trimmed.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+  // 제목 매칭
+  const titleRows = await database.select<{ id: string }[]>(
+    `SELECT id FROM conversations WHERE title LIKE ? ESCAPE '\\'`,
+    [pat],
+  );
+  // 메시지 본문 매칭 (distinct conversation_id)
+  const msgRows = await database.select<{ conversation_id: string }[]>(
+    `SELECT DISTINCT conversation_id FROM messages WHERE content LIKE ? ESCAPE '\\'`,
+    [pat],
+  );
+  const set = new Set<string>();
+  for (const r of titleRows) set.add(r.id);
+  for (const r of msgRows) set.add(r.conversation_id);
+  return set;
 }
 
 /**

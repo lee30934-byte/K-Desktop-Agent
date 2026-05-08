@@ -37,7 +37,21 @@ import {
   createCompressedConversation,
   updateConversationMetrics,
   getConversationMetrics,
+  // Phase 32 — folders + DnD + favorites + color/icon
+  getAllFolders,
+  createFolder,
+  renameFolder,
+  deleteFolder,
+  moveFolder,
+  setFolderColor,
+  setFolderIcon,
+  moveConversationToFolder,
+  toggleConversationFavorite,
+  setConversationColor,
+  setConversationIcon,
+  searchConversations,
 } from "./db";
+import type { Folder } from "./types";
 import "./App.css";
 import logger from "./utils/logger";
 import { useStableCallback } from "./utils/useStableCallback";
@@ -164,6 +178,8 @@ export default function App() {
   // ─── 상태 ───────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  // Phase 32 — folder tree
+  const [folders, setFolders] = useState<Folder[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connected");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -497,10 +513,22 @@ export default function App() {
     (async () => {
       try {
         await initDB();
-        const convs = await getAllConversations();
+        const [convs, fols] = await Promise.all([
+          getAllConversations(),
+          getAllFolders(),
+        ]);
         setConversations(convs);
+        setFolders(fols.map((f) => ({
+          id: f.id,
+          name: f.name,
+          parentId: f.parentId,
+          color: f.color,
+          icon: f.icon,
+          position: f.position,
+          createdAt: f.createdAt,
+        })));
         setDbReady(true);
-        logger.log("[App] DB 초기화 완료, 대화 수:", convs.length);
+        logger.log("[App] DB 초기화 완료, 대화 수:", convs.length, ", 폴더 수:", fols.length);
       } catch (err) {
         console.error("[App] DB 초기화 실패:", err);
         setDbReady(true); // 실패해도 앱은 동작하게
@@ -1315,6 +1343,178 @@ export default function App() {
     }
   });
 
+  // ─── Phase 32 (v0.5.20) — Folder Tree + DnD + Favorites + Color/Icon ───
+  const refreshFolders = useStableCallback(async () => {
+    try {
+      const fols = await getAllFolders();
+      setFolders(fols.map((f) => ({
+        id: f.id,
+        name: f.name,
+        parentId: f.parentId,
+        color: f.color,
+        icon: f.icon,
+        position: f.position,
+        createdAt: f.createdAt,
+      })));
+    } catch (e) {
+      console.error("[App] folders 로드 실패:", e);
+    }
+  });
+
+  const handleCreateFolder = useStableCallback(
+    async (name: string, parentId: string | null = null) => {
+      try {
+        const f = await createFolder(name, parentId);
+        setFolders((prev) => [
+          ...prev,
+          {
+            id: f.id,
+            name: f.name,
+            parentId: f.parentId,
+            color: f.color,
+            icon: f.icon,
+            position: f.position,
+            createdAt: f.createdAt,
+          },
+        ]);
+      } catch (e) {
+        console.error("[App] 폴더 생성 실패:", e);
+        pushSystem("폴더를 생성하지 못했습니다.", "error");
+      }
+    },
+  );
+
+  const handleRenameFolder = useStableCallback(async (id: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    try {
+      await renameFolder(id, trimmed);
+      setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, name: trimmed } : f)));
+    } catch (e) {
+      console.error("[App] 폴더 이름 변경 실패:", e);
+      pushSystem("폴더 이름을 변경하지 못했습니다.", "error");
+    }
+  });
+
+  const handleDeleteFolder = useStableCallback(
+    async (id: string, mode: "moveToParent" | "deleteAll" = "moveToParent") => {
+      try {
+        await deleteFolder(id, mode);
+        await refreshFolders();
+        // 대화도 부모로 옮겨졌거나 삭제됐으니 다시 불러오기
+        const convs = await getAllConversations();
+        setConversations(convs);
+        // 활성 대화가 삭제됐으면 초기화
+        if (
+          mode === "deleteAll" &&
+          activeConversationId &&
+          !convs.find((c) => c.id === activeConversationId)
+        ) {
+          setActiveConversationId(null);
+          setMessages([]);
+        }
+      } catch (e) {
+        console.error("[App] 폴더 삭제 실패:", e);
+        pushSystem("폴더를 삭제하지 못했습니다.", "error");
+      }
+    },
+  );
+
+  const handleMoveFolder = useStableCallback(
+    async (id: string, newParentId: string | null, newPosition: number) => {
+      try {
+        await moveFolder(id, newParentId, newPosition);
+        setFolders((prev) =>
+          prev.map((f) =>
+            f.id === id ? { ...f, parentId: newParentId, position: newPosition } : f,
+          ),
+        );
+      } catch (e) {
+        console.error("[App] 폴더 이동 실패:", e);
+        pushSystem(
+          (e as Error)?.message ?? "폴더를 이동하지 못했습니다.",
+          "error",
+        );
+      }
+    },
+  );
+
+  const handleSetFolderColor = useStableCallback(async (id: string, color: string | null) => {
+    try {
+      await setFolderColor(id, color);
+      setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, color } : f)));
+    } catch (e) {
+      console.error("[App] 폴더 색상 변경 실패:", e);
+    }
+  });
+
+  const handleSetFolderIcon = useStableCallback(async (id: string, icon: string | null) => {
+    try {
+      await setFolderIcon(id, icon);
+      setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, icon } : f)));
+    } catch (e) {
+      console.error("[App] 폴더 아이콘 변경 실패:", e);
+    }
+  });
+
+  const handleMoveConversationToFolder = useStableCallback(
+    async (convId: string, folderId: string | null, position: number = 0) => {
+      try {
+        await moveConversationToFolder(convId, folderId, position);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === convId ? { ...c, folderId, position } : c)),
+        );
+      } catch (e) {
+        console.error("[App] 대화 이동 실패:", e);
+        pushSystem("대화를 이동하지 못했습니다.", "error");
+      }
+    },
+  );
+
+  const handleToggleFavorite = useStableCallback(async (id: string) => {
+    try {
+      const next = await toggleConversationFavorite(id);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, isFavorite: next } : c)),
+      );
+    } catch (e) {
+      console.error("[App] 즐겨찾기 토글 실패:", e);
+    }
+  });
+
+  const handleSetConversationColor = useStableCallback(
+    async (id: string, color: string | null) => {
+      try {
+        await setConversationColor(id, color);
+        setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, color } : c)));
+      } catch (e) {
+        console.error("[App] 대화 색상 변경 실패:", e);
+      }
+    },
+  );
+
+  const handleSetConversationIcon = useStableCallback(
+    async (id: string, icon: string | null) => {
+      try {
+        await setConversationIcon(id, icon);
+        setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, icon } : c)));
+      } catch (e) {
+        console.error("[App] 대화 아이콘 변경 실패:", e);
+      }
+    },
+  );
+
+  const handleSearchConversations = useStableCallback(
+    async (query: string): Promise<Set<string>> => {
+      try {
+        return await searchConversations(query);
+      } catch (e) {
+        console.error("[App] 대화 검색 실패:", e);
+        return new Set<string>();
+      }
+    },
+  );
+
   // ─── Phase 30 (v0.5.18) — 메시지 큐 자동 비우기 ───────────────
   // streaming false 로 전환되는 순간 큐에 보관된 메시지 하나를 자동 send.
   // K 가 답변 받는 동안 Enter 친 것이 있으면 답변 끝난 직후 즉시 다음 turn 시작.
@@ -1779,12 +1979,26 @@ export default function App() {
       <UpdateChecker />
       <Sidebar
         conversations={conversations}
+        folders={folders}
         activeConversationId={activeConversationId}
         onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
         onRenameConversation={handleRenameConversation}
         onRefreshConversations={refreshConversations}
+        // Phase 32 — folder tree
+        onCreateFolder={handleCreateFolder}
+        onRenameFolder={handleRenameFolder}
+        onDeleteFolder={handleDeleteFolder}
+        onMoveFolder={handleMoveFolder}
+        onSetFolderColor={handleSetFolderColor}
+        onSetFolderIcon={handleSetFolderIcon}
+        onMoveConversationToFolder={handleMoveConversationToFolder}
+        onToggleFavorite={handleToggleFavorite}
+        onSetConversationColor={handleSetConversationColor}
+        onSetConversationIcon={handleSetConversationIcon}
+        onSearchConversations={handleSearchConversations}
+        onRefreshFolders={refreshFolders}
         mcpConnected={mcpState.connected}
         onOpenSettings={openSettings}
       />
