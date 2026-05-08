@@ -22,6 +22,7 @@ import type {
 import ElicitationDialog from "./components/ElicitationDialog";
 import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
+import SidebarResizer from "./components/SidebarResizer";
 import {
   initDB,
   getAllConversations,
@@ -211,6 +212,21 @@ export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   // Phase 32 — folder tree
   const [folders, setFolders] = useState<Folder[]>([]);
+  // Phase 38 (v0.5.26) — 사이드바 폭 (resizable, localStorage 저장)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = parseInt(localStorage.getItem("kda_sidebar_width") || "", 10);
+      if (!Number.isNaN(saved) && saved >= 200 && saved <= 600) return saved;
+    } catch {}
+    return 260;
+  });
+  // CSS variable 동기화
+  useEffect(() => {
+    document.documentElement.style.setProperty("--sidebar-width", `${sidebarWidth}px`);
+    try {
+      localStorage.setItem("kda_sidebar_width", String(sidebarWidth));
+    } catch {}
+  }, [sidebarWidth]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connected");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -2072,6 +2088,9 @@ export default function App() {
   return (
     <div className="app">
       <UpdateChecker />
+      {/* Phase 38 (v0.5.26) — 사이드바 폭 조절 handle. Sidebar 우측 가장자리, drag 로 200~600px */}
+      <SidebarResizer width={sidebarWidth} onChange={setSidebarWidth} />
+
       <Sidebar
         conversations={conversations}
         folders={folders}

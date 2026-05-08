@@ -206,12 +206,20 @@ function MetricsPanel({
             <div className="context-tooltip-hint">
               {contextOverflowed
                 ? "⚠️ 100% 초과 — 큰 tool 결과 (cc_screenshot 등) 의 base64 가 누적된 케이스. 새 대화 또는 압축 권장."
+                : contextUsage >= 90 && contextSource === "measured"
+                ? `⚠️ ${maxContextTokens >= 1_000_000 ? "1M 마장" : "한도"} 임박 — 모델이 이미 ${formatTokens(displayContext)} 입력받음. 큰 history 누적 대화면 새 대화 / 압축 권장`
                 : contextUsage >= 90
                 ? "⚠️ 세션이 곧 자동 갱신됩니다"
                 : contextUsage >= 70
                   ? "주의: 컨텍스트 70% 이상"
                   : "✓ 정상 범위"}
             </div>
+            {/* Phase 38 (v0.5.26): measured 와 estimated 갭 큼 → 어느 쪽이 진실인지 판단 도움 */}
+            {contextSource === "measured" && estimatedContext > 0 && Math.abs(displayContext - estimatedContext) > maxContextTokens * 0.3 && (
+              <div className="context-tooltip-hint" style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                💡 실측({formatTokens(displayContext)}) 과 추정({formatTokens(estimatedContext)}) 갭 큼 — 누적 history 큰 대화일 가능성. 수치 자체는 모델이 보고한 정확치.
+              </div>
+            )}
             {/* Phase 35 (v0.5.23) — 모델별 분모 출처 명시. K 가 200K vs 400K vs 1M 어느 분모로 계산되는지 즉시 식별 */}
             <div className="context-tooltip-row" style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }} title="분모는 모델 ID 매칭으로 추정. 실제 모델 한도와 다를 수 있음. GPT-5/codex=400K, Claude default=1M, gpt-5-nano=1M, 그 외=200K">
               <span>분모 출처</span>

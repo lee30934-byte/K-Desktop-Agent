@@ -4,7 +4,8 @@
 
 .app {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  /* Phase 38 (v0.5.26) — sidebar 폭 변수화. K 가 우측 가장자리 drag handle 로 조절 */
+  grid-template-columns: var(--sidebar-width, 260px) 1fr;
   grid-template-rows: 1fr auto;
   grid-template-areas:
     "sidebar main"
@@ -3501,6 +3502,171 @@
 .update-close-btn:hover {
   opacity: 1;
   background: rgba(0, 0, 0, 0.15);
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Phase 38 (v0.5.26) — Sidebar resizer + folder picker + delete dialog + new folder inline
+   ════════════════════════════════════════════════════════════════ */
+
+/* 사이드바 폭 조절 handle (우측 가장자리 absolute) */
+.sidebar-resizer {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 80px;
+  cursor: ew-resize;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: rgba(79, 232, 225, 0.2);
+}
+.sidebar-resizer-grip {
+  width: 3px;
+  height: 40px;
+  background: var(--border, #444);
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+.sidebar-resizer:hover .sidebar-resizer-grip,
+.sidebar-resizer.dragging .sidebar-resizer-grip {
+  background: var(--accent);
+}
+
+/* 새 폴더 inline input (root 영역 overlay 형태) */
+.folder-create-overlay {
+  margin: 4px 8px;
+}
+.folder-create-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(79, 232, 225, 0.08);
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+}
+.folder-create-box .folder-name-edit {
+  flex: 1;
+}
+
+/* folder-row 의 새 폴더 생성 inline (자식 영역) */
+.folder-row.folder-row-creating {
+  background: rgba(79, 232, 225, 0.06);
+  border: 1px dashed var(--accent);
+}
+
+/* 폴더 picker (대화→폴더 이동) */
+.folder-picker {
+  min-width: 220px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.folder-picker-item {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-family: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.folder-picker-item:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+}
+.folder-picker-empty {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 8px 12px;
+  text-align: center;
+}
+
+/* 폴더 삭제 dialog (modal overlay) */
+.folder-delete-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.folder-delete-box {
+  background: var(--surface-elevated, #1a1d24);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  min-width: 380px;
+  max-width: 460px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.folder-delete-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+.folder-delete-msg {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+.folder-delete-msg strong {
+  color: var(--text-primary);
+}
+.folder-delete-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.folder-delete-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: all 0.15s;
+}
+.folder-delete-btn:hover {
+  background: var(--surface-hover);
+}
+.folder-delete-btn.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.folder-delete-btn.primary:hover {
+  background: rgba(79, 232, 225, 0.12);
+}
+.folder-delete-btn.danger {
+  border-color: #ff7c7c;
+  color: #ff7c7c;
+}
+.folder-delete-btn.danger:hover {
+  background: rgba(255, 80, 80, 0.12);
+}
+.folder-delete-btn.secondary {
+  color: var(--text-tertiary);
 }
 
 .update-content {

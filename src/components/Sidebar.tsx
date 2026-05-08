@@ -111,6 +111,24 @@ function Sidebar({
     | null
   >(null);
 
+  // Phase 38 (v0.5.26) — 폴더 생성 inline 입력 (prompt() 가 Tauri webview 에서 막힘 fallback)
+  const [creatingFolder, setCreatingFolder] = useState<{ parentId: string | null; name: string } | null>(null);
+  const createFolderInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Phase 38 — 폴더 picker (대화→폴더 이동 fallback, DnD 안 될 때)
+  const [folderPicker, setFolderPicker] = useState<{
+    convId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // Phase 38 — 폴더 삭제 confirm dialog (confirm() 도 Tauri webview 에서 안 뜰 수 있음)
+  const [folderDeleteDialog, setFolderDeleteDialog] = useState<{
+    folder: Folder;
+    childCount: number;
+    convCount: number;
+  } | null>(null);
+
   // DnD: 현재 드래그 중인 대상 + 드롭 후보
   const [dragOver, setDragOver] = useState<string | null>(null); // folderId 또는 "__root__"
   const dragRef = useRef<{ kind: "conversation" | "folder"; id: string } | null>(null);
@@ -125,17 +143,20 @@ function Sidebar({
     }
   }, [editingState?.id, editingState?.kind]);
 
-  // 우클릭 메뉴 / picker 외부 클릭 닫기 + Escape
+  // 우클릭 메뉴 / picker / folder picker 외부 클릭 닫기 + Escape
   useEffect(() => {
-    if (!contextMenu && !pickerState) return;
+    if (!contextMenu && !pickerState && !folderPicker) return;
     const handleDocClick = () => {
       setContextMenu(null);
       setPickerState(null);
+      setFolderPicker(null);
     };
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setContextMenu(null);
         setPickerState(null);
+        setFolderPicker(null);
+        setFolderDeleteDialog(null);
       }
     };
     document.addEventListener("click", handleDocClick);
@@ -144,7 +165,7 @@ function Sidebar({
       document.removeEventListener("click", handleDocClick);
       document.removeEventListener("keydown", handleKey);
     };
-  }, [contextMenu, pickerState]);
+  }, [contextMenu, pickerState, folderPicker]);
 
   // 검색 — debounce 200ms
   useEffect(() => {
@@ -278,7 +299,7 @@ function Sidebar({
     });
   };
 
-  // ─── DnD ───────────────────────────────────────────────────
+  // ─── DnD (Phase 38 v0.5.26: 진단 로그 추가) ───────────────────
   const handleDragStart = (
     e: React.DragEvent,
     kind: "conversation" | "folder",
@@ -288,7 +309,10 @@ function Sidebar({
     try {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", `${kind}:${id}`);
-    } catch {}
+      console.log(`[DnD] dragstart kind=${kind} id=${id}`);
+    } catch (err) {
+      console.warn(`[DnD] dragstart 실패:`, err);
+    }
   };
   const handleDragOver = (e: React.DragEvent, target: string | "__root__") => {
     if (!dragRef.current) return;
@@ -310,8 +334,12 @@ function Sidebar({
     setDragOver(null);
     const dragged = dragRef.current;
     dragRef.current = null;
-    if (!dragged) return;
+    if (!dragged) {
+      console.warn("[DnD] drop fired but no dragged ref — drag 미시작 또는 race");
+      return;
+    }
     const newParentId = target === "__root__" ? null : target;
+    console.log(`[DnD] drop kind=${dragged.kind} id=${dragged.id} → target=${target}`);
     if (dragged.kind === "conversation") {
       if (!onMoveConversationToFolder) return;
       await onMoveConversationToFolder(dragged.id, newParentId, 0);
@@ -338,39 +366,47 @@ function Sidebar({
     setContextMenu({ x: e.clientX, y: e.clientY, type, id });
   };
 
+  // Phase 38 (v0.5.26) — prompt() / confirm() 이 Tauri webview 에서 작동 안 함 → inline UI 로 대체
   const handleNewSubfolder = (parentId: string | null) => {
     if (!onCreateFolder) return;
-    const name = prompt("새 폴더 이름:");
-    if (!name) return;
-    void onCreateFolder(name, parentId);
+    setCreatingFolder({ parentId, name: "" });
+    // 부모 폴더는 자동 펼침
+    if (parentId) {
+      setExpandedFolders((prev) => new Set(prev).add(parentId));
+    }
+    // 다음 tick 에 input 포커스
+    setTimeout(() => {
+      createFolderInputRef.current?.focus();
+    }, 50);
   };
 
-  const handleDeleteFolderWithPrompt = async (id: string) => {
+  const commitNewFolder = async () => {
+    if (!creatingFolder || !onCreateFolder) {
+      setCreatingFolder(null);
+      return;
+    }
+    const name = creatingFolder.name.trim();
+    if (!name) {
+      setCreatingFolder(null);
+      return;
+    }
+    try {
+      await onCreateFolder(name, creatingFolder.parentId);
+    } catch (e) {
+      console.error("[Sidebar] 폴더 생성 실패:", e);
+    }
+    setCreatingFolder(null);
+  };
+
+  const cancelNewFolder = () => setCreatingFolder(null);
+
+  const handleDeleteFolderWithPrompt = (id: string) => {
     if (!onDeleteFolder) return;
     const fol = folders.find((f) => f.id === id);
     if (!fol) return;
-    // 폴더 안에 대화가 있으면 옵션 묻기
     const inHere = tree.convsInFolder.get(id) ?? [];
     const subs = tree.childFolders.get(id) ?? [];
-    const hasContent = inHere.length > 0 || subs.length > 0;
-    if (!hasContent) {
-      if (confirm(`폴더 "${fol.name}" 을(를) 삭제할까요?`)) {
-        await onDeleteFolder(id, "moveToParent");
-      }
-      return;
-    }
-    const choice = prompt(
-      `폴더 "${fol.name}" 안에 ${inHere.length}개 대화 + ${subs.length}개 하위폴더가 있습니다.\n` +
-        `1 = 폴더만 지우고 안의 항목은 부모로 이동\n` +
-        `2 = 폴더와 안의 모든 대화/하위폴더까지 전부 삭제 (되돌릴 수 없음)\n\n숫자 입력 (1 또는 2):`,
-      "1",
-    );
-    if (choice === "1") await onDeleteFolder(id, "moveToParent");
-    else if (choice === "2") {
-      if (confirm(`정말 모든 내용을 영구 삭제할까요? (${inHere.length}개 대화 손실)`)) {
-        await onDeleteFolder(id, "deleteAll");
-      }
-    }
+    setFolderDeleteDialog({ folder: fol, childCount: subs.length, convCount: inHere.length });
   };
 
   // ─── 렌더 헬퍼 ─────────────────────────────────────────────
@@ -547,6 +583,32 @@ function Sidebar({
           <div className="folder-children">
             {subFolders.map((sf) => renderFolder(sf, depth + 1))}
             {subConvs.map((c) => renderConvItem(c, depth + 1))}
+            {/* Phase 38: 이 폴더 안에 새 폴더 만들 때 inline input */}
+            {creatingFolder && creatingFolder.parentId === f.id && (
+              <div className="folder-row folder-row-creating">
+                <span className="folder-toggle">▾</span>
+                <span className="folder-icon">📁</span>
+                <input
+                  ref={createFolderInputRef}
+                  className="folder-name-edit"
+                  type="text"
+                  placeholder="하위 폴더 이름 (Enter=생성, Esc=취소)"
+                  value={creatingFolder.name}
+                  onChange={(e) => setCreatingFolder({ ...creatingFolder, name: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void commitNewFolder();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      cancelNewFolder();
+                    }
+                  }}
+                  onBlur={() => void commitNewFolder()}
+                  maxLength={80}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -664,6 +726,10 @@ function Sidebar({
       items.push({
         label: "💠 아이콘…",
         action: () => setPickerState({ kind: "icon", type: "conversation", id, x, y }),
+      });
+      items.push({
+        label: "📁 폴더로 이동…",
+        action: () => setFolderPicker({ convId: id, x: contextMenu.x, y: contextMenu.y }),
       });
       items.push({
         label: "📂 루트로 이동",
@@ -920,6 +986,153 @@ function Sidebar({
 
       {renderContextMenu()}
       {renderPicker()}
+
+      {/* Phase 38 (v0.5.26): 새 폴더 inline 입력 — root 영역에 박힘 */}
+      {creatingFolder && creatingFolder.parentId === null && (
+        <div className="folder-create-overlay" onClick={(e) => e.stopPropagation()}>
+          <div className="folder-create-box">
+            <span className="folder-icon">📁</span>
+            <input
+              ref={createFolderInputRef}
+              className="folder-name-edit"
+              type="text"
+              placeholder="새 폴더 이름 (Enter=생성, Esc=취소)"
+              value={creatingFolder.name}
+              onChange={(e) => setCreatingFolder({ ...creatingFolder, name: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void commitNewFolder();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelNewFolder();
+                }
+              }}
+              onBlur={() => void commitNewFolder()}
+              maxLength={80}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Phase 38: 폴더 picker (대화→폴더 이동 fallback) */}
+      {folderPicker && (
+        <div
+          className="picker-popover folder-picker"
+          style={{ left: clampX(folderPicker.x), top: clampY(folderPicker.y) }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="picker-label">폴더 선택 (대화 이동)</div>
+          <button
+            className="folder-picker-item"
+            onClick={() => {
+              if (onMoveConversationToFolder) {
+                void onMoveConversationToFolder(folderPicker.convId, null, 0);
+              }
+              setFolderPicker(null);
+            }}
+          >
+            📂 루트 (폴더 밖)
+          </button>
+          {folders.length === 0 ? (
+            <div className="folder-picker-empty">등록된 폴더가 없습니다.</div>
+          ) : (
+            folders.map((f) => {
+              // 자식폴더 깊이로 들여쓰기
+              let depth = 0;
+              let cur: string | null = f.parentId ?? null;
+              while (cur) {
+                depth++;
+                cur = folders.find((p) => p.id === cur)?.parentId ?? null;
+                if (depth > 6) break;
+              }
+              return (
+                <button
+                  key={f.id}
+                  className="folder-picker-item"
+                  style={{ paddingLeft: `${10 + depth * 14}px` }}
+                  onClick={() => {
+                    if (onMoveConversationToFolder) {
+                      void onMoveConversationToFolder(folderPicker.convId, f.id, 0);
+                    }
+                    setFolderPicker(null);
+                  }}
+                >
+                  {f.icon ?? "📁"} {f.name}
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* Phase 38: 폴더 삭제 confirm dialog */}
+      {folderDeleteDialog && (
+        <div className="folder-delete-overlay" onClick={() => setFolderDeleteDialog(null)}>
+          <div className="folder-delete-box" onClick={(e) => e.stopPropagation()}>
+            <div className="folder-delete-title">
+              📁 "{folderDeleteDialog.folder.name}" 삭제
+            </div>
+            {folderDeleteDialog.convCount === 0 && folderDeleteDialog.childCount === 0 ? (
+              <>
+                <div className="folder-delete-msg">빈 폴더입니다. 삭제할까요?</div>
+                <div className="folder-delete-actions">
+                  <button
+                    className="folder-delete-btn primary"
+                    onClick={async () => {
+                      if (onDeleteFolder) await onDeleteFolder(folderDeleteDialog.folder.id, "moveToParent");
+                      setFolderDeleteDialog(null);
+                    }}
+                  >
+                    삭제
+                  </button>
+                  <button
+                    className="folder-delete-btn secondary"
+                    onClick={() => setFolderDeleteDialog(null)}
+                  >
+                    취소
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="folder-delete-msg">
+                  안에 <strong>{folderDeleteDialog.convCount}개 대화</strong> +{" "}
+                  <strong>{folderDeleteDialog.childCount}개 하위폴더</strong>가 있습니다.
+                </div>
+                <div className="folder-delete-actions">
+                  <button
+                    className="folder-delete-btn primary"
+                    title="폴더만 지우고 안의 대화/하위폴더는 부모로 이동 (안전)"
+                    onClick={async () => {
+                      if (onDeleteFolder) await onDeleteFolder(folderDeleteDialog.folder.id, "moveToParent");
+                      setFolderDeleteDialog(null);
+                    }}
+                  >
+                    📂 폴더만 지움 (내용 보존)
+                  </button>
+                  <button
+                    className="folder-delete-btn danger"
+                    title="폴더 안의 모든 대화 영구 삭제 (되돌릴 수 없음)"
+                    onClick={async () => {
+                      if (onDeleteFolder) await onDeleteFolder(folderDeleteDialog.folder.id, "deleteAll");
+                      setFolderDeleteDialog(null);
+                    }}
+                  >
+                    🗑 전체 삭제 ({folderDeleteDialog.convCount}개 손실)
+                  </button>
+                  <button
+                    className="folder-delete-btn secondary"
+                    onClick={() => setFolderDeleteDialog(null)}
+                  >
+                    취소
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
