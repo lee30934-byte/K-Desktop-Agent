@@ -112,16 +112,50 @@ function normalizeRateLimit(
 ): RateLimitInfo | null {
   if (!payload || typeof payload !== "object") return null;
   const p = payload as any;
-  // 가능한 컨테이너 필드들
-  const primary = readWindow(p.primary ?? p.five_hour ?? p.hourly ?? p["5h"]) ??
-    // rate_limits 배열인 경우
-    (Array.isArray(p.rate_limits)
-      ? readWindow(p.rate_limits.find((r: any) => /5|hour|primary/i.test(r?.type ?? r?.window ?? "")))
-      : undefined);
-  const secondary = readWindow(p.secondary ?? p.weekly ?? p.seven_day ?? p["7d"]) ??
-    (Array.isArray(p.rate_limits)
-      ? readWindow(p.rate_limits.find((r: any) => /week|7d|secondary/i.test(r?.type ?? r?.window ?? "")))
-      : undefined);
+  // Phase 31 (v0.5.19): chatgpt.com endpoint 가 schema 자주 바꿈 — 후보 키 확장.
+  // 가능한 컨테이너 필드들 (top-level)
+  const primaryRaw =
+    p.primary ??
+    p.five_hour ??
+    p.hourly ??
+    p["5h"] ??
+    p.short ??
+    p.short_term ??
+    p.hourly_quota ??
+    p.usage_5h;
+  const secondaryRaw =
+    p.secondary ??
+    p.weekly ??
+    p.seven_day ??
+    p["7d"] ??
+    p.long ??
+    p.long_term ??
+    p.weekly_quota ??
+    p.usage_weekly;
+  let primary = readWindow(primaryRaw);
+  let secondary = readWindow(secondaryRaw);
+
+  // rate_limits 배열인 경우 (Anthropic 형식)
+  if (!primary && Array.isArray(p.rate_limits)) {
+    primary = readWindow(
+      p.rate_limits.find((r: any) => /5|hour|primary|short/i.test(r?.type ?? r?.window ?? "")),
+    );
+  }
+  if (!secondary && Array.isArray(p.rate_limits)) {
+    secondary = readWindow(
+      p.rate_limits.find((r: any) => /week|7d|secondary|long/i.test(r?.type ?? r?.window ?? "")),
+    );
+  }
+
+  // Phase 31: usage / quotas / limits 같은 컨테이너 안의 객체도 시도
+  for (const containerKey of ["usage", "quotas", "limits", "subscription", "plan"]) {
+    if (primary && secondary) break;
+    const c = p[containerKey];
+    if (!c || typeof c !== "object") continue;
+    if (!primary) primary = readWindow(c.primary ?? c.five_hour ?? c.hourly ?? c.short);
+    if (!secondary) secondary = readWindow(c.secondary ?? c.weekly ?? c.seven_day ?? c.long);
+  }
+
   if (!primary && !secondary) return null;
   return { provider, primary, secondary, receivedAt, rawPayload: payload };
 }
@@ -172,6 +206,8 @@ export default function App() {
   });
   // Phase 29 (v0.5.17): Codex usage polling 의 fail 사유 — UI 노출용. null 이면 정상 또는 미로그인.
   const [codexUsageError, setCodexUsageError] = useState<string | null>(null);
+  // Phase 31 (v0.5.19): normalize fail 시 raw payload 보관 — [Raw 보기] 버튼이 열어 K 가 schema 직접 확인.
+  const [codexUsageRawPayload, setCodexUsageRawPayload] = useState<unknown>(null);
 
   // ─── Auto Session Continuity ────────────────────────────
   // 분모는 모델별 동적 (currentModelMaxTokens — Claude default = 1M, 그 외 = 200K). 90% 트리거.
@@ -357,13 +393,18 @@ export default function App() {
       if (info) {
         setRateLimitCodex(info);
         setCodexUsageError(null);
+        setCodexUsageRawPayload(null);
         try { localStorage.setItem("kda_rate_limit_codex", JSON.stringify(info)); } catch {}
         logger.log(
           `[codex_usage] OK primary=${info.primary?.used_pct?.toFixed(1)}% secondary=${info.secondary?.used_pct?.toFixed(1)}%`
         );
       } else {
-        const reason = "응답 형식 변경 (chatgpt.com endpoint 변경 가능)";
+        // Phase 31 (v0.5.19): top-level keys 를 사유에 포함 + raw payload state 에 저장
+        const topKeys =
+          json && typeof json === "object" ? Object.keys(json as object).slice(0, 8).join(", ") : "(non-object)";
+        const reason = `응답 schema 인식 못 함 — top-level keys: [${topKeys}]. [Raw 보기] 클릭`;
         setCodexUsageError(reason);
+        setCodexUsageRawPayload(json);
         logger.warn("[codex_usage] normalize 실패 — raw:", json);
       }
     } catch (e) {
@@ -1773,6 +1814,7 @@ export default function App() {
               : null
         }
         codexUsageError={activeProvider === "codex" ? codexUsageError : null}
+        codexUsageRawPayload={activeProvider === "codex" ? codexUsageRawPayload : null}
         onRetryCodexUsage={pollCodexUsage}
       />
 

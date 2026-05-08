@@ -26,6 +26,10 @@ interface MetricsPanelProps {
    * UI 가 visible warning 표시 + 재시도 버튼 노출.
    */
   codexUsageError?: string | null;
+  /**
+   * Phase 31 (v0.5.19) — normalize 실패 시의 raw payload. [Raw 보기] 버튼이 열어 표시.
+   */
+  codexUsageRawPayload?: unknown;
   onRetryCodexUsage?: () => void;
 }
 
@@ -40,6 +44,7 @@ function MetricsPanel({
   isCompressing = false,
   rateLimit,
   codexUsageError,
+  codexUsageRawPayload,
   onRetryCodexUsage,
 }: MetricsPanelProps) {
   const [showContextDetails, setShowContextDetails] = useState(false);
@@ -285,24 +290,41 @@ function MetricsPanel({
           <div className="text-warn mono" style={{ fontSize: "0.85em", marginTop: "0.3em", lineHeight: "1.3" }}>
             ⚠ {codexUsageError}
           </div>
-          {onRetryCodexUsage && (
-            <button
-              className="settings-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRetryCodexUsage();
-              }}
-              style={{
-                marginTop: "0.4em",
-                padding: "2px 8px",
-                fontSize: "0.8em",
-                cursor: "pointer",
-              }}
-              title="Codex 사용량 다시 가져오기"
-            >
-              재시도
-            </button>
-          )}
+          <div style={{ display: "flex", gap: "4px", marginTop: "0.4em", flexWrap: "wrap" }}>
+            {onRetryCodexUsage && (
+              <button
+                className="settings-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRetryCodexUsage();
+                }}
+                style={{ padding: "2px 8px", fontSize: "0.8em", cursor: "pointer" }}
+                title="Codex 사용량 다시 가져오기"
+              >
+                재시도
+              </button>
+            )}
+            {/* Phase 31 (v0.5.19): raw payload 가 있으면 K 가 schema 직접 확인 가능 */}
+            {codexUsageRawPayload != null && (
+              <button
+                className="settings-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  try {
+                    const json = JSON.stringify(codexUsageRawPayload, null, 2);
+                    const truncated = json.length > 4000 ? json.slice(0, 4000) + "\n... (truncated)" : json;
+                    window.alert(`Codex API raw 응답:\n\n${truncated}`);
+                  } catch (e) {
+                    window.alert(`raw payload 표시 실패: ${String(e)}`);
+                  }
+                }}
+                style={{ padding: "2px 8px", fontSize: "0.8em", cursor: "pointer" }}
+                title="chatgpt.com 응답 raw JSON 보기 (schema 진단용)"
+              >
+                Raw 보기
+              </button>
+            )}
+          </div>
         </div>
       )}
 

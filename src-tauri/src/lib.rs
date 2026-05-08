@@ -1250,12 +1250,21 @@ async fn codex_fetch_usage() -> Result<serde_json::Value, String> {
     }
     let json: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("응답 JSON 파싱 실패: {}", e))?;
+    // Phase 31 (v0.5.19): top-level keys + 첫 500자 디버그 로깅 — schema 변경 진단용.
+    // K 가 sidecar.log 한 줄 보내주면 normalizeRateLimit 의 schema 정확히 패치 가능.
+    let top_keys: Vec<String> = json
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_else(|| vec!["(not-an-object)".to_string()]);
+    let snippet: String = body.chars().take(500).collect();
     log_lifecycle(
         "runtime.log",
         &format!(
-            "codex_fetch_usage OK status={} bodyLen={}",
+            "codex_fetch_usage OK status={} bodyLen={} topKeys=[{}] snippet={}",
             status.as_u16(),
-            body.len()
+            body.len(),
+            top_keys.join(","),
+            snippet
         ),
     );
     Ok(json)
