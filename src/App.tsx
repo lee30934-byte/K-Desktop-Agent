@@ -309,21 +309,36 @@ export default function App() {
   //
   // baseline 20K = 시스템 프롬프트 + MCP 42개 도구 JSON 스키마 (실측 15-25K 중앙값).
   // 4자 ≈ 1 토큰 휴리스틱 — 영어 ±10%, 한글 ±20% 오차이지만 윈도우 점유율 추적용으로 충분.
+  // Phase 35 (v0.5.23): base64 image / huge data 자동 short-circuit + 진단 로그.
+  // - data:image/...;base64,... 같은 inline base64 가 content 안에 있으면 placeholder 길이로 치환
+  // - PER_MESSAGE_CAP 을 200K → 50K 로 낮춤 (정상 user 메시지가 50K 토큰 = 200KB 텍스트는 거의 없음)
+  // - 50K 넘는 메시지는 logger 로 기록 → K 가 reproduce 시 어떤 메시지가 폭발하는지 식별 가능
   function estimateConvTokens(msgs: ChatMessage[]): number {
     const baseline = 20_000;
     const recent = msgs
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-20);
-    // Phase 28 (v0.5.16): 한 메시지당 토큰 cap.
-    // cc_screenshot 의 base64 이미지 (수MB) 가 message.content 에 그대로 박히면
-    // 단일 메시지가 1M+ 토큰으로 잡혀 conv % 가 1700% 까지 부풀음. 메시지당 200K 로 cap —
-    // 어떤 모델도 단일 메시지가 그 이상 정상 입력일 수 없음. 누적도 200K * 20 = 4M (이론치)
-    // 인데 모델 컨텍스트 1M 분모 대비 합리적 ceiling.
-    const PER_MESSAGE_CAP = 200_000;
-    return recent.reduce((sum, m) => {
-      const tokens = Math.ceil((m.content?.length ?? 0) / 4);
-      return sum + Math.min(tokens, PER_MESSAGE_CAP);
-    }, 0) + baseline;
+    const PER_MESSAGE_CAP = 50_000;
+    let total = baseline;
+    for (let i = 0; i < recent.length; i++) {
+      const m = recent[i];
+      const raw = m.content ?? "";
+      // base64 inline image (data:image/...) 자동 단축 — 모델한테 안 가는 UI-only 미리보기일 수 있음
+      const sanitized = raw.replace(
+        /data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g,
+        "[IMG]",
+      );
+      const tokens = Math.ceil(sanitized.length / 4);
+      const capped = Math.min(tokens, PER_MESSAGE_CAP);
+      total += capped;
+      if (tokens > 50_000) {
+        // 한 메시지가 50K (~200KB) 넘으면 진단 로그 — DevTools console + sidecar.log 양쪽
+        logger.warn(
+          `[estimate] huge message #${i} role=${m.role} rawLen=${raw.length} sanitizedLen=${sanitized.length} tokens=${tokens} → capped=${capped}`,
+        );
+      }
+    }
+    return total;
   }
 
   // 메시지 변경 시에만 재계산 — 현재 대화의 컨텍스트 윈도우 추정 점유량.
@@ -416,13 +431,41 @@ export default function App() {
   // - Claude Max default(Opus 5.7) : 1M
   // - Anthropic claude-* : 200K (Sonnet 4.5 등) — sonnet-4-5 도 1M 베타가 있으나 일반은 200K
   // - 기타 (OpenAI / Gemini / OpenRouter) : 200K 기본 (모델별 정확값은 Phase 13 이후)
+  // Phase 35 (v0.5.23) — 모델별 정확한 context window lookup.
+  // 종전 default 200K 가 GPT-5 family (실제 400K) 까지 200K 로 잡아 K 가 한 번 메시지 보내면
+  // 100% 표시되는 가짜 만수 발생. 모델 ID 별로 정확한 spec 으로 분모 잡음.
   const currentModelMaxTokens = useMemo(() => {
-    if (activeProvider === "claude" && (!activeModelId || activeModelId === "default")) {
+    const id = (activeModelId || "").toLowerCase();
+
+    // 1M 모델 — 명시 시그널
+    if (id.includes("1m")) return 1_000_000;
+    if (id.includes("nano") && id.includes("gpt-5")) return 1_000_000;
+
+    // Claude (Max OAuth default = Claude Opus 4.7 1M context)
+    if (activeProvider === "claude" && (!activeModelId || id === "default")) {
       return 1_000_000;
     }
-    // 모델 ID 에 1m / 1M / 1m-context 등 1M 시그널이 들어있으면 1M.
-    const id = (activeModelId || "").toLowerCase();
-    if (id.includes("1m")) return 1_000_000;
+
+    // OpenAI GPT-5 family / Codex — 공식 400K input window (2025 spec)
+    if (
+      id.startsWith("gpt-5") ||
+      id.includes("gpt-5") ||
+      id.startsWith("codex") ||
+      id.includes("codex-1")
+    ) {
+      return 400_000;
+    }
+
+    // OpenAI O1 / O3 series — 200K
+    if (id.startsWith("o1") || id.startsWith("o3")) return 200_000;
+
+    // Claude 모델 (3.5, 3.7, 4 등) — 200K (1M 베타는 위에서 catch)
+    if (id.includes("claude")) return 200_000;
+
+    // Gemini — 1M+ 지만 모델별 다름. 기본 1M
+    if (id.includes("gemini")) return 1_000_000;
+
+    // 안전 fallback
     return 200_000;
   }, [activeProvider, activeModelId]);
 
