@@ -1,5 +1,15 @@
 import { memo, useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { save, open } from "@tauri-apps/plugin-dialog";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  useDraggable,
+  useDroppable,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import CornerBrackets from "./CornerBrackets";
 import type { Conversation, Folder } from "../types";
 import {
@@ -129,9 +139,15 @@ function Sidebar({
     convCount: number;
   } | null>(null);
 
-  // DnD: 현재 드래그 중인 대상 + 드롭 후보
-  const [dragOver, setDragOver] = useState<string | null>(null); // folderId 또는 "__root__"
-  const dragRef = useRef<{ kind: "conversation" | "folder"; id: string } | null>(null);
+  // Phase 39 (v0.5.27): @dnd-kit 도입 — native HTML5 DnD 가 K 의 PC 에서 작동 안 한
+  // 패턴 (button→div fix 후에도) 우회. dnd-kit 은 PointerSensor 로 mousedown→move 를
+  // 직접 추적하므로 Tauri webview 의 native drag quirk 영향 없음.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_activeDragId, setActiveDragId] = useState<string | null>(null);
+  // PointerSensor: 8px 이동 후에 drag 시작 — 일반 click 과 충돌 없음
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+  );
 
   // Phase 36 (v0.5.24): 즐겨찾기 섹션 제거 — K 가 "제목 2개 보임 + 시야 좁다" 보고. ★ 아이콘 + 정렬 우선만 남김.
 
@@ -299,59 +315,36 @@ function Sidebar({
     });
   };
 
-  // ─── DnD (Phase 38 v0.5.26: 진단 로그 추가) ───────────────────
-  const handleDragStart = (
-    e: React.DragEvent,
-    kind: "conversation" | "folder",
-    id: string,
-  ) => {
-    dragRef.current = { kind, id };
-    try {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", `${kind}:${id}`);
-      console.log(`[DnD] dragstart kind=${kind} id=${id}`);
-    } catch (err) {
-      console.warn(`[DnD] dragstart 실패:`, err);
-    }
+  // ─── DnD (Phase 39 v0.5.27: @dnd-kit) ───────────────────────────
+  // active.id / over.id 는 prefix 로 분기:
+  //   "conv:<id>"   = 대화 드래그
+  //   "folder:<id>" = 폴더 드래그
+  //   "folder:<id>" / "__root__" = 드롭 타겟
+  const handleDndStart = (event: DragStartEvent) => {
+    setActiveDragId(String(event.active.id));
+    console.log(`[DnD] start active=${event.active.id}`);
   };
-  const handleDragOver = (e: React.DragEvent, target: string | "__root__") => {
-    if (!dragRef.current) return;
-    // 폴더를 자기 자신/자손으로 못 넣게 — drag over 단계에서 미리 차단
-    if (dragRef.current.kind === "folder" && target !== "__root__") {
-      if (target === dragRef.current.id) return;
-      if (isDescendantOf(folders, dragRef.current.id, target)) return;
-    }
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDragOver(target);
-  };
-  const handleDragLeave = () => {
-    setDragOver(null);
-  };
-  const handleDrop = async (e: React.DragEvent, target: string | "__root__") => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(null);
-    const dragged = dragRef.current;
-    dragRef.current = null;
-    if (!dragged) {
-      console.warn("[DnD] drop fired but no dragged ref — drag 미시작 또는 race");
-      return;
-    }
-    const newParentId = target === "__root__" ? null : target;
-    console.log(`[DnD] drop kind=${dragged.kind} id=${dragged.id} → target=${target}`);
-    if (dragged.kind === "conversation") {
+  const handleDndEnd = async (event: DragEndEvent) => {
+    setActiveDragId(null);
+    const activeId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    console.log(`[DnD] end active=${activeId} over=${overId}`);
+    if (!overId) return;
+
+    const [activeKind, activeRealId] = activeId.split(":");
+    const target = overId === "__root__" ? null : overId.split(":")[1] ?? null;
+
+    if (activeKind === "conv") {
       if (!onMoveConversationToFolder) return;
-      await onMoveConversationToFolder(dragged.id, newParentId, 0);
-    } else {
+      await onMoveConversationToFolder(activeRealId, target, 0);
+    } else if (activeKind === "folder") {
       if (!onMoveFolder) return;
-      // 동일 부모 / 자기 자신 / 자손 차단
-      if (newParentId === dragged.id) return;
-      if (newParentId !== null && isDescendantOf(folders, dragged.id, newParentId)) return;
-      // 타겟 부모 안의 마지막 + 1 position
-      const siblings = folders.filter((f) => f.parentId === newParentId);
+      // 사이클 차단
+      if (target === activeRealId) return;
+      if (target !== null && isDescendantOf(folders, activeRealId, target)) return;
+      const siblings = folders.filter((f) => f.parentId === target);
       const newPos = siblings.length > 0 ? Math.max(...siblings.map((f) => f.position)) + 1 : 0;
-      await onMoveFolder(dragged.id, newParentId, newPos);
+      await onMoveFolder(activeRealId, target, newPos);
     }
   };
 
@@ -416,13 +409,13 @@ function Sidebar({
     const isFiltered = visibleConvIds !== null && !visibleConvIds.has(c.id);
     if (isFiltered) return null;
     return (
-      <div
+      <DraggableConv
         key={c.id}
+        convId={c.id}
+        disabled={isEditing}
         className={`conv-item depth-${Math.min(depth, 5)} ${
           c.id === activeConversationId ? "active" : ""
         } ${c.isFavorite ? "is-fav" : ""}`}
-        draggable={!isEditing}
-        onDragStart={(e) => handleDragStart(e, "conversation", c.id)}
         onContextMenu={(e) => openContextMenu(e, "conversation", c.id)}
         style={c.color ? { borderLeftColor: c.color } : undefined}
       >
@@ -508,7 +501,7 @@ function Sidebar({
             ×
           </button>
         )}
-      </div>
+      </DraggableConv>
     );
   };
 
@@ -519,16 +512,12 @@ function Sidebar({
     if (visibleConvIds && !folderHasHit(f.id)) return null;
     const subFolders = tree.childFolders.get(f.id) ?? [];
     const subConvs = tree.convsInFolder.get(f.id) ?? [];
-    const isDragOver = dragOver === f.id;
     return (
       <div key={f.id} className={`folder-block depth-${Math.min(depth, 5)}`}>
-        <div
-          className={`folder-row ${isDragOver ? "drag-over" : ""}`}
-          draggable={!isEditing}
-          onDragStart={(e) => handleDragStart(e, "folder", f.id)}
-          onDragOver={(e) => handleDragOver(e, f.id)}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => handleDrop(e, f.id)}
+        <DndFolder
+          folderId={f.id}
+          disabled={isEditing}
+          className="folder-row"
           onContextMenu={(e) => openContextMenu(e, "folder", f.id)}
           style={f.color ? { borderLeftColor: f.color } : undefined}
         >
@@ -578,7 +567,7 @@ function Sidebar({
             {(tree.convsInFolder.get(f.id)?.length ?? 0) +
               (tree.childFolders.get(f.id)?.length ?? 0)}
           </span>
-        </div>
+        </DndFolder>
         {expanded && (
           <div className="folder-children">
             {subFolders.map((sf) => renderFolder(sf, depth + 1))}
@@ -849,10 +838,10 @@ function Sidebar({
   // 트리 root level (parent_id = null) 자식 폴더 + 대화
   const rootFolders = tree.childFolders.get(null) ?? [];
   const rootConvs = tree.convsInFolder.get(null) ?? [];
-  const rootDragOver = dragOver === "__root__";
 
   return (
     <aside className="sidebar">
+      <DndContext sensors={sensors} onDragStart={handleDndStart} onDragEnd={handleDndEnd}>
       {/* 브랜드 헤더 */}
       <div className="sidebar-brand">
         <div className="brand-logo">
@@ -928,12 +917,7 @@ function Sidebar({
       {/* 대화 목록 (트리) */}
       <div className="sidebar-section sidebar-tree-section">
         <div className="eyebrow section-label">대화 목록</div>
-        <div
-          className={`conv-list root-drop ${rootDragOver ? "drag-over" : ""}`}
-          onDragOver={(e) => handleDragOver(e, "__root__")}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => handleDrop(e, "__root__")}
-        >
+        <DroppableRoot className="conv-list root-drop">
           {conversations.length === 0 && folders.length === 0 ? (
             <div className="conv-empty">대화 없음</div>
           ) : (
@@ -945,7 +929,7 @@ function Sidebar({
               )}
             </>
           )}
-        </div>
+        </DroppableRoot>
       </div>
 
       {/* 백업/복구 */}
@@ -1133,6 +1117,7 @@ function Sidebar({
           </div>
         </div>
       )}
+      </DndContext>
     </aside>
   );
 }
@@ -1148,6 +1133,107 @@ function formatRelative(ts: number): string {
   if (hr < 24) return `${hr}h ago`;
   const day = Math.floor(hr / 24);
   return `${day}d ago`;
+}
+
+// ─── Phase 39 (v0.5.27): @dnd-kit wrapper 컴포넌트 ─────────
+// 기존 conv-item / folder-row div 의 className/style/onContextMenu 등은 그대로 유지하면서
+// dnd-kit 의 setNodeRef + listeners 만 추가. native HTML5 quirk 회피.
+
+interface DraggableConvProps extends React.HTMLAttributes<HTMLDivElement> {
+  convId: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+}
+function DraggableConv({
+  convId,
+  disabled,
+  className,
+  style,
+  children,
+  ...rest
+}: DraggableConvProps) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `conv:${convId}`,
+    disabled,
+  });
+  const composedStyle: React.CSSProperties = {
+    ...style,
+    ...(transform
+      ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
+      : {}),
+    ...(isDragging ? { opacity: 0.5, zIndex: 10 } : {}),
+  };
+  return (
+    <div
+      ref={setNodeRef}
+      className={className}
+      style={composedStyle}
+      {...attributes}
+      {...listeners}
+      {...rest}
+    >
+      {children}
+    </div>
+  );
+}
+
+interface DndFolderProps extends React.HTMLAttributes<HTMLDivElement> {
+  folderId: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+}
+function DndFolder({
+  folderId,
+  disabled,
+  className,
+  style,
+  children,
+  ...rest
+}: DndFolderProps) {
+  const draggable = useDraggable({ id: `folder:${folderId}`, disabled });
+  const droppable = useDroppable({ id: `folder:${folderId}` });
+  const setRef = (node: HTMLElement | null) => {
+    draggable.setNodeRef(node);
+    droppable.setNodeRef(node);
+  };
+  const composedStyle: React.CSSProperties = {
+    ...style,
+    ...(draggable.transform
+      ? {
+          transform: `translate3d(${draggable.transform.x}px, ${draggable.transform.y}px, 0)`,
+        }
+      : {}),
+    ...(draggable.isDragging ? { opacity: 0.5, zIndex: 10 } : {}),
+  };
+  const overClass = droppable.isOver ? "drag-over" : "";
+  return (
+    <div
+      ref={setRef}
+      className={`${className ?? ""} ${overClass}`.trim()}
+      style={composedStyle}
+      {...draggable.attributes}
+      {...draggable.listeners}
+      {...rest}
+    >
+      {children}
+    </div>
+  );
+}
+
+interface DroppableRootProps extends React.HTMLAttributes<HTMLDivElement> {
+  children: React.ReactNode;
+}
+function DroppableRoot({ className, children, ...rest }: DroppableRootProps) {
+  const { setNodeRef, isOver } = useDroppable({ id: "__root__" });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`${className ?? ""} ${isOver ? "drag-over" : ""}`.trim()}
+      {...rest}
+    >
+      {children}
+    </div>
+  );
 }
 
 // 폴더 사이클 방지 — folderId 가 candidateAncestor 의 자손인지 확인

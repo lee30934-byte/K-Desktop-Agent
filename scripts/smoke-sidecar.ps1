@@ -39,7 +39,9 @@
 
 param(
     [switch]$Build,
-    [int]$TimeoutSec = 15,
+    # Phase 39 (v0.5.27): default 15s → 30s. CI runner 가 cold start 시 느려서
+    # 15s 안에 sidecar 가 diagnostic line emit 못하는 flaky 발생 (v0.5.20, v0.5.25).
+    [int]$TimeoutSec = 30,
     [switch]$Quiet
 )
 
