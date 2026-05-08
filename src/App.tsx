@@ -170,6 +170,8 @@ export default function App() {
       return null;
     }
   });
+  // Phase 29 (v0.5.17): Codex usage polling 의 fail 사유 — UI 노출용. null 이면 정상 또는 미로그인.
+  const [codexUsageError, setCodexUsageError] = useState<string | null>(null);
 
   // ─── Auto Session Continuity ────────────────────────────
   // 분모는 모델별 동적 (currentModelMaxTokens — Claude default = 1M, 그 외 = 200K). 90% 트리거.
@@ -342,39 +344,58 @@ export default function App() {
   }, [activeProvider, activeModelId]);
 
   // ─── Phase 15.5 — Codex usage polling ────────────────────
-  // provider="codex" 일 때만 활성. 기동 직후 1번 + 5분마다.
-  // 비공식 endpoint 라 실패 시 silently swallow + 마지막 성공 값 유지 (localStorage).
+  // Phase 29 (v0.5.17): provider 무관 polling + fail 사유 UI 노출.
+  //   - 옛 design: provider="codex" 일 때만 polling → Claude 메인이면 Codex 카드 영원히 빈 상태
+  //   - 옛 design: catch 가 logger.warn 만 → K 가 다른 PC 에서 표시 안 되는 이유 디버깅 불가
+  //   - 새 design: 매 5분 polling. auth.json 없음 (정상 — 미로그인) 만 silent skip,
+  //     그 외 (401 만료 / 네트워크 / API 변경) 는 codexUsageError state 에 박아 UI 에 표시.
   // Anthropic 은 sidecar 가 매 turn rate_limit_event 로 자동 emit 하므로 polling 불필요.
-  useEffect(() => {
-    if (activeProvider !== "codex") return;
-    let cancelled = false;
-    async function pollCodexUsage() {
-      try {
-        const json = await invoke<unknown>("codex_fetch_usage");
-        if (cancelled) return;
-        const info = normalizeRateLimit("codex", json, Date.now());
-        if (info) {
-          setRateLimitCodex(info);
-          try { localStorage.setItem("kda_rate_limit_codex", JSON.stringify(info)); } catch {}
-          logger.log(
-            `[codex_usage] OK primary=${info.primary?.used_pct?.toFixed(1)}% secondary=${info.secondary?.used_pct?.toFixed(1)}%`
-          );
-        } else {
-          logger.warn("[codex_usage] normalize 실패 — raw:", json);
-        }
-      } catch (e) {
-        // 401 (login 만료) / 네트워크 / 비공식 endpoint 변경 모두 silently
-        logger.warn("[codex_usage] fetch 실패:", e);
+  const pollCodexUsage = useStableCallback(async () => {
+    try {
+      const json = await invoke<unknown>("codex_fetch_usage");
+      const info = normalizeRateLimit("codex", json, Date.now());
+      if (info) {
+        setRateLimitCodex(info);
+        setCodexUsageError(null);
+        try { localStorage.setItem("kda_rate_limit_codex", JSON.stringify(info)); } catch {}
+        logger.log(
+          `[codex_usage] OK primary=${info.primary?.used_pct?.toFixed(1)}% secondary=${info.secondary?.used_pct?.toFixed(1)}%`
+        );
+      } else {
+        const reason = "응답 형식 변경 (chatgpt.com endpoint 변경 가능)";
+        setCodexUsageError(reason);
+        logger.warn("[codex_usage] normalize 실패 — raw:", json);
       }
+    } catch (e) {
+      const errStr = String(e);
+      // auth.json 없음 = 정상 (Codex 미로그인) → silent
+      if (errStr.includes("auth.json 없음") || errStr.includes("auth.json 안 access_token 없음")) {
+        setCodexUsageError(null);
+        logger.log("[codex_usage] codex 미로그인 — skip");
+        return;
+      }
+      // 그 외 (HTTP 401 / 네트워크 / parsing) 는 UI 에 표시
+      let userMsg = errStr;
+      if (errStr.includes("HTTP 401")) {
+        userMsg = "로그인 만료 — [Codex 로그인] 다시 필요";
+      } else if (errStr.includes("HTTP 403")) {
+        userMsg = "접근 거부 — Codex 정액제 가입 상태 확인 필요";
+      } else if (errStr.includes("HTTP 429")) {
+        userMsg = "rate limit — 잠시 후 자동 재시도";
+      } else if (errStr.includes("HTTP 5") || errStr.includes("HTTP 응답") || errStr.includes("HTTP 요청 실패")) {
+        userMsg = `Codex API 일시 오류: ${errStr.split(" — ")[0]}`;
+      } else if (errStr.includes("응답 JSON 파싱 실패")) {
+        userMsg = "Codex API 응답 형식 변경 (KDA 업데이트 필요할 수 있음)";
+      }
+      setCodexUsageError(userMsg);
+      logger.warn("[codex_usage] fetch 실패:", errStr);
     }
-    // 즉시 1번 + 5분 interval (300_000ms)
+  });
+  useEffect(() => {
     pollCodexUsage();
     const handle = window.setInterval(pollCodexUsage, 300_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(handle);
-    };
-  }, [activeProvider]);
+    return () => window.clearInterval(handle);
+  }, [pollCodexUsage]);
 
   // ─── 재기동 감지 (dev rebuild 등) ────────────────────
   // 주기적으로 localStorage 에 heartbeat 를 찍고, 기동 시 마지막 heartbeat 와의 갭을 본다.
@@ -1727,6 +1748,8 @@ export default function App() {
               ? rateLimitAnthropic
               : null
         }
+        codexUsageError={activeProvider === "codex" ? codexUsageError : null}
+        onRetryCodexUsage={pollCodexUsage}
       />
 
       <Settings

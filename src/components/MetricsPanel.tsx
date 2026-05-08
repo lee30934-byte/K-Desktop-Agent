@@ -21,6 +21,12 @@ interface MetricsPanelProps {
    * provider 가 anthropic/codex 가 아니거나 아직 데이터 못 받았으면 null.
    */
   rateLimit?: RateLimitInfo | null;
+  /**
+   * Phase 29 (v0.5.17) — Codex usage polling 이 fail 한 사유. null 이면 정상 또는 미로그인 silent.
+   * UI 가 visible warning 표시 + 재시도 버튼 노출.
+   */
+  codexUsageError?: string | null;
+  onRetryCodexUsage?: () => void;
 }
 
 function MetricsPanel({
@@ -33,6 +39,8 @@ function MetricsPanel({
   onCompressContext,
   isCompressing = false,
   rateLimit,
+  codexUsageError,
+  onRetryCodexUsage,
 }: MetricsPanelProps) {
   const [showContextDetails, setShowContextDetails] = useState(false);
   // 컨텍스트 카드 + 툴팁을 함께 감싸는 컨테이너 ref. 외부 클릭 감지용.
@@ -265,6 +273,37 @@ function MetricsPanel({
       )}
       {rateLimit?.secondary && (
         <RateLimitCard label="Week" window={rateLimit.secondary} />
+      )}
+      {/* Phase 29 (v0.5.17) — Codex usage fetch 가 fail 했고 캐시도 없으면 진단 카드. */}
+      {codexUsageError && !rateLimit?.primary && !rateLimit?.secondary && (
+        <div
+          className="metric-card rate-limit-error"
+          title={`자세한 사유: ${codexUsageError}\n\n[재시도] 클릭 시 즉시 다시 fetch.\n로그인 만료면 환경설정 → AI 모델 연동 → Codex → [Codex 로그인].`}
+          style={{ minWidth: "180px", maxWidth: "260px" }}
+        >
+          <div className="eyebrow metric-label">Codex Usage</div>
+          <div className="text-warn mono" style={{ fontSize: "0.85em", marginTop: "0.3em", lineHeight: "1.3" }}>
+            ⚠ {codexUsageError}
+          </div>
+          {onRetryCodexUsage && (
+            <button
+              className="settings-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRetryCodexUsage();
+              }}
+              style={{
+                marginTop: "0.4em",
+                padding: "2px 8px",
+                fontSize: "0.8em",
+                cursor: "pointer",
+              }}
+              title="Codex 사용량 다시 가져오기"
+            >
+              재시도
+            </button>
+          )}
+        </div>
       )}
 
       <MetricCard
