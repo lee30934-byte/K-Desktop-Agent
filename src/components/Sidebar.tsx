@@ -115,8 +115,7 @@ function Sidebar({
   const [dragOver, setDragOver] = useState<string | null>(null); // folderId 또는 "__root__"
   const dragRef = useRef<{ kind: "conversation" | "folder"; id: string } | null>(null);
 
-  // 즐겨찾기 섹션 펼침
-  const [favoritesExpanded, setFavoritesExpanded] = useState(true);
+  // Phase 36 (v0.5.24): 즐겨찾기 섹션 제거 — K 가 "제목 2개 보임 + 시야 좁다" 보고. ★ 아이콘 + 정렬 우선만 남김.
 
   // 편집 진입 시 input 자동 포커스 + 전체 선택
   useEffect(() => {
@@ -223,20 +222,19 @@ function Sidebar({
       arr.push(c);
       convsInFolder.set(key, arr);
     }
+    // Phase 36 (v0.5.24): 즐겨찾기 우선 정렬 — 별도 섹션 없애고 같은 부모 안에서 ★ 가 위로.
     for (const arr of convsInFolder.values()) {
-      arr.sort(
-        (a, b) =>
-          ((a.position ?? 0) - (b.position ?? 0)) || (b.lastActive - a.lastActive),
-      );
+      arr.sort((a, b) => {
+        const favDiff = (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0);
+        if (favDiff !== 0) return favDiff;
+        const posDiff = (a.position ?? 0) - (b.position ?? 0);
+        if (posDiff !== 0) return posDiff;
+        return b.lastActive - a.lastActive;
+      });
     }
 
     return { childFolders, convsInFolder };
   }, [folders, conversations]);
-
-  const favorites = useMemo(
-    () => conversations.filter((c) => c.isFavorite),
-    [conversations],
-  );
 
   // 검색 필터: 폴더는 자손 중 hit 가 있으면 표시
   const visibleConvIds = useMemo(() => {
@@ -859,23 +857,7 @@ function Sidebar({
         </div>
       )}
 
-      {/* 즐겨찾기 섹션 */}
-      {favorites.length > 0 && !visibleConvIds && (
-        <div className="sidebar-section">
-          <button
-            className="eyebrow section-label section-toggle"
-            onClick={() => setFavoritesExpanded((p) => !p)}
-            title="즐겨찾기 펼침/접힘"
-          >
-            <span>{favoritesExpanded ? "▾" : "▸"} ★ 즐겨찾기 ({favorites.length})</span>
-          </button>
-          {favoritesExpanded && (
-            <div className="conv-list">
-              {favorites.map((c) => renderConvItem(c, 0))}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Phase 36 (v0.5.24): 즐겨찾기는 별도 섹션 X — ★ 아이콘 + 자동 정렬로 통합 */}
 
       {/* 대화 목록 (트리) */}
       <div className="sidebar-section sidebar-tree-section">
