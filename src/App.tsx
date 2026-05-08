@@ -69,6 +69,7 @@ function readWindow(obj: any): RateLimitWindow | undefined {
   const usedRaw =
     obj.used_percentage ??
     obj.used_pct ??
+    obj.used_percent ??              // Phase 33 (v0.5.21) — chatgpt.com /codex/usage 실제 키
     obj.utilization_percent ??
     obj.utilization ??
     obj.percent_used ??
@@ -162,13 +163,43 @@ function normalizeRateLimit(
   }
 
   // Phase 31: usage / quotas / limits 같은 컨테이너 안의 객체도 시도
-  for (const containerKey of ["usage", "quotas", "limits", "subscription", "plan"]) {
+  // Phase 33 (v0.5.21): Codex 의 실제 schema 는 `rate_limit` 컨테이너 안에 primary_window/secondary_window
+  for (const containerKey of [
+    "usage",
+    "quotas",
+    "limits",
+    "subscription",
+    "plan",
+    "rate_limit",       // Phase 33 — chatgpt.com /codex/usage 의 실제 키 (singular)
+    "rate_limits",      // 일부 endpoint 가 plural 도 씀
+  ]) {
     if (primary && secondary) break;
     const c = p[containerKey];
-    if (!c || typeof c !== "object") continue;
-    if (!primary) primary = readWindow(c.primary ?? c.five_hour ?? c.hourly ?? c.short);
-    if (!secondary) secondary = readWindow(c.secondary ?? c.weekly ?? c.seven_day ?? c.long);
+    if (!c || typeof c !== "object" || Array.isArray(c)) continue;
+    // Phase 33 — primary_window / secondary_window 도 후보
+    if (!primary) {
+      primary = readWindow(
+        c.primary ??
+          c.primary_window ??
+          c.five_hour ??
+          c.hourly ??
+          c.short,
+      );
+    }
+    if (!secondary) {
+      secondary = readWindow(
+        c.secondary ??
+          c.secondary_window ??
+          c.weekly ??
+          c.seven_day ??
+          c.long,
+      );
+    }
   }
+
+  // Phase 33 (v0.5.21) — top-level 에 primary_window/secondary_window 가 직접 박힌 케이스도 안전망
+  if (!primary && p.primary_window) primary = readWindow(p.primary_window);
+  if (!secondary && p.secondary_window) secondary = readWindow(p.secondary_window);
 
   if (!primary && !secondary) return null;
   return { provider, primary, secondary, receivedAt, rawPayload: payload };

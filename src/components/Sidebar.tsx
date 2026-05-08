@@ -407,12 +407,23 @@ function Sidebar({
             />
           </div>
         ) : (
-          <button
+          // Phase 33 (v0.5.21): button → div role=button 으로 변경 — HTML5 native DnD 가
+          // <button> 안에서는 mousedown 이 button focus 로 가로채여 dragstart 가 시작 안 됨.
+          // div + role 로 a11y 유지하면서 wrapper 의 draggable 이 정상 작동.
+          <div
             className="conv-item-main"
+            role="button"
+            tabIndex={0}
             onClick={() => onSelectConversation(c.id)}
             onDoubleClick={(e) => {
               e.stopPropagation();
               startEditConv(c.id, c.title);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelectConversation(c.id);
+              }
             }}
             title="더블클릭=제목 편집 · 우클릭=메뉴 · 드래그=폴더 이동"
           >
@@ -423,7 +434,7 @@ function Sidebar({
                 {c.messageCount} msg · {formatRelative(c.lastActive)}
               </div>
             </div>
-          </button>
+          </div>
         )}
         {!isEditing && onToggleFavorite && (
           <button
@@ -507,18 +518,27 @@ function Sidebar({
               placeholder="폴더 이름"
             />
           ) : (
-            <button
+            // Phase 33 (v0.5.21): button → div role=button (DnD 호환)
+            <div
               className="folder-name"
+              role="button"
+              tabIndex={0}
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 startEditFolder(f.id, f.name);
               }}
               onClick={() => toggleFolderExpand(f.id)}
-              title="더블클릭=이름 편집 · 우클릭=메뉴 · 클릭=펼침/접힘"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggleFolderExpand(f.id);
+                }
+              }}
+              title="더블클릭=이름 편집 · 우클릭=메뉴 · 클릭=펼침/접힘 · 드래그=다른 폴더로 이동"
               style={f.color ? { color: f.color } : undefined}
             >
               {f.name}
-            </button>
+            </div>
           )}
           <span className="folder-count mono">
             {(tree.convsInFolder.get(f.id)?.length ?? 0) +

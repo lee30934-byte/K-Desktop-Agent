@@ -3814,9 +3814,42 @@
 .depth-2, .depth-3, .depth-4, .depth-5 { /* nothing extra */ }
 
 /* Conversation item — Phase 32 enhancements */
+.conv-item {
+  cursor: grab;
+  user-select: none;
+}
+.conv-item:active {
+  cursor: grabbing;
+}
+.conv-item .conv-item-main {
+  /* div role=button 처럼 작동하도록 button 스타일 부여 */
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  outline: none;
+}
+.conv-item .conv-item-main:focus-visible {
+  outline: 1px solid var(--accent);
+}
 .conv-item .conv-icon {
   font-size: 12px;
   margin-right: 4px;
+}
+.folder-row {
+  cursor: grab;
+  user-select: none;
+}
+.folder-row:active {
+  cursor: grabbing;
 }
 .conv-item.is-fav .conv-title::before {
   content: "★ ";
