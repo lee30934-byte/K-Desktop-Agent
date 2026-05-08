@@ -63,14 +63,25 @@ Invoke-Step "Rust cargo check" {
     cargo check --manifest-path src-tauri/Cargo.toml --all-targets --quiet
 }
 
-# 2. 프론트 타입 체크
+# 2. 프론트 타입 체크 — Phase 25.1 (v0.5.12): npx 없는 환경에서도 동작하도록
+#    node_modules 의 typescript bin 직접 호출로 fallback. CI 도 같은 path 쓰지만
+#    K 의 PC 에서도 commit 전 tsc fail 사전 발견 가능.
+function Invoke-Tsc($projectFile, $tscBin) {
+    if (Test-Path $tscBin) {
+        & node $tscBin --noEmit --project $projectFile
+        if ($LASTEXITCODE -ne 0) { throw "tsc exit $LASTEXITCODE" }
+    } else {
+        npx --yes tsc --noEmit --project $projectFile
+    }
+}
+
 Invoke-Step "Frontend tsc --noEmit" {
-    npx --yes tsc --noEmit --project tsconfig.json
+    Invoke-Tsc "tsconfig.json" "node_modules/typescript/bin/tsc"
 }
 
 # 3. sidecar 타입 체크
 Invoke-Step "Sidecar tsc --noEmit" {
-    npx --yes tsc --noEmit --project sidecar/tsconfig.json
+    Invoke-Tsc "sidecar/tsconfig.json" "sidecar/node_modules/typescript/bin/tsc"
 }
 
 # 4. sidecar 회귀 테스트들 — 권한 게이트 / 덮어쓰기 hook / cmdline 길이 한계 / 컨텍스트 미터 / Phase 13.

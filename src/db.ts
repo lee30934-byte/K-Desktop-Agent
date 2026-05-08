@@ -33,7 +33,7 @@ export async function initDB(): Promise<Database> {
     if (info?.db_path) {
       // Windows path 의 backslash 는 SQLite URI 에서도 허용 (Tauri plugin 이 처리)
       dbUrl = `sqlite:${info.db_path}`;
-      logger.info(`[db] using portable DB path: ${info.db_path}`);
+      logger.log(`[db] using portable DB path: ${info.db_path}`);
     }
   } catch (e) {
     logger.warn(`[db] get_data_dir_info 실패 — legacy default 사용: ${String(e)}`);
