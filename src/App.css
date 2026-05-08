@@ -3979,3 +3979,77 @@
   color: var(--text-tertiary);
   font-size: 10px;
 }
+
+/* ════════════════════════════════════════════════════════════════
+   Phase 34 (v0.5.22) — 큐 미리보기 chip (작업 중 다음 메시지 예약)
+   ════════════════════════════════════════════════════════════════ */
+.queue-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: rgba(79, 232, 225, 0.07);
+  border: 1px solid rgba(79, 232, 225, 0.35);
+  border-radius: 8px;
+  position: relative;
+}
+.queue-chip::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 8px 0 0 8px;
+}
+.queue-chip-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.queue-chip-body {
+  flex: 1;
+  min-width: 0;
+}
+.queue-chip-label {
+  font-size: 10px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 2px;
+}
+.queue-chip-text {
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-word;
+  white-space: pre-wrap;
+  max-height: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  line-clamp: 3;
+}
+.queue-chip-files {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.queue-chip-cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+.queue-chip-cancel:hover {
+  background: rgba(255, 80, 80, 0.12);
+  border-color: #ff7c7c;
+  color: #ff7c7c;
+}

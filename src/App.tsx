@@ -991,14 +991,26 @@ export default function App() {
 
   // Phase 30 (v0.5.18): 메시지 큐 — streaming 중 K 가 Enter 치면 한 슬롯 보관.
   // streaming false 로 전환되면 useEffect 가 자동 비움. 두 번째 Enter 치면 마지막 입력으로 덮어씀.
-  type QueuedSend = { text: string; files?: FileAttachment[] };
+  // Phase 34 (v0.5.22): UI 노출 + ref 동기화 + 진단 로그.
+  type QueuedSend = { text: string; files?: FileAttachment[]; queuedAt: number };
   const [queuedSend, setQueuedSend] = useState<QueuedSend | null>(null);
+  // Phase 34: useEffect race 진단용 ref. setQueuedSend 와 항상 동기 — flush 직전 ref 도 비움.
+  const queuedSendRef = useRef<QueuedSend | null>(null);
+
+  const handleCancelQueuedSend = useStableCallback(() => {
+    logger.log("[Phase34] 큐 취소 — K 가 ✕ 클릭");
+    queuedSendRef.current = null;
+    setQueuedSend(null);
+  });
 
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text && (!files || files.length === 0)) return;
     // Phase 30: streaming 중이면 큐에 보관 후 return — useEffect 가 streaming 종료 시 자동 send
     if (isStreaming) {
-      setQueuedSend({ text, files });
+      const slot: QueuedSend = { text, files, queuedAt: Date.now() };
+      queuedSendRef.current = slot;
+      setQueuedSend(slot);
+      logger.log(`[Phase34] 큐 적재 — text 길이=${text.length}, files=${files?.length ?? 0}`);
       return;
     }
 
@@ -1546,15 +1558,24 @@ export default function App() {
     },
   );
 
-  // ─── Phase 30 (v0.5.18) — 메시지 큐 자동 비우기 ───────────────
+  // ─── Phase 30 (v0.5.18) / Phase 34 (v0.5.22) — 메시지 큐 자동 비우기 ───────────────
   // streaming false 로 전환되는 순간 큐에 보관된 메시지 하나를 자동 send.
   // K 가 답변 받는 동안 Enter 친 것이 있으면 답변 끝난 직후 즉시 다음 turn 시작.
+  // Phase 34: ref 동기화 + 진단 로그 + 빈 시점 robustness (state vs ref 불일치 발견 시 ref 우선).
   useEffect(() => {
-    if (isStreaming || !queuedSend) return;
-    const next = queuedSend;
+    logger.log(
+      `[Phase34] flush effect fire — isStreaming=${isStreaming}, queuedSend=${queuedSend ? `len=${queuedSend.text.length}` : "null"}, ref=${queuedSendRef.current ? "set" : "null"}`,
+    );
+    if (isStreaming) return;
+    // state 와 ref 둘 다 확인 — 어느 한쪽만 set 이라면 그게 진짜 큐
+    const next = queuedSend ?? queuedSendRef.current;
+    if (!next) return;
+    logger.log(`[Phase34] flush 시작 — text 첫50자="${next.text.slice(0, 50)}"`);
+    queuedSendRef.current = null;
     setQueuedSend(null);
     // setTimeout(0) — setState batch 끝난 후 send (race 방어)
     const t = window.setTimeout(() => {
+      logger.log(`[Phase34] flush 실행 — handleSendMessage 호출`);
       void handleSendMessage(next.text, next.files);
     }, 0);
     return () => window.clearTimeout(t);
@@ -2040,6 +2061,13 @@ export default function App() {
         isStreaming={isStreaming}
         onSendMessage={handleSendMessage}
         onInterrupt={handleInterrupt}
+        // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
+        queuedSend={
+          queuedSend
+            ? { text: queuedSend.text, fileCount: queuedSend.files?.length ?? 0, queuedAt: queuedSend.queuedAt }
+            : null
+        }
+        onCancelQueuedSend={handleCancelQueuedSend}
       />
 
       <MetricsPanel

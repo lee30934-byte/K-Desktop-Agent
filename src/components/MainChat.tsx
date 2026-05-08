@@ -10,6 +10,9 @@ interface MainChatProps {
   isStreaming: boolean;
   onSendMessage: (text: string, files?: FileAttachment[]) => void;
   onInterrupt: () => void;
+  // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
+  queuedSend?: { text: string; fileCount: number; queuedAt: number } | null;
+  onCancelQueuedSend?: () => void;
 }
 
 // 빌트인 도구 → 한국어 라벨 매핑. MCP 도구는 정규식으로 자동 변환 (mcp__server__tool → tool).
@@ -60,6 +63,8 @@ function MainChat({
   isStreaming,
   onSendMessage,
   onInterrupt,
+  queuedSend,
+  onCancelQueuedSend,
 }: MainChatProps) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const lastMessageCountRef = useRef(0);
@@ -226,6 +231,8 @@ function MainChat({
           isStreaming={isStreaming}
           onSubmit={onSendMessage}
           onInterrupt={onInterrupt}
+          queuedSend={queuedSend}
+          onCancelQueuedSend={onCancelQueuedSend}
         />
       </div>
     </section>

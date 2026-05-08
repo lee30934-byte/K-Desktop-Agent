@@ -8,6 +8,9 @@ interface ComposerProps {
   onSubmit: (text: string, files?: FileAttachment[]) => void;
   onInterrupt: () => void;
   placeholder?: string;
+  // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
+  queuedSend?: { text: string; fileCount: number; queuedAt: number } | null;
+  onCancelQueuedSend?: () => void;
 }
 
 // 파일 타입별 아이콘
@@ -42,6 +45,8 @@ export default function Composer({
   onSubmit,
   onInterrupt,
   placeholder = "메시지를 입력하세요. Enter로 전송, Shift+Enter로 줄바꿈.",
+  queuedSend,
+  onCancelQueuedSend,
 }: ComposerProps) {
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<FileAttachment[]>([]);
@@ -276,6 +281,34 @@ export default function Composer({
             <span className="drag-icon">📁</span>
             <span>파일을 여기에 놓으세요</span>
           </div>
+        </div>
+      )}
+
+      {/* Phase 34 (v0.5.22) — 작업 중 다음 메시지 예약 미리보기 + 취소 */}
+      {isStreaming && queuedSend && (
+        <div className="queue-chip" role="status" aria-live="polite">
+          <span className="queue-chip-icon">📨</span>
+          <div className="queue-chip-body">
+            <div className="queue-chip-label mono">작업 후 자동 전송 예약</div>
+            <div className="queue-chip-text">
+              {queuedSend.text.slice(0, 200)}
+              {queuedSend.text.length > 200 ? "…" : ""}
+              {queuedSend.fileCount > 0 && (
+                <span className="queue-chip-files"> · 📎 첨부 {queuedSend.fileCount}개</span>
+              )}
+            </div>
+          </div>
+          {onCancelQueuedSend && (
+            <button
+              type="button"
+              className="queue-chip-cancel"
+              onClick={onCancelQueuedSend}
+              title="예약 메시지 취소"
+              aria-label="예약 메시지 취소"
+            >
+              ✕ 취소
+            </button>
+          )}
         </div>
       )}
 
