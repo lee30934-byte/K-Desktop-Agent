@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "K Desktop Agent",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "identifier": "com.k.desktop-agent",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -48,7 +48,20 @@
       "../node-bundle/**/*",
       "../scripts/install-deps.ps1",
       "../scripts/backup.ps1",
-      "../scripts/rollback.ps1"
+      "../scripts/rollback.ps1",
+      "../bundled-mcp/server.py",
+      "../bundled-mcp/requirements.txt",
+      "../bundled-mcp/install.bat",
+      "../bundled-mcp/check_config.bat",
+      "../bundled-mcp/test_modules.py",
+      "../bundled-mcp/README.md",
+      "../bundled-mcp/modules/__init__.py",
+      "../bundled-mcp/modules/app_launcher.py",
+      "../bundled-mcp/modules/computer_control.py",
+      "../bundled-mcp/modules/file_manager.py",
+      "../bundled-mcp/modules/personal_db.py",
+      "../bundled-mcp/modules/uia_control.py",
+      "../bundled-mcp/modules/web_automation.py"
     ],
     "externalBin": [],
     "copyright": "",

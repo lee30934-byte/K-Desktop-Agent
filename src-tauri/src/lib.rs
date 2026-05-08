@@ -491,9 +491,10 @@ fn resolve_script_path(name: &str) -> Result<PathBuf, String> {
 ///
 /// 우선순위:
 ///   1. 환경변수 `K_PERSONAL_MCP_PATH` 명시 지정
-///   2. `~/Documents/K-Personal-MCP/server.py` (K 의 평소 위치)
+///   2. `~/Documents/K-Personal-MCP/server.py` (K 의 평소 위치 — 실제 personal.db 가 사는 곳)
 ///   3. `~/K-Personal-MCP/server.py`
-///   4. project_root().parent()/K-Personal-MCP/server.py (dev 환경의 sibling 폴더)
+///   4. Phase 26 (v0.5.13): `<install_dir>/bundled-mcp/server.py` (KDA 가 setup.exe 에 번들로 박은 fallback)
+///   5. project_root().parent()/K-Personal-MCP/server.py (dev 환경의 sibling 폴더)
 fn resolve_kpersonal_mcp_server() -> Result<PathBuf, String> {
     if let Ok(env_path) = std::env::var("K_PERSONAL_MCP_PATH") {
         let p = PathBuf::from(&env_path);
@@ -517,6 +518,20 @@ fn resolve_kpersonal_mcp_server() -> Result<PathBuf, String> {
             }
         }
     }
+    // Phase 26: install_dir 의 bundled-mcp 도 후보 (Tauri resource_dir 다중 layout 시도)
+    if let Some(install) = install_dir() {
+        let candidates = [
+            install.join("bundled-mcp").join("server.py"),
+            install.join("resources").join("bundled-mcp").join("server.py"),
+            install.join("resources").join("_up_").join("bundled-mcp").join("server.py"),
+            install.join("_up_").join("bundled-mcp").join("server.py"),
+        ];
+        for c in &candidates {
+            if c.exists() {
+                return Ok(c.clone());
+            }
+        }
+    }
     if let Ok(root) = project_root() {
         if let Some(parent) = root.parent() {
             let p = parent.join("K-Personal-MCP").join("server.py");
@@ -525,7 +540,67 @@ fn resolve_kpersonal_mcp_server() -> Result<PathBuf, String> {
             }
         }
     }
-    Err("K-Personal MCP server.py 못 찾음 (USERPROFILE/Documents 또는 ~ 또는 dev sibling 모두 없음)".into())
+    Err("K-Personal MCP server.py 못 찾음 (USERPROFILE/Documents · ~ · install_dir/bundled-mcp · dev sibling 모두 없음)".into())
+}
+
+/// Phase 26 (v0.5.13): 새 PC 의 K 가 setup.exe 깐 직후 ~/Documents/K-Personal-MCP/ 가 없으면
+/// install_dir 의 bundled-mcp 를 자동 복사해 K 가 [K-Personal MCP 등록] 클릭 한 번으로
+/// 모든 도구 작동하게 해준다. K 의 본 PC 에선 이미 폴더 있어 skip.
+///
+/// data/personal.db 는 새로 빈 SQLite 가 생기는 게 정상 — K-Personal-MCP 의 personal_db.py
+/// 가 첫 호출 시 자동 schema 생성. K 의 옛 데이터가 있으면 ~/Documents/K-Personal-MCP/ 가
+/// 이미 있어 이 함수는 skip 됨 (조건 검사 첫 줄).
+fn deploy_bundled_mcp_if_needed() {
+    // 옛 폴더 이미 있으면 보존 — K 의 todos/notes/habits 그대로
+    let target_root = match std::env::var("USERPROFILE").ok() {
+        Some(h) => PathBuf::from(&h).join("Documents").join("K-Personal-MCP"),
+        None => return,
+    };
+    if target_root.exists() {
+        return;
+    }
+    // install_dir 의 bundled-mcp 후보 다중 시도
+    let install = match install_dir() {
+        Some(p) => p,
+        None => return,
+    };
+    let bundled_candidates = [
+        install.join("bundled-mcp"),
+        install.join("resources").join("bundled-mcp"),
+        install.join("resources").join("_up_").join("bundled-mcp"),
+        install.join("_up_").join("bundled-mcp"),
+    ];
+    let bundled = match bundled_candidates.iter().find(|p| p.join("server.py").exists()) {
+        Some(p) => p.clone(),
+        None => {
+            log_lifecycle(
+                "runtime.log",
+                "deploy_bundled_mcp_if_needed: bundled-mcp 못 찾음 — skip (dev/legacy 빌드)",
+            );
+            return;
+        }
+    };
+    log_lifecycle(
+        "runtime.log",
+        &format!(
+            "deploy_bundled_mcp_if_needed: copying {} → {}",
+            bundled.display(),
+            target_root.display()
+        ),
+    );
+    if let Err(e) = copy_dir_recursive(&bundled, &target_root) {
+        log_lifecycle(
+            "runtime.log",
+            &format!("warn: bundled-mcp 복사 실패: {}", e),
+        );
+        return;
+    }
+    // data/ 빈 폴더 생성 (personal.db 는 첫 호출 시 K-Personal-MCP 가 자동 생성)
+    let _ = std::fs::create_dir_all(target_root.join("data"));
+    log_lifecycle(
+        "runtime.log",
+        &format!("bundled-mcp deployed to {}", target_root.display()),
+    );
 }
 
 /// UTF-8 BOM (`\u{FEFF}`) 이 있으면 떼어낸 슬라이스 반환.
@@ -1922,6 +1997,11 @@ pub fn run_with_options(start_minimized: bool) {
             // 가 새 data_root() 에 없으면 자동 한 번 복사 — v0.5.10→v0.5.11 update 시 K 의
             // 대화 손실 방지. idempotent — 이미 새 위치에 있으면 skip.
             migrate_legacy_db_if_needed();
+
+            // Phase 26 (v0.5.13): 새 PC 에 setup.exe 깐 직후 K-Personal-MCP 가 없으면
+            // install_dir 의 bundled-mcp 를 ~/Documents/K-Personal-MCP/ 로 자동 복사.
+            // K 의 본 PC 에선 폴더 이미 있어 skip — 옛 todos/notes/habits 보존.
+            deploy_bundled_mcp_if_needed();
 
             // Tray
             if let Err(e) = setup_tray(&handle) {

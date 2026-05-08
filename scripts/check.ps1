@@ -382,6 +382,51 @@ Invoke-Step "Phase 25 (portable data dir + migration)" {
     Write-Host "  OK tauri.conf.json NSIS installMode = currentUser" -ForegroundColor DarkGray
 }
 
+# 4.12 Phase 26 - bundled-mcp: K-Personal-MCP 코드를 KDA setup.exe 에 자동 번들
+Invoke-Step "Phase 26 (bundled-mcp auto deploy)" {
+    $libContent = Get-Content "src-tauri/src/lib.rs" -Raw
+
+    # (a) deploy_bundled_mcp_if_needed 정의 + setup() 에서 호출
+    if ($libContent -notmatch "fn deploy_bundled_mcp_if_needed") {
+        throw "lib.rs: deploy_bundled_mcp_if_needed 정의 없음 (Phase 26)"
+    }
+    if ($libContent -notmatch "deploy_bundled_mcp_if_needed\(\)") {
+        throw "lib.rs: setup() 에 deploy_bundled_mcp_if_needed() 호출 없음 (Phase 26)"
+    }
+    Write-Host "  OK lib.rs has deploy_bundled_mcp_if_needed + setup() call" -ForegroundColor DarkGray
+
+    # (b) resolve_kpersonal_mcp_server 가 bundled-mcp 후보 추가
+    if ($libContent -notmatch 'install\.join\("bundled-mcp"\)\.join\("server\.py"\)') {
+        throw "lib.rs: resolve_kpersonal_mcp_server 에 install_dir/bundled-mcp/server.py 후보 없음 (Phase 26)"
+    }
+    Write-Host "  OK resolve_kpersonal_mcp_server has bundled-mcp candidates" -ForegroundColor DarkGray
+
+    # (c) tauri.conf.json bundle.resources 에 bundled-mcp 12 entry 박힘
+    $confContent = Get-Content "src-tauri/tauri.conf.json" -Raw
+    $bundledRefs = ([regex]::Matches($confContent, '"\.\./bundled-mcp/')).Count
+    if ($bundledRefs -lt 7) {
+        throw "tauri.conf.json: bundled-mcp resources entries 부족 (받은 $bundledRefs, 7+ 필요) (Phase 26)"
+    }
+    Write-Host "  OK tauri.conf.json bundle.resources has $bundledRefs bundled-mcp entries" -ForegroundColor DarkGray
+
+    # (d) release.yml 에 git clone step 박힘
+    $releaseYml = Get-Content ".github/workflows/release.yml" -Raw
+    if ($releaseYml -notmatch 'git clone --depth=1 https://github\.com/lee30934-byte/K-Personal-MCP\.git bundled-mcp') {
+        throw ".github/workflows/release.yml: K-Personal-MCP git clone step 없음 (Phase 26)"
+    }
+    if ($releaseYml -notmatch "Fetch K-Personal-MCP source") {
+        throw ".github/workflows/release.yml: 'Fetch K-Personal-MCP source' step name 없음 (Phase 26)"
+    }
+    Write-Host "  OK release.yml has K-Personal-MCP fetch step" -ForegroundColor DarkGray
+
+    # (e) .gitignore 에 bundled-mcp/ 박힘 (실수로 commit 안 되도록)
+    $gitignoreContent = Get-Content ".gitignore" -Raw
+    if ($gitignoreContent -notmatch "(?m)^bundled-mcp/") {
+        throw ".gitignore: bundled-mcp/ entry 없음 — repo 에 실수로 박힐 위험 (Phase 26)"
+    }
+    Write-Host "  OK .gitignore has bundled-mcp/" -ForegroundColor DarkGray
+}
+
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
 if (-not $SkipDeps) {
     Invoke-Step "npm ls (root, depth=0)" {

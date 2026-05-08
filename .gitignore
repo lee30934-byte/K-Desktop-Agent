@@ -51,3 +51,7 @@ release/*.msi
 backups/
 .backups/
 node-bundle/
+
+# Phase 26 (v0.5.13): bundled-mcp 은 release.yml 의 git clone step 이 빌드 시점에만 fetch.
+# repo 안에 박지 않음 — K-Personal-MCP 의 single source of truth 는 그 repo 자체.
+bundled-mcp/

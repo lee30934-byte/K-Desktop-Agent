@@ -43,6 +43,21 @@ jobs:
           npm ci
           npm run build
 
+      - name: Fetch K-Personal-MCP source
+        # Phase 26 (v0.5.13): K-Personal MCP 도구 서버 코드를 매 빌드마다 fetch.
+        # data/, __pycache__/ 는 source repo 의 .gitignore 로 이미 제외됨 — code 만 옴.
+        # K 가 K-Personal-MCP 에 push 하면 다음 KDA 빌드에 자동 반영.
+        # Public repo 라 인증 불필요. depth=1 로 빠르게.
+        shell: pwsh
+        run: |
+          git clone --depth=1 https://github.com/lee30934-byte/K-Personal-MCP.git bundled-mcp
+          # SHA + 파일 수 보고 — debugging 용
+          $sha = (cd bundled-mcp; git rev-parse HEAD)
+          $count = (Get-ChildItem bundled-mcp -Recurse -File | Measure-Object).Count
+          Write-Host "K-Personal-MCP fetched: SHA=$sha, files=$count"
+          # .git 폴더 제거 — bundle.resources 에 들어가면 안 됨 (크기 + privacy)
+          Remove-Item -Recurse -Force bundled-mcp/.git
+
       - name: Bundle Node.js
         shell: pwsh
         run: |
