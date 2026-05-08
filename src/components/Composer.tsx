@@ -149,9 +149,11 @@ export default function Composer({
   }
 
   // 제출 핸들러
+  // Phase 30 (v0.5.18): isStreaming 중에도 onSubmit 호출 — App 이 큐로 처리.
+  // K 가 답변 받는 동안 Enter 치면 streaming 끝난 직후 자동 전송.
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if ((!input.trim() && files.length === 0) || disabled || isStreaming) return;
+    if ((!input.trim() && files.length === 0) || disabled) return;
 
     onSubmit(input.trim(), files.length > 0 ? files : undefined);
     setInput("");
@@ -357,7 +359,13 @@ export default function Composer({
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={disabled ? "연결 대기 중..." : placeholder}
+          placeholder={
+            disabled
+              ? "연결 대기 중..."
+              : isStreaming
+                ? "응답 생성 중... Enter 시 다음 메시지 예약 (답변 끝나면 자동 전송)"
+                : placeholder
+          }
           rows={4}
           disabled={disabled}
         />

@@ -889,8 +889,18 @@ export default function App() {
 
   // ─── 액션 ───────────────────────────────────────────
 
+  // Phase 30 (v0.5.18): 메시지 큐 — streaming 중 K 가 Enter 치면 한 슬롯 보관.
+  // streaming false 로 전환되면 useEffect 가 자동 비움. 두 번째 Enter 치면 마지막 입력으로 덮어씀.
+  type QueuedSend = { text: string; files?: FileAttachment[] };
+  const [queuedSend, setQueuedSend] = useState<QueuedSend | null>(null);
+
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
-    if ((!text && (!files || files.length === 0)) || isStreaming) return;
+    if (!text && (!files || files.length === 0)) return;
+    // Phase 30: streaming 중이면 큐에 보관 후 return — useEffect 가 streaming 종료 시 자동 send
+    if (isStreaming) {
+      setQueuedSend({ text, files });
+      return;
+    }
 
     // 새 메시지 시작 → 미완 턴 이어받기 배너는 더 이상 의미 없음
     setPendingResume(null);
@@ -1263,6 +1273,20 @@ export default function App() {
       pushSystem("대화 제목을 변경하지 못했습니다.", "error");
     }
   });
+
+  // ─── Phase 30 (v0.5.18) — 메시지 큐 자동 비우기 ───────────────
+  // streaming false 로 전환되는 순간 큐에 보관된 메시지 하나를 자동 send.
+  // K 가 답변 받는 동안 Enter 친 것이 있으면 답변 끝난 직후 즉시 다음 turn 시작.
+  useEffect(() => {
+    if (isStreaming || !queuedSend) return;
+    const next = queuedSend;
+    setQueuedSend(null);
+    // setTimeout(0) — setState batch 끝난 후 send (race 방어)
+    const t = window.setTimeout(() => {
+      void handleSendMessage(next.text, next.files);
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [isStreaming, queuedSend, handleSendMessage]);
 
   // ─── 중단된 턴 같은 질문 재시도 ─────────────────────────────────
   // pendingResume.userMessage 텍스트를 그대로 재전송. user 메시지는 이미 DB/UI 에 있으니
