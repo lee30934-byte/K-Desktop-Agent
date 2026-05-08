@@ -190,6 +190,56 @@
   background: rgba(255, 107, 107, 0.15);
 }
 
+/* Phase 27 (v0.5.15): 대화 제목 변경 ✎ 버튼 + inline-edit 입력란 */
+.conv-rename-btn {
+  opacity: 0;
+  padding: 4px 8px;
+  margin-right: 2px;
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: var(--transition-ui-fast);
+  border-radius: var(--radius-sm);
+}
+
+.conv-item:hover .conv-rename-btn {
+  opacity: 1;
+}
+
+.conv-rename-btn:hover {
+  color: var(--accent);
+  background: rgba(79, 232, 225, 0.12);
+}
+
+.conv-item-editing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  padding: 6px 10px;
+  min-width: 0;
+}
+
+.conv-title-edit {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  outline: none;
+  font-family: inherit;
+}
+
+.conv-title-edit:focus {
+  box-shadow: 0 0 0 2px rgba(79, 232, 225, 0.2);
+}
+
 .conv-dot {
   width: 6px;
   height: 6px;

@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useState, useEffect, useRef } from "react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import CornerBrackets from "./CornerBrackets";
 import type { Conversation } from "../types";
@@ -17,6 +17,7 @@ interface SidebarProps {
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onDeleteConversation?: (id: string) => void;
+  onRenameConversation?: (id: string, newTitle: string) => Promise<void> | void;
   onRefreshConversations?: () => void;
   mcpConnected?: boolean;
   onOpenSettings?: () => void;
@@ -28,10 +29,59 @@ function Sidebar({
   onSelectConversation,
   onNewConversation,
   onDeleteConversation,
+  onRenameConversation,
   onRefreshConversations,
   mcpConnected = false,
   onOpenSettings,
 }: SidebarProps) {
+  // Phase 27 (v0.5.15): 대화 제목 inline edit
+  const [editingState, setEditingState] = useState<{ id: string; title: string } | null>(null);
+  const editInputRef = useRef<HTMLInputElement | null>(null);
+
+  // 편집 진입 시 input 자동 포커스 + 전체 선택
+  useEffect(() => {
+    if (editingState && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingState?.id]);
+
+  const startEdit = (id: string, currentTitle: string) => {
+    if (!onRenameConversation) return;
+    setEditingState({ id, title: currentTitle });
+  };
+
+  const commitEdit = async () => {
+    if (!editingState || !onRenameConversation) {
+      setEditingState(null);
+      return;
+    }
+    const newTitle = editingState.title.trim();
+    const original = conversations.find((c) => c.id === editingState.id)?.title ?? "";
+    if (newTitle && newTitle !== original) {
+      try {
+        await onRenameConversation(editingState.id, newTitle);
+      } catch (e) {
+        console.error("[Sidebar] rename 실패:", e);
+      }
+    }
+    setEditingState(null);
+  };
+
+  const cancelEdit = () => {
+    setEditingState(null);
+  };
+
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commitEdit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelEdit();
+    }
+  };
+
   // 현재 대화 내보내기
   const handleExportCurrent = async () => {
     if (!activeConversationId) {
@@ -157,37 +207,75 @@ function Sidebar({
           {conversations.length === 0 ? (
             <div className="conv-empty">대화 없음</div>
           ) : (
-            conversations.map((c) => (
-              <div
-                key={c.id}
-                className={`conv-item ${c.id === activeConversationId ? "active" : ""}`}
-              >
-                <button
-                  className="conv-item-main"
-                  onClick={() => onSelectConversation(c.id)}
+            conversations.map((c) => {
+              const isEditing = editingState?.id === c.id;
+              return (
+                <div
+                  key={c.id}
+                  className={`conv-item ${c.id === activeConversationId ? "active" : ""}`}
                 >
-                  <div className="conv-dot" />
-                  <div className="conv-content">
-                    <div className="conv-title">{c.title}</div>
-                    <div className="conv-meta mono">
-                      {c.messageCount} msg · {formatRelative(c.lastActive)}
+                  {isEditing ? (
+                    <div className="conv-item-main conv-item-editing">
+                      <div className="conv-dot" />
+                      <input
+                        ref={editInputRef}
+                        className="conv-title-edit"
+                        value={editingState!.title}
+                        onChange={(e) =>
+                          setEditingState({ id: c.id, title: e.target.value })
+                        }
+                        onBlur={() => void commitEdit()}
+                        onKeyDown={handleEditKeyDown}
+                        maxLength={120}
+                        placeholder="제목 (Enter=저장, Esc=취소)"
+                      />
                     </div>
-                  </div>
-                </button>
-                {onDeleteConversation && (
-                  <button
-                    className="conv-delete-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteConversation(c.id);
-                    }}
-                    title="대화 삭제"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            ))
+                  ) : (
+                    <button
+                      className="conv-item-main"
+                      onClick={() => onSelectConversation(c.id)}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        startEdit(c.id, c.title);
+                      }}
+                      title="더블클릭 = 제목 편집"
+                    >
+                      <div className="conv-dot" />
+                      <div className="conv-content">
+                        <div className="conv-title">{c.title}</div>
+                        <div className="conv-meta mono">
+                          {c.messageCount} msg · {formatRelative(c.lastActive)}
+                        </div>
+                      </div>
+                    </button>
+                  )}
+                  {!isEditing && onRenameConversation && (
+                    <button
+                      className="conv-rename-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startEdit(c.id, c.title);
+                      }}
+                      title="제목 변경"
+                    >
+                      ✎
+                    </button>
+                  )}
+                  {!isEditing && onDeleteConversation && (
+                    <button
+                      className="conv-delete-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteConversation(c.id);
+                      }}
+                      title="대화 삭제"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       </div>

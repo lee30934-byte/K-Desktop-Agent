@@ -1218,6 +1218,24 @@ export default function App() {
     }
   });
 
+  // Phase 27 (v0.5.15): 대화 제목 직접 변경 (Sidebar 의 더블클릭 / ✎ 버튼)
+  const handleRenameConversation = useStableCallback(async (id: string, newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+    try {
+      await updateConversationTitle(id, trimmed);
+      // 메모리상 conversations 즉시 업데이트 (UI 반영 빠르게)
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === id ? { ...c, title: trimmed, lastActive: Date.now() } : c,
+        ),
+      );
+    } catch (err) {
+      console.error("[App] 대화 제목 변경 실패:", err);
+      pushSystem("대화 제목을 변경하지 못했습니다.", "error");
+    }
+  });
+
   // ─── 중단된 턴 같은 질문 재시도 ─────────────────────────────────
   // pendingResume.userMessage 텍스트를 그대로 재전송. user 메시지는 이미 DB/UI 에 있으니
   // 새로 추가하지 않고, history 에서도 마지막 user 만 제외하고 보낸다 (sidecar 가 current_message
@@ -1672,6 +1690,7 @@ export default function App() {
         onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
+        onRenameConversation={handleRenameConversation}
         onRefreshConversations={refreshConversations}
         mcpConnected={mcpState.connected}
         onOpenSettings={openSettings}
