@@ -229,8 +229,15 @@ export default function App() {
     const recent = msgs
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-20);
+    // Phase 28 (v0.5.16): 한 메시지당 토큰 cap.
+    // cc_screenshot 의 base64 이미지 (수MB) 가 message.content 에 그대로 박히면
+    // 단일 메시지가 1M+ 토큰으로 잡혀 conv % 가 1700% 까지 부풀음. 메시지당 200K 로 cap —
+    // 어떤 모델도 단일 메시지가 그 이상 정상 입력일 수 없음. 누적도 200K * 20 = 4M (이론치)
+    // 인데 모델 컨텍스트 1M 분모 대비 합리적 ceiling.
+    const PER_MESSAGE_CAP = 200_000;
     return recent.reduce((sum, m) => {
-      return sum + Math.ceil((m.content?.length ?? 0) / 4);
+      const tokens = Math.ceil((m.content?.length ?? 0) / 4);
+      return sum + Math.min(tokens, PER_MESSAGE_CAP);
     }, 0) + baseline;
   }
 

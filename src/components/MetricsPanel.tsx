@@ -86,8 +86,19 @@ function MetricsPanel({
   const displayContext = measuredContext > 0 ? measuredContext : estimatedContext;
   const contextSource: "measured" | "estimated" =
     measuredContext > 0 ? "measured" : "estimated";
-  const contextUsage = (displayContext / maxContextTokens) * 100;
-  const contextColor = contextUsage >= 80 ? "warn" : contextUsage >= 60 ? undefined : "accent";
+  const rawContextUsage = (displayContext / maxContextTokens) * 100;
+  // Phase 28 (v0.5.16): 부풀음 (1737% 같은 nonsense) UI 가드 — 100% 까지만 표시.
+  // 실제 측정치가 100% 넘으면 그건 sidecar/모델이 잘못 보고한 값이거나 tool output 부풀음.
+  // contextOverflowed 가 true 면 카드에 ⚠ 표시.
+  const contextOverflowed = rawContextUsage > 100;
+  const contextUsage = Math.min(rawContextUsage, 100);
+  const contextColor = contextOverflowed
+    ? "warn"
+    : contextUsage >= 80
+    ? "warn"
+    : contextUsage >= 60
+    ? undefined
+    : "accent";
   const remainingTokens = Math.max(0, maxContextTokens - displayContext);
 
   return (
@@ -128,8 +139,15 @@ function MetricsPanel({
               <div className="context-bar-threshold" style={{ left: "80%" }} />
             )}
           </div>
-          <span className={`context-percent mono ${contextColor ? `text-${contextColor}` : ""}`}>
-            {contextUsage.toFixed(1)}%
+          <span
+            className={`context-percent mono ${contextColor ? `text-${contextColor}` : ""}`}
+            title={
+              contextOverflowed
+                ? `실제 측정치 ${rawContextUsage.toFixed(1)}% — tool 결과 누적 부풀음 가능. 세션 초기화 또는 압축 권장.`
+                : undefined
+            }
+          >
+            {contextUsage.toFixed(1)}%{contextOverflowed ? "+ ⚠" : ""}
           </span>
         </div>
 

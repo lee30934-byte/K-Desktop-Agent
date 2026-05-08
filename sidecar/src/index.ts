@@ -1818,7 +1818,19 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             const cr = u.cached_input_tokens ?? 0;
             maxTurnInputTokens = Math.max(0, inp);
             maxTurnCacheRead = cr;
-            maxTurnContextTokens = (u.input_tokens ?? 0); // = 그 turn 모델이 본 컨텍스트 크기
+            // Phase 28 (v0.5.16): Codex 가 가끔 input_tokens 를 비현실적으로 크게 (3M+) 보고함 —
+            // tool 결과 (cc_screenshot 의 base64 이미지 등) 가 누적된 값. 모델 context window
+            // 넘어 박히면 1737% 같은 nonsense % 가 UI 에 표시됨. 모델 max (200K, 1M 등) 로 cap.
+            // 휴리스틱: 1M 모델이라도 input 이 1M 넘는 건 비정상이므로 1.05M 을 hard ceiling 으로.
+            const codexCtxRaw = u.input_tokens ?? 0;
+            const CODEX_CTX_HARD_CAP = 1_050_000;
+            if (codexCtxRaw > CODEX_CTX_HARD_CAP) {
+              logToFile(
+                "warn",
+                `Codex input_tokens=${codexCtxRaw} 비현실적 — ${CODEX_CTX_HARD_CAP} 으로 cap (tool 결과 누적 부풀음)`,
+              );
+            }
+            maxTurnContextTokens = Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP);
             // 마지막 안전망 — 누적 텍스트가 있으면 한 번 더 emit (Claude 와 동일 정책).
             if (currentText) {
               emit({ type: "assistant_delta", id: msg.id, text: currentText });
