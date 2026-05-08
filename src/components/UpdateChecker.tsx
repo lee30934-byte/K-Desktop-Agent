@@ -8,6 +8,11 @@ interface UpdateInfo {
   date?: string;
 }
 
+// Phase 37 (v0.5.25): 같은 버전을 한 번 dismiss 하면 다음 버전 출시 전까지 안 뜨게.
+// 종전: dismissed 가 component-local state — 30분 polling 마다 또는 KDA 재시작 시 즉시 다시 뜸.
+// K 의 빌드 cycle 이 분 단위라 알림이 사이드바 K.AGENT 로고를 영구히 가림.
+const DISMISSED_VERSION_KEY = 'kda_update_dismissed_version';
+
 export function UpdateChecker() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -27,7 +32,14 @@ export function UpdateChecker() {
     try {
       const update = await check();
       if (update) {
+        // Phase 37: 같은 버전을 이미 dismiss 했으면 알림 띄우지 않음
+        const dismissedVersion = localStorage.getItem(DISMISSED_VERSION_KEY);
+        if (dismissedVersion === update.version) {
+          // 이미 K 가 "나중에" 또는 ✕ 한 버전 → 다음 버전 출시 전까지 silent
+          return;
+        }
         setUpdateAvailable(true);
+        setDismissed(false);
         setUpdateInfo({
           version: update.version,
           body: update.body,
@@ -73,10 +85,31 @@ export function UpdateChecker() {
     }
   }
 
+  function dismissUpdate() {
+    // Phase 37: localStorage 에 영구 저장 — 같은 버전은 다시 알림 안 뜸
+    if (updateInfo?.version) {
+      try {
+        localStorage.setItem(DISMISSED_VERSION_KEY, updateInfo.version);
+      } catch {}
+    }
+    setDismissed(true);
+  }
+
   if (!updateAvailable || dismissed) return null;
 
   return (
     <div className="update-banner">
+      {/* Phase 37: 우측 상단 명확한 ✕ 닫기 버튼 — 같은 버전은 다음에 안 뜸 */}
+      <button
+        type="button"
+        className="update-close-btn"
+        onClick={dismissUpdate}
+        title="이 버전 알림 닫기 (다음 버전 출시까지 다시 안 뜸)"
+        aria-label="업데이트 알림 닫기"
+      >
+        ✕
+      </button>
+
       <div className="update-content">
         <div className="update-icon">🎉</div>
         <div className="update-text">
@@ -99,7 +132,7 @@ export function UpdateChecker() {
           <button className="update-btn primary" onClick={downloadAndInstall}>
             지금 업데이트
           </button>
-          <button className="update-btn secondary" onClick={() => setDismissed(true)}>
+          <button className="update-btn secondary" onClick={dismissUpdate}>
             나중에
           </button>
         </div>

@@ -3464,20 +3464,43 @@
    Update Banner
    ═══════════════════════════════════════════════════════════════ */
 
+/* Phase 37 (v0.5.25): 사이드바 K.AGENT 로고 가림 fix — top 전체폭 띠 → 우측 상단 카드 toast.
+   닫기 ✕ 버튼 + localStorage dismiss 로 같은 버전 알림은 한 번만. */
 .update-banner {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: 12px;
+  right: 12px;
   z-index: 9999;
+  max-width: 360px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-lg);
+  flex-direction: column;
+  gap: var(--space-sm, 8px);
   padding: var(--space-md) var(--space-lg);
+  padding-right: 32px;
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary, var(--accent-primary)));
   color: var(--bg-1);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.update-close-btn {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--bg-1);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0.7;
+  transition: opacity 0.15s, background 0.15s;
+  font-family: inherit;
+}
+.update-close-btn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.15);
 }
 
 .update-content {
