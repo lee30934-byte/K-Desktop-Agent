@@ -4023,11 +4023,12 @@
   color: var(--text-tertiary);
   padding: 0 4px;
 }
-/* Phase 40 (v0.5.28): 트리 라인 시인성 강화 — dashed 점선 → solid + 자식 항목에 ├ 가로 라인 추가 */
+/* Phase 41 (v0.5.29): 트리 라인 진하게 + 가로 connector 위치 위로 (folder-row 높이 맞춤)
+   K 보고: connector 위치가 폴더 아이콘보다 아래쪽 → 어색. 라인 흐림. */
 .folder-children {
   margin-left: 12px;
-  /* 부모-자식 vertical 라인 — 살짝 진하게 */
-  border-left: 1px solid rgba(79, 232, 225, 0.18);
+  /* 부모-자식 vertical 라인 — 진하게 (0.18 → 0.45) + solid */
+  border-left: 1.5px solid rgba(79, 232, 225, 0.45);
   padding-left: 0;
   position: relative;
 }
@@ -4037,25 +4038,40 @@
   position: relative;
   padding-left: 12px;
 }
-.folder-children > .folder-block::before,
+/* 가로 connector — 폴더 row 의 첫 줄 (icon 높이) 에 맞춤. 14px → 12px 위로 */
+.folder-children > .folder-block::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;          /* folder-row 의 icon center 높이 — 위로 올림 */
+  width: 12px;
+  height: 1.5px;
+  background: rgba(79, 232, 225, 0.55);
+}
+/* conv-item 은 row 높이가 조금 더 — 14px 유지 */
 .folder-children > .conv-item::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 14px;          /* 항목 row 중앙 높이 */
-  width: 10px;
-  height: 1px;
-  background: rgba(79, 232, 225, 0.25);
+  top: 18px;
+  width: 12px;
+  height: 1.5px;
+  background: rgba(79, 232, 225, 0.55);
 }
-/* 마지막 자식의 vertical 라인이 그 아래로 안 흐르게 — :last-child 의 ::before 위에 background mask */
+/* 마지막 자식의 vertical 라인이 그 아래로 안 흐르게 — └ 효과 */
 .folder-children > :last-child::after {
   content: "";
   position: absolute;
-  left: -1px;
-  top: 15px;
+  left: -1.5px;
+  top: 14px;
   bottom: 0;
-  width: 2px;
+  width: 3px;
   background: var(--bg-2);
+}
+/* folder-block 안의 자식 row 도 자기 부모 - 더 강한 padding (depth 별 가독성) */
+.folder-children .folder-children {
+  margin-left: 10px;
+  padding-left: 0;
 }
 
 /* Depth-based indent (visual only — folder-children 가 실제 indent) */
