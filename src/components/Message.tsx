@@ -1,4 +1,4 @@
-import { memo, useState, type ReactNode, isValidElement } from "react";
+import { memo, useState, useEffect, type ReactNode, isValidElement } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -151,11 +151,69 @@ function Message({ message }: MessageProps) {
 // 이미지: 썸네일 (data:base64 또는 preview URL)
 // 비디오/오디오: <video>/<audio> controls 박스
 // 그 외: 파일 아이콘 + 이름 + 크기
+// Phase 42 (v0.5.30): 첨부 lightbox modal — 클릭 시 원본 크기로 열림
+function AttachmentLightbox({
+  attachment,
+  onClose,
+}: {
+  attachment: { name: string; type: string; size: number; base64?: string; preview?: string };
+  onClose: () => void;
+}) {
+  const dataUrl =
+    attachment.preview ||
+    (attachment.base64 ? `data:${attachment.type};base64,${attachment.base64}` : null);
+  const isImage = attachment.type.startsWith("image/");
+  const isVideo = attachment.type.startsWith("video/");
+  const isAudio = attachment.type.startsWith("audio/");
+
+  // ESC 닫기
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  if (!dataUrl) return null;
+
+  return (
+    <div className="lightbox-overlay" onClick={onClose}>
+      <button
+        type="button"
+        className="lightbox-close"
+        onClick={onClose}
+        title="닫기 (ESC)"
+        aria-label="첨부 보기 닫기"
+      >
+        ✕
+      </button>
+      <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
+        {isImage && (
+          <img src={dataUrl} alt={attachment.name} className="lightbox-image" />
+        )}
+        {isVideo && (
+          <video src={dataUrl} className="lightbox-video" controls autoPlay preload="metadata" />
+        )}
+        {isAudio && (
+          <audio src={dataUrl} className="lightbox-audio" controls autoPlay preload="metadata" />
+        )}
+        <div className="lightbox-caption mono">
+          <span>{attachment.name}</span>
+          <span style={{ opacity: 0.6 }}>· {formatBytes(attachment.size)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AttachmentPreviewList({
   attachments,
 }: {
   attachments: Array<{ name: string; type: string; size: number; base64?: string; preview?: string }>;
 }) {
+  // Phase 42: 클릭 시 lightbox 로 원본 표시
+  const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
   return (
     <div className="msg-attachments">
       {attachments.map((att, idx) => {
@@ -164,8 +222,16 @@ function AttachmentPreviewList({
         const isImage = att.type.startsWith("image/");
         const isVideo = att.type.startsWith("video/");
         const isAudio = att.type.startsWith("audio/");
+        const isPreviewable = (isImage || isVideo || isAudio) && Boolean(dataUrl);
         return (
-          <div key={idx} className="msg-attachment-item">
+          <div
+            key={idx}
+            className={`msg-attachment-item ${isPreviewable ? "clickable" : ""}`}
+            onClick={() => {
+              if (isPreviewable) setLightboxIdx(idx);
+            }}
+            title={isPreviewable ? "클릭 = 원본 크기 보기" : undefined}
+          >
             {dataUrl && isImage ? (
               <img
                 src={dataUrl}
@@ -185,6 +251,7 @@ function AttachmentPreviewList({
                 className="msg-attachment-video"
                 controls
                 preload="metadata"
+                onClick={(e) => e.stopPropagation()}
               />
             ) : dataUrl && isAudio ? (
               <audio
@@ -192,6 +259,7 @@ function AttachmentPreviewList({
                 className="msg-attachment-audio"
                 controls
                 preload="metadata"
+                onClick={(e) => e.stopPropagation()}
               />
             ) : (
               <span className="msg-attachment-icon">{getAttachmentIcon(att.type)}</span>
@@ -199,10 +267,19 @@ function AttachmentPreviewList({
             <div className="msg-attachment-info mono">
               <span className="msg-attachment-name">{att.name}</span>
               <span className="msg-attachment-size">{formatBytes(att.size)}</span>
+              {isPreviewable && (
+                <span className="msg-attachment-hint">🔍 클릭 = 원본</span>
+              )}
             </div>
           </div>
         );
       })}
+      {lightboxIdx !== null && attachments[lightboxIdx] && (
+        <AttachmentLightbox
+          attachment={attachments[lightboxIdx]}
+          onClose={() => setLightboxIdx(null)}
+        />
+      )}
     </div>
   );
 }

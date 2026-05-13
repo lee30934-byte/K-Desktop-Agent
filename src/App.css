@@ -3700,6 +3700,105 @@
   background: var(--accent);
 }
 
+/* ════════════════════════════════════════════════════════════════
+   Phase 42 (v0.5.30) — 첨부 lightbox modal + clickable hint
+   ════════════════════════════════════════════════════════════════ */
+
+.msg-attachment-item.clickable {
+  cursor: zoom-in;
+  transition: background 0.15s, transform 0.15s;
+}
+.msg-attachment-item.clickable:hover {
+  background: rgba(79, 232, 225, 0.06);
+  transform: translateY(-1px);
+}
+.msg-attachment-hint {
+  font-size: 10px;
+  color: var(--accent);
+  opacity: 0.7;
+  margin-left: 6px;
+}
+
+/* lightbox overlay — 화면 전체 어둡게 + 중앙에 원본 표시 */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  animation: lightbox-fade-in 0.15s ease;
+}
+@keyframes lightbox-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.lightbox-content {
+  max-width: 92vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  cursor: default;
+}
+.lightbox-image {
+  max-width: 92vw;
+  max-height: 80vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+.lightbox-video {
+  max-width: 92vw;
+  max-height: 80vh;
+  width: auto;
+  height: auto;
+  border-radius: 6px;
+  background: #000;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+.lightbox-audio {
+  width: min(560px, 90vw);
+}
+.lightbox-caption {
+  font-size: 12px;
+  color: #eee;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 6px 14px;
+  border-radius: 4px;
+  display: flex;
+  gap: 6px;
+}
+.lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  z-index: 10001;
+  transition: background 0.15s, transform 0.15s;
+}
+.lightbox-close:hover {
+  background: rgba(255, 80, 80, 0.5);
+  transform: scale(1.1);
+}
+
 .update-content {
   display: flex;
   align-items: center;
@@ -4023,42 +4122,42 @@
   color: var(--text-tertiary);
   padding: 0 4px;
 }
-/* Phase 41 (v0.5.29): 트리 라인 진하게 + 가로 connector 위치 위로 (folder-row 높이 맞춤)
-   K 보고: connector 위치가 폴더 아이콘보다 아래쪽 → 어색. 라인 흐림. */
+/* Phase 42 (v0.5.30): vertical line 을 폴더 아이콘 horizontal center 와 정확히 정렬.
+   K 보고: 트리가 폴더 아이콘 좌측 멀리 떨어져 있음. icon center 바로 아래로 박음.
+   folder-row 구조: padding 6 + folder-toggle 18 + folder-icon ~13 = icon center ~ 30px */
 .folder-children {
-  margin-left: 12px;
-  /* 부모-자식 vertical 라인 — 진하게 (0.18 → 0.45) + solid */
+  margin-left: 28px;  /* 폴더 아이콘 center 정렬 — 12 → 28 */
   border-left: 1.5px solid rgba(79, 232, 225, 0.45);
   padding-left: 0;
   position: relative;
 }
-/* 각 자식 항목에 가로 connector 라인 (├) */
+/* 각 자식 항목 — 가로 connector 길이도 더 키워 conv-icon 근처까지 닿게 */
 .folder-children > .folder-block,
 .folder-children > .conv-item {
   position: relative;
-  padding-left: 12px;
+  padding-left: 16px;
 }
-/* 가로 connector — 폴더 row 의 첫 줄 (icon 높이) 에 맞춤. 14px → 12px 위로 */
+/* folder-row connector — icon center 높이 */
 .folder-children > .folder-block::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 12px;          /* folder-row 의 icon center 높이 — 위로 올림 */
-  width: 12px;
+  top: 12px;
+  width: 16px;
   height: 1.5px;
   background: rgba(79, 232, 225, 0.55);
 }
-/* conv-item 은 row 높이가 조금 더 — 14px 유지 */
+/* conv-item connector — row center 높이 */
 .folder-children > .conv-item::before {
   content: "";
   position: absolute;
   left: 0;
   top: 18px;
-  width: 12px;
+  width: 16px;
   height: 1.5px;
   background: rgba(79, 232, 225, 0.55);
 }
-/* 마지막 자식의 vertical 라인이 그 아래로 안 흐르게 — └ 효과 */
+/* 마지막 자식 └ 효과 — vertical line 의 아래 부분 mask */
 .folder-children > :last-child::after {
   content: "";
   position: absolute;
@@ -4068,9 +4167,9 @@
   width: 3px;
   background: var(--bg-2);
 }
-/* folder-block 안의 자식 row 도 자기 부모 - 더 강한 padding (depth 별 가독성) */
+/* 중첩 폴더 children — 부모 들여쓰기 패턴 유지 */
 .folder-children .folder-children {
-  margin-left: 10px;
+  margin-left: 18px;
   padding-left: 0;
 }
 
