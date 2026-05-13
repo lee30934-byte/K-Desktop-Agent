@@ -3669,6 +3669,37 @@
   color: var(--text-tertiary);
 }
 
+/* ════════════════════════════════════════════════════════════════
+   Phase 40 (v0.5.28) — Composer 높이 조절 grip + 파일 드래그 + 트리 라인
+   ════════════════════════════════════════════════════════════════ */
+
+.composer-height-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 8px;
+  cursor: ns-resize;
+  user-select: none;
+  margin: 0 12px 2px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.composer-height-grip:hover,
+.composer-height-grip.dragging {
+  background: rgba(79, 232, 225, 0.12);
+}
+.composer-height-grip-bar {
+  width: 60px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border, #444);
+  transition: background 0.15s;
+}
+.composer-height-grip:hover .composer-height-grip-bar,
+.composer-height-grip.dragging .composer-height-grip-bar {
+  background: var(--accent);
+}
+
 .update-content {
   display: flex;
   align-items: center;
@@ -3992,10 +4023,39 @@
   color: var(--text-tertiary);
   padding: 0 4px;
 }
+/* Phase 40 (v0.5.28): 트리 라인 시인성 강화 — dashed 점선 → solid + 자식 항목에 ├ 가로 라인 추가 */
 .folder-children {
-  margin-left: 14px;
-  border-left: 1px dashed rgba(255, 255, 255, 0.06);
-  padding-left: 2px;
+  margin-left: 12px;
+  /* 부모-자식 vertical 라인 — 살짝 진하게 */
+  border-left: 1px solid rgba(79, 232, 225, 0.18);
+  padding-left: 0;
+  position: relative;
+}
+/* 각 자식 항목에 가로 connector 라인 (├) */
+.folder-children > .folder-block,
+.folder-children > .conv-item {
+  position: relative;
+  padding-left: 12px;
+}
+.folder-children > .folder-block::before,
+.folder-children > .conv-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 14px;          /* 항목 row 중앙 높이 */
+  width: 10px;
+  height: 1px;
+  background: rgba(79, 232, 225, 0.25);
+}
+/* 마지막 자식의 vertical 라인이 그 아래로 안 흐르게 — :last-child 의 ::before 위에 background mask */
+.folder-children > :last-child::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 15px;
+  bottom: 0;
+  width: 2px;
+  background: var(--bg-2);
 }
 
 /* Depth-based indent (visual only — folder-children 가 실제 indent) */

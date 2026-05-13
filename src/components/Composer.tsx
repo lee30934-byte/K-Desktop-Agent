@@ -1,4 +1,4 @@
-import { useState, useRef, FormEvent, KeyboardEvent, DragEvent, ChangeEvent, ClipboardEvent } from "react";
+import { useState, useRef, useEffect, FormEvent, KeyboardEvent, DragEvent, ChangeEvent, ClipboardEvent } from "react";
 import type { FileAttachment, PromptTemplate } from "../types";
 import PromptPicker from "./PromptPicker";
 
@@ -54,6 +54,44 @@ export default function Composer({
   const [showPromptPicker, setShowPromptPicker] = useState(false);
   const [promptQuery, setPromptQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Phase 40 (v0.5.28): Composer 높이 조절 — 상단 grip bar drag.
+  // localStorage 에 저장 (기본 4 lines = 약 100px).
+  const [composerHeight, setComposerHeight] = useState<number>(() => {
+    try {
+      const saved = parseInt(localStorage.getItem("kda_composer_height") || "", 10);
+      if (!Number.isNaN(saved) && saved >= 60 && saved <= 600) return saved;
+    } catch {}
+    return 100;
+  });
+  const heightDragRef = useRef<{ startY: number; startH: number } | null>(null);
+  const [resizingHeight, setResizingHeight] = useState(false);
+
+  useEffect(() => {
+    if (!resizingHeight) return;
+    const onMove = (e: MouseEvent) => {
+      if (!heightDragRef.current) return;
+      const dy = heightDragRef.current.startY - e.clientY; // 위로 끌수록 +
+      const next = Math.max(60, Math.min(600, heightDragRef.current.startH + dy));
+      setComposerHeight(next);
+    };
+    const onUp = () => {
+      setResizingHeight(false);
+      heightDragRef.current = null;
+      try {
+        localStorage.setItem("kda_composer_height", String(composerHeight));
+      } catch {}
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [resizingHeight, composerHeight]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // 파일을 FileAttachment로 변환
@@ -359,6 +397,22 @@ export default function Composer({
         </div>
       )}
 
+      {/* Phase 40 (v0.5.28): Composer 높이 조절 grip — 상단 가로 bar */}
+      <div
+        className={`composer-height-grip ${resizingHeight ? "dragging" : ""}`}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          heightDragRef.current = { startY: e.clientY, startH: composerHeight };
+          setResizingHeight(true);
+        }}
+        onDoubleClick={() => setComposerHeight(100)}
+        title="위아래 드래그로 입력창 높이 조절 · 더블클릭 = 기본 (100px)"
+        role="separator"
+        aria-label="Composer 높이 조절"
+      >
+        <div className="composer-height-grip-bar" />
+      </div>
+
       <form className="composer" onSubmit={handleSubmit}>
         <div className="composer-corner composer-corner-tl" />
         <div className="composer-corner composer-corner-tr" />
@@ -399,8 +453,8 @@ export default function Composer({
                 ? "응답 생성 중... Enter 시 다음 메시지 예약 (답변 끝나면 자동 전송)"
                 : placeholder
           }
-          rows={4}
           disabled={disabled}
+          style={{ height: `${composerHeight}px`, resize: "none" }}
         />
 
         {/* 프롬프트 피커 */}
