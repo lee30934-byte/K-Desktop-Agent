@@ -4159,26 +4159,26 @@
   height: 1.5px;
   background: rgba(79, 232, 225, 0.55);
 }
-/* Phase 43 (v0.5.31): 마지막 자식 └ 효과 정밀화 — mask top 을 connector top 과 정확히 맞춤.
-   K 보고: 마지막 자식 아래 vertical line 이 살짝 이어져 보임. mask top 14px 가 connector top
-   (folder 12 / conv 18) 보다 위/아래에 어긋나 있었음 → connector 가로선과 정확히 만나게 분기. */
+/* Phase 45 (v0.5.33): 마지막 자식 mask 가 box 바깥의 margin/padding 영역까지 vertical line 가리게.
+   K 보고: v0.5.31 에서도 row 끝 후 line 이 ~5px 더 보임. conv-item 의 margin (1px) + 부모
+   folder-children 의 잠재적 gap 영역이 mask `bottom:0` 으로 안 덮였음 → bottom 음수 확장. */
 .folder-children > .folder-block:last-child::after {
   content: "";
   position: absolute;
-  left: -1.5px;
-  top: 12px;          /* folder-row connector top 과 일치 */
-  bottom: 0;
-  width: 3px;
+  left: -2px;          /* border-left 1.5px 완전히 덮기 위해 좌측 여유 */
+  top: 12px;
+  bottom: -10px;       /* 자식 박스 밖 10px 까지 — folder-children 의 padding/margin 영역 덮음 */
+  width: 4px;          /* 1.5px line + 좌우 여유 */
   background: var(--bg-2);
-  z-index: 1;          /* connector(::before) 보다 아래여야 가로선이 그려짐. ::before 기본 0 → mask 1, connector ::before 도 z-index 박음 */
+  z-index: 1;
 }
 .folder-children > .conv-item:last-child::after {
   content: "";
   position: absolute;
-  left: -1.5px;
-  top: 18px;          /* conv-item connector top 과 일치 */
-  bottom: 0;
-  width: 3px;
+  left: -2px;
+  top: 18px;
+  bottom: -10px;
+  width: 4px;
   background: var(--bg-2);
   z-index: 1;
 }
