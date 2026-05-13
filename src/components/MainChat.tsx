@@ -13,6 +13,8 @@ interface MainChatProps {
   // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
   queuedSend?: { text: string; fileCount: number; queuedAt: number } | null;
   onCancelQueuedSend?: () => void;
+  // Phase 44 (v0.5.32) — 메시지 안 link 클릭 → SidePanel 트리거
+  onPreviewRequest?: (pathOrUrl: string, label?: string) => void;
 }
 
 // 빌트인 도구 → 한국어 라벨 매핑. MCP 도구는 정규식으로 자동 변환 (mcp__server__tool → tool).
@@ -65,6 +67,7 @@ function MainChat({
   onInterrupt,
   queuedSend,
   onCancelQueuedSend,
+  onPreviewRequest,
 }: MainChatProps) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const lastMessageCountRef = useRef(0);
@@ -203,7 +206,7 @@ function MainChat({
                 {/* 메시지가 적을 때 위쪽 빈 공간 채우기 */}
                 <div className="messages-spacer" />
                 {visibleMessages.map((msg) => (
-                  <Message key={msg.id} message={msg} />
+                  <Message key={msg.id} message={msg} onPreviewRequest={onPreviewRequest} />
                 ))}
               </>
             );

@@ -23,6 +23,7 @@ import ElicitationDialog from "./components/ElicitationDialog";
 import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
 import SidebarResizer from "./components/SidebarResizer";
+import SidePanel, { type SidePanelItem } from "./components/SidePanel";
 import {
   initDB,
   getAllConversations,
@@ -219,6 +220,27 @@ export default function App() {
       if (!Number.isNaN(saved) && saved >= 200 && saved <= 600) return saved;
     } catch {}
     return 260;
+  });
+  // Phase 44 (v0.5.32) — 우측 SidePanel: 대화 안 link/file 클릭 → 미리보기
+  const [sidePanelOpen, setSidePanelOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("kda_side_panel_open") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [sidePanelItem, setSidePanelItem] = useState<SidePanelItem | null>(null);
+  useEffect(() => {
+    try {
+      localStorage.setItem("kda_side_panel_open", sidePanelOpen ? "1" : "0");
+    } catch {}
+  }, [sidePanelOpen]);
+  const handlePreviewRequest = useStableCallback((pathOrUrl: string, label?: string) => {
+    setSidePanelItem({ pathOrUrl, label });
+    setSidePanelOpen(true);
+  });
+  const handleSidePanelClose = useStableCallback(() => {
+    setSidePanelItem(null);
   });
   // CSS variable 동기화
   useEffect(() => {
@@ -1822,6 +1844,8 @@ export default function App() {
   }
 
   // 세션 자동 갱신 트리거
+  // Phase 44 (v0.5.32): toast 메시지 동적 % + source — hardcode "80% 도달" 이 K 에게 오해 부름.
+  // 실제 트리거는 CONTEXT_THRESHOLD (현재 90%) 이지만 메시지는 80% 라 적혀있었음.
   const triggerSessionRefresh = useStableCallback(async () => {
     logger.log("[Session] 세션 갱신 시작...");
 
@@ -1830,6 +1854,20 @@ export default function App() {
       isRefreshingSessionRef.current = false;
       return;
     }
+
+    // 갱신 시점의 실제 컨텍스트 % + source 캡처 — toast 에 정확히 표시
+    const refreshContextSnapshot = (() => {
+      const measured = metrics.maxTurnContextTokens ?? 0;
+      const estimated = estimateConvTokens(messagesRef.current);
+      const effective = measured > 0 ? measured : Math.max(0, estimated - refreshBaselineRef.current);
+      const pct = currentModelMaxTokens > 0 ? (effective / currentModelMaxTokens) * 100 : 0;
+      return {
+        pct: Math.round(pct),
+        source: measured > 0 ? "실측" : "추정",
+        tokens: effective,
+        max: currentModelMaxTokens,
+      };
+    })();
 
     try {
       // 1. 현재 대화 요약 생성
@@ -1864,9 +1902,10 @@ export default function App() {
       setSessionRefreshToast(true);
       setTimeout(() => setSessionRefreshToast(false), 4000);
 
-      // 5. 시스템 메시지로 알림 (간결하게)
+      // 5. 시스템 메시지로 알림 — Phase 44: 실제 % + source 명시 (toast 도 동일 메시지 base 로)
+      const pctMsg = `${refreshContextSnapshot.pct}% (${refreshContextSnapshot.source})`;
       pushSystem(
-        "🔄 세션 갱신됨 (80% 도달). 대화 맥락 유지됩니다.",
+        `🔄 세션 갱신됨 (${pctMsg} 도달). 대화 맥락 유지됩니다.`,
         "info"
       );
 
@@ -2130,6 +2169,8 @@ export default function App() {
             : null
         }
         onCancelQueuedSend={handleCancelQueuedSend}
+        // Phase 44 (v0.5.32) — link/file click → SidePanel
+        onPreviewRequest={handlePreviewRequest}
       />
 
       <MetricsPanel
@@ -2151,6 +2192,14 @@ export default function App() {
         codexUsageError={activeProvider === "codex" ? codexUsageError : null}
         codexUsageRawPayload={activeProvider === "codex" ? codexUsageRawPayload : null}
         onRetryCodexUsage={pollCodexUsage}
+      />
+
+      {/* Phase 44 (v0.5.32) — 우측 SidePanel (대화 안 link/file → 미리보기) */}
+      <SidePanel
+        open={sidePanelOpen}
+        onOpenChange={setSidePanelOpen}
+        item={sidePanelItem}
+        onClose={handleSidePanelClose}
       />
 
       <Settings

@@ -7,6 +7,8 @@ import type { ChatMessage } from "../types";
 
 interface MessageProps {
   message: ChatMessage;
+  // Phase 44 (v0.5.32): markdown link / file 클릭 → SidePanel 트리거
+  onPreviewRequest?: (pathOrUrl: string, label?: string) => void;
 }
 
 // React children 트리에서 평문 텍스트 추출 — 코드 블록 복사용.
@@ -53,7 +55,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
   );
 }
 
-function Message({ message }: MessageProps) {
+function Message({ message, onPreviewRequest }: MessageProps) {
   const [copied, setCopied] = useState(false);
 
   if (message.role === "tool") {
@@ -99,21 +101,29 @@ function Message({ message }: MessageProps) {
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
               components={{
-                // 링크 클릭 시 기본 브라우저에서 열기
-                a: ({ href, children }) => (
-                  <a
-                    href={href}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      if (href) {
-                        open(href).catch(console.error);
-                      }
-                    }}
-                    className="md-link"
-                  >
-                    {children}
-                  </a>
-                ),
+                // Phase 44 (v0.5.32): 링크 클릭 → SidePanel 미리보기 (있으면). 없으면 외부 열기.
+                a: ({ href, children }) => {
+                  const label = typeof children === "string" ? children : undefined;
+                  return (
+                    <a
+                      href={href}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (!href) return;
+                        if (onPreviewRequest) {
+                          // SidePanel 우선 — 사용자가 거기서 "외부 열기" 버튼으로 dispatch 가능
+                          onPreviewRequest(href, label);
+                        } else {
+                          open(href).catch(console.error);
+                        }
+                      }}
+                      className="md-link"
+                      title="클릭 = 사이드 패널에서 미리보기"
+                    >
+                      {children}
+                    </a>
+                  );
+                },
                 // 코드 블록 스타일링
                 code: ({ className, children, ...props }) => {
                   const isInline = !className;

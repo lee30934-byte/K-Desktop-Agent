@@ -4,16 +4,18 @@
 
 .app {
   display: grid;
-  /* Phase 38 (v0.5.26) — sidebar 폭 변수화. K 가 우측 가장자리 drag handle 로 조절 */
-  grid-template-columns: var(--sidebar-width, 260px) 1fr;
+  /* Phase 44 (v0.5.32) — 우측 SidePanel 영역 추가. closed 면 width 0.
+     Phase 38: sidebar 폭 변수. */
+  grid-template-columns: var(--sidebar-width, 260px) 1fr var(--side-panel-width, 0px);
   grid-template-rows: 1fr auto;
   grid-template-areas:
-    "sidebar main"
-    "sidebar metrics";
+    "sidebar main   side-panel"
+    "sidebar metrics side-panel";
   height: 100vh;
   gap: var(--space-md);
   padding: var(--space-md);
   background-color: var(--bg-1);
+  transition: grid-template-columns 0.2s ease;
 }
 
 /* ─── 사이드바 ──────────────────────────────────────── */
@@ -4184,6 +4186,259 @@
 .folder-children > .folder-block::before,
 .folder-children > .conv-item::before {
   z-index: 2;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Phase 44 (v0.5.32) — SidePanel: 대화 안 link/file → 우측 미리보기
+   ════════════════════════════════════════════════════════════════ */
+
+.side-panel {
+  grid-area: side-panel;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* 우측 가장자리 toggle (closed 상태) — 작은 ⟨ 버튼 */
+.side-panel-toggle-closed {
+  position: fixed;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 60px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px 0 0 4px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+.side-panel-toggle-closed:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+
+/* 좌측 가장자리 폭 조절 grip */
+.side-panel-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: ew-resize;
+  background: transparent;
+  transition: background 0.15s;
+}
+.side-panel-resizer:hover,
+.side-panel-resizer.dragging {
+  background: var(--accent);
+}
+
+.side-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.side-panel-header-actions {
+  display: flex;
+  gap: 4px;
+}
+.side-panel-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  width: 28px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+.side-panel-btn:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.side-panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-height: 0;
+}
+
+.side-panel-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 32px 16px;
+}
+.empty-icon {
+  font-size: 32px;
+  opacity: 0.5;
+}
+.empty-text p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.side-panel-item-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: var(--space-sm, 8px);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.side-panel-filename {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 500;
+  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-clamp: 2;
+}
+.side-panel-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.side-panel-action-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.side-panel-action-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.side-panel-action-btn.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.side-panel-action-btn.primary:hover {
+  background: rgba(79, 232, 225, 0.12);
+}
+.side-panel-action-btn.close:hover {
+  border-color: #ff7c7c;
+  color: #ff7c7c;
+  background: rgba(255, 80, 80, 0.08);
+}
+
+.side-panel-preview {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  overflow: hidden;
+  min-height: 0;
+}
+.side-panel-loading {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  padding: 32px;
+}
+.side-panel-error {
+  width: 100%;
+  padding: 12px;
+  background: rgba(255, 80, 80, 0.08);
+  border: 1px solid rgba(255, 80, 80, 0.3);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.side-panel-error .mono {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  word-break: break-all;
+}
+.side-panel-image,
+.side-panel-video {
+  max-width: 100%;
+  max-height: 70vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #000;
+}
+.side-panel-audio {
+  width: 100%;
+}
+.side-panel-pdf {
+  width: 100%;
+  height: 70vh;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: #fff;
+}
+.side-panel-text {
+  width: 100%;
+  max-height: 70vh;
+  overflow: auto;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 12px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+}
+.side-panel-url-card {
+  width: 100%;
+  padding: 16px;
+  background: rgba(79, 232, 225, 0.06);
+  border: 1px solid rgba(79, 232, 225, 0.25);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.side-panel-url-card p {
+  margin: 0;
+  line-height: 1.5;
 }
 /* 중첩 폴더 children — 부모 들여쓰기 패턴 유지 */
 .folder-children .folder-children {
