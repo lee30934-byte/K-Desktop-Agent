@@ -4157,15 +4157,33 @@
   height: 1.5px;
   background: rgba(79, 232, 225, 0.55);
 }
-/* 마지막 자식 └ 효과 — vertical line 의 아래 부분 mask */
-.folder-children > :last-child::after {
+/* Phase 43 (v0.5.31): 마지막 자식 └ 효과 정밀화 — mask top 을 connector top 과 정확히 맞춤.
+   K 보고: 마지막 자식 아래 vertical line 이 살짝 이어져 보임. mask top 14px 가 connector top
+   (folder 12 / conv 18) 보다 위/아래에 어긋나 있었음 → connector 가로선과 정확히 만나게 분기. */
+.folder-children > .folder-block:last-child::after {
   content: "";
   position: absolute;
   left: -1.5px;
-  top: 14px;
+  top: 12px;          /* folder-row connector top 과 일치 */
   bottom: 0;
   width: 3px;
   background: var(--bg-2);
+  z-index: 1;          /* connector(::before) 보다 아래여야 가로선이 그려짐. ::before 기본 0 → mask 1, connector ::before 도 z-index 박음 */
+}
+.folder-children > .conv-item:last-child::after {
+  content: "";
+  position: absolute;
+  left: -1.5px;
+  top: 18px;          /* conv-item connector top 과 일치 */
+  bottom: 0;
+  width: 3px;
+  background: var(--bg-2);
+  z-index: 1;
+}
+/* connector ::before 들이 mask 위에 그려지도록 z-index 명시 */
+.folder-children > .folder-block::before,
+.folder-children > .conv-item::before {
+  z-index: 2;
 }
 /* 중첩 폴더 children — 부모 들여쓰기 패턴 유지 */
 .folder-children .folder-children {
