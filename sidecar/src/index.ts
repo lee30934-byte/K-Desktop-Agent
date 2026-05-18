@@ -1902,8 +1902,11 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             const u = event.usage ?? {};
             const inp = (u.input_tokens ?? 0) - (u.cached_input_tokens ?? 0);
             const cr = u.cached_input_tokens ?? 0;
-            maxTurnInputTokens = Math.max(0, inp);
-            maxTurnCacheRead = cr;
+            // Phase 53 (v0.5.41): max 누적 — Phase 52 에서 token_count event 가 sub-iteration
+            // 누적치 (70K+ 등) 박았는데, turn.completed 의 u.input_tokens 가 마지막 model call
+            // 의 짧은 값 (30K 등) 일 수 있어 그대로 = 로 박으면 peak 가 손실됨. Math.max 로 묶음.
+            maxTurnInputTokens = Math.max(maxTurnInputTokens, Math.max(0, inp));
+            maxTurnCacheRead = Math.max(maxTurnCacheRead, cr);
             // Phase 28 (v0.5.16): Codex 가 가끔 input_tokens 를 비현실적으로 크게 (3M+) 보고함 —
             // tool 결과 (cc_screenshot 의 base64 이미지 등) 가 누적된 값. 모델 context window
             // 넘어 박히면 1737% 같은 nonsense % 가 UI 에 표시됨. 모델 max (200K, 1M 등) 로 cap.
@@ -1916,7 +1919,12 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                 `Codex input_tokens=${codexCtxRaw} 비현실적 — ${CODEX_CTX_HARD_CAP} 으로 cap (tool 결과 누적 부풀음)`,
               );
             }
-            maxTurnContextTokens = Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP);
+            // Phase 53 (v0.5.41): token_count 누적치 (sub-iteration max) 와 turn.completed 의
+            // 최종 보고 둘 중 더 큰 값 사용. 종전 = (assignment) 라 70K → 30K 로 덮어쓰는 회귀 케이스.
+            maxTurnContextTokens = Math.max(
+              maxTurnContextTokens,
+              Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP),
+            );
             // 마지막 안전망 — 누적 텍스트가 있으면 한 번 더 emit (Claude 와 동일 정책).
             if (currentText) {
               emit({ type: "assistant_delta", id: msg.id, text: currentText });
