@@ -7,6 +7,8 @@ interface ComposerProps {
   isStreaming: boolean;
   onSubmit: (text: string, files?: FileAttachment[]) => void;
   onInterrupt: () => void;
+  // Phase 46 (v0.5.34) — "모두 중단" 강한 stop (현재 turn + 큐 + 자동 갱신 abort)
+  onHardStop?: () => void;
   placeholder?: string;
   // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
   queuedSend?: { text: string; fileCount: number; queuedAt: number } | null;
@@ -44,6 +46,7 @@ export default function Composer({
   isStreaming,
   onSubmit,
   onInterrupt,
+  onHardStop,
   placeholder = "메시지를 입력하세요. Enter로 전송, Shift+Enter로 줄바꿈.",
   queuedSend,
   onCancelQueuedSend,
@@ -466,14 +469,27 @@ export default function Composer({
         />
 
         {isStreaming ? (
-          <button
-            type="button"
-            onClick={onInterrupt}
-            className="composer-btn composer-btn-stop"
-          >
-            <span className="stop-icon">■</span>
-            STOP
-          </button>
+          <div className="composer-stop-group">
+            <button
+              type="button"
+              onClick={onInterrupt}
+              className="composer-btn composer-btn-stop"
+              title="현재 진행 중인 메시지만 멈춤 (예약된 메시지는 계속 전송됨)"
+            >
+              <span className="stop-icon">■</span>
+              STOP
+            </button>
+            {onHardStop && (
+              <button
+                type="button"
+                onClick={onHardStop}
+                className="composer-btn composer-btn-hardstop"
+                title="진행 중 + 예약 메시지 + 자동 세션 갱신까지 전부 정지"
+              >
+                🛑 모두
+              </button>
+            )}
+          </div>
         ) : (
           <button
             type="submit"

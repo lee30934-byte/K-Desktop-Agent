@@ -472,16 +472,19 @@ export default function App() {
   // Phase 35 (v0.5.23) — 모델별 정확한 context window lookup.
   // 종전 default 200K 가 GPT-5 family (실제 400K) 까지 200K 로 잡아 K 가 한 번 메시지 보내면
   // 100% 표시되는 가짜 만수 발생. 모델 ID 별로 정확한 spec 으로 분모 잡음.
-  const currentModelMaxTokens = useMemo(() => {
+  // Phase 46 (v0.5.34): 모델 ID 매칭 결과를 fallback 여부와 함께 노출 (tooltip 진단용).
+  // K 보고: 다른 PC 에서 2개 질문만에 100%+ → 모델 ID 매칭 실패해서 200K fallback 가능성
+  // 또는 큰 history/cache 누적의 정상 측정. tooltip 에 "fallback" 여부 표시해서 식별 가능하게.
+  const currentModelMaxTokensInfo = useMemo(() => {
     const id = (activeModelId || "").toLowerCase();
 
     // 1M 모델 — 명시 시그널
-    if (id.includes("1m")) return 1_000_000;
-    if (id.includes("nano") && id.includes("gpt-5")) return 1_000_000;
+    if (id.includes("1m")) return { tokens: 1_000_000, source: "1m 시그널" };
+    if (id.includes("nano") && id.includes("gpt-5")) return { tokens: 1_000_000, source: "gpt-5-nano" };
 
     // Claude (Max OAuth default = Claude Opus 4.7 1M context)
     if (activeProvider === "claude" && (!activeModelId || id === "default")) {
-      return 1_000_000;
+      return { tokens: 1_000_000, source: "Claude Max default" };
     }
 
     // OpenAI GPT-5 family / Codex — 공식 400K input window (2025 spec)
@@ -491,21 +494,22 @@ export default function App() {
       id.startsWith("codex") ||
       id.includes("codex-1")
     ) {
-      return 400_000;
+      return { tokens: 400_000, source: "GPT-5/codex 400K" };
     }
 
     // OpenAI O1 / O3 series — 200K
-    if (id.startsWith("o1") || id.startsWith("o3")) return 200_000;
+    if (id.startsWith("o1") || id.startsWith("o3")) return { tokens: 200_000, source: "O1/O3 200K" };
 
     // Claude 모델 (3.5, 3.7, 4 등) — 200K (1M 베타는 위에서 catch)
-    if (id.includes("claude")) return 200_000;
+    if (id.includes("claude")) return { tokens: 200_000, source: "Claude 200K" };
 
     // Gemini — 1M+ 지만 모델별 다름. 기본 1M
-    if (id.includes("gemini")) return 1_000_000;
+    if (id.includes("gemini")) return { tokens: 1_000_000, source: "Gemini 1M" };
 
-    // 안전 fallback
-    return 200_000;
+    // 안전 fallback ⚠ — K 의 다른 PC 가 여기 떨어지면 비정상 부풀음
+    return { tokens: 200_000, source: `⚠ 매칭 실패 (model="${activeModelId || "unset"}") → 200K fallback` };
   }, [activeProvider, activeModelId]);
+  const currentModelMaxTokens = currentModelMaxTokensInfo.tokens;
 
   // ─── Phase 15.5 — Codex usage polling ────────────────────
   // Phase 29 (v0.5.17): provider 무관 polling + fail 사유 UI 노출.
@@ -1309,6 +1313,40 @@ export default function App() {
       setIsStreaming(false);
       setCurrentTurnId(null);
     }
+  });
+
+  // Phase 46 (v0.5.34): "모두 중단" — 현재 turn 뿐 아니라 큐, 자동 세션 갱신, pending resume 까지 abort.
+  // K 보고: STOP 눌러도 큐가 다음 메시지 자동 전송해서 "계속 진행" 으로 보임 → 진짜 멈추는 버튼 추가.
+  const handleHardStop = useStableCallback(async () => {
+    logger.log("[HardStop] 모두 중단 — turn + 큐 + 자동갱신 abort");
+    // 1. 현재 turn interrupt
+    if (currentTurnId) {
+      try {
+        await invoke("interrupt", { id: currentTurnId });
+      } catch (err) {
+        console.error("[HardStop] interrupt failed:", err);
+      }
+    }
+    // 2. 큐 비우기 (다음 자동 전송 차단)
+    queuedSendRef.current = null;
+    setQueuedSend(null);
+    // 3. 자동 세션 갱신 차단
+    isRefreshingSessionRef.current = false;
+    // 4. pending resume (중단된 turn 같은 질문 재시도) 차단
+    setPendingResume(null);
+    // 5. UI 정리
+    setTimeout(() => {
+      setIsStreaming(false);
+      setCurrentTurnId(null);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.role === "assistant" && (m as any).streaming
+            ? { ...m, streaming: false }
+            : m
+        )
+      );
+    }, 300);
+    pushSystem("🛑 모두 중단 — 진행 중 작업 + 예약 메시지 + 자동 갱신 전부 정지.", "info");
   });
 
   const handleNewConversation = useStableCallback(async () => {
@@ -2162,6 +2200,7 @@ export default function App() {
         isStreaming={isStreaming}
         onSendMessage={handleSendMessage}
         onInterrupt={handleInterrupt}
+        onHardStop={handleHardStop}
         // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
         queuedSend={
           queuedSend
@@ -2178,6 +2217,7 @@ export default function App() {
         mcpConnected={mcpState.connected}
         currentModel={currentModelLabel}
         maxContextTokens={currentModelMaxTokens}
+        maxContextSource={currentModelMaxTokensInfo.source}
         estimatedContextTokens={estimatedContextTokens}
         onManualRefresh={triggerSessionRefresh}
         onCompressContext={handleCompressContext}

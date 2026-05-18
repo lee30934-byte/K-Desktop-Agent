@@ -10,6 +10,8 @@ interface MainChatProps {
   isStreaming: boolean;
   onSendMessage: (text: string, files?: FileAttachment[]) => void;
   onInterrupt: () => void;
+  // Phase 46 (v0.5.34) — "모두 중단" 강한 stop
+  onHardStop?: () => void;
   // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
   queuedSend?: { text: string; fileCount: number; queuedAt: number } | null;
   onCancelQueuedSend?: () => void;
@@ -65,6 +67,7 @@ function MainChat({
   isStreaming,
   onSendMessage,
   onInterrupt,
+  onHardStop,
   queuedSend,
   onCancelQueuedSend,
   onPreviewRequest,
@@ -234,6 +237,7 @@ function MainChat({
           isStreaming={isStreaming}
           onSubmit={onSendMessage}
           onInterrupt={onInterrupt}
+          onHardStop={onHardStop}
           queuedSend={queuedSend}
           onCancelQueuedSend={onCancelQueuedSend}
         />

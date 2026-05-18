@@ -19,6 +19,10 @@ import {
   type WriteStream,
 } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+// Phase 46 (v0.5.34): Windows 에서 process tree (손자 포함) 모두 죽이기 위해 tree-kill 도입.
+// node 의 child.kill 은 Windows 에서 손자 process 안 죽임 — Anthropic SDK / MCP 서버 spawn 한
+// 자손이 STOP 후에도 살아있어 K 가 "안 멈춤" 으로 인식.
+import treeKill from "tree-kill";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -2397,12 +2401,34 @@ rl.on("line", (line) => {
     case "interrupt": {
       const proc = activeTurns.get(msg.id);
       if (proc) {
-        proc.kill("SIGTERM");
+        // Phase 46 (v0.5.34): Windows 의 child.kill("SIGTERM") 은 손자 process 안 죽음.
+        // claude/codex CLI 가 또 다른 subprocess (MCP 서버 등) spawn 했으면 그게 계속 살아있음.
+        // tree-kill 로 process tree 전체 SIGKILL.
+        const pid = proc.pid;
+        if (pid) {
+          treeKill(pid, "SIGKILL", (err) => {
+            if (err) {
+              log("warn", `tree-kill 실패 PID=${pid}: ${err.message} — fallback proc.kill`);
+              try {
+                proc.kill("SIGKILL");
+              } catch (e2) {
+                log("warn", `proc.kill fallback 도 실패: ${e2}`);
+              }
+            } else {
+              log("info", `tree-kill 성공 PID=${pid} turn=${msg.id}`);
+            }
+          });
+        } else {
+          proc.kill("SIGKILL");
+        }
+        // activeTurns 에서 즉시 제거 — 다음 interrupt 가 같은 PID 재공격 안 함
+        activeTurns.delete(msg.id);
         log("info", `interrupted CLI turn ${msg.id}`);
       }
       const controller = activeRestTurns.get(msg.id);
       if (controller) {
         controller.abort();
+        activeRestTurns.delete(msg.id);
         log("info", `interrupted REST turn ${msg.id}`);
       }
       break;

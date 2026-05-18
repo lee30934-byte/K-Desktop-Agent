@@ -7,6 +7,8 @@ interface MetricsPanelProps {
   mcpConnected: boolean;
   currentModel?: string;
   maxContextTokens?: number;
+  // Phase 46 (v0.5.34) — 분모 source 설명 ("GPT-5/codex 400K" 또는 "⚠ 매칭 실패 → 200K fallback")
+  maxContextSource?: string;
   /**
    * 메시지 배열 기반 컨텍스트 추정치 (App 의 estimateConvTokens 결과).
    * 자동 갱신 트리거와 같은 지표라 표시 % 와 트리거 % 가 일치한다.
@@ -38,6 +40,7 @@ function MetricsPanel({
   mcpConnected,
   currentModel = "Opus 5.7 · 1M",
   maxContextTokens = 200000,
+  maxContextSource,
   estimatedContextTokens,
   onManualRefresh,
   onCompressContext,
@@ -220,11 +223,26 @@ function MetricsPanel({
                 💡 실측({formatTokens(displayContext)}) 과 추정({formatTokens(estimatedContext)}) 갭 큼 — 누적 history 큰 대화일 가능성. 수치 자체는 모델이 보고한 정확치.
               </div>
             )}
-            {/* Phase 35 (v0.5.23) — 모델별 분모 출처 명시. K 가 200K vs 400K vs 1M 어느 분모로 계산되는지 즉시 식별 */}
+            {/* Phase 35 (v0.5.23) + Phase 46 (v0.5.34) — 모델별 분모 출처 + 매칭 source */}
             <div className="context-tooltip-row" style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }} title="분모는 모델 ID 매칭으로 추정. 실제 모델 한도와 다를 수 있음. GPT-5/codex=400K, Claude default=1M, gpt-5-nano=1M, 그 외=200K">
               <span>분모 출처</span>
               <span className="mono">{currentModel} → {formatTokens(maxContextTokens)}</span>
             </div>
+            {maxContextSource && (
+              <div
+                className="context-tooltip-row"
+                style={{
+                  fontSize: 10,
+                  opacity: maxContextSource.startsWith("⚠") ? 0.95 : 0.5,
+                  color: maxContextSource.startsWith("⚠") ? "var(--warn, #ffb74d)" : undefined,
+                  marginTop: 2,
+                }}
+                title={maxContextSource.startsWith("⚠") ? "모델 ID 매칭 실패 — Settings 에서 model 명시 권장. 200K fallback 이라 빠르게 100% 도달." : undefined}
+              >
+                <span>매칭</span>
+                <span className="mono" style={{ fontSize: 10 }}>{maxContextSource}</span>
+              </div>
+            )}
             {onCompressContext && contextUsage >= 50 && (
               <button
                 className="context-compress-btn"
