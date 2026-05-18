@@ -1649,11 +1649,12 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     ? `${msg.content}${attachmentsGuidance}`
     : msg.content;
   const memory = loadMemoryContext();
-  const promptWithHistory = buildPromptWithHistory(
-    baseContent,
-    msg.history,
-    memory.content,
-  );
+  // Phase 48 (v0.5.36): Codex resume 사용 시 prior_conversation 안 박음 — Codex 가 thread state
+  // 로 history 보유. 매 turn 마다 통째 재주입 시 context 폭발 (K 의 다른 PC root cause).
+  // resume 아닐 때만 history 박음.
+  const promptWithHistory = msg.agent_id
+    ? buildPromptWithHistory(baseContent, undefined, memory.content)
+    : buildPromptWithHistory(baseContent, msg.history, memory.content);
 
   // Codex CLI 인자 — `codex exec` 의 sub-form.
   // resume 은 별도 subcommand 라 case 분기로 처리.
@@ -1734,9 +1735,30 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       if (!line.trim()) continue;
       try {
         const event = JSON.parse(line);
+        // Phase 48 (v0.5.36): Codex CLI 버전별 event schema 가 달라서 thread_id 못 잡는 케이스가 있음.
+        // K 의 다른 PC 보고: agent_id NULL → resume 안 됨 → prior_conversation 매번 재주입 → context 폭발.
+        // 여러 키 폴백 + 모든 event 의 thread/session/conversation id 후보 적극 추출.
+        if (!sessionId) {
+          const candidate =
+            event.thread_id ??
+            event.session_id ??
+            event.conversation_id ??
+            event.threadId ??
+            event.sessionId ??
+            event.id ??
+            event.thread?.id ??
+            event.session?.id ??
+            event.conversation?.id;
+          if (typeof candidate === "string" && candidate.length > 8) {
+            sessionId = candidate;
+            logToFile("info", `Codex sessionId 추출 from type=${event.type} key=auto → ${sessionId}`);
+          }
+        }
         switch (event.type) {
-          case "thread.started": {
-            if (event.thread_id) sessionId = event.thread_id;
+          case "thread.started":
+          case "session.created":
+          case "conversation.started": {
+            if (!sessionId && event.thread_id) sessionId = event.thread_id;
             break;
           }
           case "turn.started": {
@@ -1865,8 +1887,16 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             });
             logToFile(
               "info",
-              `Codex turn end id=${msg.id} displayCtx=${maxTurnContextTokens} (input=${maxTurnInputTokens} cr=${maxTurnCacheRead} out=${u.output_tokens ?? 0})`,
+              `Codex turn end id=${msg.id} displayCtx=${maxTurnContextTokens} (input=${maxTurnInputTokens} cr=${maxTurnCacheRead} out=${u.output_tokens ?? 0}) sessionId=${sessionId ?? "NULL"}`,
             );
+            // Phase 48 (v0.5.36): sessionId 못 잡으면 resume 안 되고 매 turn 마다 prior_conversation 재주입 →
+            // context 폭발. 진단 path 명시 — 다음 turn 부터 어떻게 fix 할지 추적 가능.
+            if (!sessionId) {
+              logToFile(
+                "warn",
+                `⚠ Codex sessionId NULL — resume 불가. 다음 turn 도 매번 새 세션 + prior_conversation 통째 재주입됨. Codex CLI 버전이 thread_id event schema 안 보내는 경우. K 의 다른 PC root cause 후보.`,
+              );
+            }
             break;
           }
           case "error": {
@@ -1876,7 +1906,10 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             break;
           }
           default: {
-            logToFile("info", `Codex event: ${event.type}`);
+            // Phase 48: 모르는 event type 의 keys 도 sidecar.log 에 기록 — thread_id 가 어디
+            // 박혀있는지 K 의 다른 PC sidecar.log 에서 식별 가능.
+            const keys = Object.keys(event).slice(0, 8).join(",");
+            logToFile("info", `Codex event: ${event.type} (keys: ${keys})`);
           }
         }
       } catch (parseErr) {
