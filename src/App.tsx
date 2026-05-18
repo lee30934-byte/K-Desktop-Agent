@@ -1268,20 +1268,29 @@ export default function App() {
 
       // 이전 대화 컨텍스트 — user/assistant 메시지 최근 20개만 (tool 은 용량 문제로 제외)
       // 방금 추가한 userMsg 는 제외 (prompt 안 current_message 로 따로 감)
-      let history = messages
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .slice(-20)
-        .map((m) => ({ role: m.role, content: m.content }));
-
-      // 세션 갱신 후 요약이 있으면 히스토리 앞에 주입
+      // Phase 51 (v0.5.39): 세션 갱신 직후엔 기존 20 messages 를 박지 않고 짧은 handoff (summary)
+      // 만 박는다. 종전엔 summary + 최근 20 메시지를 함께 박아서 갱신해도 context 가 거의 안 줄어
+      // 두 turn 만에 또 90%+ 도달 → 갱신 loop. K 의 다른 PC 진단 ("새 thread + 짧은 handoff 만")
+      // 을 정확히 반영. tool history 는 어차피 sidecar 측에서 별도 path 라 영향 없음.
+      let history: Array<{ role: "user" | "assistant"; content: string }>;
       if (sessionSummary) {
+        // 갱신 직후 — handoff 만. 기존 20 messages 전부 버림.
         history = [
           { role: "user" as const, content: sessionSummary },
-          { role: "assistant" as const, content: "이전 대화 맥락을 확인했습니다. 이어서 도와드리겠습니다." },
-          ...history,
+          {
+            role: "assistant" as const,
+            content: "이전 대화 맥락을 확인했습니다. 이어서 도와드리겠습니다.",
+          },
         ];
-        // 요약은 한 번만 사용 후 초기화
         setSessionSummary(null);
+        logger.log(
+          "[Session] 갱신 직후 — handoff(summary)만 박음, 기존 20 messages 버림"
+        );
+      } else {
+        history = messages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .slice(-20)
+          .map((m) => ({ role: m.role, content: m.content }));
       }
 
       // 파일 첨부가 있으면 base64 데이터 포함

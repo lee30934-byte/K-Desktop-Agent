@@ -3493,6 +3493,12 @@
 
 /* Phase 37 (v0.5.25): 사이드바 K.AGENT 로고 가림 fix — top 전체폭 띠 → 우측 상단 카드 toast.
    닫기 ✕ 버튼 + localStorage dismiss 로 같은 버전 알림은 한 번만. */
+/* Phase 51 (v0.5.39) — root cause fix.
+   종전 background 가 var(--accent-primary)/--accent-secondary 를 참조했는데 그 두 변수는
+   index.css 에 정의 안 되어 있어 그라데이션이 transparent 로 fallback → 부모 검정 그대로 +
+   color: var(--bg-1) (=#0a0e18) 도 검정 → "검정 위 검정" 시인성 0.
+   고치는 path: KDA 의 실제 정의된 토큰 (--accent / --accent-dim / --bg-0) 으로 명시 + 글자색을
+   순수 검정-on-시안 으로 대비 보장. */
 .update-banner {
   position: fixed;
   top: 12px;
@@ -3504,10 +3510,11 @@
   gap: var(--space-sm, 8px);
   padding: var(--space-md) var(--space-lg);
   padding-right: 32px;
-  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary, var(--accent-primary)));
-  color: var(--bg-1);
+  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+  color: #0a0e18;
+  border: 1px solid var(--accent);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 6px 24px rgba(79, 232, 225, 0.35), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .update-close-btn {
@@ -3516,18 +3523,19 @@
   right: 8px;
   background: transparent;
   border: none;
-  color: var(--bg-1);
+  color: #0a0e18;
   font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
-  opacity: 0.7;
+  opacity: 0.75;
   transition: opacity 0.15s, background 0.15s;
   font-family: inherit;
 }
 .update-close-btn:hover {
   opacity: 1;
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.18);
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -3837,11 +3845,14 @@
 
 .update-text strong {
   font-size: 14px;
+  font-weight: 700;
+  color: #0a0e18;
 }
 
 .update-notes {
   font-size: 12px;
-  opacity: 0.9;
+  color: #0a0e18;
+  opacity: 0.88;
   margin-top: 2px;
 }
 
@@ -3860,24 +3871,31 @@
   transition: var(--transition-ui-fast);
 }
 
+/* Phase 51: var(--accent-primary) 가 undefined 라 글자색이 transparent → "검정 배경에 검정"
+   현상의 한 축이었음. 명시적 색으로 fix. primary 는 어두운 배경 + 시안 글자, secondary 는
+   투명 + 검정 글자 + 검정 border (배너의 시안 배경 위에서 가독성 확보). */
 .update-btn.primary {
-  background: var(--bg-1);
-  color: var(--accent-primary);
+  background: #0a0e18;
+  color: var(--accent);
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  font-weight: 700;
 }
 
 .update-btn.primary:hover {
-  background: var(--bg-2);
+  background: #131826;
   transform: scale(1.02);
 }
 
 .update-btn.secondary {
-  background: transparent;
-  color: var(--bg-1);
-  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(0, 0, 0, 0.18);
+  color: #0a0e18;
+  border: 1px solid rgba(0, 0, 0, 0.45);
+  font-weight: 600;
 }
 
 .update-btn.secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.32);
+  color: #0a0e18;
 }
 
 .update-progress {
@@ -3897,7 +3915,7 @@
 
 .progress-fill {
   height: 100%;
-  background: var(--bg-1);
+  background: #0a0e18;
   transition: width 0.3s ease;
 }
 
