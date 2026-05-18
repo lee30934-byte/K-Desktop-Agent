@@ -91,6 +91,16 @@ export type SidecarEvent =
       cancel_label: string;
     }
   | {
+      // Phase 52 (v0.5.40) — Codex 런타임이 token_count event 의 model_context_window 로
+      // 실제 model 한도를 보고함. K-Desktop-Agent 의 hardcode lookup (gpt-5* → 400K) 과 어긋나는
+      // 케이스 (예: gpt-5.5 실제 보고 258400) 가 있어 % 가 모델 실제 한도와 안 맞음. frontend 가
+      // 이걸 받으면 currentModelMaxTokens 를 동적으로 override.
+      type: "model_context_window";
+      provider: "claude" | "codex" | string;
+      contextWindow: number;
+      source: string;            // "codex token_count" / "claude rate_limit" 등 — UI tooltip 에 표시
+    }
+  | {
       // Phase 50 — 모델이 AskUserQuestion tool 호출 시 sidecar 가 가로채서 KDA UI 로 라우팅.
       // questions[].options 가 라디오/방향키 선택 가능한 옵션 리스트로 띄워짐.
       type: "ask_user_question";

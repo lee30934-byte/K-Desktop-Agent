@@ -482,13 +482,34 @@ export default function App() {
   // - Claude Max default(Opus 5.7) : 1M
   // - Anthropic claude-* : 200K (Sonnet 4.5 등) — sonnet-4-5 도 1M 베타가 있으나 일반은 200K
   // - 기타 (OpenAI / Gemini / OpenRouter) : 200K 기본 (모델별 정확값은 Phase 13 이후)
+  // Phase 52 (v0.5.40) — Codex 런타임이 token_count event 에 model_context_window 같이 보고함.
+  // K 의 다른 PC 진단: gpt-5.5 의 실제 model_context_window=258400 인데 KDA hardcode 는 400K →
+  // UI 가 76.6% 표시할 때 실제 model 은 이미 118% (overflow). 런타임 보고를 받으면 hardcode 보다
+  // 우선해서 분모로 씀. activeConversationId / activeModelId 바뀌면 reset (다른 모델일 수 있음).
+  const [runtimeModelMaxTokens, setRuntimeModelMaxTokens] = useState<
+    { tokens: number; source: string; provider: string } | null
+  >(null);
+  useEffect(() => {
+    // 대화 또는 모델 바뀌면 런타임 보고치 무효 — 새 turn 시작 후 sidecar 가 다시 보고하면 갱신됨
+    setRuntimeModelMaxTokens(null);
+  }, [activeConversationId, activeModelId, activeProvider]);
+
   // Phase 35 (v0.5.23) — 모델별 정확한 context window lookup.
   // 종전 default 200K 가 GPT-5 family (실제 400K) 까지 200K 로 잡아 K 가 한 번 메시지 보내면
   // 100% 표시되는 가짜 만수 발생. 모델 ID 별로 정확한 spec 으로 분모 잡음.
   // Phase 46 (v0.5.34): 모델 ID 매칭 결과를 fallback 여부와 함께 노출 (tooltip 진단용).
   // K 보고: 다른 PC 에서 2개 질문만에 100%+ → 모델 ID 매칭 실패해서 200K fallback 가능성
   // 또는 큰 history/cache 누적의 정상 측정. tooltip 에 "fallback" 여부 표시해서 식별 가능하게.
+  // Phase 52 (v0.5.40): runtimeModelMaxTokens 있으면 hardcode 보다 우선.
   const currentModelMaxTokensInfo = useMemo(() => {
+    // Phase 52 — 런타임 보고 우선 (Codex 의 token_count 등). hardcode 와 unmatch 시 진단용으로
+    // source 에 두 값 같이 노출.
+    if (runtimeModelMaxTokens && runtimeModelMaxTokens.tokens > 0) {
+      return {
+        tokens: runtimeModelMaxTokens.tokens,
+        source: `${runtimeModelMaxTokens.source} → ${(runtimeModelMaxTokens.tokens / 1000).toFixed(1)}K`,
+      };
+    }
     const id = (activeModelId || "").toLowerCase();
 
     // 1M 모델 — 명시 시그널
@@ -521,7 +542,7 @@ export default function App() {
 
     // 안전 fallback ⚠ — K 의 다른 PC 가 여기 떨어지면 비정상 부풀음
     return { tokens: 200_000, source: `⚠ 매칭 실패 (model="${activeModelId || "unset"}") → 200K fallback` };
-  }, [activeProvider, activeModelId]);
+  }, [activeProvider, activeModelId, runtimeModelMaxTokens]);
   const currentModelMaxTokens = currentModelMaxTokensInfo.tokens;
 
   // ─── Phase 15.5 — Codex usage polling ────────────────────
@@ -1019,6 +1040,23 @@ export default function App() {
           cancelLabel: ev.cancel_label,
         });
         // 응답은 handleElicitationResponse에서 처리됨
+        break;
+      }
+
+      case "model_context_window": {
+        // Phase 52 (v0.5.40) — Codex 런타임의 model_context_window 실제 보고치.
+        // hardcode lookup 보다 우선. K 의 다른 PC: gpt-5.5 → 실제 258400 vs hardcode 400000.
+        const evAny = ev as any;
+        if (typeof evAny.contextWindow === "number" && evAny.contextWindow > 1000) {
+          setRuntimeModelMaxTokens({
+            tokens: evAny.contextWindow,
+            source: evAny.source || `runtime ${evAny.provider}`,
+            provider: evAny.provider || "unknown",
+          });
+          logger.log(
+            `[Context] 런타임 보고 model_context_window=${evAny.contextWindow} (${evAny.source}) — hardcode override`,
+          );
+        }
         break;
       }
 

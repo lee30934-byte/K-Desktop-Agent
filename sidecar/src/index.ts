@@ -1789,6 +1789,42 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             // 신호용 — 현재는 별도 처리 없음
             break;
           }
+          case "token_count": {
+            // Phase 52 (v0.5.40) — Codex 런타임의 정확한 model_context_window 보고.
+            // K 의 다른 PC 진단: gpt-5.5 의 실제 model_context_window=258400 인데 KDA hardcode 는
+            // 400K → UI 가 76.6% 표시할 때 실제 model 은 이미 118% 넘김 (overflow 인데 "괜찮은 척"
+            // 표시되는 케이스). frontend 에 동적 분모로 override.
+            const ctxWin =
+              event.model_context_window ??
+              event.context_window ??
+              event.turn_context?.model_context_window;
+            if (typeof ctxWin === "number" && ctxWin > 1000) {
+              emit({
+                type: "model_context_window",
+                provider: "codex",
+                contextWindow: ctxWin,
+                source: "codex token_count",
+              } as any);
+              logToFile(
+                "info",
+                `Codex model_context_window = ${ctxWin} (last_token_usage=${JSON.stringify(event.last_token_usage ?? event.token_usage ?? {})})`,
+              );
+            }
+            // last_token_usage 가 turn 진행 중 model 이 실제 본 입력 크기 — turn.completed 보다
+            // 먼저 도착하는 케이스가 있어 max 갱신해 둠 (sub-iteration 누적 추적).
+            const ltu = event.last_token_usage ?? event.token_usage;
+            if (ltu && typeof ltu === "object") {
+              const cached = ltu.cached_input_tokens ?? 0;
+              const totalInput = ltu.input_tokens ?? 0;
+              const newInput = Math.max(0, totalInput - cached);
+              if (totalInput > maxTurnContextTokens) {
+                maxTurnContextTokens = totalInput;
+                maxTurnInputTokens = newInput;
+                maxTurnCacheRead = cached;
+              }
+            }
+            break;
+          }
           case "item.delta": {
             // 스트리밍 델타. agent_message 의 text 누적 (Claude 의 stream_event/text_delta 와 동일).
             const it = event.item;
