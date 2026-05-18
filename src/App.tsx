@@ -927,15 +927,20 @@ export default function App() {
           // 임계치 체크 — Phase 12 부터는 maxTurnContextTokens (sidecar message_start max)
           // 가 있으면 정확한 측정치라 그걸 우선 사용. 없으면 estimateConvTokens fallback.
           // 분모는 모델별 (Claude default = 1M, 그 외 = 200K) 동적 적용.
+          // Phase 47 (v0.5.35): measured 가 max 의 1.3배 넘으면 비정상 (sub-agent 누적 등) → estimate 우선.
           const estimated = estimateConvTokens(messagesRef.current);
           const measured = maxTurnCtxTokens || updatedMetrics.maxTurnContextTokens || 0;
-          const effectiveTokens = measured > 0
+          const ctxDenominator = currentModelMaxTokens;
+          const measuredOverflow = measured > ctxDenominator * 1.3;
+          const effectiveTokens = measured > 0 && !measuredOverflow
             ? measured
             : Math.max(0, estimated - refreshBaselineRef.current);
-          const ctxDenominator = currentModelMaxTokens;
+          const usageSource = measured > 0 && !measuredOverflow
+            ? "maxTurn"
+            : measuredOverflow ? "estimate(measured-overflow)" : "estimate";
           const contextUsage = effectiveTokens / ctxDenominator;
           if (contextUsage >= CONTEXT_THRESHOLD && !isRefreshingSessionRef.current) {
-            logger.log(`[Session] 컨텍스트 ${(contextUsage * 100).toFixed(1)}% (${effectiveTokens}/${ctxDenominator}, source=${measured > 0 ? "maxTurn" : "estimate"}) 도달 - 세션 자동 갱신 시작`);
+            logger.log(`[Session] 컨텍스트 ${(contextUsage * 100).toFixed(1)}% (${effectiveTokens}/${ctxDenominator}, source=${usageSource}${measuredOverflow ? `, measured=${measured} OVERFLOW` : ""}) 도달 - 세션 자동 갱신 시작`);
             isRefreshingSessionRef.current = true;
             // 비동기로 세션 갱신 실행
             setTimeout(() => triggerSessionRefresh(), 100);
@@ -1893,15 +1898,36 @@ export default function App() {
       return;
     }
 
-    // 갱신 시점의 실제 컨텍스트 % + source 캡처 — toast 에 정확히 표시
+    // 갱신 시점의 실제 컨텍스트 % + source 캡처 — toast 에 정확히 표시.
+    // Phase 47 (v0.5.35): measured 가 모델 max 의 1.3배 넘으면 비정상 측정 → estimate 로 fallback.
+    // (sidecar 의 message_start usage 가 sub-agent 누적 등으로 부풀음. K 가 본 "102%" 같은 케이스.)
     const refreshContextSnapshot = (() => {
-      const measured = metrics.maxTurnContextTokens ?? 0;
+      const measuredRaw = metrics.maxTurnContextTokens ?? 0;
       const estimated = estimateConvTokens(messagesRef.current);
-      const effective = measured > 0 ? measured : Math.max(0, estimated - refreshBaselineRef.current);
-      const pct = currentModelMaxTokens > 0 ? (effective / currentModelMaxTokens) * 100 : 0;
+      const cap = currentModelMaxTokens * 1.3;
+      let effective: number;
+      let source: string;
+      if (measuredRaw > 0 && measuredRaw <= cap) {
+        effective = measuredRaw;
+        source = "실측";
+      } else if (measuredRaw > cap) {
+        // 비정상 측정 — estimate 로 fallback + warn
+        effective = Math.max(0, estimated - refreshBaselineRef.current);
+        source = `⚠ 실측 ${(measuredRaw / 1000).toFixed(0)}K > max 130% → 추정`;
+        logger.warn(`[Session] measured ${measuredRaw} > ${cap} (max 1.3x) — estimate fallback. estimated=${estimated}`);
+      } else {
+        effective = Math.max(0, estimated - refreshBaselineRef.current);
+        source = "추정";
+      }
+      const rawPct = currentModelMaxTokens > 0 ? (effective / currentModelMaxTokens) * 100 : 0;
+      // toast 메시지 % 는 100 cap (UI 의 contextOverflowed 와 동일 정책)
+      const displayPct = Math.min(Math.round(rawPct), 100);
+      const overflowed = rawPct > 100;
       return {
-        pct: Math.round(pct),
-        source: measured > 0 ? "실측" : "추정",
+        pct: displayPct,
+        rawPct: Math.round(rawPct),
+        overflowed,
+        source,
         tokens: effective,
         max: currentModelMaxTokens,
       };
@@ -1940,11 +1966,13 @@ export default function App() {
       setSessionRefreshToast(true);
       setTimeout(() => setSessionRefreshToast(false), 4000);
 
-      // 5. 시스템 메시지로 알림 — Phase 44: 실제 % + source 명시 (toast 도 동일 메시지 base 로)
-      const pctMsg = `${refreshContextSnapshot.pct}% (${refreshContextSnapshot.source})`;
+      // 5. 시스템 메시지로 알림 — Phase 47: overflow 케이스 명확히 표기 + cap 100%
+      const pctMsg = refreshContextSnapshot.overflowed
+        ? `100%+ ⚠ (실측 ${refreshContextSnapshot.rawPct}%, ${refreshContextSnapshot.source})`
+        : `${refreshContextSnapshot.pct}% (${refreshContextSnapshot.source})`;
       pushSystem(
         `🔄 세션 갱신됨 (${pctMsg} 도달). 대화 맥락 유지됩니다.`,
-        "info"
+        refreshContextSnapshot.overflowed ? "warn" : "info"
       );
 
       logger.log("[Session] 세션 갱신 완료");
