@@ -91,6 +91,22 @@ export type SidecarEvent =
       cancel_label: string;
     }
   | {
+      // Phase 50 — 모델이 AskUserQuestion tool 호출 시 sidecar 가 가로채서 KDA UI 로 라우팅.
+      // questions[].options 가 라디오/방향키 선택 가능한 옵션 리스트로 띄워짐.
+      type: "ask_user_question";
+      id: string;            // turn id (msg.id)
+      tool_use_id: string;   // Anthropic 의 tool_use.id (재추적용)
+      questions: Array<{
+        question: string;
+        header: string;
+        multiSelect?: boolean;
+        options: Array<{
+          label: string;
+          description: string;
+        }>;
+      }>;
+    }
+  | {
       // Phase 15.5 — provider 의 5h/주간 한도 정보 (rate_limit_event 또는 polling 결과)
       type: "rate_limit";
       provider: "anthropic" | "codex";

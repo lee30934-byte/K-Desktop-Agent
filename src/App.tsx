@@ -268,6 +268,19 @@ export default function App() {
   const [dbReady, setDbReady] = useState(false);
   const [elicitationRequest, setElicitationRequest] = useState<ElicitationRequest | null>(null);
   const elicitationResolveRef = useRef<((response: ElicitationResponse) => void) | null>(null);
+  // Phase 50 — ask_user_question 추적용. 응답 시 어떤 turn 의 질문이었는지 기록 + multi-question
+  // 케이스에 큐 박힘. 첫 질문만 dialog 에 띄우고 나머지는 K 답 시 자동 다음 turn 의 prefix 로.
+  const askUserQuestionStateRef = useRef<{
+    turnId: string;
+    toolUseId: string;
+    questions: Array<{
+      question: string;
+      header: string;
+      options: Array<{ label: string; description: string }>;
+    }>;
+    currentIndex: number;
+    collectedAnswers: Array<{ header: string; question: string; answer: string }>;
+  } | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // ─── Phase 15.5 — Rate Limit Info ────────────────────────
@@ -1006,6 +1019,40 @@ export default function App() {
           cancelLabel: ev.cancel_label,
         });
         // 응답은 handleElicitationResponse에서 처리됨
+        break;
+      }
+
+      case "ask_user_question": {
+        // Phase 50 — 모델이 AskUserQuestion tool 호출. sidecar 가 questions[] 를 그대로 전달.
+        // 첫 질문을 ElicitationDialog 로 띄우고, K 가 선택하면 다음 질문 또는 다음 turn 의
+        // user message prefix 로 박음. 답 미선택 시 (cancel) 첫 옵션 자동 선택 + 다음 메시지에
+        // prefix 박힘 — 작업이 멈추지 않게.
+        const evAny = ev as any;
+        if (!evAny.questions || evAny.questions.length === 0) break;
+
+        askUserQuestionStateRef.current = {
+          turnId: evAny.id,
+          toolUseId: evAny.tool_use_id,
+          questions: evAny.questions,
+          currentIndex: 0,
+          collectedAnswers: [],
+        };
+
+        const firstQ = evAny.questions[0];
+        setElicitationRequest({
+          id: `ask-${evAny.id}-0`,
+          type: "choice",
+          title: firstQ.header || "선택",
+          message: firstQ.question,
+          severity: "info",
+          confirmLabel: evAny.questions.length > 1 ? "다음 (1/" + evAny.questions.length + ")" : "선택",
+          cancelLabel: "직접 답 입력",
+          options: (firstQ.options || []).map((opt: any, idx: number) => ({
+            id: String(idx),
+            label: `${idx + 1}. ${opt.label}`,
+            description: opt.description,
+          })),
+        });
         break;
       }
 
@@ -2120,9 +2167,85 @@ export default function App() {
   });
 
   const handleElicitationResponse = useStableCallback(async (response: ElicitationResponse) => {
+    // Phase 50 — ask_user_question 답 흐름 분기. dialog id 가 "ask-..." prefix 면 모델 질문.
+    const askState = askUserQuestionStateRef.current;
+    const isAskUserQ =
+      askState !== null && typeof response.id === "string" && response.id.startsWith(`ask-${askState.turnId}-`);
+
     setElicitationRequest(null);
 
-    // Sidecar에 응답 전송 (MCP 도구 확인 요청에 대한 응답)
+    if (isAskUserQ && askState) {
+      const currentQ = askState.questions[askState.currentIndex];
+      let answerLabel: string;
+
+      if (response.confirmed && response.selectedOption !== undefined) {
+        // 옵션 id 는 "0", "1", ... — currentQ.options 의 index
+        const idx = parseInt(response.selectedOption, 10);
+        const opt = currentQ.options[idx];
+        answerLabel = opt ? opt.label : `(옵션 ${response.selectedOption})`;
+      } else {
+        // cancel = K 가 자유 입력으로 직접 답함. 빈 답으로 기록 + 다음 메시지에 prefix 안 박음.
+        askUserQuestionStateRef.current = null;
+        pushSystem(`💬 모델 질문 "${currentQ.header}" — 직접 답을 작성해 보내세요`, "info");
+        if (elicitationResolveRef.current) {
+          elicitationResolveRef.current(response);
+          elicitationResolveRef.current = null;
+        }
+        return;
+      }
+
+      askState.collectedAnswers.push({
+        header: currentQ.header,
+        question: currentQ.question,
+        answer: answerLabel,
+      });
+
+      // 다음 질문 있으면 dialog 다시 띄움
+      const nextIdx = askState.currentIndex + 1;
+      if (nextIdx < askState.questions.length) {
+        askState.currentIndex = nextIdx;
+        const nextQ = askState.questions[nextIdx];
+        // 다음 dialog 띄우는 건 mount cycle 한 번 돌고 — 50ms 후
+        setTimeout(() => {
+          setElicitationRequest({
+            id: `ask-${askState.turnId}-${nextIdx}`,
+            type: "choice",
+            title: nextQ.header || "선택",
+            message: nextQ.question,
+            severity: "info",
+            confirmLabel:
+              nextIdx + 1 < askState.questions.length
+                ? `다음 (${nextIdx + 1}/${askState.questions.length})`
+                : "완료",
+            cancelLabel: "직접 답 입력",
+            options: nextQ.options.map((opt, optIdx) => ({
+              id: String(optIdx),
+              label: `${optIdx + 1}. ${opt.label}`,
+              description: opt.description,
+            })),
+          });
+        }, 50);
+        return;
+      }
+
+      // 모든 질문 답함 — 다음 user message 로 박아 전송
+      const summary = askState.collectedAnswers
+        .map((a) => `• ${a.header}: ${a.answer}`)
+        .join("\n");
+      const replyText = `[모델 질문 답변]\n${summary}`;
+      askUserQuestionStateRef.current = null;
+      pushSystem(`📨 답변 ${askState.collectedAnswers.length}개 전송: ${askState.collectedAnswers.map((a) => a.answer).join(" / ")}`, "info");
+      // 즉시 새 turn 으로 보냄 — Claude 가 답 받고 continuation
+      handleSendMessage(replyText, []);
+
+      if (elicitationResolveRef.current) {
+        elicitationResolveRef.current(response);
+        elicitationResolveRef.current = null;
+      }
+      return;
+    }
+
+    // 기존 path — sidecar MCP 도구 확인
     try {
       await invoke("elicitation_response", {
         id: response.id,

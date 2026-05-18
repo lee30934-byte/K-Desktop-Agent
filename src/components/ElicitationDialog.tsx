@@ -32,14 +32,54 @@ export default function ElicitationDialog({
     }
   }, [request]);
 
-  // 키보드 이벤트
+  // 키보드 이벤트 — Phase 50: choice 타입에서 ↑↓ 방향키 + 1~9 숫자 단축키 추가.
+  // 단순 confirm/preview 는 종전 그대로 Enter/ESC 만.
   useEffect(() => {
     if (!request) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         handleCancel();
-      } else if (e.key === "Enter" && request.type !== "input") {
+        return;
+      }
+
+      if (request.type === "choice" && request.options && request.options.length > 0) {
+        const options = request.options;
+
+        // ↑↓ 방향키 — 라디오 선택 이동 (wrap-around)
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          const currentIdx = options.findIndex((o) => o.id === selectedOption);
+          let nextIdx: number;
+          if (e.key === "ArrowDown") {
+            nextIdx = currentIdx < 0 ? 0 : (currentIdx + 1) % options.length;
+          } else {
+            nextIdx = currentIdx <= 0 ? options.length - 1 : currentIdx - 1;
+          }
+          setSelectedOption(options[nextIdx].id);
+          return;
+        }
+
+        // 1~9 숫자 단축키 — 해당 옵션 즉시 선택 + confirm
+        if (/^[1-9]$/.test(e.key)) {
+          const idx = parseInt(e.key, 10) - 1;
+          if (idx < options.length) {
+            e.preventDefault();
+            const targetId = options[idx].id;
+            setSelectedOption(targetId);
+            // 즉시 confirm — K 가 빠르게 답 가능. handleConfirm 은 selectedOption state 의
+            // 다음 cycle 을 봐야 해서 targetId 를 직접 박은 임시 객체로 호출.
+            onResponse({
+              id: request.id,
+              confirmed: true,
+              selectedOption: targetId,
+            });
+            return;
+          }
+        }
+      }
+
+      if (e.key === "Enter" && request.type !== "input") {
         handleConfirm();
       }
     };
@@ -190,7 +230,9 @@ export default function ElicitationDialog({
 
         {/* 키보드 힌트 */}
         <div className="elicitation-hint">
-          Enter 확인 · Esc 취소
+          {request.type === "choice"
+            ? "↑↓ 이동 · 1~9 즉시 선택 · Enter 확인 · Esc 취소"
+            : "Enter 확인 · Esc 취소"}
         </div>
       </div>
     </div>

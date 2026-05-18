@@ -1386,6 +1386,30 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
                     currentText = newText;
                   }
                 } else if (block.type === "tool_use") {
+                  // Phase 50 — 모델이 AskUserQuestion (Claude 의 user-question tool) 호출 시
+                  // sidecar 가 KDA UI 로 라우팅. 기존 path 에선 그냥 tool_use 메시지로만 보였고
+                  // 답할 방법이 없어 K 가 옵션을 직접 선택할 수 없었음. 이걸 ask_user_question
+                  // 이벤트로 변환 → frontend 의 ElicitationDialog 가 옵션 리스트로 띄워줌.
+                  const askInput = block.input as any;
+                  if (
+                    block.name === "AskUserQuestion" &&
+                    askInput &&
+                    Array.isArray(askInput.questions) &&
+                    askInput.questions.length > 0
+                  ) {
+                    log(
+                      "info",
+                      `[AskUserQuestion] 모델 질문 ${askInput.questions.length}개 캡처 → KDA elicitation 라우팅`,
+                    );
+                    emit({
+                      type: "ask_user_question",
+                      id: msg.id,
+                      tool_use_id: block.id,
+                      questions: askInput.questions,
+                    } as any);
+                    // 기존 tool_use 이벤트도 함께 emit — 메시지 본문에 흔적 남겨 K 가 어떤 질문이
+                    // 있었는지 history 로 볼 수 있게. ElicitationDialog 닫혀도 추후 추적 가능.
+                  }
                   emit({
                     type: "tool_use",
                     id: msg.id,
