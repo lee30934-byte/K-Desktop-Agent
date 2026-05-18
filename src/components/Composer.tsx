@@ -13,6 +13,8 @@ interface ComposerProps {
   // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
   queuedSend?: { text: string; fileCount: number; queuedAt: number } | null;
   onCancelQueuedSend?: () => void;
+  // Phase 49 (v0.5.37) — 큐 즉시 전송 (작업 중단 + 새 turn)
+  onFlushQueueNow?: () => void;
 }
 
 // 파일 타입별 아이콘
@@ -50,6 +52,7 @@ export default function Composer({
   placeholder = "메시지를 입력하세요. Enter로 전송, Shift+Enter로 줄바꿈.",
   queuedSend,
   onCancelQueuedSend,
+  onFlushQueueNow,
 }: ComposerProps) {
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<FileAttachment[]>([]);
@@ -339,6 +342,17 @@ export default function Composer({
               )}
             </div>
           </div>
+          {onFlushQueueNow && (
+            <button
+              type="button"
+              className="queue-chip-flush-now"
+              onClick={onFlushQueueNow}
+              title="현재 작업 중단 후 이 메시지 즉시 전송 (Claude 가 중간 질문 했을 때 답하기 적합)"
+              aria-label="큐 즉시 전송"
+            >
+              📤 지금
+            </button>
+          )}
           {onCancelQueuedSend && (
             <button
               type="button"

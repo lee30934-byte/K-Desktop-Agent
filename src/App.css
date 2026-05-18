@@ -4714,3 +4714,21 @@
   border-color: #ff7c7c;
   color: #ff7c7c;
 }
+/* Phase 49 (v0.5.37) — 큐 즉시 전송 버튼 (accent 색) */
+.queue-chip-flush-now {
+  background: rgba(79, 232, 225, 0.12);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  font-weight: 600;
+}
+.queue-chip-flush-now:hover {
+  background: rgba(79, 232, 225, 0.22);
+  transform: translateY(-1px);
+}

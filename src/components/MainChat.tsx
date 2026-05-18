@@ -15,6 +15,8 @@ interface MainChatProps {
   // Phase 34 (v0.5.22) — 큐 미리보기 + 취소
   queuedSend?: { text: string; fileCount: number; queuedAt: number } | null;
   onCancelQueuedSend?: () => void;
+  // Phase 49 (v0.5.37) — "지금 전송" (작업 중단 후 큐 바로 새 turn)
+  onFlushQueueNow?: () => void;
   // Phase 44 (v0.5.32) — 메시지 안 link 클릭 → SidePanel 트리거
   onPreviewRequest?: (pathOrUrl: string, label?: string) => void;
 }
@@ -70,6 +72,7 @@ function MainChat({
   onHardStop,
   queuedSend,
   onCancelQueuedSend,
+  onFlushQueueNow,
   onPreviewRequest,
 }: MainChatProps) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -240,6 +243,7 @@ function MainChat({
           onHardStop={onHardStop}
           queuedSend={queuedSend}
           onCancelQueuedSend={onCancelQueuedSend}
+          onFlushQueueNow={onFlushQueueNow}
         />
       </div>
     </section>

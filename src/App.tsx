@@ -1093,6 +1093,41 @@ export default function App() {
     setQueuedSend(null);
   });
 
+  // Phase 49 (v0.5.37): "지금 전송" — 현재 작업 중단 + 큐 메시지 즉시 새 turn 으로.
+  // K 요청: Claude 가 중간 질문 던질 때 답을 바로 보내고 싶음. 큐 자동 flush 는
+  // 작업 끝나야 작동하므로 너무 늦음. flush 가 mid-stream 에 강제 발화.
+  const handleFlushQueueNow = useStableCallback(async () => {
+    const pending = queuedSendRef.current ?? queuedSend;
+    if (!pending) return;
+    logger.log("[Phase49] 큐 즉시 전송 — STOP + 새 turn 강제 시작");
+    // 1. 현재 turn interrupt (작업 중단)
+    if (currentTurnId) {
+      try {
+        await invoke("interrupt", { id: currentTurnId });
+      } catch (err) {
+        console.error("[FlushNow] interrupt failed:", err);
+      }
+    }
+    // 2. 큐 비우기 (자동 flush 안 발화)
+    queuedSendRef.current = null;
+    setQueuedSend(null);
+    // 3. UI 정리 (isStreaming false 로) — useEffect 의 자동 flush 도 비활성
+    setIsStreaming(false);
+    setCurrentTurnId(null);
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.role === "assistant" && (m as any).streaming
+          ? { ...m, streaming: false }
+          : m
+      )
+    );
+    // 4. 짧은 지연 후 send — interrupt 가 sidecar 에 도달 + state 정리 보장
+    setTimeout(() => {
+      void handleSendMessage(pending.text, pending.files);
+    }, 200);
+    pushSystem("📤 큐 즉시 전송 — 진행 중 작업 중단 후 새 메시지 시작.", "info");
+  });
+
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text && (!files || files.length === 0)) return;
     // Phase 30: streaming 중이면 큐에 보관 후 return — useEffect 가 streaming 종료 시 자동 send
@@ -2236,6 +2271,7 @@ export default function App() {
             : null
         }
         onCancelQueuedSend={handleCancelQueuedSend}
+        onFlushQueueNow={handleFlushQueueNow}
         // Phase 44 (v0.5.32) — link/file click → SidePanel
         onPreviewRequest={handlePreviewRequest}
       />
