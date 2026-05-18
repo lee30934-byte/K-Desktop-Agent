@@ -54,17 +54,43 @@ import { statSync, renameSync } from "node:fs";
 
 // ─── 파일 로거 ─────────────────────────────────────────
 // release 모드에서는 sidecar 의 stderr 가 소실되므로 `logs/sidecar.log` 에 직접 append.
-// path: <project-root>/logs/sidecar.log — __filename 이 sidecar/src 또는 sidecar/dist 안에 있어서 2단계 위로.
+// Phase 54 (v0.5.42): K 의 다른 PC 진단 — 설치본 (`Program Files\K Desktop Agent\...`) 의
+// sidecar 부모(`resources\logs`) 가 readonly 라 mkdirSync 가 silent fail → fileLogStream null
+// → 진단 로그 전부 silent drop. fallback path 박음 — bundled path 실패 시 user-writable 위치
+// (APPDATA → tmpdir) 로 자동 전환. 어디에 박혔는지 첫 라인에 marker 박아 K 가 찾기 쉽게.
 const __filename_local = fileURLToPath(import.meta.url);
 const __dirname_local = path.dirname(__filename_local);
-const LOG_DIR = path.resolve(__dirname_local, "..", "..", "logs");
+const LOG_DIR_CANDIDATES = [
+  path.resolve(__dirname_local, "..", "..", "logs"),
+  path.join(
+    process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
+    "com.k.desktop-agent",
+    "logs",
+  ),
+  path.join(os.tmpdir(), "kda-logs"),
+];
 let fileLogStream: WriteStream | null = null;
-try {
-  mkdirSync(LOG_DIR, { recursive: true });
-  fileLogStream = createWriteStream(path.join(LOG_DIR, "sidecar.log"), { flags: "a" });
-} catch {
-  // 로깅 실패가 sidecar 동작을 막으면 안 됨
+let activeLogDir: string | null = null;
+for (const dir of LOG_DIR_CANDIDATES) {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const stream = createWriteStream(path.join(dir, "sidecar.log"), { flags: "a" });
+    fileLogStream = stream;
+    activeLogDir = dir;
+    // 어디에 박혔는지 첫 라인 marker — K 가 sidecar.log 찾을 때 hint
+    try {
+      stream.write(
+        `[epoch=${Math.floor(Date.now() / 1000)}] info: sidecar log path = ${dir}\n`,
+      );
+    } catch {
+      // ignore — stream 쓰기 실패해도 fileLogStream 자체는 유효 (다음 write 시도)
+    }
+    break;
+  } catch {
+    // 다음 candidate 로
+  }
 }
+// 로깅 실패가 sidecar 동작을 막으면 안 됨 — fileLogStream === null 이어도 process 는 계속
 
 function logToFile(level: string, message: string): void {
   if (!fileLogStream) return;
@@ -1715,6 +1741,10 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   let maxTurnCacheCreation = 0;
   let maxTurnCacheRead = 0;
   let maxTurnContextTokens = 0;
+  // Phase 54 (v0.5.42): Codex 런타임이 보고하는 실제 model_context_window 추적.
+  // turn.completed 의 usage.input_tokens 가 이 값의 1.2배 넘으면 cumulative billing 합
+  // (total_token_usage 시리즈, 681K 같은 케이스) 으로 판정 → maxTurnContextTokens 갱신 skip.
+  let lastSeenModelContextWindow = 0;
 
   let sessionId: string | null = null;
   let currentText = "";
@@ -1799,6 +1829,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               event.context_window ??
               event.turn_context?.model_context_window;
             if (typeof ctxWin === "number" && ctxWin > 1000) {
+              lastSeenModelContextWindow = ctxWin;
               emit({
                 type: "model_context_window",
                 provider: "codex",
@@ -1807,12 +1838,16 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               } as any);
               logToFile(
                 "info",
-                `Codex model_context_window = ${ctxWin} (last_token_usage=${JSON.stringify(event.last_token_usage ?? event.token_usage ?? {})})`,
+                `Codex model_context_window = ${ctxWin} (last_token_usage=${JSON.stringify(event.last_token_usage ?? {})})`,
               );
             }
-            // last_token_usage 가 turn 진행 중 model 이 실제 본 입력 크기 — turn.completed 보다
-            // 먼저 도착하는 케이스가 있어 max 갱신해 둠 (sub-iteration 누적 추적).
-            const ltu = event.last_token_usage ?? event.token_usage;
+            // Phase 54 (v0.5.42): K 의 다른 PC 진단으로 진짜 root cause 잡힘 —
+            // `event.total_token_usage.input_tokens` 는 turn 내 sub-iteration 들의 input 의
+            // 누적 billing 합 (681K 같은 모델 window 의 2.6배). model 이 본 적 없는 가짜 누적.
+            // 정답: `event.last_token_usage.input_tokens` (각 sub-call 마다 model 이 실제 본
+            // 단일 input window 점유) 만 사용. `event.token_usage` 는 schema 상 total 일 수
+            // 있어 제거 (Codex CLI 버전 별로 다름) — 명시적으로 last_token_usage 만 신뢰.
+            const ltu = event.last_token_usage;
             if (ltu && typeof ltu === "object") {
               const cached = ltu.cached_input_tokens ?? 0;
               const totalInput = ltu.input_tokens ?? 0;
@@ -1919,12 +1954,28 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                 `Codex input_tokens=${codexCtxRaw} 비현실적 — ${CODEX_CTX_HARD_CAP} 으로 cap (tool 결과 누적 부풀음)`,
               );
             }
-            // Phase 53 (v0.5.41): token_count 누적치 (sub-iteration max) 와 turn.completed 의
-            // 최종 보고 둘 중 더 큰 값 사용. 종전 = (assignment) 라 70K → 30K 로 덮어쓰는 회귀 케이스.
-            maxTurnContextTokens = Math.max(
-              maxTurnContextTokens,
-              Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP),
-            );
+            // Phase 54 (v0.5.42): K 의 다른 PC 진단 — turn.completed.usage.input_tokens 가
+            // Codex 버전에 따라 sub-iteration 누적 billing 합 (total_token_usage 등가) 일 수
+            // 있음 (681K = model window 의 2.6배 케이스). 그러면 maxTurnContextTokens 가 가짜로
+            // 부풀어 UI 가 진짜 model window 점유 (~35%) 가 아닌 cumulative billing % 를 표시.
+            // 방어: codexCtxRaw 가 모델 window 의 1.2배 넘으면 cumulative 로 판정 → skip.
+            // 모델 window 모르는 경우 (lastSeenModelContextWindow == 0) 는 종전대로 HARD_CAP cap.
+            const looksLikeCumulative =
+              lastSeenModelContextWindow > 0 &&
+              codexCtxRaw > lastSeenModelContextWindow * 1.2;
+            if (looksLikeCumulative) {
+              logToFile(
+                "warn",
+                `Codex turn.completed.usage.input_tokens=${codexCtxRaw} > model window ${lastSeenModelContextWindow} * 1.2 — cumulative billing 합 추정, single-call max 갱신 skip (token_count last_token_usage peak=${maxTurnContextTokens} 만 유지)`,
+              );
+            } else {
+              // Phase 53 (v0.5.41): token_count 누적치 (sub-iteration max) 와 turn.completed 의
+              // 최종 보고 둘 중 더 큰 값 사용. 종전 = (assignment) 라 70K → 30K 로 덮어쓰는 회귀 케이스.
+              maxTurnContextTokens = Math.max(
+                maxTurnContextTokens,
+                Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP),
+              );
+            }
             // 마지막 안전망 — 누적 텍스트가 있으면 한 번 더 emit (Claude 와 동일 정책).
             if (currentText) {
               emit({ type: "assistant_delta", id: msg.id, text: currentText });
