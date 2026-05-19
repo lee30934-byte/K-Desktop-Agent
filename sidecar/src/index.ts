@@ -1958,64 +1958,45 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             //   input_tokens          ← input_tokens (모두 새로 본 input)
             //   cached_input_tokens   ← cache_read_input_tokens
             //   (Codex 는 cache_creation 분리 안 함 — 0 으로 둠)
+            //
+            // Phase 58 (v0.5.46): K 다른 PC 정밀 진단으로 결정타 fix — 종전 (Phase 53~57) 은
+            // maxTurnInputTokens 를 가드 검사 전에 박는 순서 버그. inputCumulative 가드가
+            // maxTurnContextTokens 만 보호하고 maxTurnInputTokens / maxTurnCacheRead 는 그대로
+            // 오염된 cumulative billing 합이 박힌 후 done.usage.input_tokens 로 frontend 에
+            // 전달됨. UI 의 다른 path (currentContextTokens 등) 가 그 값을 보고 cap 100%.
+            //
+            // v0.5.46 fix:
+            //   1. 가드 먼저 검사 (input + cache 둘 다)
+            //   2. 가드 통과 시만 갱신 (input / cache / context 모두)
+            //   3. done.usage.cache_read_input_tokens 도 raw cr 대신 maxTurnCacheRead (가드 적용)
+            //   4. 모든 갱신 skip 시 token_count peak (token_count handler 가 박은 값) 만 유지
             const u = event.usage ?? {};
-            const inp = (u.input_tokens ?? 0) - (u.cached_input_tokens ?? 0);
+            const inpRaw = (u.input_tokens ?? 0) - (u.cached_input_tokens ?? 0);
+            const inp = Math.max(0, inpRaw);
             const cr = u.cached_input_tokens ?? 0;
-            // Phase 53 (v0.5.41): max 누적 — Phase 52 에서 token_count event 가 sub-iteration
-            // 누적치 (70K+ 등) 박았는데, turn.completed 의 u.input_tokens 가 마지막 model call
-            // 의 짧은 값 (30K 등) 일 수 있어 그대로 = 로 박으면 peak 가 손실됨. Math.max 로 묶음.
-            maxTurnInputTokens = Math.max(maxTurnInputTokens, Math.max(0, inp));
-            // Phase 57 (v0.5.45): cached_input_tokens 도 cumulative billing 합일 수 있음 —
-            // K 다른 PC 케이스: turn.completed.usage.cached_input_tokens=3,963,648 (= 3.9M),
-            // 반면 token_count.last_token_usage.cached_input_tokens peak=166,272 (24배 차). cr 이
-            // peak 의 2배 넘으면 cumulative 로 판정 → 그 turn 만 skip. peak 모르면 absolute
-            // 1M 으로 fallback 가드.
-            const cacheCumulative =
-              (maxLastTokenUsageCachePeak > 0 && cr > maxLastTokenUsageCachePeak * 2) ||
-              (maxLastTokenUsageCachePeak === 0 && cr > 1_000_000);
-            if (cacheCumulative) {
-              logToFile(
-                "warn",
-                `Codex turn.completed.usage.cached_input_tokens=${cr} > peak ${maxLastTokenUsageCachePeak} * 2 (또는 1M absolute) — cumulative billing 합 추정, cache_read 갱신 skip`,
-              );
-            } else {
-              maxTurnCacheRead = Math.max(maxTurnCacheRead, cr);
-            }
-            // Phase 28 (v0.5.16): Codex 가 가끔 input_tokens 를 비현실적으로 크게 (3M+) 보고함 —
-            // tool 결과 (cc_screenshot 의 base64 이미지 등) 가 누적된 값. 모델 context window
-            // 넘어 박히면 1737% 같은 nonsense % 가 UI 에 표시됨. 모델 max (200K, 1M 등) 로 cap.
-            // 휴리스틱: 1M 모델이라도 input 이 1M 넘는 건 비정상이므로 1.05M 을 hard ceiling 으로.
             const codexCtxRaw = u.input_tokens ?? 0;
             const CODEX_CTX_HARD_CAP = 1_050_000;
-            if (codexCtxRaw > CODEX_CTX_HARD_CAP) {
-              logToFile(
-                "warn",
-                `Codex input_tokens=${codexCtxRaw} 비현실적 — ${CODEX_CTX_HARD_CAP} 으로 cap (tool 결과 누적 부풀음)`,
-              );
-            }
-            // Phase 54 (v0.5.42) + Phase 55 (v0.5.43): K 의 다른 PC 진단 — turn.completed.usage.input_tokens
-            // 가 Codex 버전에 따라 sub-iteration 누적 billing 합 (total_token_usage 등가) 일 수
-            // 있음 (681K = model window 의 2.6배 케이스). 그러면 maxTurnContextTokens 가 가짜로
-            // 부풀어 UI 가 진짜 model window 점유 (~35%) 가 아닌 cumulative billing % 를 표시.
-            //
-            // v0.5.42 의 가드 (lastSeenModelContextWindow * 1.2) 는 token_count event 가 turn.completed
-            // 보다 먼저 도착해야 작동 — 첫 turn 에서 token_count 가 안 오거나 늦게 오면 lastSeen=0
-            // 으로 가드 무력화 → cumulative 박혀 "대화 한 번에 100%" 회귀. v0.5.43 fallback heuristic:
-            // codexCtxRaw 가 token_count last_token_usage peak (maxTurnContextTokens) 의 2배 넘으면
-            // 모델 window 모르더라도 cumulative 추정.
-            const cap = CODEX_CTX_HARD_CAP;
+            const ABSOLUTE_SINGLE_CALL_CEILING = 1_000_000;
+
+            // ── 가드 1: input cumulative 판정 ─────────────────────
             const overModelWindow =
               lastSeenModelContextWindow > 0 &&
               codexCtxRaw > lastSeenModelContextWindow * 1.2;
             const overLastTokenPeak =
               maxTurnContextTokens > 0 && codexCtxRaw > maxTurnContextTokens * 2;
-            // Phase 56 (v0.5.44): token_count event 가 단 한 번도 안 와서 model_context_window /
-            // last_token_usage 둘 다 모르는 케이스 (구 Codex CLI 또는 schema 변경) 의 absolute
-            // 안전망. 1M 토큰 넘는 single-call input 은 정상 모델에서 불가능 → cumulative 추정.
-            const ABSOLUTE_SINGLE_CALL_CEILING = 1_000_000;
             const overAbsoluteCeiling = codexCtxRaw > ABSOLUTE_SINGLE_CALL_CEILING;
-            const looksLikeCumulative = overModelWindow || overLastTokenPeak || overAbsoluteCeiling;
-            if (looksLikeCumulative) {
+            const inputCumulative = overModelWindow || overLastTokenPeak || overAbsoluteCeiling;
+
+            // ── 가드 2: cache cumulative 판정 ─────────────────────
+            const cacheCumulative =
+              (maxLastTokenUsageCachePeak > 0 && cr > maxLastTokenUsageCachePeak * 2) ||
+              (maxLastTokenUsageCachePeak === 0 && cr > 1_000_000);
+
+            // ── 가드 적용 ──────────────────────────────────────────
+            // turn.completed.usage 가 cumulative billing 합 케이스: input 또는 cache 어느 한쪽이
+            // cumulative 면 turn.completed.usage 자체가 cumulative 합 → 모든 갱신 skip 안전.
+            // input 만 정상이고 cache 만 cumulative 인 비대칭 케이스는 거의 없으나 안전망.
+            if (inputCumulative) {
               const reason = overModelWindow
                 ? `> model window ${lastSeenModelContextWindow} * 1.2`
                 : overLastTokenPeak
@@ -2023,16 +2004,37 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                   : `> 1M absolute ceiling (token_count event 전무 — schema mismatch 의심)`;
               logToFile(
                 "warn",
-                `Codex turn.completed.usage.input_tokens=${codexCtxRaw} ${reason} — cumulative billing 합 추정, single-call max 갱신 skip (token_count peak=${maxTurnContextTokens} 만 유지)`,
+                `Codex turn.completed.usage cumulative billing 합 추정 — input=${codexCtxRaw} ${reason}, cache=${cr}. ALL 갱신 skip (token_count peak 유지: input=${maxTurnInputTokens} cache=${maxTurnCacheRead} ctx=${maxTurnContextTokens})`,
               );
-            } else {
-              // Phase 53 (v0.5.41): token_count 누적치 (sub-iteration max) 와 turn.completed 의
-              // 최종 보고 둘 중 더 큰 값 사용. 종전 = (assignment) 라 70K → 30K 로 덮어쓰는 회귀 케이스.
+              // input / cache / context 모두 갱신 skip — token_count handler 가 박은 peak 만 유지
+            } else if (cacheCumulative) {
+              // 비대칭 케이스 — input 만 정상, cache 만 cumulative
+              logToFile(
+                "warn",
+                `Codex cache_read_input_tokens=${cr} cumulative billing 추정 (peak=${maxLastTokenUsageCachePeak}) — cache 만 skip, input/context 는 정상 갱신`,
+              );
+              maxTurnInputTokens = Math.max(maxTurnInputTokens, inp);
               maxTurnContextTokens = Math.max(
                 maxTurnContextTokens,
-                Math.min(codexCtxRaw, cap),
+                Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP),
+              );
+            } else {
+              // 정상 — 모두 갱신
+              maxTurnInputTokens = Math.max(maxTurnInputTokens, inp);
+              maxTurnCacheRead = Math.max(maxTurnCacheRead, cr);
+              maxTurnContextTokens = Math.max(
+                maxTurnContextTokens,
+                Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP),
               );
             }
+
+            if (codexCtxRaw > CODEX_CTX_HARD_CAP) {
+              logToFile(
+                "warn",
+                `Codex input_tokens=${codexCtxRaw} 비현실적 — ${CODEX_CTX_HARD_CAP} 으로 cap (tool 결과 누적 부풀음)`,
+              );
+            }
+
             // 마지막 안전망 — 누적 텍스트가 있으면 한 번 더 emit (Claude 와 동일 정책).
             if (currentText) {
               emit({ type: "assistant_delta", id: msg.id, text: currentText });
@@ -2041,14 +2043,17 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               type: "done",
               id: msg.id,
               usage: {
+                // Phase 58: cr (raw) 대신 maxTurnCacheRead (가드 적용된 값) 사용 — frontend 의
+                // 다른 측정 path (currentContextTokens 등) 가 cumulative 값 보고 cap 100% 회귀
+                // 방지. maxTurnInputTokens 도 가드 통과한 값.
                 input_tokens: maxTurnInputTokens,
                 output_tokens: u.output_tokens ?? 0,
-                cache_read_input_tokens: cr,
+                cache_read_input_tokens: maxTurnCacheRead,
               },
               computed_usage: {
                 input_tokens: maxTurnInputTokens,
                 output_tokens: u.output_tokens ?? 0,
-                cache_read_input_tokens: cr,
+                cache_read_input_tokens: maxTurnCacheRead,
               },
               maxTurnUsage:
                 maxTurnContextTokens > 0
