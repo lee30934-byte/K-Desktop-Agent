@@ -1788,7 +1788,17 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     for await (const line of rl) {
       if (!line.trim()) continue;
       try {
-        const event = JSON.parse(line);
+        const rawEvent = JSON.parse(line);
+        // Phase 56 (v0.5.44): K 의 다른 PC 진단으로 결정타 발견 — Codex CLI 0.130 부터 event 가
+        // `event_msg` wrapper 로 박혀서 옴. 종전 schema (Codex 0.120 이전) 는 root 에 type/data,
+        // 신 schema 는 root 에 type="event_msg" + payload={type, info, ...}. token_count event 가
+        // 0.130 환경에서 root level switch case 에 안 잡혀 silent drop → model_context_window
+        // 한 번도 안 잡힘 → cumulative 가드 무력 → "대화 한 번에 100%" 회귀.
+        // 양쪽 schema 모두 처리: event_msg wrapper 면 payload 를 unwrap 해서 actualEvent 로 박음.
+        let event = rawEvent;
+        if (rawEvent.type === "event_msg" && rawEvent.payload && typeof rawEvent.payload === "object") {
+          event = { ...rawEvent.payload, _wrappedFrom: "event_msg" };
+        }
         // Phase 48 (v0.5.36): Codex CLI 버전별 event schema 가 달라서 thread_id 못 잡는 케이스가 있음.
         // K 의 다른 PC 보고: agent_id NULL → resume 안 됨 → prior_conversation 매번 재주입 → context 폭발.
         // 여러 키 폴백 + 모든 event 의 thread/session/conversation id 후보 적극 추출.
@@ -1802,7 +1812,11 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             event.id ??
             event.thread?.id ??
             event.session?.id ??
-            event.conversation?.id;
+            event.conversation?.id ??
+            // Phase 56: event_msg wrapper 의 payload 안에 id 가 박힐 수도
+            rawEvent.payload?.thread_id ??
+            rawEvent.payload?.session_id ??
+            rawEvent.payload?.id;
           if (typeof candidate === "string" && candidate.length > 8) {
             sessionId = candidate;
             logToFile("info", `Codex sessionId 추출 from type=${event.type} key=auto → ${sessionId}`);
@@ -1820,11 +1834,15 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             break;
           }
           case "token_count": {
-            // Phase 52 (v0.5.40) — Codex 런타임의 정확한 model_context_window 보고.
-            // K 의 다른 PC 진단: gpt-5.5 의 실제 model_context_window=258400 인데 KDA hardcode 는
-            // 400K → UI 가 76.6% 표시할 때 실제 model 은 이미 118% 넘김 (overflow 인데 "괜찮은 척"
-            // 표시되는 케이스). frontend 에 동적 분모로 override.
+            // Phase 52 (v0.5.40) + Phase 56 (v0.5.44) — Codex 런타임의 정확한 model_context_window
+            // 보고. K 의 다른 PC 진단: gpt-5.5 의 실제 model_context_window=258400 인데 KDA hardcode 는
+            // 400K → UI 가 76.6% 표시할 때 실제 model 은 이미 118% 넘김.
+            // Codex 0.130 부터 schema 변경 — root 에 있던 model_context_window/last_token_usage 가
+            // event.info.* 로 nested. 양쪽 schema 모두 지원.
+            const info = event.info ?? event;
             const ctxWin =
+              info.model_context_window ??
+              info.context_window ??
               event.model_context_window ??
               event.context_window ??
               event.turn_context?.model_context_window;
@@ -1838,16 +1856,15 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               } as any);
               logToFile(
                 "info",
-                `Codex model_context_window = ${ctxWin} (last_token_usage=${JSON.stringify(event.last_token_usage ?? {})})`,
+                `Codex model_context_window = ${ctxWin} (last_token_usage=${JSON.stringify(info.last_token_usage ?? event.last_token_usage ?? {})})`,
               );
             }
-            // Phase 54 (v0.5.42): K 의 다른 PC 진단으로 진짜 root cause 잡힘 —
-            // `event.total_token_usage.input_tokens` 는 turn 내 sub-iteration 들의 input 의
-            // 누적 billing 합 (681K 같은 모델 window 의 2.6배). model 이 본 적 없는 가짜 누적.
-            // 정답: `event.last_token_usage.input_tokens` (각 sub-call 마다 model 이 실제 본
-            // 단일 input window 점유) 만 사용. `event.token_usage` 는 schema 상 total 일 수
-            // 있어 제거 (Codex CLI 버전 별로 다름) — 명시적으로 last_token_usage 만 신뢰.
-            const ltu = event.last_token_usage;
+            // Phase 54 (v0.5.42) + Phase 56 (v0.5.44): K 의 다른 PC 진단으로 진짜 root cause 잡힘 —
+            // `total_token_usage.input_tokens` 는 turn 내 sub-iteration 들의 input 의 누적 billing
+            // 합 (681K 같은 모델 window 의 2.6배). model 이 본 적 없는 가짜 누적.
+            // 정답: `last_token_usage.input_tokens` (각 sub-call 마다 model 이 실제 본 단일 input
+            // window 점유) 만 사용. 0.130 schema 는 info.last_token_usage, 구버전은 root.
+            const ltu = info.last_token_usage ?? event.last_token_usage;
             if (ltu && typeof ltu === "object") {
               const cached = ltu.cached_input_tokens ?? 0;
               const totalInput = ltu.input_tokens ?? 0;
@@ -1970,11 +1987,18 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               codexCtxRaw > lastSeenModelContextWindow * 1.2;
             const overLastTokenPeak =
               maxTurnContextTokens > 0 && codexCtxRaw > maxTurnContextTokens * 2;
-            const looksLikeCumulative = overModelWindow || overLastTokenPeak;
+            // Phase 56 (v0.5.44): token_count event 가 단 한 번도 안 와서 model_context_window /
+            // last_token_usage 둘 다 모르는 케이스 (구 Codex CLI 또는 schema 변경) 의 absolute
+            // 안전망. 1M 토큰 넘는 single-call input 은 정상 모델에서 불가능 → cumulative 추정.
+            const ABSOLUTE_SINGLE_CALL_CEILING = 1_000_000;
+            const overAbsoluteCeiling = codexCtxRaw > ABSOLUTE_SINGLE_CALL_CEILING;
+            const looksLikeCumulative = overModelWindow || overLastTokenPeak || overAbsoluteCeiling;
             if (looksLikeCumulative) {
               const reason = overModelWindow
                 ? `> model window ${lastSeenModelContextWindow} * 1.2`
-                : `> last_token_usage peak ${maxTurnContextTokens} * 2 (model window 미보고)`;
+                : overLastTokenPeak
+                  ? `> last_token_usage peak ${maxTurnContextTokens} * 2 (model window 미보고)`
+                  : `> 1M absolute ceiling (token_count event 전무 — schema mismatch 의심)`;
               logToFile(
                 "warn",
                 `Codex turn.completed.usage.input_tokens=${codexCtxRaw} ${reason} — cumulative billing 합 추정, single-call max 갱신 skip (token_count peak=${maxTurnContextTokens} 만 유지)`,
