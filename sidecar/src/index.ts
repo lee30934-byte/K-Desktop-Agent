@@ -1954,26 +1954,37 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                 `Codex input_tokens=${codexCtxRaw} 비현실적 — ${CODEX_CTX_HARD_CAP} 으로 cap (tool 결과 누적 부풀음)`,
               );
             }
-            // Phase 54 (v0.5.42): K 의 다른 PC 진단 — turn.completed.usage.input_tokens 가
-            // Codex 버전에 따라 sub-iteration 누적 billing 합 (total_token_usage 등가) 일 수
+            // Phase 54 (v0.5.42) + Phase 55 (v0.5.43): K 의 다른 PC 진단 — turn.completed.usage.input_tokens
+            // 가 Codex 버전에 따라 sub-iteration 누적 billing 합 (total_token_usage 등가) 일 수
             // 있음 (681K = model window 의 2.6배 케이스). 그러면 maxTurnContextTokens 가 가짜로
             // 부풀어 UI 가 진짜 model window 점유 (~35%) 가 아닌 cumulative billing % 를 표시.
-            // 방어: codexCtxRaw 가 모델 window 의 1.2배 넘으면 cumulative 로 판정 → skip.
-            // 모델 window 모르는 경우 (lastSeenModelContextWindow == 0) 는 종전대로 HARD_CAP cap.
-            const looksLikeCumulative =
+            //
+            // v0.5.42 의 가드 (lastSeenModelContextWindow * 1.2) 는 token_count event 가 turn.completed
+            // 보다 먼저 도착해야 작동 — 첫 turn 에서 token_count 가 안 오거나 늦게 오면 lastSeen=0
+            // 으로 가드 무력화 → cumulative 박혀 "대화 한 번에 100%" 회귀. v0.5.43 fallback heuristic:
+            // codexCtxRaw 가 token_count last_token_usage peak (maxTurnContextTokens) 의 2배 넘으면
+            // 모델 window 모르더라도 cumulative 추정.
+            const cap = CODEX_CTX_HARD_CAP;
+            const overModelWindow =
               lastSeenModelContextWindow > 0 &&
               codexCtxRaw > lastSeenModelContextWindow * 1.2;
+            const overLastTokenPeak =
+              maxTurnContextTokens > 0 && codexCtxRaw > maxTurnContextTokens * 2;
+            const looksLikeCumulative = overModelWindow || overLastTokenPeak;
             if (looksLikeCumulative) {
+              const reason = overModelWindow
+                ? `> model window ${lastSeenModelContextWindow} * 1.2`
+                : `> last_token_usage peak ${maxTurnContextTokens} * 2 (model window 미보고)`;
               logToFile(
                 "warn",
-                `Codex turn.completed.usage.input_tokens=${codexCtxRaw} > model window ${lastSeenModelContextWindow} * 1.2 — cumulative billing 합 추정, single-call max 갱신 skip (token_count last_token_usage peak=${maxTurnContextTokens} 만 유지)`,
+                `Codex turn.completed.usage.input_tokens=${codexCtxRaw} ${reason} — cumulative billing 합 추정, single-call max 갱신 skip (token_count peak=${maxTurnContextTokens} 만 유지)`,
               );
             } else {
               // Phase 53 (v0.5.41): token_count 누적치 (sub-iteration max) 와 turn.completed 의
               // 최종 보고 둘 중 더 큰 값 사용. 종전 = (assignment) 라 70K → 30K 로 덮어쓰는 회귀 케이스.
               maxTurnContextTokens = Math.max(
                 maxTurnContextTokens,
-                Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP),
+                Math.min(codexCtxRaw, cap),
               );
             }
             // 마지막 안전망 — 누적 텍스트가 있으면 한 번 더 emit (Claude 와 동일 정책).
