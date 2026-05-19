@@ -1745,6 +1745,11 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // turn.completed 의 usage.input_tokens 가 이 값의 1.2배 넘으면 cumulative billing 합
   // (total_token_usage 시리즈, 681K 같은 케이스) 으로 판정 → maxTurnContextTokens 갱신 skip.
   let lastSeenModelContextWindow = 0;
+  // Phase 57 (v0.5.45): token_count 의 last_token_usage 의 cached peak 추적. turn.completed.usage
+  // 의 cached_input_tokens 가 이 값의 2배 넘으면 cumulative billing 합으로 판정 → 그 turn 만
+  // skip + token_count 의 peak 유지. K 다른 PC 케이스: token_count peak=166272 vs
+  // turn.completed=3963648 (= 24배). input 가드와 별도로 cache 도 가드 필요.
+  let maxLastTokenUsageCachePeak = 0;
 
   let sessionId: string | null = null;
   let currentText = "";
@@ -1869,6 +1874,8 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               const cached = ltu.cached_input_tokens ?? 0;
               const totalInput = ltu.input_tokens ?? 0;
               const newInput = Math.max(0, totalInput - cached);
+              // Phase 57: cache peak 추적 — turn.completed 의 cumulative cache 가드용
+              maxLastTokenUsageCachePeak = Math.max(maxLastTokenUsageCachePeak, cached);
               if (totalInput > maxTurnContextTokens) {
                 maxTurnContextTokens = totalInput;
                 maxTurnInputTokens = newInput;
@@ -1958,7 +1965,22 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             // 누적치 (70K+ 등) 박았는데, turn.completed 의 u.input_tokens 가 마지막 model call
             // 의 짧은 값 (30K 등) 일 수 있어 그대로 = 로 박으면 peak 가 손실됨. Math.max 로 묶음.
             maxTurnInputTokens = Math.max(maxTurnInputTokens, Math.max(0, inp));
-            maxTurnCacheRead = Math.max(maxTurnCacheRead, cr);
+            // Phase 57 (v0.5.45): cached_input_tokens 도 cumulative billing 합일 수 있음 —
+            // K 다른 PC 케이스: turn.completed.usage.cached_input_tokens=3,963,648 (= 3.9M),
+            // 반면 token_count.last_token_usage.cached_input_tokens peak=166,272 (24배 차). cr 이
+            // peak 의 2배 넘으면 cumulative 로 판정 → 그 turn 만 skip. peak 모르면 absolute
+            // 1M 으로 fallback 가드.
+            const cacheCumulative =
+              (maxLastTokenUsageCachePeak > 0 && cr > maxLastTokenUsageCachePeak * 2) ||
+              (maxLastTokenUsageCachePeak === 0 && cr > 1_000_000);
+            if (cacheCumulative) {
+              logToFile(
+                "warn",
+                `Codex turn.completed.usage.cached_input_tokens=${cr} > peak ${maxLastTokenUsageCachePeak} * 2 (또는 1M absolute) — cumulative billing 합 추정, cache_read 갱신 skip`,
+              );
+            } else {
+              maxTurnCacheRead = Math.max(maxTurnCacheRead, cr);
+            }
             // Phase 28 (v0.5.16): Codex 가 가끔 input_tokens 를 비현실적으로 크게 (3M+) 보고함 —
             // tool 결과 (cc_screenshot 의 base64 이미지 등) 가 누적된 값. 모델 context window
             // 넘어 박히면 1737% 같은 nonsense % 가 UI 에 표시됨. 모델 max (200K, 1M 등) 로 cap.
