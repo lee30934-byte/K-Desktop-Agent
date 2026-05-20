@@ -1422,6 +1422,78 @@ async fn unwatch_folder(folder_id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ────────── Sidecar config (Phase 59 — Anthropic rate polling toggle) ──────────
+//
+// sidecar 가 시작 시 읽는 ~/.kda/sidecar-config.json 의 한 키만 partial-update.
+// 기존 키는 보존 (merge). sidecar 는 시작 시에만 읽으므로 변경 후 즉시 효과 보려면 reload_sidecar.
+// 동기: K 의 V3 (안랩) 백신이 ccusage native binary (bun standalone .exe) 의 실행을 차단해
+// 매 5분마다 알림 팝업이 뜨는 경우, polling 자체를 끌 수 있어야 함. 끈 상태에서도 KDA 본체
+// 동작은 무관 — Anthropic 사용량 표시의 정확한 source 만 비활성화.
+
+fn sidecar_config_path() -> Result<PathBuf, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "HOME/USERPROFILE 환경변수 없음".to_string())?;
+    Ok(PathBuf::from(home).join(".kda").join("sidecar-config.json"))
+}
+
+#[tauri::command]
+async fn get_sidecar_config() -> Result<serde_json::Value, String> {
+    let path = sidecar_config_path()?;
+    if !path.exists() {
+        // 기본값 — sidecar 의 readSidecarConfig() 와 동기화 유지 필요.
+        return Ok(serde_json::json!({
+            "anthropicRatePollingEnabled": true,
+        }));
+    }
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("config 읽기 실패: {}", e))?;
+    let stripped = strip_bom(&raw);
+    let v: serde_json::Value = serde_json::from_str(stripped)
+        .map_err(|e| format!("config 파싱 실패: {}", e))?;
+    Ok(v)
+}
+
+#[tauri::command]
+async fn set_sidecar_config_flag(
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let path = sidecar_config_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("config 부모 폴더 생성 실패 ({}): {}", parent.display(), e))?;
+    }
+
+    // 기존 파일 로드 (없거나 깨진 경우 빈 객체로 시작 — merge 가 의미 있음)
+    let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => {
+                let stripped = strip_bom(&raw);
+                match serde_json::from_str::<serde_json::Value>(stripped) {
+                    Ok(serde_json::Value::Object(m)) => m,
+                    _ => serde_json::Map::new(),
+                }
+            }
+            Err(_) => serde_json::Map::new(),
+        }
+    } else {
+        serde_json::Map::new()
+    };
+    obj.insert(key, value);
+
+    // BOM 없는 UTF-8 으로 write (pitfall_powershell_secret_bom 함정 회피).
+    // Rust 의 std::fs::write 는 raw bytes 라 BOM 자동 주입 없음 — 그대로 안전.
+    let json = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
+        .map_err(|e| format!("config 직렬화 실패: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("config 쓰기 실패: {}", e))?;
+    log_lifecycle(
+        "runtime.log",
+        &format!("[config] sidecar-config.json updated: {}", path.display()),
+    );
+    Ok(())
+}
+
 // ────────── Sidecar spawning ──────────
 
 async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
@@ -2124,7 +2196,10 @@ pub fn run_with_options(start_minimized: bool) {
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,
-            unwatch_folder
+            unwatch_folder,
+            // Phase 59 — Sidecar config (Anthropic rate polling toggle)
+            get_sidecar_config,
+            set_sidecar_config_flag
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

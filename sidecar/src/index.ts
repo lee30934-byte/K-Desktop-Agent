@@ -1959,7 +1959,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             //   cached_input_tokens   ← cache_read_input_tokens
             //   (Codex 는 cache_creation 분리 안 함 — 0 으로 둠)
             //
-            // Phase 58 (v0.5.46): K 다른 PC 정밀 진단으로 결정타 fix — 종전 (Phase 53~57) 은
+            // Phase 58 (v0.5.46): K 다른 PC 정밀 진단으로 결정타 fix — 종전 (Phase 59~57) 은
             // maxTurnInputTokens 를 가드 검사 전에 박는 순서 버그. inputCumulative 가드가
             // maxTurnContextTokens 만 보호하고 maxTurnInputTokens / maxTurnCacheRead 는 그대로
             // 오염된 cumulative billing 합이 박힌 후 done.usage.input_tokens 로 frontend 에
@@ -2744,9 +2744,47 @@ function installStatusLine(): void {
   }
 }
 
+// Phase 59 (Anthropic rate polling toggle): ~/.kda/sidecar-config.json 으로 sidecar 옵션 영속화.
+// 없거나 키 누락 시 기본값 사용. KDA Settings UI 가 set_sidecar_config_flag Tauri command 로 갱신.
+// 변경 사항은 sidecar 재시작 시 반영 (file watch 안 함 — overengineering 회피).
+//
+// 이 toggle 의 동기: K 의 V3 (안랩) 같은 백신이 ccusage native binary (bun standalone .exe) 의
+// 실행을 차단해 사용자가 5분마다 V3 알림 팝업을 받는 경우, 폴링 자체를 끌 수 있어야 함.
+// 끈 상태에서도 KDA 본체 동작은 무관 — 단지 Anthropic 사용량 표시의 정확한 source 가 없을 뿐
+// (sidecar 는 여전히 SSE rate_limit_event 로 reset 시간만 받음).
+interface SidecarConfig {
+  // ccusage polling 활성화. 기본 true (기존 동작 유지).
+  anthropicRatePollingEnabled: boolean;
+}
+
+function readSidecarConfig(): SidecarConfig {
+  const defaults: SidecarConfig = { anthropicRatePollingEnabled: true };
+  const configPath = path.join(os.homedir(), ".kda", "sidecar-config.json");
+  try {
+    if (!existsSync(configPath)) return defaults;
+    const raw = readFileSync(configPath, "utf-8");
+    // BOM strip — Tauri 가 UTF-8 with BOM 으로 쓰면 JSON.parse 가 fail.
+    const stripped = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+    const parsed = JSON.parse(stripped) as Record<string, unknown>;
+    return {
+      anthropicRatePollingEnabled:
+        typeof parsed.anthropicRatePollingEnabled === "boolean"
+          ? parsed.anthropicRatePollingEnabled
+          : defaults.anthropicRatePollingEnabled,
+    };
+  } catch (err) {
+    log("warn", `sidecar-config.json 읽기 실패 (기본값 사용): ${err}`);
+    return defaults;
+  }
+}
+
 function startRateLimitPolling(): void {
+  const cfg = readSidecarConfig();
+  log("info", `sidecar config loaded: anthropicRatePollingEnabled=${cfg.anthropicRatePollingEnabled}`);
+
   // (a) statusLine path — interactive Claude 세션이 있으면 statusLine 이 temp file 박음.
   //     non-interactive `claude -p` 에선 안 부르지만, K 가 별도 터미널에서 interactive 쓰면 작동.
+  //     이 경로는 단순 file read 라 백신 안 건드림 — toggle 무관하게 항상 활성.
   let lastMtime = 0;
   setInterval(() => {
     try {
@@ -2775,8 +2813,16 @@ function startRateLimitPolling(): void {
   // (b) ccusage path — non-interactive 환경(K-Desktop-Agent)에서 정확한 토큰/시간 수집.
   //     `npx ccusage blocks --active --json` (5h primary) + `npx ccusage weekly --json` (주간 secondary).
   //     5분 간격 + 기동 직후 1회. ccusage 가 ~/.claude/projects/ session 파일 파싱 → statusLine 무관.
-  pollCcusageOnce();
-  setInterval(pollCcusageOnce, 5 * 60 * 1000);
+  //     Phase 59: toggle off 면 skip (V3 등 백신 차단 회피).
+  if (cfg.anthropicRatePollingEnabled) {
+    pollCcusageOnce();
+    setInterval(pollCcusageOnce, 5 * 60 * 1000);
+  } else {
+    log(
+      "info",
+      "ccusage polling disabled by user (sidecar-config.json) — Anthropic 사용량 표시는 SSE rate_limit_event 만 사용"
+    );
+  }
 }
 
 function spawnNpx(args: string[], timeoutMs: number): { stdout: string; ok: boolean } {

@@ -598,6 +598,14 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
   // 자동 업데이트 상태
   const [autoUpdate, setAutoUpdate] = useState(true);
+
+  // Phase 59 — Anthropic rate polling (ccusage) toggle.
+  // K 의 V3 (안랩) 같은 백신이 ccusage native binary 의 실행을 차단해 매 5분마다 알림 팝업이
+  // 뜨는 경우, polling 자체를 끌 수 있어야 함. 영속화: ~/.kda/sidecar-config.json.
+  // 변경 후 즉시 효과는 sidecar 재시작 필요.
+  const [anthropicRatePolling, setAnthropicRatePolling] = useState(true);
+  const [sidecarReloadHint, setSidecarReloadHint] = useState(false);
+  const [anthropicRatePollingBusy, setAnthropicRatePollingBusy] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
@@ -1001,6 +1009,54 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     const newValue = !autoUpdate;
     setAutoUpdate(newValue);
     localStorage.setItem("kda_auto_update", String(newValue));
+  }
+
+  // Phase 59 — Anthropic rate polling 초기값 로드 (~/.kda/sidecar-config.json).
+  // open 이 true 가 될 때 한 번 invoke. 토글 자체는 file write + sidecar 재시작 안내.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    invoke<Record<string, unknown>>("get_sidecar_config")
+      .then((cfg) => {
+        if (cancelled) return;
+        const v = cfg?.anthropicRatePollingEnabled;
+        // 기본값 true (sidecar 의 readSidecarConfig 와 동기화)
+        setAnthropicRatePolling(typeof v === "boolean" ? v : true);
+      })
+      .catch((err) => {
+        console.error("get_sidecar_config failed:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  async function toggleAnthropicRatePolling() {
+    if (anthropicRatePollingBusy) return;
+    const newValue = !anthropicRatePolling;
+    setAnthropicRatePollingBusy(true);
+    setAnthropicRatePolling(newValue); // optimistic
+    try {
+      await invoke("set_sidecar_config_flag", {
+        key: "anthropicRatePollingEnabled",
+        value: newValue,
+      });
+      setSidecarReloadHint(true);
+    } catch (err) {
+      console.error("set_sidecar_config_flag failed:", err);
+      setAnthropicRatePolling(!newValue); // 롤백
+    } finally {
+      setAnthropicRatePollingBusy(false);
+    }
+  }
+
+  async function handleReloadSidecarNow() {
+    try {
+      await invoke("reload_sidecar");
+      setSidecarReloadHint(false);
+    } catch (err) {
+      console.error("reload_sidecar failed:", err);
+    }
   }
 
   // 업데이트 확인
@@ -2695,6 +2751,42 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </div>
               )}
             </div>
+          </section>
+
+          {/* Phase 59 — Anthropic rate polling toggle (ccusage). V3 같은 백신이 ccusage 의 native binary 를 차단해 매 5분마다 알림이 뜨는 경우 off. */}
+          <section className="settings-section" data-tab="system">
+            <div className="eyebrow">사용량 추적</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">Anthropic 사용량 폴링 (ccusage)</div>
+                <div className="settings-row-desc">
+                  5분마다 ccusage 를 호출해 Claude Code 토큰 사용량 / 한도 reset 시간을 표시합니다.
+                  백신(V3 등)이 ccusage 의 native binary 를 차단하는 환경이면 끄세요.
+                  끄면 사용량 카드는 SSE rate_limit_event 만 사용합니다 (토큰 합계는 표시 안 됨).
+                </div>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={anthropicRatePolling}
+                  onChange={toggleAnthropicRatePolling}
+                  disabled={anthropicRatePollingBusy}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            {sidecarReloadHint && (
+              <div className="settings-row settings-row-vertical">
+                <div className="settings-row-info">
+                  <div className="settings-row-desc" style={{ color: "var(--warn, #ffb74d)" }}>
+                    ⓘ 변경 사항은 sidecar 재시작 시 반영됩니다.
+                  </div>
+                </div>
+                <button className="settings-btn" onClick={handleReloadSidecarNow}>
+                  지금 sidecar 재시작
+                </button>
+              </div>
+            )}
           </section>
 
           <section className="settings-section" data-tab="system">
