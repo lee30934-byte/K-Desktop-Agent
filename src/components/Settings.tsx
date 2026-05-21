@@ -1596,8 +1596,20 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       const json = await invoke<string>("install_kpersonal_mcp");
       const parsed = JSON.parse(json) as KpmcpResult;
       setKpmcpResult(parsed);
-      if (parsed.success && !parsed.alreadyInstalled) {
-        // 새로 설치됐으니 sidecar 재시작 → MCP detect
+
+      // Phase 66.8 (v0.6.9) — alreadyInstalled 여도 reload_sidecar 호출.
+      //
+      // 배경: v0.6.8 의 install-kpersonal-mcp.ps1 은 alreadyInstalled path 에서도
+      // ~/.kda/kpersonal-mcp-path.txt cache 를 새로 박음 (KnownFolder API 의 정확한 결과).
+      // 그런데 sidecar 는 KDA 부팅 시 한 번만 cache 읽으므로, 이미 시작된 sidecar 는
+      // 새 cache 못 읽어 server.py 못 찾는 상태 그대로 유지 → MCP 도구 0개.
+      //
+      // K 보고: v0.6.8 받은 후 버튼 누름 → alreadyInstalled=true + cache 박힘 ✓
+      // → 하지만 sidecar 재시작 안 됨 → 도구 탭 여전히 빈 상태.
+      //
+      // Fix: success 여부만 보고 reload (alreadyInstalled 분기 제거). reload 자체 cost
+      // 는 작고 (몇 초), idempotent. 이미 정상이면 같은 도구가 다시 보일 뿐.
+      if (parsed.success) {
         try {
           await invoke("reload_sidecar");
         } catch (e) {
