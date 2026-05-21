@@ -1165,12 +1165,34 @@ async fn list_mcp_tools(refresh: Option<bool>) -> Result<(), String> {
 
 fn resolve_kpersonal_plugins_dir() -> Result<std::path::PathBuf, String> {
     // sidecar 의 resolveKPersonalPath 와 같은 우선순위.
+    // Phase 66.7 (v0.6.8): OneDrive redirect 함정 + cache 파일 우선 fix.
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .map_err(|_| "USERPROFILE/HOME 없음".to_string())?;
+    let home_pb = std::path::PathBuf::from(&home);
+
+    // 1. install-kpersonal-mcp.ps1 가 박은 cache 파일 우선 (KnownFolder API 정공법 결과)
+    let cache_path = home_pb.join(".kda").join("kpersonal-mcp-path.txt");
+    if cache_path.exists() {
+        if let Ok(raw) = std::fs::read_to_string(&cache_path) {
+            // BOM strip
+            let stripped: &str = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+            let first_line = stripped.lines().next().unwrap_or("").trim();
+            if !first_line.is_empty() {
+                let target = std::path::PathBuf::from(first_line);
+                if target.join("server.py").exists() {
+                    return Ok(target.join("modules").join("kda_plugins"));
+                }
+            }
+        }
+    }
+
+    // 2. candidates (OneDrive redirect 변형 포함)
     let candidates = [
-        std::path::PathBuf::from(&home).join("Documents").join("K-Personal-MCP"),
-        std::path::PathBuf::from(&home).join("K-Personal-MCP"),
+        home_pb.join("Documents").join("K-Personal-MCP"),
+        home_pb.join("OneDrive").join("Documents").join("K-Personal-MCP"),
+        home_pb.join("OneDrive").join("문서").join("K-Personal-MCP"),
+        home_pb.join("K-Personal-MCP"),
     ];
     for base in &candidates {
         if base.join("server.py").exists() {

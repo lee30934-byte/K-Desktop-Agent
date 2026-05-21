@@ -118,23 +118,52 @@ process.on("unhandledRejection", (reason) => {
 /**
  * K-Personal MCP 서버 경로.
  *
- * Phase 22 (v0.5.8): user-specific hardcoded path 제거. 이전엔 절대 경로
- * 형식 'C:/Users/<특정사용자>/Documents/K-Personal-MCP/server.py' 가 fallback
- * 이라 사용자명이 다른 PC 에선 absolute path 가 엉뚱한 디렉토리 가리켜
- * always fail. 이제 USERPROFILE 환경변수 기반 dynamic + 다중 후보 시도.
+ * Phase 22 (v0.5.8): user-specific hardcoded path 제거.
+ * Phase 66.7 (v0.6.8): OneDrive redirect 함정 fix — K 보고 사례 (K 의 PC 가
+ *   Documents 를 OneDrive 의 한글 폴더 "문서" 로 redirect 하는 환경. node 의
+ *   단순 path.join(home, "Documents") 는 이걸 못 따라가 server.py 못 찾음).
  *
  * 우선순위:
  *   1. 환경변수 K_PERSONAL_MCP_PATH (있으면 그대로)
- *   2. <USERPROFILE>/Documents/K-Personal-MCP/server.py
- *   3. <USERPROFILE>/K-Personal-MCP/server.py
- *   4. (검사 fail 후) 폴더 자체 없으니 MCP NOT configured 정상 표시
+ *   2. ~/.kda/kpersonal-mcp-path.txt 의 첫 줄 (install-kpersonal-mcp.ps1 이 KnownFolder
+ *      API 로 정확히 resolve 한 결과를 영속화 — OneDrive / 비표준 redirect 정공법)
+ *   3. <USERPROFILE>/Documents/K-Personal-MCP/server.py
+ *   4. <USERPROFILE>/OneDrive/Documents/K-Personal-MCP/server.py (영문 OneDrive)
+ *   5. <USERPROFILE>/OneDrive/문서/K-Personal-MCP/server.py (한국어 OneDrive)
+ *   6. <USERPROFILE>/K-Personal-MCP/server.py
+ *   7. (검사 fail 후) 폴더 자체 없으니 MCP NOT configured 정상 표시
  */
 function resolveKPersonalPath(): string {
   if (process.env.K_PERSONAL_MCP_PATH) return process.env.K_PERSONAL_MCP_PATH;
   const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
+
+  // Phase 66.7: install-kpersonal-mcp.ps1 가 박은 KDA cache 파일 우선.
+  // 그 ps1 은 Windows KnownFolder API 로 정확한 Documents path (OneDrive redirect 반영)
+  // 를 받아 박으므로, 어떤 한국어/영문 OneDrive 변형이든 정공법으로 해결.
+  if (home) {
+    const cachePath = path.join(home, ".kda", "kpersonal-mcp-path.txt");
+    if (existsSync(cachePath)) {
+      try {
+        // BOM strip (PowerShell 의 Set-Content -Encoding UTF8 함정 양방향 방어)
+        let cached = readFileSync(cachePath, "utf-8");
+        if (cached.charCodeAt(0) === 0xfeff) cached = cached.slice(1);
+        const targetDir = cached.split(/\r?\n/)[0].trim();
+        if (targetDir) {
+          const serverPy = path.join(targetDir, "server.py");
+          if (existsSync(serverPy)) return serverPy;
+        }
+      } catch {
+        // cache 손상 — 무시 + fallback 으로
+      }
+    }
+  }
+
   if (!home) return "K-Personal-MCP/server.py"; // last-resort relative
   const candidates = [
     path.join(home, "Documents", "K-Personal-MCP", "server.py"),
+    // Phase 66.7 — OneDrive redirect 변형들 (K 의 PC 환경)
+    path.join(home, "OneDrive", "Documents", "K-Personal-MCP", "server.py"),
+    path.join(home, "OneDrive", "문서", "K-Personal-MCP", "server.py"),
     path.join(home, "K-Personal-MCP", "server.py"),
   ];
   for (const c of candidates) {

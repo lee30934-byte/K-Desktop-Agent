@@ -171,6 +171,33 @@ try {
     Add-Step "ERR 오류: $($_.Exception.Message)"
 }
 
+# Phase 66.7 (v0.6.8) — 성공 시 sidecar 가 server.py 를 못 찾는 OneDrive redirect 함정 해결.
+#
+# 이 스크립트는 [Environment]::GetFolderPath('MyDocuments') 로 Windows KnownFolder API
+# 통해 정확한 Documents 경로 (OneDrive 한글 "문서" redirect 포함) 를 받는 반면,
+# sidecar 의 node `path.join(home, "Documents")` 는 redirect 무시 → server.py 못 찾음 →
+# MCP 도구 0개 → Settings 탭이 빈 상태.
+#
+# 해결: 검증된 target 을 ~/.kda/kpersonal-mcp-path.txt 에 박음. sidecar / Rust 가
+# 이 파일을 candidates 보다 우선 사용해 정확한 path 자동 발견.
+# - UTF-8 no-BOM (외부 도구가 읽는 파일 — pitfall_powershell_secret_bom 회피책 D)
+# - 성공 시에만 박음 (실패면 stale cache 남기지 않게 삭제)
+if ($result.success -and $result.serverPyExists) {
+    try {
+        $kdaDir = Join-Path $env:USERPROFILE '.kda'
+        if (-not (Test-Path $kdaDir)) {
+            New-Item -ItemType Directory -Path $kdaDir -Force | Out-Null
+        }
+        $cacheFile = Join-Path $kdaDir 'kpersonal-mcp-path.txt'
+        # UTF-8 no-BOM 으로 박음 — node / Rust 양쪽 모두 BOM strip 안전망 있지만 깔끔하게.
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        [System.IO.File]::WriteAllText($cacheFile, $targetDir, $utf8NoBom)
+        Add-Step "OK cache 박음: $cacheFile"
+    } catch {
+        Add-Step "WARN cache 박기 실패 (sidecar fallback candidates 로 시도됨): $($_.Exception.Message)"
+    }
+}
+
 if ($AsJson) {
     # stdout JSON 출력. PS 5.1 의 BOM 함정 회피: stdout pipe 는 BOM 안 박음 (Out-File 만 위험).
     $result | ConvertTo-Json -Compress -Depth 5
