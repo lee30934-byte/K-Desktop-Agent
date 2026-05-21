@@ -36,6 +36,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Phase 66.6 (v0.6.7) — 한국어 Windows 의 PowerShell 5.1 출력 인코딩 fix.
+# K 의 PC 가 한국어 Windows 면 PS 5.1 의 기본 OutputEncoding 이 CP949 (EUC-KR).
+# Rust 의 sidecar 가 stdout 을 String::from_utf8_lossy 로 받으면 한글이 깨져 "오류" 가
+# "����" 로 표시. K 의 toast / Settings UI 에서 진단이 어려워짐.
+# Console + $OutputEncoding 둘 다 UTF-8 로 강제 — stdout 에 박히는 모든 한글 안전.
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {
+    # 일부 환경 (Win10 LTSC, locked-down PS) 에선 OutputEncoding 변경 거부될 수 있음.
+    # 그 경우는 한글 깨짐을 감수하고 진행 — 본 흐름엔 영향 없음.
+}
+
 $result = @{
     success = $false
     alreadyInstalled = $false
@@ -100,10 +113,25 @@ try {
             $result.success = $true
         } else {
             # 5. git clone
-            Add-Step "git clone https://github.com/lee30934-byte/K-Personal-MCP.git ..."
-            $cloneOutput = git clone 'https://github.com/lee30934-byte/K-Personal-MCP.git' $targetDir 2>&1
+            #
+            # Phase 66.6 (v0.6.7) — PowerShell 5.1 의 native command stderr ErrorRecord 함정 회피.
+            #
+            # 이전 코드: `git clone ... 2>&1` + `$ErrorActionPreference='Stop'` 조합에서
+            #   git 의 정상 진행 메시지 ("Cloning into '...'" 가 stderr 로 출력됨) 가
+            #   NativeCommandError 로 wrap 되어 즉시 throw → catch 에서 "Cloning..." 자체를
+            #   에러 메시지로 받음. clone 자체는 성공해도 실패로 판정.
+            #
+            # 회피: cmd /c 로 wrap. cmd 안에서 stderr 가 stdout 으로 merge → PS 가 단순
+            # 문자열 array 로 받아 ErrorRecord wrap 안 함. $LASTEXITCODE 만 진짜 exit 검사.
+            $repoUrl = 'https://github.com/lee30934-byte/K-Personal-MCP.git'
+            Add-Step "git clone $repoUrl ..."
+            # 경로에 공백 / 한글 (OneDrive 의 "문서") 가 있을 수 있어 인용 필수.
+            $cmdLine = "git clone `"$repoUrl`" `"$targetDir`" 2>&1"
+            $cloneOutput = & cmd /c $cmdLine
             $cloneCode = $LASTEXITCODE
-            $cloneOutput | ForEach-Object { Add-Step "  $($_.ToString())" }
+            if ($cloneOutput) {
+                $cloneOutput | ForEach-Object { Add-Step "  $($_.ToString())" }
+            }
             if ($cloneCode -ne 0) {
                 throw "git clone failed (exit $cloneCode) — 네트워크/권한/repo 접근 확인"
             }
