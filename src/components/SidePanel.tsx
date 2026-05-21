@@ -27,16 +27,17 @@ interface SidePanelProps {
   onClose: () => void;
 }
 
-function getExt(pathOrUrl: string): string {
+// Phase 65 (v0.5.53 후보): Message.tsx 의 inline 이미지 미리보기에서 재사용.
+export function getExt(pathOrUrl: string): string {
   const m = /\.([a-zA-Z0-9]+)(?:$|\?)/.exec(pathOrUrl);
   return (m?.[1] ?? "").toLowerCase();
 }
 
-function isUrl(pathOrUrl: string): boolean {
+export function isUrl(pathOrUrl: string): boolean {
   return /^(https?|file):\/\//i.test(pathOrUrl);
 }
 
-function getCategory(pathOrUrl: string): "image" | "video" | "audio" | "text" | "pdf" | "url" | "other" {
+export function getCategory(pathOrUrl: string): "image" | "video" | "audio" | "text" | "pdf" | "url" | "other" {
   if (isUrl(pathOrUrl) && !/\.(png|jpg|jpeg|gif|webp|svg|mp4|webm|mp3|wav|ogg|pdf|txt|md|json|csv|xml|yaml|yml|log)$/i.test(pathOrUrl)) {
     return "url";
   }
@@ -54,7 +55,7 @@ function getCategory(pathOrUrl: string): "image" | "video" | "audio" | "text" | 
  * - image/video/audio/pdf: bytes → base64 → data URL
  * - text: UTF-8 text 그대로
  */
-async function loadPreview(
+export async function loadPreview(
   pathOrUrl: string,
   category: ReturnType<typeof getCategory>,
 ): Promise<{ dataUrl?: string; text?: string; error?: string }> {

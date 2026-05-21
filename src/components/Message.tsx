@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { open } from "@tauri-apps/plugin-shell";
 import type { ChatMessage } from "../types";
+import { loadPreview, getCategory, isUrl } from "./SidePanel";
+import logger from "../utils/logger";
 
 interface MessageProps {
   message: ChatMessage;
@@ -23,6 +25,87 @@ function extractText(node: ReactNode): string {
     return extractText(props.children);
   }
   return "";
+}
+
+// Phase 65 (v0.5.53 후보): markdown 의 ![alt](path) 를 인라인 썸네일로 표시.
+// 로컬 파일 path 면 SidePanel 의 loadPreview 로 base64 data URL 로드.
+// 클릭 시 onPreviewRequest 로 SidePanel 에 원본 표시.
+function InlineImagePreview({
+  src,
+  alt,
+  onPreviewRequest,
+}: {
+  src: string;
+  alt?: string;
+  onPreviewRequest?: (pathOrUrl: string, label?: string) => void;
+}) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    // http(s)/file/data URL 은 그대로 src 사용 — 별도 로드 불필요
+    if (isUrl(src) || src.startsWith("data:")) {
+      setDataUrl(src);
+      setError(null);
+      return;
+    }
+    // 로컬 path — SidePanel 과 동일한 비동기 로드 (Tauri fs.readFile → base64)
+    const category = getCategory(src);
+    if (category !== "image") {
+      setError("이미지 형식 아님");
+      return;
+    }
+    setDataUrl(null);
+    setError(null);
+    loadPreview(src, "image").then((result) => {
+      if (cancelled) return;
+      if (result.error) {
+        logger.warn(`[InlineImage] 로드 실패: ${src} → ${result.error}`);
+        setError(result.error);
+      } else if (result.dataUrl) {
+        setDataUrl(result.dataUrl);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (onPreviewRequest) {
+      onPreviewRequest(src, alt);
+    } else {
+      open(src).catch(console.error);
+    }
+  };
+
+  if (error) {
+    return (
+      <span
+        className="md-inline-image-error"
+        onClick={handleClick}
+        title={`이미지 로드 실패 — 클릭 = 원본 열기: ${error}`}
+      >
+        🖼️ {alt || src} <small style={{ opacity: 0.6 }}>({error})</small>
+      </span>
+    );
+  }
+
+  if (!dataUrl) {
+    return <span className="md-inline-image-loading">🖼️ {alt || "이미지 로딩 중…"}</span>;
+  }
+
+  return (
+    <img
+      src={dataUrl}
+      alt={alt || ""}
+      className="md-inline-thumbnail"
+      onClick={handleClick}
+      title="클릭 = 원본 미리보기"
+    />
+  );
 }
 
 // 코드 블록 wrapper — 우상단 복사 버튼.
@@ -122,6 +205,19 @@ function Message({ message, onPreviewRequest }: MessageProps) {
                     >
                       {children}
                     </a>
+                  );
+                },
+                // Phase 65 (v0.5.53 후보): markdown 이미지 `![alt](path)` → 인라인 썸네일.
+                // 로컬 파일 path 면 Tauri fs.readFile 로 base64 data URL 로드 (CSP 안전).
+                // 클릭 시 SidePanel 에 원본 표시.
+                img: ({ src, alt }) => {
+                  if (!src || typeof src !== "string") return null;
+                  return (
+                    <InlineImagePreview
+                      src={src}
+                      alt={typeof alt === "string" ? alt : undefined}
+                      onPreviewRequest={onPreviewRequest}
+                    />
                   );
                 },
                 // 코드 블록 스타일링

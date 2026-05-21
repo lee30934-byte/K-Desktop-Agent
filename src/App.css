@@ -739,6 +739,42 @@
   text-shadow: 0 0 8px var(--accent-glow);
 }
 
+/* Phase 65 (v0.5.53 후보): markdown 의 ![alt](path) 인라인 썸네일 */
+.md-inline-thumbnail {
+  max-width: 240px;
+  max-height: 240px;
+  display: inline-block;
+  margin: 6px 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  cursor: zoom-in;
+  transition: var(--transition-ui-fast);
+  vertical-align: middle;
+}
+
+.md-inline-thumbnail:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.md-inline-image-loading,
+.md-inline-image-error {
+  display: inline-block;
+  padding: 4px 8px;
+  margin: 2px 4px;
+  font-size: 0.9em;
+  background: var(--bg-0);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 4px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.md-inline-image-error {
+  color: #d77;
+  border-color: rgba(221, 119, 119, 0.4);
+}
+
 /* 인라인 코드 */
 .md-inline-code {
   font-family: var(--font-mono);
