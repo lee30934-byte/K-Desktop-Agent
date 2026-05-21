@@ -1925,6 +1925,20 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   let currentText = "";
   let sawCompletion = false;
   let stderrTail = "";
+  // Phase 63 (v0.5.51): K 다른 PC 진단 — turn.completed 와 token_count 의 race condition.
+  // turn.completed 가 먼저 도착하면 그 시점엔 sawCodexLastTokenUsage=false → 가드 무력 →
+  // cumulative 값 (121K) 박힘 → done emit 후 늦게 도착한 token_count 의 last_token_usage
+  // (15K) 는 max(15K, 121K) = 121K 유지 → UI 121K 표시 (3% 누적 회귀).
+  // Fix: turn.completed 받아도 즉시 done emit 안 함. snapshot 저장만. stream EOF (rl loop
+  // 자연 종료) 후 finalize 단계에서 모든 token_count 가 박힌 후의 정확한 sawCodexLastTokenUsage
+  // 와 함께 가드 + done emit.
+  let turnCompletedSnapshot: {
+    usage: any;
+    codexCtxRaw: number;
+    inp: number;
+    cr: number;
+    outputTokens: number;
+  } | null = null;
   const STDERR_KEEP = 4096;
 
   try {
@@ -2141,29 +2155,45 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
           }
           case "turn.completed": {
             sawCompletion = true;
-            // Codex usage 형식 → Anthropic usage 형식으로 매핑.
-            //   input_tokens          ← input_tokens (모두 새로 본 input)
-            //   cached_input_tokens   ← cache_read_input_tokens
-            //   (Codex 는 cache_creation 분리 안 함 — 0 으로 둠)
-            //
-            // Phase 58 (v0.5.46): K 다른 PC 정밀 진단으로 결정타 fix — 종전 (Phase 59~57) 은
-            // maxTurnInputTokens 를 가드 검사 전에 박는 순서 버그. inputCumulative 가드가
-            // maxTurnContextTokens 만 보호하고 maxTurnInputTokens / maxTurnCacheRead 는 그대로
-            // 오염된 cumulative billing 합이 박힌 후 done.usage.input_tokens 로 frontend 에
-            // 전달됨. UI 의 다른 path (currentContextTokens 등) 가 그 값을 보고 cap 100%.
-            //
-            // v0.5.46 fix:
-            //   1. 가드 먼저 검사 (input + cache 둘 다)
-            //   2. 가드 통과 시만 갱신 (input / cache / context 모두)
-            //   3. done.usage.cache_read_input_tokens 도 raw cr 대신 maxTurnCacheRead (가드 적용)
-            //   4. 모든 갱신 skip 시 token_count peak (token_count handler 가 박은 값) 만 유지
+            // Phase 63 (v0.5.51): K 다른 PC 진단 — turn.completed 가 token_count 보다 먼저 도착
+            // 시 가드 무력화. 종전엔 여기서 즉시 가드 검사 + maxTurn* 갱신 + done emit 했지만,
+            // 그 시점 sawCodexLastTokenUsage=false → cumulative 121K 박힘 → 늦은 token_count 의
+            // last_token_usage=15K 도 max() 정책상 121K 못 떨어뜨림.
+            // Fix: snapshot 저장만, finalize 는 for-await 루프 종료 후 (모든 token_count 처리 후).
             const u = event.usage ?? {};
             const inpRaw = (u.input_tokens ?? 0) - (u.cached_input_tokens ?? 0);
             const inp = Math.max(0, inpRaw);
             const cr = u.cached_input_tokens ?? 0;
             const codexCtxRaw = u.input_tokens ?? 0;
+            turnCompletedSnapshot = {
+              usage: u,
+              codexCtxRaw,
+              inp,
+              cr,
+              outputTokens: u.output_tokens ?? 0,
+            };
+            // 누적 텍스트 마지막 emit (Claude 와 동일 정책) — done emit 은 deferred 라도 텍스트는 즉시
+            if (currentText) {
+              emit({ type: "assistant_delta", id: msg.id, text: currentText });
+            }
+            // done emit / 가드 / 갱신 모두 deferred — for-await 루프 종료 후 finalize 에서.
+            break;
+          }
+
+          // === DEFERRED FINALIZE 스텁 (never matches) — 아래 dead code 는 finalize 함수 본문 ===
+          // Phase 63 (v0.5.51): 이 case label 이 절대 매칭 안 돼서 아래 코드는 실행 X.
+          // 실제 finalize 는 for-await loop 종료 후 `if (turnCompletedSnapshot) { ... }`.
+          case "__phase63_deferred_finalize_never__": {
+            // stub case 안 const 들 — 아래 dead code 가 type-check 통과하게 placeholder 박음.
+            const u: any = {};
+            const inpRaw = 0;
+            const inp = Math.max(0, inpRaw);
+            const cr = 0;
+            const codexCtxRaw = 0;
             const CODEX_CTX_HARD_CAP = 1_050_000;
             const ABSOLUTE_SINGLE_CALL_CEILING = 1_000_000;
+            void u; void inp; void cr; void codexCtxRaw;
+            void CODEX_CTX_HARD_CAP; void ABSOLUTE_SINGLE_CALL_CEILING;
 
             // ── 가드 1: input cumulative 판정 ─────────────────────
             // Phase 62 (v0.5.50): K 다른 PC 진단 결정타 — sawCodexLastTokenUsage 가 true 면
@@ -2295,6 +2325,115 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
         }
       } catch (parseErr) {
         logToFile("warn", `Codex JSON parse error: ${line}`);
+      }
+    }
+
+    // Phase 63 (v0.5.51): for-await rl loop 종료 후 deferred finalize.
+    // 이 시점이면 모든 token_count event 가 처리된 후 → sawCodexLastTokenUsage 정확.
+    // turn.completed 가 token_count 보다 먼저 도착해도 가드가 정확하게 작동.
+    if (turnCompletedSnapshot) {
+      const u = turnCompletedSnapshot.usage;
+      const inp = turnCompletedSnapshot.inp;
+      const cr = turnCompletedSnapshot.cr;
+      const codexCtxRaw = turnCompletedSnapshot.codexCtxRaw;
+      const CODEX_CTX_HARD_CAP = 1_050_000;
+      const ABSOLUTE_SINGLE_CALL_CEILING = 1_000_000;
+
+      // ── 가드 1: input cumulative 판정 (정확한 sawCodexLastTokenUsage 기반) ──
+      const dominatedByLastTokenUsage =
+        sawCodexLastTokenUsage && codexCtxRaw > maxTurnContextTokens;
+      const overModelWindow =
+        lastSeenModelContextWindow > 0 &&
+        codexCtxRaw > lastSeenModelContextWindow * 1.2;
+      const overLastTokenPeak =
+        maxTurnContextTokens > 0 && codexCtxRaw > maxTurnContextTokens * 2;
+      const overAbsoluteCeiling = codexCtxRaw > ABSOLUTE_SINGLE_CALL_CEILING;
+      const inputCumulative =
+        dominatedByLastTokenUsage ||
+        overModelWindow ||
+        overLastTokenPeak ||
+        overAbsoluteCeiling;
+
+      // ── 가드 2: cache cumulative 판정 ──
+      const cacheCumulative =
+        (maxLastTokenUsageCachePeak > 0 && cr > maxLastTokenUsageCachePeak * 2) ||
+        (maxLastTokenUsageCachePeak === 0 && cr > 1_000_000);
+
+      // ── 가드 적용 (deferred — 이제 sawCodexLastTokenUsage 가 정확) ──
+      if (inputCumulative) {
+        const reason = dominatedByLastTokenUsage
+          ? `> last_token_usage peak ${maxTurnContextTokens} (Phase 63 deferred — token_count.last_token_usage 가 single-call 진실, race condition 해결)`
+          : overModelWindow
+            ? `> model window ${lastSeenModelContextWindow} * 1.2`
+            : overLastTokenPeak
+              ? `> last_token_usage peak ${maxTurnContextTokens} * 2 (model window 미보고)`
+              : `> 1M absolute ceiling (token_count event 전무 — schema mismatch 의심)`;
+        logToFile(
+          "warn",
+          `Codex turn.completed.usage cumulative billing 합 추정 — input=${codexCtxRaw} ${reason}, cache=${cr}. ALL 갱신 skip (token_count peak 유지: input=${maxTurnInputTokens} cache=${maxTurnCacheRead} ctx=${maxTurnContextTokens})`,
+        );
+        // input / cache / context 모두 갱신 skip — token_count handler 가 박은 peak 만 유지
+      } else if (cacheCumulative) {
+        // 비대칭 케이스 — input 만 정상, cache 만 cumulative
+        logToFile(
+          "warn",
+          `Codex cache_read_input_tokens=${cr} cumulative billing 추정 (peak=${maxLastTokenUsageCachePeak}) — cache 만 skip, input/context 는 정상 갱신`,
+        );
+        maxTurnInputTokens = Math.max(maxTurnInputTokens, inp);
+        maxTurnContextTokens = Math.max(
+          maxTurnContextTokens,
+          Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP),
+        );
+      } else {
+        // 정상 — 모두 갱신
+        maxTurnInputTokens = Math.max(maxTurnInputTokens, inp);
+        maxTurnCacheRead = Math.max(maxTurnCacheRead, cr);
+        maxTurnContextTokens = Math.max(
+          maxTurnContextTokens,
+          Math.min(codexCtxRaw, CODEX_CTX_HARD_CAP),
+        );
+      }
+
+      if (codexCtxRaw > CODEX_CTX_HARD_CAP) {
+        logToFile(
+          "warn",
+          `Codex input_tokens=${codexCtxRaw} 비현실적 — ${CODEX_CTX_HARD_CAP} 으로 cap (tool 결과 누적 부풀음)`,
+        );
+      }
+
+      emit({
+        type: "done",
+        id: msg.id,
+        usage: {
+          input_tokens: maxTurnInputTokens,
+          output_tokens: turnCompletedSnapshot.outputTokens,
+          cache_read_input_tokens: maxTurnCacheRead,
+        },
+        computed_usage: {
+          input_tokens: maxTurnInputTokens,
+          output_tokens: turnCompletedSnapshot.outputTokens,
+          cache_read_input_tokens: maxTurnCacheRead,
+        },
+        maxTurnUsage:
+          maxTurnContextTokens > 0
+            ? {
+                input_tokens: maxTurnInputTokens,
+                cache_creation_input_tokens: maxTurnCacheCreation,
+                cache_read_input_tokens: maxTurnCacheRead,
+                total_context_tokens: maxTurnContextTokens,
+              }
+            : null,
+        agentId: sessionId,
+      });
+      logToFile(
+        "info",
+        `Codex turn end (Phase 63 deferred) id=${msg.id} displayCtx=${maxTurnContextTokens} (input=${maxTurnInputTokens} cr=${maxTurnCacheRead} out=${turnCompletedSnapshot.outputTokens}) sessionId=${sessionId ?? "NULL"} sawLast=${sawCodexLastTokenUsage}`,
+      );
+      if (!sessionId) {
+        logToFile(
+          "warn",
+          `⚠ Codex sessionId NULL — resume 불가. 다음 turn 도 매번 새 세션 + prior_conversation 통째 재주입됨. Codex CLI 버전이 thread_id event schema 안 보내는 경우. K 의 다른 PC root cause 후보.`,
+        );
       }
     }
 
