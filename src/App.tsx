@@ -1221,23 +1221,42 @@ export default function App() {
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text && (!files || files.length === 0)) return;
 
-    // Phase 67.1 (v0.6.3) — AskUserQuestion cancel path: K 가 "직접 답 입력" 후 자유 작성한
-    // 메시지가 들어오면 자동으로 tool_use_id 명시 prefix 박음. 모델이 직전 turn 의 자기 tool 호출
-    // 과 짝 맞춰 인식. 한 번 박힌 후 askState 비움.
+    // Phase 67.1 (v0.6.3) + Phase 68 (v0.6.4) — AskUserQuestion cancel path.
+    //
+    // Phase 68 의 진짜 fix: 직전 turn 의 AskUserQuestion ToolMessage 의 toolOutput 자리에
+    // K 의 답을 박는다. 그러면 buildPromptWithHistory 가 다음 turn 의 prior_conversation 에
+    // [Tool] AskUserQuestion(...) → "K 답: ..." 로 묶어 박음 → 모델이 자기 tool 호출이
+    // K 답을 받았다는 걸 명확히 인식. text-prefix 보강 (v0.6.3) 은 이중 안전망으로 유지.
+    // 단일 frontend fix 로 CLI / Codex / REST 모든 path 영향 — sidecar 의 summarizeToolItem
+    // 이 세 path 공통 함수라.
     const askPending = askUserQuestionStateRef.current;
     if (askPending?.awaitingFreeForm) {
       const currentQ = askPending.questions[askPending.currentIndex];
+      // Phase 68: ToolMessage.toolOutput 박기 (history 합성의 진짜 path)
+      patchAskToolMessageOutput(
+        askPending.turnId,
+        askPending.toolUseId,
+        [
+          `K 가 "직접 답 입력" 으로 자유 작성한 답변:`,
+          currentQ ? `질문 (${currentQ.header}): ${currentQ.question}` : "",
+          `답:`,
+          text,
+        ].filter(Boolean).join("\n"),
+      );
+
+      // v0.6.3 prefix 보강 — 이중 안전망 유지
       text = [
         `[K-DESKTOP-AGENT 시스템 알림]`,
         `이 메시지는 직전 turn 에서 당신(AI)이 호출한 AskUserQuestion 도구에 대한 K 의 자유 작성 답변입니다.`,
         `tool_use_id: ${askPending.toolUseId}`,
         currentQ ? `질문: ${currentQ.header || currentQ.question}` : "",
         `별개의 새 요청이 아니라, 이 답을 기반으로 작업을 이어서 진행해 주세요.`,
+        `(같은 답이 history 의 [Tool] AskUserQuestion 의 결과 자리에도 박혀 있습니다)`,
         ``,
         text,
       ].filter(Boolean).join("\n");
       askUserQuestionStateRef.current = null;
-      logger.log(`[ask_user_question] free-form answer prefixed with tool_use_id=${askPending.toolUseId}`);
+      logger.log(`[ask_user_question] free-form answer synthesized into tool_use_id=${askPending.toolUseId}`);
     }
 
     // Phase 30: streaming 중이면 큐에 보관 후 return — useEffect 가 streaming 종료 시 자동 send
@@ -2238,6 +2257,40 @@ export default function App() {
     });
   });
 
+  // Phase 68 (v0.6.4) — AskUserQuestion 응답 → 직전 turn 의 ToolMessage 의 toolOutput 자리에
+  // K 답을 박는다. 이게 박히면 다음 turn 의 history 에 [Tool] AskUserQuestion(...) → "K 답: ..."
+  // 가 짝으로 들어가 (sidecar 의 summarizeToolItem 통해), 모델이 자기 tool 호출 + K 답을
+  // 명확히 매칭. CLI / Codex / REST 세 path 모두 동일 함수 거치므로 한 곳 fix 로 다 적용됨.
+  // 안전:
+  //   - 대상 ToolMessage 못 찾으면 silent skip (회귀 위험 0) — text-prefix 보강이 fallback
+  //   - DB 영속화로 다음 turn / resume 에도 보존
+  const patchAskToolMessageOutput = useStableCallback(
+    (turnId: string, toolUseId: string, kAnswer: string) => {
+      const targetId = `${turnId}-tool-${toolUseId}`;
+      let updated: ChatMessage | null = null;
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.role === "tool" && m.id === targetId) {
+            const next: ChatMessage = {
+              ...m,
+              toolOutput: kAnswer,
+              status: "success" as const,
+            };
+            updated = next;
+            return next;
+          }
+          return m;
+        }),
+      );
+      if (updated) {
+        queueMessageSave(updated);
+        logger.log(`[ask_user_question] ToolMessage.toolOutput patched (tool_use_id=${toolUseId})`);
+      } else {
+        logger.warn(`[ask_user_question] ToolMessage 못 찾음 (turnId=${turnId}, toolUseId=${toolUseId}) — text-prefix 만 작동`);
+      }
+    },
+  );
+
   const handleElicitationResponse = useStableCallback(async (response: ElicitationResponse) => {
     // Phase 50 — ask_user_question 답 흐름 분기. dialog id 가 "ask-..." prefix 면 모델 질문.
     const askState = askUserQuestionStateRef.current;
@@ -2314,24 +2367,32 @@ export default function App() {
 
       // 모든 질문 답함 — 다음 user message 로 박아 전송.
       //
-      // Phase 67.1 (v0.6.3) — 회귀 fix:
-      //   기존엔 "[모델 질문 답변]\n• ..." prefix 만 박았는데, 모델이 새 turn 받을 때
-      //   직전 turn 의 AskUserQuestion tool_use 와 연결 못 하고 "별개 메시지" 로 인식
-      //   → K 의 답을 무시하고 다른 작업 가버림. K 의 보고와 일치.
-      //
-      // 진짜 fix 는 tool_use 짝 맞는 tool_result 박는 거지만, sidecar 의 history 합성은
-      // CLI / REST path 마다 mechanism 다르고 회귀 영역 큼. 일단 user message text 자체를
-      // 강한 instructional prefix + tool_use_id 명시로 보강 — 모델이 자기 history 의
-      // tool 호출과 짝 맞춰 인식하도록. tool_use_id 가 메시지에 있으면 long-context model
-      // 의 self-reference 정확도 크게 올라감.
+      // Phase 67.1 (v0.6.3) + Phase 68 (v0.6.4) 통합 fix:
+      //   - v0.6.3: replyText 자체에 강한 prefix + tool_use_id 명시 (이중 안전망)
+      //   - v0.6.4: ToolMessage.toolOutput 자리에 K 의 답을 박아서 history 의 진짜 tool_result
+      //     합성. buildPromptWithHistory 의 summarizeToolItem 이 [Tool] AskUserQuestion(...) →
+      //     "K 답: ..." 로 묶어 prior_conversation 에 박음 → CLI / Codex / REST 모든 path 에서
+      //     모델이 자기 tool 호출 + K 답을 한 쌍으로 인식.
       const summary = askState.collectedAnswers
         .map((a) => `• ${a.header}: ${a.answer}`)
         .join("\n");
+
+      // Phase 68: ToolMessage.toolOutput 박기 (진짜 history 합성)
+      patchAskToolMessageOutput(
+        askState.turnId,
+        askState.toolUseId,
+        [
+          `K 가 옵션에서 선택한 답변:`,
+          summary,
+        ].join("\n"),
+      );
+
       const replyText = [
         `[K-DESKTOP-AGENT 시스템 알림]`,
         `이 메시지는 직전 turn 에서 당신(AI)이 호출한 AskUserQuestion 도구의 응답입니다.`,
         `tool_use_id: ${askState.toolUseId}`,
         `K 님이 다음 선택지를 골랐습니다 — 이 답을 기반으로 작업을 이어서 진행해 주세요. 별개의 새 요청이 아닙니다.`,
+        `(같은 답이 history 의 [Tool] AskUserQuestion 의 결과 자리에도 박혀 있습니다)`,
         ``,
         summary,
       ].join("\n");
