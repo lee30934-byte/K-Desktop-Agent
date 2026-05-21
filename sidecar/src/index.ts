@@ -16,6 +16,9 @@ import {
   rmSync,
   readdirSync,
   readFileSync,
+  openSync,
+  readSync,
+  closeSync,
   type WriteStream,
 } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -1691,6 +1694,109 @@ function normalizeToolOutput(content: unknown): string {
 //      sandbox 모드로 매핑 (auto → workspace-write, ask → read-only, manual → 자체 거부).
 //      향후 정밀 매핑은 별도 phase. 현재는 --dangerously-bypass-approvals-and-sandbox 로
 //      stdin 프로토콜 호환성 우선 (Claude CLI 의 bypassPermissions 와 동등).
+
+// Phase 59 (v0.5.47): poisoned Codex session 차단 — K 의 다른 PC 진단 결정타.
+// Codex thread 가 한 번 cumulative billing 누적 (예: total_token_usage.input_tokens=8M+)
+// 으로 오염되면, KDA 가 그 thread 를 resume 하는 한 매 turn context % 가 비정상으로 부풀음.
+// Phase 58 까지의 fix 는 "오염된 값을 frontend 에 안 보내기" 였지만, 그 thread 자체를 계속
+// resume 하면 다시 비정상 상태 진입. 해결: resume 직전 .jsonl 파일 검사 → poisoned 면 새 세션.
+function findCodexSessionFileById(agentId: string): string | null {
+  // Codex 세션 파일: ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl
+  // 최근 14일 디렉터리만 스캔 (성능 위해)
+  const rootDir = path.join(os.homedir(), ".codex", "sessions");
+  if (!existsSync(rootDir)) return null;
+  const now = new Date();
+  for (let daysBack = 0; daysBack <= 14; daysBack++) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - daysBack);
+    const yyyy = String(d.getFullYear());
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const dayDir = path.join(rootDir, yyyy, mm, dd);
+    if (!existsSync(dayDir)) continue;
+    try {
+      const files = readdirSync(dayDir);
+      for (const f of files) {
+        if (f.includes(agentId) && f.endsWith(".jsonl")) {
+          return path.join(dayDir, f);
+        }
+      }
+    } catch {
+      // 디렉터리 읽기 실패 — 다음 일자 검색
+    }
+  }
+  return null;
+}
+
+function inspectCodexSessionFile(agentId: string): {
+  isPoisoned: boolean;
+  reason?: string;
+  filePath?: string;
+} {
+  try {
+    const sessionFile = findCodexSessionFileById(agentId);
+    if (!sessionFile) {
+      // 파일 못 찾으면 그냥 resume 시도 (Codex 가 자체 fail 시 fallback path)
+      return { isPoisoned: false };
+    }
+
+    // 1차 가드: 파일 크기 > 5MB
+    const stats = statSync(sessionFile);
+    const sizeMB = stats.size / 1024 / 1024;
+    if (sizeMB > 5) {
+      return {
+        isPoisoned: true,
+        reason: `세션 파일 크기 ${sizeMB.toFixed(2)}MB > 5MB threshold (대량 tool output 누적)`,
+        filePath: sessionFile,
+      };
+    }
+
+    // 2차 가드: 마지막 100KB 안의 가장 최근 token_count 의 total_token_usage.input_tokens 검사
+    // 전체 파일 스캔 회피 — 마지막 chunk 만 읽음
+    const lastBytes = Math.min(stats.size, 200 * 1024);
+    const fd = openSync(sessionFile, "r");
+    const buf = Buffer.alloc(lastBytes);
+    readSync(fd, buf, 0, lastBytes, stats.size - lastBytes);
+    closeSync(fd);
+    const lastChunk = buf.toString("utf-8");
+    const lines = lastChunk.split("\n").reverse();
+
+    let modelWindow = 0;
+    let totalInput = 0;
+    for (const line of lines) {
+      if (!line.includes("token_count")) continue;
+      try {
+        const parsed = JSON.parse(line);
+        const payload = parsed.payload ?? parsed;
+        if (payload.type !== "token_count") continue;
+        const info = payload.info ?? payload;
+        modelWindow = info.model_context_window ?? 0;
+        totalInput = info.total_token_usage?.input_tokens ?? 0;
+        if (modelWindow > 0 && totalInput > 0) break;
+      } catch {
+        // JSON 파싱 실패 — 그 line 무시
+      }
+    }
+
+    // total_token_usage 가 model window 의 5배 넘으면 oxidized
+    if (modelWindow > 0 && totalInput > modelWindow * 5) {
+      return {
+        isPoisoned: true,
+        reason: `total_token_usage.input_tokens=${totalInput} > model_context_window ${modelWindow} * 5 (cumulative billing 과대 누적)`,
+        filePath: sessionFile,
+      };
+    }
+
+    return { isPoisoned: false, filePath: sessionFile };
+  } catch (e) {
+    logToFile(
+      "warn",
+      `poisoned session check 실패 (resume 그대로 시도): ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return { isPoisoned: false };
+  }
+}
+
 async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // 첨부 파일은 Claude 와 같은 방식으로 임시 폴더 + 안내 텍스트
   const { dir: attachmentsDir, guidance: attachmentsGuidance } =
@@ -1699,10 +1805,29 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     ? `${msg.content}${attachmentsGuidance}`
     : msg.content;
   const memory = loadMemoryContext();
+
+  // Phase 59 (v0.5.47): poisoned session 차단 가드 — K 다른 PC 진단 핵심.
+  // msg.agent_id 가 있어도 그 thread 가 오염됐으면 resume 안 함 → 새 세션 시작.
+  // 차단 시 frontend 에는 agentId=null 알림 emit (turn end 시 새 sessionId 로 자동 갱신됨)
+  // 그리고 prior_conversation 도 새 세션처럼 박아야 함 (resume 아닌 path 와 동일).
+  let effectiveAgentId: string | undefined = msg.agent_id ?? undefined;
+  let poisonedSkipped = false;
+  if (effectiveAgentId) {
+    const poison = inspectCodexSessionFile(effectiveAgentId);
+    if (poison.isPoisoned) {
+      logToFile(
+        "warn",
+        `Codex session ${effectiveAgentId} POISONED — ${poison.reason}. resume 차단 → 새 세션 시작 (file=${poison.filePath ?? "?"})`,
+      );
+      effectiveAgentId = undefined;
+      poisonedSkipped = true;
+    }
+  }
+
   // Phase 48 (v0.5.36): Codex resume 사용 시 prior_conversation 안 박음 — Codex 가 thread state
   // 로 history 보유. 매 turn 마다 통째 재주입 시 context 폭발 (K 의 다른 PC root cause).
-  // resume 아닐 때만 history 박음.
-  const promptWithHistory = msg.agent_id
+  // resume 아닐 때만 history 박음. Phase 59: effectiveAgentId 기준 (poisoned 시 새 세션 path).
+  const promptWithHistory = effectiveAgentId
     ? buildPromptWithHistory(baseContent, undefined, memory.content)
     : buildPromptWithHistory(baseContent, msg.history, memory.content);
 
@@ -1710,11 +1835,19 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // resume 은 별도 subcommand 라 case 분기로 처리.
   const args: string[] = [];
 
-  if (msg.agent_id) {
+  if (effectiveAgentId) {
     // `codex exec resume <thread_id>` — 기존 세션 이어가기.
-    args.push("exec", "resume", msg.agent_id, "--json");
+    args.push("exec", "resume", effectiveAgentId, "--json");
   } else {
     args.push("exec", "--json");
+    if (poisonedSkipped) {
+      // poisoned skip 시 frontend 에 즉시 안내 — 시스템 메시지로 표시 가능
+      emit({
+        type: "log",
+        level: "warn",
+        message: `이전 Codex 세션이 비정상 누적 (cumulative billing 합 > model window * 5 또는 파일 > 5MB) → 새 세션으로 자동 전환. 다음 turn 부터 정상 측정됩니다.`,
+      });
+    }
   }
 
   // 공통 옵션
