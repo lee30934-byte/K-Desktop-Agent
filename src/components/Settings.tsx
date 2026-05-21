@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
@@ -512,17 +513,130 @@ const THEMES: Theme[] = [
 ];
 
 // Phase 16: Settings 탭 분리 — 16개 섹션을 5개 카테고리로 그룹핑
-type SettingsTabId = "ai" | "agent" | "appearance" | "system" | "safety";
+type SettingsTabId = "ai" | "agent" | "appearance" | "system" | "tools" | "safety";
 
 const SETTINGS_TABS: { id: SettingsTabId; icon: string; label: string }[] = [
   { id: "ai", icon: "🤖", label: "AI" },
   { id: "agent", icon: "🛡️", label: "에이전트" },
   { id: "appearance", icon: "🎨", label: "외관" },
   { id: "system", icon: "⚙️", label: "시스템" },
+  // Phase 67 (v0.6.2) — MCP 도구 인스펙터 + 카탈로그 + 커스텀 plugin 빌더
+  { id: "tools", icon: "🔧", label: "MCP 도구" },
   { id: "safety", icon: "🆘", label: "안전장치" },
 ];
 
 const LS_ACTIVE_SETTINGS_TAB = "kda_active_settings_tab";
+
+// Phase 67 (v0.6.2) — 커스텀 plugin 빌더의 "새 도구" 기본 템플릿.
+// K-Personal-MCP/modules/kda_plugins/kda_example.py 와 같은 패턴 — 익숙해지면 빠른 시작 가능.
+const KDA_PLUGIN_TEMPLATE = `"""
+KDA 커스텀 plugin
+"""
+from mcp.types import Tool, TextContent
+
+
+def get_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="kda_my_tool",
+            description="여기에 도구 설명 (모델이 이걸 보고 언제 호출할지 판단).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "예시 인자"},
+                },
+                "required": ["message"],
+            },
+        ),
+    ]
+
+
+async def handle_tool(name: str, arguments: dict) -> list:
+    if name == "kda_my_tool":
+        msg = arguments.get("message", "")
+        return [TextContent(type="text", text=f"received: {msg}")]
+    raise KeyError(name)
+`;
+
+// Phase 67b (v0.6.2) — 외부 MCP 서버 카탈로그 (정적 list — 이번 phase 는 명령 안내만).
+// 자동 설치 + sidecar multi-MCP spawn 은 다음 phase 후보 (현재 sidecar 는 K-Personal singleton).
+interface ExternalMCPCatalogEntry {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  installCommand: string;
+  docsUrl: string;
+  note?: string;
+}
+
+const EXTERNAL_MCP_CATALOG: ExternalMCPCatalogEntry[] = [
+  {
+    id: "filesystem",
+    name: "Filesystem",
+    icon: "📁",
+    description:
+      "임의 디렉토리에 대한 read/write/list/search. K-Personal MCP 의 fm_* 와 비슷하지만 표준 MCP 형식이라 다른 IDE 와 호환.",
+    installCommand: "npx -y @modelcontextprotocol/server-filesystem <path>",
+    docsUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+  },
+  {
+    id: "github",
+    name: "GitHub",
+    icon: "🐙",
+    description:
+      "GitHub repo 검색, issue/PR 조회, code search. 개인 access token 필요.",
+    installCommand: "npx -y @modelcontextprotocol/server-github",
+    docsUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+    note: "GITHUB_PERSONAL_ACCESS_TOKEN 환경변수 필요",
+  },
+  {
+    id: "brave-search",
+    name: "Brave Search",
+    icon: "🔍",
+    description: "웹 검색 (개인정보 보호 검색엔진). Brave API 키 필요 (월 2,000 쿼리 무료).",
+    installCommand: "npx -y @modelcontextprotocol/server-brave-search",
+    docsUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
+    note: "BRAVE_API_KEY 환경변수 필요",
+  },
+  {
+    id: "slack",
+    name: "Slack",
+    icon: "💬",
+    description:
+      "Slack 워크스페이스 메시지 읽기/검색/post. Bot token 필요.",
+    installCommand: "npx -y @modelcontextprotocol/server-slack",
+    docsUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
+    note: "SLACK_BOT_TOKEN + SLACK_TEAM_ID 필요",
+  },
+  {
+    id: "postgres",
+    name: "PostgreSQL",
+    icon: "🐘",
+    description: "Postgres DB 에 read-only SQL 쿼리. 로컬 / 원격 모두 가능.",
+    installCommand: "npx -y @modelcontextprotocol/server-postgres postgresql://...",
+    docsUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
+  },
+  {
+    id: "fetch",
+    name: "Fetch",
+    icon: "🌐",
+    description:
+      "임의 URL 의 HTML 을 markdown 변환 후 가져옴. K-Personal 의 web_* 보다 가벼움.",
+    installCommand: "uvx mcp-server-fetch",
+    docsUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+    note: "Python uv 설치 필요",
+  },
+  {
+    id: "memory",
+    name: "Memory (Knowledge Graph)",
+    icon: "🧠",
+    description:
+      "MCP 서버 자체에 entity/relation 영속 — 대화간 지속되는 지식 베이스. K 의 memory/ 와 별도.",
+    installCommand: "npx -y @modelcontextprotocol/server-memory",
+    docsUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+  },
+];
 
 export default function Settings({ open, onClose, mcpConnected }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
@@ -661,6 +775,35 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [kpmcpBusy, setKpmcpBusy] = useState<"idle" | "installing">("idle");
   const [kpmcpError, setKpmcpError] = useState<string | null>(null);
 
+  // ─── Phase 67 (v0.6.2) — MCP 도구 인스펙터 + 카탈로그 + plugin 빌더 상태 ──────────
+  // 67a: 현재 sidecar 에 연결된 K-Personal MCP 가 노출하는 도구 list
+  type McpToolInfo = {
+    name: string;
+    description?: string;
+    inputSchema?: Record<string, unknown>;
+  };
+  const [mcpTools, setMcpTools] = useState<McpToolInfo[] | null>(null);
+  const [mcpToolsError, setMcpToolsError] = useState<string | null>(null);
+  const [mcpToolsBusy, setMcpToolsBusy] = useState(false);
+  const [toolFilter, setToolFilter] = useState("");
+  const [expandedTool, setExpandedTool] = useState<string | null>(null);
+
+  // 67c: KDA 가 K-Personal-MCP/modules/kda_plugins/ 에 박은 커스텀 plugin 목록 + 에디터
+  type PluginInfo = { file: string; size: number; modified_ms: number };
+  const [pluginList, setPluginList] = useState<PluginInfo[]>([]);
+  const [pluginListError, setPluginListError] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"new" | "edit">("new");
+  const [editorName, setEditorName] = useState("");
+  const [editorCode, setEditorCode] = useState("");
+  const [editorBusy, setEditorBusy] = useState(false);
+  const [editorMessage, setEditorMessage] = useState<string | null>(null);
+  // 모델에게 자연어 요청해서 코드 자동 제안받는 경로 — Composer 에 prompt 흘려보내는 식
+  const [builderRequest, setBuilderRequest] = useState("");
+
+  // sidecar event listen 등록 ref (unmount 시 해제)
+  const mcpToolsUnlistenRef = useRef<UnlistenFn | null>(null);
+
   // Phase 25 (v0.5.11): Portable data dir
   type DataDirInfo = {
     data_root: string;
@@ -773,6 +916,51 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     // Phase 25 (v0.5.11): 데이터 폴더 상태 동기 로드
     refreshDataDirInfo();
   }, [open]);
+
+  // ─── Phase 67 (v0.6.2) — Settings 열림 + tools 탭 활성화 시 도구/plugin list 로드 ──────
+  useEffect(() => {
+    if (!open) return;
+
+    // sidecar 의 mcp_tools event 한 번만 등록 (open 사이클 동안 유지)
+    let cancelled = false;
+    (async () => {
+      const unlisten = await listen<{
+        type: string;
+        server?: string;
+        tools?: McpToolInfo[];
+        error?: string;
+      }>("sidecar-event", (ev) => {
+        const payload = ev.payload;
+        if (payload && payload.type === "mcp_tools") {
+          if (cancelled) return;
+          setMcpToolsBusy(false);
+          if (payload.error) {
+            setMcpToolsError(payload.error);
+            setMcpTools([]);
+          } else {
+            setMcpToolsError(null);
+            setMcpTools(payload.tools ?? []);
+          }
+        }
+      });
+      mcpToolsUnlistenRef.current = unlisten;
+    })();
+
+    return () => {
+      cancelled = true;
+      if (mcpToolsUnlistenRef.current) {
+        try { mcpToolsUnlistenRef.current(); } catch {}
+        mcpToolsUnlistenRef.current = null;
+      }
+    };
+  }, [open]);
+
+  // 탭이 "tools" 로 활성화될 때마다 fresh 로드.
+  useEffect(() => {
+    if (!open || activeTab !== "tools") return;
+    requestMcpToolsRefresh(false);
+    refreshPluginList();
+  }, [open, activeTab]);
 
   useEffect(() => {
     if (!open) return;
@@ -1420,6 +1608,138 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       setKpmcpError(String(e));
     } finally {
       setKpmcpBusy("idle");
+    }
+  }
+
+  // ─── Phase 67a (v0.6.2) — MCP 도구 인스펙터 핸들러 ──────────
+  //
+  // sidecar 의 mcp_tools event 를 listen + invoke("list_mcp_tools") 로 갱신.
+  // 호출 패턴: 탭이 활성화될 때 자동 + "새로고침" 버튼.
+  async function requestMcpToolsRefresh(refresh = false) {
+    setMcpToolsBusy(true);
+    setMcpToolsError(null);
+    try {
+      await invoke("list_mcp_tools", { refresh });
+      // 응답은 sidecar event listener 가 받아 setMcpTools 호출.
+      // 5초 안 오면 timeout 으로 busy 해제 (UI 멈춤 회피).
+      setTimeout(() => setMcpToolsBusy(false), 5000);
+    } catch (e) {
+      setMcpToolsError(String(e));
+      setMcpToolsBusy(false);
+    }
+  }
+
+  // ─── Phase 67c (v0.6.2) — 커스텀 plugin 빌더 핸들러 ──────────
+  async function refreshPluginList() {
+    try {
+      const list = await invoke<PluginInfo[]>("list_kda_plugins");
+      setPluginList(list);
+      setPluginListError(null);
+    } catch (e) {
+      setPluginListError(String(e));
+    }
+  }
+
+  function openNewPluginEditor() {
+    setEditorMode("new");
+    setEditorName("");
+    setEditorCode(KDA_PLUGIN_TEMPLATE);
+    setEditorMessage(null);
+    setBuilderRequest("");
+    setEditorOpen(true);
+  }
+
+  async function openEditPluginEditor(file: string) {
+    try {
+      const code = await invoke<string>("read_kda_plugin", { file });
+      setEditorMode("edit");
+      // 파일명에서 .py 제거 후 이름으로
+      setEditorName(file.replace(/\.py$/, ""));
+      setEditorCode(code);
+      setEditorMessage(null);
+      setBuilderRequest("");
+      setEditorOpen(true);
+    } catch (e) {
+      setEditorMessage(`불러오기 실패: ${e}`);
+    }
+  }
+
+  async function handleSavePlugin() {
+    setEditorBusy(true);
+    setEditorMessage(null);
+    try {
+      const name = editorName.trim();
+      if (!name) {
+        setEditorMessage("plugin 이름이 비어있습니다.");
+        setEditorBusy(false);
+        return;
+      }
+      const result = await invoke<string>("save_kda_plugin", {
+        name,
+        code: editorCode,
+      });
+      setEditorMessage(`✓ ${result}`);
+      // 저장 후 sidecar 자동 재시작 (Rust 측에서) → 도구 list 도 곧 새로고침
+      setTimeout(() => {
+        refreshPluginList();
+        requestMcpToolsRefresh(true);
+      }, 2500);
+    } catch (e) {
+      setEditorMessage(`✗ 저장 실패: ${e}`);
+    } finally {
+      setEditorBusy(false);
+    }
+  }
+
+  async function handleDeletePlugin(file: string) {
+    if (!confirm(`정말 plugin '${file}' 를 삭제할까요?\n\n.deleted.bak 으로 1회 백업이 남으니 K-Personal-MCP/modules/kda_plugins/ 에서 복구 가능합니다.`)) {
+      return;
+    }
+    try {
+      const msg = await invoke<string>("delete_kda_plugin", { file });
+      setEditorMessage(`✓ ${msg}`);
+      setTimeout(() => {
+        refreshPluginList();
+        requestMcpToolsRefresh(true);
+      }, 2500);
+    } catch (e) {
+      setEditorMessage(`✗ 삭제 실패: ${e}`);
+    }
+  }
+
+  // 채팅으로 코드 자동 제안 — Composer 에 prompt 흘려보내고 K 가 응답을 textarea 로 복사하는 흐름.
+  // KDA 의 메인 채팅 창에 "이런 도구 만들어줘" prompt 박는 게 가장 자연스러움 (보안 검토 + K 가 직접 코드 확인).
+  function handleAskModelToBuild() {
+    if (!builderRequest.trim()) return;
+    const prompt = [
+      "K-Personal-MCP 의 커스텀 plugin 으로 박을 Python 코드를 작성해줘.",
+      "",
+      "요구 사항:",
+      `  • ${builderRequest}`,
+      "",
+      "규칙:",
+      "  • 파일은 modules/kda_plugins/kda_<name>.py 에 박힐 거야 (kda_ prefix 필수)",
+      "  • get_tools() -> list[Tool] 과 async handle_tool(name, arguments) -> list 두 함수 export",
+      "  • 도구 이름도 kda_ prefix",
+      "  • mcp.types 의 Tool / TextContent 만 import",
+      "  • 외부 의존성 추가 시 K 가 별도로 pip install 해야 한다는 점 명시",
+      "  • 위험 코드 (os.system, subprocess.run, eval, exec, urllib unsafe) 사용 시 명시",
+      "",
+      "응답은 코드 블록 하나로 — 그 내용 그대로 modules/kda_plugins/ 에 박을 거야.",
+    ].join("\n");
+    try {
+      // 같은 Tauri window 의 main chat 으로 이 prompt 를 흘리는 이벤트 발행.
+      // Composer 가 listen 해서 textarea 에 박음. Settings 모달은 자동 닫기 — K 가 채팅 영역을 봐야 응답을 받음.
+      window.dispatchEvent(
+        new CustomEvent("kda-builder-prompt", { detail: { prompt } })
+      );
+      setEditorMessage("✓ 메인 채팅에 prompt 박았습니다. Settings 닫고 응답 받은 후 코드 블록 복사 → Settings 다시 열어 textarea 에 붙여넣기.");
+      // 모달 닫기 + 다시 열렸을 때 같은 에디터 상태 복원될 수 있게 editorOpen 은 유지
+      setTimeout(() => {
+        try { onClose(); } catch {}
+      }, 400);
+    } catch (e) {
+      setEditorMessage(`✗ prompt 발송 실패: ${e}`);
     }
   }
 
@@ -2953,6 +3273,543 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               <button className="settings-btn settings-btn-danger" onClick={handleQuit}>
                 종료
               </button>
+            </div>
+          </section>
+
+          {/* ─── Phase 67 (v0.6.2) — MCP 도구 탭 ──────────────────────── */}
+
+          {/* 67a — 현재 활성 도구 인스펙터 */}
+          <section className="settings-section" data-tab="tools">
+            <div className="eyebrow">🔧 활성 MCP 도구</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">
+                  K-Personal MCP 노출 도구
+                  {mcpTools && mcpTools.length > 0 && (
+                    <span style={{ marginLeft: "0.5em", opacity: 0.7, fontSize: "0.85em" }}>
+                      ({mcpTools.length}개)
+                    </span>
+                  )}
+                </div>
+                <div className="settings-row-desc">
+                  지금 KDA 의 sidecar 가 K-Personal-MCP server.py 로부터 받은 도구 목록입니다.
+                  채팅에서 모델 (Claude / Codex / OpenAI / Gemini) 이 호출 가능한 도구의 정확한 set.
+                  Claude CLI / Codex CLI 의 경우 권한 정책으로 일부가 잠겼을 수 있어 실제로 호출되는 set 은 더 작을 수 있음.
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
+                <input
+                  type="text"
+                  className="settings-input"
+                  placeholder="이름/설명으로 필터… (예: web_, db_, kda_)"
+                  value={toolFilter}
+                  onChange={(e) => setToolFilter(e.target.value)}
+                  style={{ flex: 1, minWidth: "200px" }}
+                />
+                <button
+                  className="settings-btn"
+                  onClick={() => requestMcpToolsRefresh(true)}
+                  disabled={mcpToolsBusy}
+                  title="sidecar 에 도구 목록 재조회 요청"
+                >
+                  {mcpToolsBusy ? "조회 중…" : "🔄 새로고침"}
+                </button>
+              </div>
+
+              {mcpToolsError && (
+                <div className="update-error-section" style={{ marginTop: "0.5rem" }}>
+                  <div className="update-status update-error">⚠ {mcpToolsError}</div>
+                  <div className="settings-row-desc" style={{ marginTop: "0.3rem", fontSize: "0.85em" }}>
+                    K-Personal MCP 가 설치 안 됐거나 Python 이 없는 상태일 수 있습니다.
+                    위의 "MCP 도구 자동 설치" 또는 "외부 의존성 자동 설치" 먼저 확인하세요.
+                  </div>
+                </div>
+              )}
+
+              {mcpTools && mcpTools.length === 0 && !mcpToolsError && (
+                <div className="settings-row-desc" style={{ marginTop: "0.5rem", opacity: 0.7 }}>
+                  도구가 없습니다. K-Personal-MCP 설치 상태를 확인하세요.
+                </div>
+              )}
+
+              {mcpTools && mcpTools.length > 0 && (
+                <div style={{ marginTop: "0.7rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                  {mcpTools
+                    .filter((t) => {
+                      if (!toolFilter.trim()) return true;
+                      const q = toolFilter.trim().toLowerCase();
+                      return (
+                        t.name.toLowerCase().includes(q) ||
+                        (t.description ?? "").toLowerCase().includes(q)
+                      );
+                    })
+                    .map((tool) => {
+                      const expanded = expandedTool === tool.name;
+                      const props = (tool.inputSchema?.properties ?? {}) as Record<
+                        string,
+                        { type?: string; description?: string; enum?: string[]; default?: unknown }
+                      >;
+                      const required = Array.isArray(tool.inputSchema?.required)
+                        ? (tool.inputSchema!.required as string[])
+                        : [];
+                      const propEntries = Object.entries(props);
+                      const isKdaCustom = tool.name.startsWith("kda_");
+                      return (
+                        <div
+                          key={tool.name}
+                          className="settings-tool-card"
+                          style={{
+                            padding: "0.6rem 0.8rem",
+                            background: "var(--bg-1)",
+                            border: "1px solid var(--border-subtle)",
+                            borderLeft: isKdaCustom ? "3px solid var(--accent, #4fe8e1)" : "1px solid var(--border-subtle)",
+                            borderRadius: "4px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              cursor: "pointer",
+                              gap: "0.5rem",
+                            }}
+                            onClick={() => setExpandedTool(expanded ? null : tool.name)}
+                          >
+                            <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{tool.name}</span>
+                            {isKdaCustom && (
+                              <span
+                                style={{
+                                  fontSize: "0.7em",
+                                  padding: "0.1em 0.4em",
+                                  background: "rgba(79,232,225,0.15)",
+                                  border: "1px solid rgba(79,232,225,0.5)",
+                                  borderRadius: "3px",
+                                  color: "var(--accent, #4fe8e1)",
+                                }}
+                              >
+                                커스텀
+                              </span>
+                            )}
+                            <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>
+                              {expanded ? "▼" : "▶"}
+                            </span>
+                          </div>
+                          {tool.description && (
+                            <div
+                              style={{
+                                marginTop: "0.3rem",
+                                fontSize: "0.88em",
+                                opacity: 0.85,
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              {tool.description}
+                            </div>
+                          )}
+                          {expanded && (
+                            <div style={{ marginTop: "0.5rem", fontSize: "0.85em" }}>
+                              {propEntries.length === 0 ? (
+                                <div style={{ opacity: 0.6 }}>인자 없음</div>
+                              ) : (
+                                <table
+                                  style={{
+                                    width: "100%",
+                                    borderCollapse: "collapse",
+                                    fontFamily: "monospace",
+                                    fontSize: "0.85em",
+                                  }}
+                                >
+                                  <thead>
+                                    <tr style={{ opacity: 0.6, textAlign: "left" }}>
+                                      <th style={{ padding: "0.2em 0.4em" }}>이름</th>
+                                      <th style={{ padding: "0.2em 0.4em" }}>타입</th>
+                                      <th style={{ padding: "0.2em 0.4em" }}>설명</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {propEntries.map(([key, spec]) => (
+                                      <tr key={key} style={{ borderTop: "1px dashed var(--border-subtle)" }}>
+                                        <td style={{ padding: "0.2em 0.4em" }}>
+                                          {key}
+                                          {required.includes(key) && (
+                                            <span style={{ color: "var(--danger, #f48771)", marginLeft: "0.2em" }}>*</span>
+                                          )}
+                                        </td>
+                                        <td style={{ padding: "0.2em 0.4em", opacity: 0.7 }}>
+                                          {spec?.type ?? "?"}
+                                          {Array.isArray(spec?.enum) && ` (${spec.enum.length})`}
+                                        </td>
+                                        <td style={{ padding: "0.2em 0.4em", whiteSpace: "normal", wordBreak: "break-word" }}>
+                                          {spec?.description ?? ""}
+                                          {spec?.default !== undefined && (
+                                            <span style={{ opacity: 0.5 }}> · 기본 {JSON.stringify(spec.default)}</span>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                              {isKdaCustom && (
+                                <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.4rem" }}>
+                                  <button
+                                    className="settings-btn"
+                                    style={{ fontSize: "0.85em", padding: "0.2em 0.6em" }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      // kda_<name> → kda_<name>.py 파일로 열기
+                                      openEditPluginEditor(`${tool.name.replace(/^kda_/, "kda_")}.py`);
+                                    }}
+                                    title="이 도구의 Python 코드 편집"
+                                  >
+                                    ✎ 편집
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+
+              {!mcpTools && !mcpToolsError && (
+                <div className="settings-row-desc" style={{ marginTop: "0.5rem", opacity: 0.6 }}>
+                  도구 목록 로딩 중...
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* 67b — 외부 MCP 서버 카탈로그 (명령 안내 형) */}
+          <section className="settings-section" data-tab="tools">
+            <div className="eyebrow">📦 추가 가능한 MCP 서버</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">표준 MCP 카탈로그 (참고)</div>
+                <div className="settings-row-desc">
+                  Anthropic 의 공식 MCP server 들. KDA 의 sidecar 는 현재 K-Personal MCP 한 개만 spawn 하므로,
+                  이 서버들을 K 가 사용하려면 Claude Desktop / Cursor / IDE 등에서 별도 등록.
+                  Claude CLI 의 <code>claude mcp add</code> 또는 Codex CLI 의 <code>codex mcp add</code> 사용.
+                  <br />
+                  <strong>(KDA 안에서 직접 사용은 다음 phase 후보 — 현재는 명령 복붙용 안내만)</strong>
+                </div>
+              </div>
+              <div style={{ marginTop: "0.6rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {EXTERNAL_MCP_CATALOG.map((entry) => (
+                  <div
+                    key={entry.id}
+                    style={{
+                      padding: "0.6rem 0.8rem",
+                      background: "var(--bg-1)",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: "4px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <span style={{ fontSize: "1.1em" }}>{entry.icon}</span>
+                      <span style={{ fontWeight: 600 }}>{entry.name}</span>
+                      <button
+                        className="settings-btn"
+                        style={{ marginLeft: "auto", fontSize: "0.8em", padding: "0.2em 0.6em" }}
+                        onClick={() =>
+                          invoke("open_external_webview", {
+                            url: entry.docsUrl,
+                            label: `mcp-doc-${entry.id}`,
+                            title: `${entry.name} docs`,
+                          }).catch((e) => console.warn("doc 열기 실패:", e))
+                        }
+                      >
+                        📖 문서
+                      </button>
+                    </div>
+                    <div style={{ marginTop: "0.3rem", fontSize: "0.88em", opacity: 0.85 }}>
+                      {entry.description}
+                    </div>
+                    {entry.note && (
+                      <div
+                        style={{
+                          marginTop: "0.3rem",
+                          fontSize: "0.82em",
+                          color: "var(--warn, #d4ad4a)",
+                        }}
+                      >
+                        ⚠ {entry.note}
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        marginTop: "0.4rem",
+                        display: "flex",
+                        gap: "0.3rem",
+                        alignItems: "center",
+                      }}
+                    >
+                      <code
+                        style={{
+                          flex: 1,
+                          padding: "0.3em 0.5em",
+                          background: "var(--bg-0)",
+                          borderRadius: "3px",
+                          fontSize: "0.85em",
+                          fontFamily: "monospace",
+                          overflowX: "auto",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {entry.installCommand}
+                      </code>
+                      <button
+                        className="settings-btn"
+                        style={{ fontSize: "0.8em", padding: "0.2em 0.6em" }}
+                        onClick={() => {
+                          navigator.clipboard
+                            .writeText(entry.installCommand)
+                            .then(() => console.info(`[catalog] ${entry.id} 명령 복사됨`))
+                            .catch((e) => console.warn("clipboard 실패:", e));
+                        }}
+                        title="설치 명령 클립보드에 복사"
+                      >
+                        📋
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* 67c — 커스텀 plugin 빌더 */}
+          <section className="settings-section" data-tab="tools">
+            <div className="eyebrow">🧪 커스텀 도구 만들기</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">K-Personal-MCP plugin 빌더</div>
+                <div className="settings-row-desc">
+                  K 의 K-Personal-MCP/modules/kda_plugins/ 에 Python plugin 을 박아 새 MCP 도구를 추가합니다.
+                  도구 이름은 <code>kda_</code> prefix 강제. 저장 시 sidecar 자동 재시작 → 도구가 모델에게 노출.
+                  <br />
+                  <strong style={{ color: "var(--warn, #d4ad4a)" }}>
+                    ⚠ 보안: 이 코드는 K 의 PC 에서 직접 실행됩니다. 저장 전 K 가 모든 줄을 검토하세요.
+                    이전 버전은 .bak 으로 자동 백업되어 K-Personal-MCP/modules/kda_plugins/ 에서 복구 가능.
+                  </strong>
+                </div>
+              </div>
+
+              <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+                <button
+                  className="settings-btn settings-btn-primary"
+                  onClick={openNewPluginEditor}
+                  disabled={editorOpen}
+                >
+                  + 새 도구 만들기
+                </button>
+                <button
+                  className="settings-btn"
+                  onClick={refreshPluginList}
+                  title="modules/kda_plugins/ 디렉토리 재스캔"
+                >
+                  🔄 plugin 목록 새로고침
+                </button>
+              </div>
+
+              {pluginListError && (
+                <div className="update-status update-error" style={{ marginTop: "0.4rem" }}>
+                  ⚠ {pluginListError}
+                </div>
+              )}
+
+              {pluginList.length === 0 && !pluginListError && !editorOpen && (
+                <div className="settings-row-desc" style={{ marginTop: "0.5rem", opacity: 0.6 }}>
+                  아직 박은 커스텀 plugin 이 없습니다. "+ 새 도구 만들기" 로 시작하세요.
+                </div>
+              )}
+
+              {pluginList.length > 0 && (
+                <div style={{ marginTop: "0.5rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                  {pluginList.map((p) => (
+                    <div
+                      key={p.file}
+                      style={{
+                        padding: "0.5rem 0.7rem",
+                        background: "var(--bg-1)",
+                        border: "1px solid var(--border-subtle)",
+                        borderRadius: "4px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.5rem",
+                      }}
+                    >
+                      <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{p.file}</span>
+                      <span style={{ opacity: 0.5, fontSize: "0.85em" }}>
+                        ({(p.size / 1024).toFixed(1)} KB · {new Date(p.modified_ms).toLocaleString("ko-KR")})
+                      </span>
+                      <button
+                        className="settings-btn"
+                        style={{ marginLeft: "auto", fontSize: "0.85em", padding: "0.2em 0.6em" }}
+                        onClick={() => openEditPluginEditor(p.file)}
+                      >
+                        ✎ 편집
+                      </button>
+                      <button
+                        className="settings-btn"
+                        style={{
+                          fontSize: "0.85em",
+                          padding: "0.2em 0.6em",
+                          color: "var(--danger, #f48771)",
+                        }}
+                        onClick={() => handleDeletePlugin(p.file)}
+                      >
+                        🗑 삭제
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {editorOpen && (
+                <div
+                  style={{
+                    marginTop: "0.8rem",
+                    padding: "0.8rem",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "4px",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.5rem",
+                      marginBottom: "0.5rem",
+                    }}
+                  >
+                    <strong>{editorMode === "new" ? "새 plugin" : "plugin 편집"}</strong>
+                    <span style={{ opacity: 0.6, fontSize: "0.85em" }}>
+                      → modules/kda_plugins/{editorName || "<name>"}.py
+                    </span>
+                    <button
+                      className="settings-btn"
+                      style={{ marginLeft: "auto", fontSize: "0.85em" }}
+                      onClick={() => {
+                        setEditorOpen(false);
+                        setEditorMessage(null);
+                      }}
+                    >
+                      ✕ 닫기
+                    </button>
+                  </div>
+
+                  <div style={{ marginBottom: "0.5rem" }}>
+                    <label
+                      style={{ display: "block", fontSize: "0.85em", marginBottom: "0.2rem", opacity: 0.8 }}
+                    >
+                      plugin 이름 (kda_ prefix, ASCII 영문/숫자/_ 만):
+                    </label>
+                    <input
+                      type="text"
+                      className="settings-input"
+                      value={editorName}
+                      onChange={(e) => setEditorName(e.target.value)}
+                      placeholder="kda_my_tool"
+                      disabled={editorMode === "edit"}
+                      style={{ width: "100%", fontFamily: "monospace" }}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: "0.5rem" }}>
+                    <label
+                      style={{ display: "block", fontSize: "0.85em", marginBottom: "0.2rem", opacity: 0.8 }}
+                    >
+                      Python 코드:
+                    </label>
+                    <textarea
+                      className="settings-input"
+                      value={editorCode}
+                      onChange={(e) => setEditorCode(e.target.value)}
+                      rows={18}
+                      style={{
+                        width: "100%",
+                        fontFamily: "monospace",
+                        fontSize: "0.85em",
+                        lineHeight: 1.4,
+                        whiteSpace: "pre",
+                        overflowWrap: "normal",
+                        overflowX: "auto",
+                      }}
+                      spellCheck={false}
+                    />
+                  </div>
+
+                  <div
+                    style={{
+                      marginBottom: "0.5rem",
+                      padding: "0.5rem",
+                      background: "var(--bg-0)",
+                      borderRadius: "4px",
+                    }}
+                  >
+                    <div style={{ fontSize: "0.85em", opacity: 0.8, marginBottom: "0.3rem" }}>
+                      🤖 AI 에게 코드 작성 요청 (선택):
+                    </div>
+                    <textarea
+                      className="settings-input"
+                      value={builderRequest}
+                      onChange={(e) => setBuilderRequest(e.target.value)}
+                      rows={2}
+                      placeholder="예: '환율 API 호출해서 USD/KRW 가져오는 도구'"
+                      style={{ width: "100%", fontSize: "0.85em", marginBottom: "0.3rem" }}
+                    />
+                    <button
+                      className="settings-btn"
+                      onClick={handleAskModelToBuild}
+                      disabled={!builderRequest.trim()}
+                      style={{ fontSize: "0.85em" }}
+                      title="K 의 메인 채팅에 prompt 박음 — 응답이 오면 코드 블록을 위 textarea 에 복사"
+                    >
+                      💬 메인 채팅에 prompt 보내기
+                    </button>
+                    <div style={{ fontSize: "0.78em", opacity: 0.6, marginTop: "0.3rem" }}>
+                      모델 응답 확인 → 코드 검토 → 위 textarea 에 복사 → 저장. (자동 적용 안 함 — K 가 직접 검토 필수)
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      onClick={handleSavePlugin}
+                      disabled={editorBusy || !editorName.trim() || !editorCode.trim()}
+                    >
+                      {editorBusy ? "저장 중…" : "💾 저장 + sidecar 재시작"}
+                    </button>
+                    <button
+                      className="settings-btn"
+                      onClick={() => setEditorCode(KDA_PLUGIN_TEMPLATE)}
+                      title="기본 템플릿으로 리셋"
+                    >
+                      ↩ 템플릿
+                    </button>
+                  </div>
+
+                  {editorMessage && (
+                    <div
+                      style={{
+                        marginTop: "0.5rem",
+                        padding: "0.4rem 0.5rem",
+                        fontSize: "0.85em",
+                        borderRadius: "3px",
+                        background: editorMessage.startsWith("✓") ? "rgba(78, 201, 176, 0.1)" : "rgba(244, 135, 113, 0.1)",
+                        color: editorMessage.startsWith("✓") ? "var(--success, #4ec9b0)" : "var(--danger, #f48771)",
+                      }}
+                    >
+                      {editorMessage}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </section>
 

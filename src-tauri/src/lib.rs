@@ -1134,6 +1134,192 @@ async fn install_kpersonal_mcp() -> Result<String, String> {
     install_kpersonal_mcp_internal(false).await
 }
 
+// ────────── Phase 67a (v0.6.2) — MCP 도구 인스펙터 ──────────
+//
+// Settings 의 "MCP 도구" 탭이 이 command 호출 → sidecar stdin 에 list_mcp_tools 메시지 흘림.
+// sidecar 가 mcp_tools event 로 응답 (frontend 가 listen 으로 받음). ping_sidecar 와 동일 패턴.
+
+#[tauri::command]
+async fn list_mcp_tools(refresh: Option<bool>) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "type": "list_mcp_tools",
+        "refresh": refresh.unwrap_or(false),
+    });
+    let line = format!("{}\n", payload);
+    let tx_holder = get_tx_holder().clone();
+    let guard = tx_holder.lock().await;
+    let tx = guard.as_ref().ok_or("sidecar not initialized")?;
+    tx.send(line).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ────────── Phase 67c (v0.6.2) — KDA 커스텀 도구 plugin 관리 ──────────
+//
+// K 가 Settings 의 "새 도구 만들기" 로 박는 커스텀 도구는 K-Personal-MCP/modules/kda_plugins/
+// 디렉토리에 *.py 로 저장. server.py 의 plugin loader (별도 K-Personal-MCP PR) 가 자동 import +
+// get_tools() / handle_tool(name, args) prefix 라우팅.
+//
+// 모든 커스텀 도구는 "kda_" prefix 강제 — 표준 도구 (cc_/fm_/db_/...) 와 namespace 충돌 방지.
+// 또한 K-Personal-MCP repo 의 git tracked 파일을 KDA 가 직접 박지 않게 함 (modules/kda_plugins/
+// 디렉토리는 .gitignore 또는 untracked — K-Personal-MCP push 측에서 보장).
+
+fn resolve_kpersonal_plugins_dir() -> Result<std::path::PathBuf, String> {
+    // sidecar 의 resolveKPersonalPath 와 같은 우선순위.
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "USERPROFILE/HOME 없음".to_string())?;
+    let candidates = [
+        std::path::PathBuf::from(&home).join("Documents").join("K-Personal-MCP"),
+        std::path::PathBuf::from(&home).join("K-Personal-MCP"),
+    ];
+    for base in &candidates {
+        if base.join("server.py").exists() {
+            return Ok(base.join("modules").join("kda_plugins"));
+        }
+    }
+    Err("K-Personal-MCP 가 설치되지 않았습니다. Settings → 'MCP 도구 자동 설치' 먼저.".into())
+}
+
+fn validate_kda_plugin_name(name: &str) -> Result<(), String> {
+    if !name.starts_with("kda_") {
+        return Err("plugin 이름은 'kda_' 로 시작해야 합니다 (namespace 충돌 회피)".into());
+    }
+    if name.len() < 5 || name.len() > 64 {
+        return Err("plugin 이름은 5~64자".into());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err("plugin 이름은 ASCII 영문/숫자/언더스코어만".into());
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct KdaPluginInfo {
+    file: String,
+    size: u64,
+    modified_ms: u128,
+}
+
+#[tauri::command]
+async fn list_kda_plugins() -> Result<Vec<KdaPluginInfo>, String> {
+    let dir = match resolve_kpersonal_plugins_dir() {
+        Ok(d) => d,
+        // 디렉토리가 없는 상태 = plugin 0 개 — 정상 케이스 (K-Personal-MCP 미설치 포함). 빈 list 반환.
+        Err(_) => return Ok(vec![]),
+    };
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut out = vec![];
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("plugins dir 읽기 실패: {}", e))?;
+    for ent in entries.flatten() {
+        let p = ent.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("py") {
+            continue;
+        }
+        let fname = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        if fname.starts_with("__") {
+            // __init__.py / __pycache__ skip
+            continue;
+        }
+        let meta = match ent.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        out.push(KdaPluginInfo {
+            file: fname,
+            size: meta.len(),
+            modified_ms,
+        });
+    }
+    out.sort_by(|a, b| a.file.cmp(&b.file));
+    Ok(out)
+}
+
+#[tauri::command]
+async fn read_kda_plugin(file: String) -> Result<String, String> {
+    // file 은 단순 basename (예: "kda_my_tool.py") — directory traversal 차단
+    if file.contains('/') || file.contains('\\') || file.contains("..") {
+        return Err("file 은 단순 파일명만 허용".into());
+    }
+    if !file.ends_with(".py") {
+        return Err("file 은 .py 확장자만".into());
+    }
+    let dir = resolve_kpersonal_plugins_dir()?;
+    let path = dir.join(&file);
+    if !path.exists() {
+        return Err(format!("plugin 없음: {}", file));
+    }
+    std::fs::read_to_string(&path).map_err(|e| format!("read 실패: {}", e))
+}
+
+#[tauri::command]
+async fn save_kda_plugin(
+    app: AppHandle,
+    name: String,
+    code: String,
+) -> Result<String, String> {
+    // name 은 plugin 식별자 (예: "kda_my_tool" — 확장자 제외). 파일명은 자동으로 .py 추가.
+    validate_kda_plugin_name(&name)?;
+    if code.is_empty() || code.len() > 200_000 {
+        return Err("code 가 비어있거나 너무 큽니다 (200KB 제한)".into());
+    }
+    let dir = resolve_kpersonal_plugins_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("plugins dir 생성 실패: {}", e))?;
+    // 디렉토리에 __init__.py 가 없으면 같이 박음 (Python package 인식)
+    let init_path = dir.join("__init__.py");
+    if !init_path.exists() {
+        let _ = std::fs::write(
+            &init_path,
+            "# KDA custom plugins — generated by K-Desktop-Agent Settings UI\n",
+        );
+    }
+    let path = dir.join(format!("{}.py", name));
+    // 이전 plugin 이 있으면 .bak 으로 보존 (롤백 용)
+    if path.exists() {
+        let bak = dir.join(format!("{}.py.bak", name));
+        let _ = std::fs::copy(&path, &bak);
+    }
+    std::fs::write(&path, code).map_err(|e| format!("plugin 저장 실패: {}", e))?;
+    log_lifecycle(
+        "runtime.log",
+        &format!("save_kda_plugin {} ({} bytes)", name, path.metadata().map(|m| m.len()).unwrap_or(0)),
+    );
+    // sidecar 재기동 → MCP server 재 spawn → 새 도구가 list_tools 에 노출
+    reload_sidecar(app).await?;
+    Ok(format!("저장 완료: {} (sidecar 재기동 중)", path.display()))
+}
+
+#[tauri::command]
+async fn delete_kda_plugin(app: AppHandle, file: String) -> Result<String, String> {
+    if file.contains('/') || file.contains('\\') || file.contains("..") {
+        return Err("file 은 단순 파일명만 허용".into());
+    }
+    if !file.ends_with(".py") {
+        return Err("file 은 .py 확장자만".into());
+    }
+    let basename = file.trim_end_matches(".py");
+    validate_kda_plugin_name(basename)?;
+    let dir = resolve_kpersonal_plugins_dir()?;
+    let path = dir.join(&file);
+    if !path.exists() {
+        return Err(format!("plugin 없음: {}", file));
+    }
+    // .bak 백업 — 실수로 지웠을 때 K-Personal-MCP/modules/kda_plugins/ 에서 직접 복구 가능
+    let bak = dir.join(format!("{}.deleted.bak", file));
+    let _ = std::fs::copy(&path, &bak);
+    std::fs::remove_file(&path).map_err(|e| format!("plugin 삭제 실패: {}", e))?;
+    log_lifecycle("runtime.log", &format!("delete_kda_plugin {}", file));
+    reload_sidecar(app).await?;
+    Ok(format!("삭제 완료 (.deleted.bak 보존)"))
+}
+
 // ────────── Phase 15 — 외부 webview 창 + Codex 통합 ──────────
 //
 // K 의 의도: K-Desktop-Agent 안에서 모든 게 완결.
@@ -2265,6 +2451,12 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 66 (v0.6.1) — K-Personal MCP 자동 설치
             check_kpersonal_mcp,
             install_kpersonal_mcp,
+            // Phase 67 (v0.6.2) — MCP 도구 인스펙터 + 카탈로그 + 커스텀 도구 plugin 빌더
+            list_mcp_tools,
+            list_kda_plugins,
+            read_kda_plugin,
+            save_kda_plugin,
+            delete_kda_plugin,
             // Phase 25 — Portable data dir
             get_data_dir_info,
             change_data_dir,

@@ -79,6 +79,18 @@ export type SidecarEvent =
       };
     }
   | {
+      // Phase 67a (v0.6.2) — list_mcp_tools 응답.
+      // Settings 의 "MCP 도구" 탭이 받아 카드 list 렌더. tools 비어 있으면 빈 상태 표시.
+      type: "mcp_tools";
+      server: string;
+      tools: Array<{
+        name: string;
+        description?: string;
+        inputSchema?: Record<string, unknown>;
+      }>;
+      error?: string;
+    }
+  | {
       type: "elicitation_request";
       id: string;
       turn_id: string;

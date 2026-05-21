@@ -100,6 +100,24 @@ export default function Composer({
   }, [resizingHeight, composerHeight]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Phase 67c (v0.6.2) — Settings 의 "메인 채팅에 prompt 보내기" 가 발행하는 이벤트 수신.
+  // detail.prompt 가 input 에 박힘 + textarea focus. 자동 전송은 안 함 (K 가 검토 후 직접 Enter).
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ prompt: string }>).detail;
+      if (!detail?.prompt) return;
+      setInput(detail.prompt);
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.focus();
+          textareaRef.current.selectionStart = textareaRef.current.selectionEnd = detail.prompt.length;
+        }
+      }, 50);
+    };
+    window.addEventListener("kda-builder-prompt", handler);
+    return () => window.removeEventListener("kda-builder-prompt", handler);
+  }, []);
+
   // 파일을 FileAttachment로 변환
   async function processFile(file: File): Promise<FileAttachment> {
     return new Promise((resolve, reject) => {

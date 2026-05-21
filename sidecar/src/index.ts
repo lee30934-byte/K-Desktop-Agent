@@ -3081,6 +3081,47 @@ rl.on("line", (line) => {
       });
       break;
     }
+    // Phase 67a (v0.6.2) — MCP 도구 인스펙터.
+    // KDA Settings 의 "MCP 도구" 탭이 이 메시지로 요청 → sidecar 가 현재 활성 도구 list 발행.
+    // 모델이 보는 catalog 와 동일한 source (mcpClient.listTools) 사용 — 정합성 보장.
+    // refresh=true 면 tools cache 무효화 후 재조회 (server.py 재기동 후 새 도구 노출 시).
+    case "list_mcp_tools": {
+      const refresh = (msg as { refresh?: boolean }).refresh === true;
+      (async () => {
+        if (!cachedMCPHealth.serverPathExists || !cachedMCPHealth.pythonAvailable) {
+          emit({
+            type: "mcp_tools",
+            server: "k-personal",
+            tools: [],
+            error: cachedMCPHealth.error ?? "K-Personal MCP 가 설정되지 않았습니다.",
+          });
+          return;
+        }
+        try {
+          const client = getKPersonalMCPClient({
+            command: PYTHON_EXE,
+            args: [K_PERSONAL_PATH],
+            logger: (level, m) => logToFile(level, m),
+          });
+          const tools = await client.listTools(refresh);
+          emit({
+            type: "mcp_tools",
+            server: "k-personal",
+            tools,
+          });
+        } catch (e) {
+          const msg_ = e instanceof Error ? e.message : String(e);
+          logToFile("warn", `list_mcp_tools failed: ${msg_}`);
+          emit({
+            type: "mcp_tools",
+            server: "k-personal",
+            tools: [],
+            error: msg_,
+          });
+        }
+      })();
+      break;
+    }
     case "elicitation_response": {
       // CLI 모드에서는 elicitation 처리 안 함 (CLI가 자체 처리)
       log("info", `elicitation_response received (ignored in CLI mode)`);
