@@ -2332,6 +2332,82 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     // 이 시점이면 모든 token_count event 가 처리된 후 → sawCodexLastTokenUsage 정확.
     // turn.completed 가 token_count 보다 먼저 도착해도 가드가 정확하게 작동.
     if (turnCompletedSnapshot) {
+      // Phase 64 (v0.5.52): sawCodexLastTokenUsage=false 인 경우 (stdout 에 token_count event 가
+      // 안 옴 / silent drop / schema 또 변경 등) — Codex 세션 JSONL 에서 직접 last_token_usage 복구.
+      // K 다른 PC 진단 결정타: sidecar displayCtx=152108 (cumulative) vs 같은 세션 파일의
+      // last_token_usage.input_tokens=15358 (single-call). Phase 63 deferred 도 token_count event 가
+      // 아예 안 오면 무력. 세션 파일은 Codex 가 항상 정확히 기록하므로 ground truth.
+      if (!sawCodexLastTokenUsage && sessionId) {
+        // Codex 가 turn.completed 후 세션 파일에 token_count 를 비동기 write 할 가능성 → 짧게 대기
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        try {
+          const sessionFile = findCodexSessionFileById(sessionId);
+          if (sessionFile) {
+            const stats = statSync(sessionFile);
+            const lastBytes = Math.min(stats.size, 512 * 1024);
+            const fd = openSync(sessionFile, "r");
+            const buf = Buffer.alloc(lastBytes);
+            readSync(fd, buf, 0, lastBytes, stats.size - lastBytes);
+            closeSync(fd);
+            const lines = buf.toString("utf-8").split("\n").reverse();
+            for (const line of lines) {
+              if (!line || !line.includes("token_count")) continue;
+              try {
+                const parsed = JSON.parse(line);
+                const payload = parsed.payload ?? parsed;
+                if (payload.type !== "token_count") continue;
+                const info = payload.info ?? payload;
+                const ltu = info.last_token_usage ?? payload.last_token_usage;
+                if (!ltu || typeof ltu !== "object") continue;
+                const cached = ltu.cached_input_tokens ?? 0;
+                const totalInput = ltu.input_tokens ?? 0;
+                if (totalInput <= 0) continue;
+                const newInput = Math.max(0, totalInput - cached);
+                sawCodexLastTokenUsage = true;
+                maxLastTokenUsageCachePeak = Math.max(maxLastTokenUsageCachePeak, cached);
+                maxTurnContextTokens = totalInput;
+                maxTurnInputTokens = newInput;
+                maxTurnCacheRead = cached;
+                // model_context_window 도 같이 복구 (stdout 에 token_count 가 안 왔으면 이것도 0)
+                const ctxWin = info.model_context_window ?? payload.model_context_window;
+                if (typeof ctxWin === "number" && ctxWin > 1000) {
+                  lastSeenModelContextWindow = ctxWin;
+                  emit({
+                    type: "model_context_window",
+                    provider: "codex",
+                    contextWindow: ctxWin,
+                    source: "codex session file token_count (Phase 64 fallback)",
+                  } as any);
+                }
+                logToFile(
+                  "info",
+                  `Codex recovered token_count from session file — displayCtx=${maxTurnContextTokens} (input=${maxTurnInputTokens} cache=${maxTurnCacheRead}) ctxWin=${ctxWin ?? "?"} — stdout 에 token_count 안 옴 또는 silent drop, 세션 파일 fallback 작동 (Phase 64)`,
+                );
+                break;
+              } catch {
+                // JSON parse 실패 — 다음 line 시도
+              }
+            }
+            if (!sawCodexLastTokenUsage) {
+              logToFile(
+                "warn",
+                `⚠ Codex 세션 파일에서도 token_count.last_token_usage 못 찾음 — sessionFile=${sessionFile} 마지막 ${lastBytes}B 스캔. stdout + 세션 둘 다 없음 = Codex CLI 측 버그 의심.`,
+              );
+            }
+          } else {
+            logToFile(
+              "warn",
+              `⚠ Codex 세션 파일 못 찾음 sessionId=${sessionId} — Phase 64 fallback 무력. 종전 가드 (모델 window/peak/1M) 만 사용.`,
+            );
+          }
+        } catch (err: any) {
+          logToFile(
+            "warn",
+            `⚠ Codex 세션 파일 fallback 실패: ${err?.message ?? String(err)}`,
+          );
+        }
+      }
+
       const u = turnCompletedSnapshot.usage;
       const inp = turnCompletedSnapshot.inp;
       const cr = turnCompletedSnapshot.cr;
