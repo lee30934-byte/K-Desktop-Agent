@@ -78,8 +78,81 @@ try {
     # 2. 이미 설치?
     if ($result.serverPyExists) {
         $result.alreadyInstalled = $true
-        $result.success = $true
         Add-Step "OK 이미 설치되어 있음 — server.py 발견"
+
+        # Phase 66.9 (v0.6.10) — 의존성 검증 fix.
+        #
+        # 함정: 종전엔 server.py 만 있으면 success 박고 끝. 그런데 K 의 PC 의 경우 v0.6.6
+        # 첫 시도가 git clone stderr 함정으로 install.bat 단계 못 갔음 → server.py 는 있지만
+        # mcp 패키지 등 pip 의존성이 영원히 안 깔린 상태 → sidecar 가 server.py spawn 시
+        # ImportError → MCP 도구 0개.
+        #
+        # 게다가 install.bat 자체가 함정:
+        #   - `python --version` 으로 검사 (K 의 PC 는 py.exe 만 있고 python.exe 부재 가능)
+        #   - 첫 fail 분기에 `pause` 박혀있어 sidecar 의 cmd /c spawn 시 무한 대기 위험
+        #
+        # 우회: install.bat 호출하지 말고 ps1 가 직접 py -m pip install (이미 위에서 py.exe
+        # 후보 검사). import mcp 검증 → 실패 시에만 pip 실행 → 다시 검증.
+        $pyExe = $null
+        foreach ($candidate in @('py.exe', 'py', 'python.exe', 'python', 'python3.exe', 'python3')) {
+            try {
+                $null = & $candidate --version 2>&1
+                if ($LASTEXITCODE -eq 0) { $pyExe = $candidate; break }
+            } catch {}
+        }
+        if (-not $pyExe) {
+            $result.success = $false
+            $result.error = "python 명령 없음 — KDA Settings 의 '외부 의존성 자동 설치' 먼저 실행"
+            Add-Step "ERR $($result.error)"
+        } else {
+            $result.pythonAvailable = $true
+            # 의존성 (mcp) 검증
+            $importCheck = & cmd /c "`"$pyExe`" -c `"import mcp`" 2>&1"
+            if ($LASTEXITCODE -eq 0) {
+                Add-Step "OK 의존성 검증 (import mcp) 통과"
+                $result.success = $true
+            } else {
+                Add-Step "WARN 의존성 누락 — pip install 실행 중... (1~2분 소요)"
+                $reqFile = Join-Path $targetDir 'requirements.txt'
+                if (-not (Test-Path $reqFile)) {
+                    $result.success = $false
+                    $result.error = "requirements.txt 없음 (repo 손상 가능) — K-Personal-MCP 폴더 삭제 후 재설치"
+                    Add-Step "ERR $($result.error)"
+                } else {
+                    # cmd /c 로 wrap (PS native stderr 함정 회피 — pitfall_powershell_native_stderr_wrap)
+                    $pipLine = "`"$pyExe`" -m pip install -r `"$reqFile`" 2>&1"
+                    $pipOutput = & cmd /c $pipLine
+                    $pipCode = $LASTEXITCODE
+                    if ($pipOutput) {
+                        # 너무 길면 처음 20줄 + 마지막 20줄만 박음
+                        $lines = @($pipOutput)
+                        if ($lines.Count -gt 40) {
+                            $lines[0..19] | ForEach-Object { Add-Step "  $($_.ToString())" }
+                            Add-Step "  ... ($(($lines.Count - 40)) 줄 생략)"
+                            $lines[($lines.Count - 20)..($lines.Count - 1)] | ForEach-Object { Add-Step "  $($_.ToString())" }
+                        } else {
+                            $lines | ForEach-Object { Add-Step "  $($_.ToString())" }
+                        }
+                    }
+                    if ($pipCode -ne 0) {
+                        $result.success = $false
+                        $result.error = "pip install 실패 (exit $pipCode) — 인터넷/권한 확인"
+                        Add-Step "ERR $($result.error)"
+                    } else {
+                        # 재검증
+                        $importCheck2 = & cmd /c "`"$pyExe`" -c `"import mcp`" 2>&1"
+                        if ($LASTEXITCODE -eq 0) {
+                            Add-Step "OK 의존성 설치 완료 + 검증 통과"
+                            $result.success = $true
+                        } else {
+                            $result.success = $false
+                            $result.error = "pip install 후에도 import mcp 실패 — pip path / venv 충돌 가능"
+                            Add-Step "ERR $($result.error)"
+                        }
+                    }
+                }
+            }
+        }
     } else {
         # 3. Git 확인 (clone 에 필요)
         try {
