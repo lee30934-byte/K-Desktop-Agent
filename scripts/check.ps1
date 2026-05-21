@@ -59,6 +59,83 @@ Write-Section "K Desktop Agent — Preflight Check"
 Write-Host "프로젝트: $projectRoot" -ForegroundColor Gray
 
 # 1. Rust 컴파일 체크
+# Phase 66.5 (v0.6.6) — scripts/*.ps1 의 한글 + BOM 부재 조합 사전 차단.
+#
+# 배경: install-kpersonal-mcp.ps1 (v0.6.5 까지) 가 BOM 없이 한글 박힌 상태로 빌드 →
+# K 의 한국어 Windows (CP949) PowerShell 5.1 이 한글을 깨뜨려 읽음 → "ERR 오류" 가
+# "ERR ?�류" 로 깨져 parser 가 'ERR' token 못 알아봄 → 영구 실행 불가.
+#
+# K 가 클릭하는 모든 .ps1 (install-deps, install-kpersonal-mcp, backup, rollback) +
+# K 가 빌드 시 직접 호출하는 ps1 (build-release, bump-version, ...) 다 동일 위험.
+# 이 step 이 한 줄이라도 발견하면 빌드 차단. 메모리의 pitfall_powershell_secret_bom 의
+# 반대 케이스 — 그 함정은 BOM 잘못 박힘, 이건 BOM 없어서 깨짐. 둘 다 인코딩 함정.
+Invoke-Step "scripts/*.ps1 BOM 검증 (한글 인코딩 함정 차단)" {
+    $broken = @()
+    foreach ($f in Get-ChildItem "scripts\*.ps1") {
+        $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+        if ($bytes.Length -lt 3) { continue }
+        $hasBom = ($bytes[0] -eq 0xEF) -and ($bytes[1] -eq 0xBB) -and ($bytes[2] -eq 0xBF)
+        # UTF-8 로 본문 읽어 한글 (가–힣) 포함 검사
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+        $hasHangul = $false
+        foreach ($c in $text.ToCharArray()) {
+            if ($c -ge [char]0xAC00 -and $c -le [char]0xD7A3) { $hasHangul = $true; break }
+        }
+        if ($hasHangul -and -not $hasBom) {
+            $broken += $f.Name
+        }
+    }
+    if ($broken.Count -gt 0) {
+        Write-Host ""
+        Write-Host "❌ 다음 .ps1 파일이 한글을 포함하면서 UTF-8 BOM 이 없습니다:" -ForegroundColor Red
+        $broken | ForEach-Object { Write-Host "  - scripts/$_" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "한국어 Windows 의 PowerShell 5.1 은 BOM 없는 UTF-8 파일을 CP949 로" -ForegroundColor Yellow
+        Write-Host "잘못 해석해 한글이 깨지고 parser 에러로 영구 실행 불가합니다." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "FIX:" -ForegroundColor Cyan
+        Write-Host '  $utf8Bom = New-Object System.Text.UTF8Encoding $true' -ForegroundColor White
+        Write-Host '  $content = [System.IO.File]::ReadAllText("scripts/<file>.ps1", [System.Text.Encoding]::UTF8)' -ForegroundColor White
+        Write-Host '  [System.IO.File]::WriteAllText("scripts/<file>.ps1", $content, $utf8Bom)' -ForegroundColor White
+        throw "PowerShell BOM 함정 — 위 파일들 fix 필수"
+    }
+    Write-Host "  모든 한글 .ps1 이 UTF-8 BOM 박혀있음 ✓" -ForegroundColor DarkGreen
+}
+
+# Phase 66.5 (v0.6.6) — bundle.resources 에 scripts/*.ps1 가 다 등록돼있는지 검증.
+#
+# 배경: v0.6.1 (Phase 66) 박을 때 install-kpersonal-mcp.ps1 을 tauri.conf.json 의
+# bundle.resources 에 등록 누락 → 빌드는 통과해도 K 의 설치 폴더에 .ps1 자체가 안 박힘
+# → resolve_script_path 가 8개 path 다 뒤져도 못 찾음.
+#
+# 이 step 은 Rust 가 spawn 하는 모든 scripts/*.ps1 이 tauri.conf.json 에 박혔는지 검증.
+# 예외: build-release / bump-version / bundle-node / rebuild-release / check / setup /
+# install-rollback-shortcut / run-dev / gui-smoke 같은 빌드 측 ps1 은 K 의 PC 가 아닌
+# 빌드 서버에서만 호출 → 번들 미포함이 정상.
+Invoke-Step "tauri.conf.json bundle.resources 의 scripts ps1 등록 검증" {
+    $conf = Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json
+    $resources = @($conf.bundle.resources)
+    # 런타임에 K 의 PC 에서 실행되는 .ps1 들 — Rust lib.rs 의 resolve_script_path 가 찾는 대상.
+    # 새 ps1 추가 시 이 배열에도 박아야 검증됨.
+    $runtimePs1 = @("install-deps.ps1", "install-kpersonal-mcp.ps1", "backup.ps1", "rollback.ps1")
+    $missing = @()
+    foreach ($name in $runtimePs1) {
+        $expected = "../scripts/$name"
+        if (-not ($resources -contains $expected)) {
+            $missing += $name
+        }
+    }
+    if ($missing.Count -gt 0) {
+        Write-Host ""
+        Write-Host "❌ 다음 .ps1 이 tauri.conf.json bundle.resources 에 없습니다:" -ForegroundColor Red
+        $missing | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "FIX: src-tauri/tauri.conf.json 의 bundle.resources 배열에 \"../scripts/<file>.ps1\" 추가" -ForegroundColor Yellow
+        throw "tauri bundle resources 누락"
+    }
+    Write-Host "  $($runtimePs1.Count) 개 런타임 ps1 모두 등록됨 ✓" -ForegroundColor DarkGreen
+}
+
 Invoke-Step "Rust cargo check" {
     cargo check --manifest-path src-tauri/Cargo.toml --all-targets --quiet
 }

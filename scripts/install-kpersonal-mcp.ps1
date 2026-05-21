@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   K-Personal-MCP 자동 설치 — KDA Settings 의 한 클릭으로 다른 PC 에서도 MCP 도구 셋업.
 
