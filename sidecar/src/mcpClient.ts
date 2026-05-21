@@ -102,7 +102,20 @@ export class MCPClient {
 
     this.startPromise = (async () => {
       // Inherit parent env, layer caller's env on top.
-      const childEnv = { ...process.env, ...this.env };
+      // Phase 66.10 (v0.6.11): force Python subprocess to UTF-8 stdio.
+      //
+      // K 보고 사례: 한국어 Windows 의 PowerShell 5.1 + py.exe 환경에서, K-Personal MCP
+      // 의 도구 description 이 한글이라 server.py 의 stdout JSON-RPC 응답 한글 부분이
+      // CP949 로 인코딩됨 → 이 client 의 proc.stdout.setEncoding("utf-8") 가 깨진 bytes
+      // 를 UTF-8 로 해석 → JSON.parse 실패 → tools/list 응답 받지 못함 → MCP 도구 0개.
+      //
+      // PYTHONIOENCODING=utf-8 + PYTHONUTF8=1 둘 다 박음 — Python 3.7+ 의 UTF-8 mode 강제.
+      // 이미 caller env 에 명시 박혀있으면 그게 우선 (override 가능).
+      const pythonEncodingDefaults: Record<string, string> = {
+        PYTHONIOENCODING: "utf-8",
+        PYTHONUTF8: "1",
+      };
+      const childEnv = { ...process.env, ...pythonEncodingDefaults, ...this.env };
 
       let proc: ChildProcessWithoutNullStreams;
       try {
