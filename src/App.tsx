@@ -280,6 +280,11 @@ export default function App() {
     }>;
     currentIndex: number;
     collectedAnswers: Array<{ header: string; question: string; answer: string }>;
+    // Phase 67.1 (v0.6.3) — cancel ("직접 답 입력") path 보강.
+    // K 가 다이얼로그에서 cancel 누르면 askState 를 바로 null 안 하고 awaitingFreeForm=true 로 보존.
+    // 다음 user message 가 handleSendMessage 로 들어오면 진입부에서 이 플래그 보고 prefix 자동 박음.
+    // 한 번 박힌 후 null 처리.
+    awaitingFreeForm?: boolean;
   } | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
@@ -1215,6 +1220,26 @@ export default function App() {
 
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text && (!files || files.length === 0)) return;
+
+    // Phase 67.1 (v0.6.3) — AskUserQuestion cancel path: K 가 "직접 답 입력" 후 자유 작성한
+    // 메시지가 들어오면 자동으로 tool_use_id 명시 prefix 박음. 모델이 직전 turn 의 자기 tool 호출
+    // 과 짝 맞춰 인식. 한 번 박힌 후 askState 비움.
+    const askPending = askUserQuestionStateRef.current;
+    if (askPending?.awaitingFreeForm) {
+      const currentQ = askPending.questions[askPending.currentIndex];
+      text = [
+        `[K-DESKTOP-AGENT 시스템 알림]`,
+        `이 메시지는 직전 turn 에서 당신(AI)이 호출한 AskUserQuestion 도구에 대한 K 의 자유 작성 답변입니다.`,
+        `tool_use_id: ${askPending.toolUseId}`,
+        currentQ ? `질문: ${currentQ.header || currentQ.question}` : "",
+        `별개의 새 요청이 아니라, 이 답을 기반으로 작업을 이어서 진행해 주세요.`,
+        ``,
+        text,
+      ].filter(Boolean).join("\n");
+      askUserQuestionStateRef.current = null;
+      logger.log(`[ask_user_question] free-form answer prefixed with tool_use_id=${askPending.toolUseId}`);
+    }
+
     // Phase 30: streaming 중이면 큐에 보관 후 return — useEffect 가 streaming 종료 시 자동 send
     if (isStreaming) {
       const slot: QueuedSend = { text, files, queuedAt: Date.now() };
@@ -2231,9 +2256,21 @@ export default function App() {
         const opt = currentQ.options[idx];
         answerLabel = opt ? opt.label : `(옵션 ${response.selectedOption})`;
       } else {
-        // cancel = K 가 자유 입력으로 직접 답함. 빈 답으로 기록 + 다음 메시지에 prefix 안 박음.
-        askUserQuestionStateRef.current = null;
-        pushSystem(`💬 모델 질문 "${currentQ.header}" — 직접 답을 작성해 보내세요`, "info");
+        // cancel = K 가 자유 입력으로 직접 답함.
+        //
+        // Phase 67.1 (v0.6.3) — 회귀 fix:
+        //   기존엔 즉시 askState=null 박아서 K 의 자유 답이 prefix 없이 그대로 새 turn 으로 갔고,
+        //   모델이 자기 이전 tool 호출과 연결 못 함 ("AI 가 답을 인식 못 한다" 보고).
+        //   이제 askState 를 awaitingFreeForm=true 로 보존 → 다음 handleSendMessage 진입부에서
+        //   자동으로 tool_use_id 명시 prefix 박음.
+        askUserQuestionStateRef.current = {
+          ...askState,
+          awaitingFreeForm: true,
+        };
+        pushSystem(
+          `💬 모델 질문 "${currentQ.header}" — 직접 답을 작성해 보내세요 (다음 메시지에 자동으로 답 표시가 붙습니다)`,
+          "info",
+        );
         if (elicitationResolveRef.current) {
           elicitationResolveRef.current(response);
           elicitationResolveRef.current = null;
@@ -2275,11 +2312,29 @@ export default function App() {
         return;
       }
 
-      // 모든 질문 답함 — 다음 user message 로 박아 전송
+      // 모든 질문 답함 — 다음 user message 로 박아 전송.
+      //
+      // Phase 67.1 (v0.6.3) — 회귀 fix:
+      //   기존엔 "[모델 질문 답변]\n• ..." prefix 만 박았는데, 모델이 새 turn 받을 때
+      //   직전 turn 의 AskUserQuestion tool_use 와 연결 못 하고 "별개 메시지" 로 인식
+      //   → K 의 답을 무시하고 다른 작업 가버림. K 의 보고와 일치.
+      //
+      // 진짜 fix 는 tool_use 짝 맞는 tool_result 박는 거지만, sidecar 의 history 합성은
+      // CLI / REST path 마다 mechanism 다르고 회귀 영역 큼. 일단 user message text 자체를
+      // 강한 instructional prefix + tool_use_id 명시로 보강 — 모델이 자기 history 의
+      // tool 호출과 짝 맞춰 인식하도록. tool_use_id 가 메시지에 있으면 long-context model
+      // 의 self-reference 정확도 크게 올라감.
       const summary = askState.collectedAnswers
         .map((a) => `• ${a.header}: ${a.answer}`)
         .join("\n");
-      const replyText = `[모델 질문 답변]\n${summary}`;
+      const replyText = [
+        `[K-DESKTOP-AGENT 시스템 알림]`,
+        `이 메시지는 직전 turn 에서 당신(AI)이 호출한 AskUserQuestion 도구의 응답입니다.`,
+        `tool_use_id: ${askState.toolUseId}`,
+        `K 님이 다음 선택지를 골랐습니다 — 이 답을 기반으로 작업을 이어서 진행해 주세요. 별개의 새 요청이 아닙니다.`,
+        ``,
+        summary,
+      ].join("\n");
       askUserQuestionStateRef.current = null;
       pushSystem(`📨 답변 ${askState.collectedAnswers.length}개 전송: ${askState.collectedAnswers.map((a) => a.answer).join(" / ")}`, "info");
       // 즉시 새 turn 으로 보냄 — Claude 가 답 받고 continuation
