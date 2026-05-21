@@ -113,12 +113,17 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
 
   // 새 item 로드
   useEffect(() => {
+    // Phase 61 (v0.5.49): 진단 로그 — K 다른 PC 에서 "프리뷰 안 됨" 보고. item / open / category
+    // 가 어디서 끊기는지 추적. DevTools console 에서 [SidePanel] grep.
+    logger.log(`[SidePanel] effect — open=${open} item=${item ? item.pathOrUrl : "null"}`);
     if (!item || !open) {
       setPreview({});
       return;
     }
     const category = getCategory(item.pathOrUrl);
+    logger.log(`[SidePanel] category=${category} for ${item.pathOrUrl}`);
     if (category === "url" || category === "other") {
+      // url/other 도 preview 안 박지만 render 측에서 "외부 열기" 카드 표시. 빈 preview 가 정상.
       setPreview({});
       return;
     }
@@ -128,6 +133,8 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
       setLoading(false);
       if (result.error) {
         logger.warn(`[SidePanel] preview 로드 실패: ${item.pathOrUrl} → ${result.error}`);
+      } else {
+        logger.log(`[SidePanel] preview 로드 성공 — hasDataUrl=${!!result.dataUrl} hasText=${!!result.text}`);
       }
     });
   }, [item, open]);

@@ -117,12 +117,15 @@ export default function Composer({
 
         // 이미지/비디오/오디오 모두 미리보기 URL 생성
         // — 비디오는 첫 프레임, 오디오는 미니 플레이어로 렌더링됨
+        // Phase 61 (v0.5.49): blob URL 이 Tauri webview CSP 에 막혀 "이미지 깨진 아이콘"
+        // 표시되는 회귀 (K 다른 PC 보고). 이미 base64 가 있으므로 data URL 로 통일 — 메시지
+        // 본문 path (Message.tsx) 와 같은 렌더링 방식이라 일관성 + CSP 안전.
         if (
           file.type.startsWith("image/") ||
           file.type.startsWith("video/") ||
           file.type.startsWith("audio/")
         ) {
-          attachment.preview = URL.createObjectURL(file);
+          attachment.preview = `data:${attachment.type};base64,${attachment.base64}`;
         }
 
         resolve(attachment);
@@ -159,7 +162,9 @@ export default function Composer({
   function removeFile(id: string) {
     setFiles((prev) => {
       const file = prev.find((f) => f.id === id);
-      if (file?.preview) {
+      // Phase 61: preview 가 data URL 이면 revokeObjectURL 무관 (no-op + warning 가능)
+      // 안전하게 blob: 접두사만 시도
+      if (file?.preview && file.preview.startsWith("blob:")) {
         URL.revokeObjectURL(file.preview);
       }
       return prev.filter((f) => f.id !== id);
@@ -207,9 +212,9 @@ export default function Composer({
     onSubmit(input.trim(), files.length > 0 ? files : undefined);
     setInput("");
 
-    // 미리보기 URL 해제
+    // 미리보기 URL 해제 — Phase 61: data URL 인 경우 skip
     files.forEach((f) => {
-      if (f.preview) URL.revokeObjectURL(f.preview);
+      if (f.preview && f.preview.startsWith("blob:")) URL.revokeObjectURL(f.preview);
     });
     setFiles([]);
   }

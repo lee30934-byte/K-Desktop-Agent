@@ -347,28 +347,39 @@ logToFile(
 //   3. 추론 fail 시 — 빈 path 반환 (메모리 디렉토리 없음 = 컨텍스트 빈 상태)
 
 function getMemoryDir(): string {
-  const envOverride = process.env.KDA_MEMORY_DIR;
-  if (envOverride && existsSync(envOverride)) return envOverride;
+  // Phase 61 (v0.5.49): K 다른 PC 진단으로 candidate path 확장.
+  // 기존 path 모두 fail 시 사용자가 단순히 둘 수 있는 위치 추가:
+  //   - ~/.kda/memory/ (KDA 표준 user-scoped 위치)
+  //   - ~/.claude/memory/ (Claude CLI 와 공유)
+  // 이 path 들도 검사하면 다른 PC 에서도 K 가 메모리 두기 쉬워짐.
+  const home = os.homedir();
+  const candidates: string[] = [];
 
+  const envOverride = process.env.KDA_MEMORY_DIR;
+  if (envOverride) candidates.push(envOverride);
+
+  // 1. 추론한 프로젝트 루트 키
   const inferredRoot = path.resolve(__dirname_local, "..", "..");
   const inferredKey = inferredRoot.replace(/[:\\]/g, "-");
-  const inferredPath = path.join(
-    os.homedir(),
-    ".claude",
-    "projects",
-    inferredKey,
-    "memory",
-  );
-  if (existsSync(inferredPath)) return inferredPath;
+  candidates.push(path.join(home, ".claude", "projects", inferredKey, "memory"));
 
-  // Phase 22 fallback: USERPROFILE 기반 dynamic 키 generate — 사용자명에 무관.
-  // 이전엔 hardcoded "C--Users-user-Documents-K-Desktop-Agent" 였는데 다른 PC
-  // (HP-HP 등) 에선 그 키 디렉토리 없어서 의미 없는 fallback.
-  // 이제 home dir + 가장 흔한 위치 (Documents/K-Desktop-Agent) 조합으로 키 만듦.
-  const home = os.homedir();
+  // 2. 새 candidate: KDA 표준 user-scoped 위치 (사용자가 직접 둘 수 있음)
+  candidates.push(path.join(home, ".kda", "memory"));
+
+  // 3. 새 candidate: Claude CLI 와 공유 가능
+  candidates.push(path.join(home, ".claude", "memory"));
+
+  // 4. Phase 22 fallback: Documents/K-Desktop-Agent 추론 키 (dev 환경)
   const fallbackProjectPath = path.join(home, "Documents", "K-Desktop-Agent");
   const fallbackKey = fallbackProjectPath.replace(/[:\\]/g, "-");
-  return path.join(home, ".claude", "projects", fallbackKey, "memory");
+  candidates.push(path.join(home, ".claude", "projects", fallbackKey, "memory"));
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  // 모두 실패 — 첫 candidate (env override 또는 inferred path) 반환
+  // 그 경로에 memory load 시 ENOENT → empty memory context 처리됨
+  return candidates[0];
 }
 
 interface MemoryContext {
@@ -1695,6 +1706,19 @@ function normalizeToolOutput(content: unknown): string {
 //      향후 정밀 매핑은 별도 phase. 현재는 --dangerously-bypass-approvals-and-sandbox 로
 //      stdin 프로토콜 호환성 우선 (Claude CLI 의 bypassPermissions 와 동등).
 
+// Phase 61 (v0.5.49): runtime session blocklist — Codex stderr 에 "Reconnecting 5/5
+// websocket closed before response.completed" 패턴 감지 시 그 sessionId 를 자동 박음.
+// 다음 spawn 의 inspectCodexSessionFile 가드에 같이 검사 → resume 차단.
+// K 다른 PC 진단: 비대한 resume session 에서 stream 안정성 깨짐 → 5번 retry 후 실패.
+// in-memory 만 (process 재시작 시 reset) — persistent 는 file 잠금 등 부담 vs 사용자 의도
+// 변경 케이스 (다음 KDA 재시작 시 그 session 다시 쓸 수 있어야) 의 균형.
+const sessionBlocklist = new Set<string>();
+
+function blockSession(agentId: string, reason: string): void {
+  sessionBlocklist.add(agentId);
+  logToFile("warn", `Session ${agentId} 자동 blocklist 추가 — ${reason}`);
+}
+
 // Phase 59 (v0.5.47): poisoned Codex session 차단 — K 의 다른 PC 진단 결정타.
 // Codex thread 가 한 번 cumulative billing 누적 (예: total_token_usage.input_tokens=8M+)
 // 으로 오염되면, KDA 가 그 thread 를 resume 하는 한 매 turn context % 가 비정상으로 부풀음.
@@ -1733,6 +1757,14 @@ function inspectCodexSessionFile(agentId: string): {
   reason?: string;
   filePath?: string;
 } {
+  // Phase 61 (v0.5.49): runtime blocklist 우선 — 이전 spawn 에서 Reconnecting 5/5 로
+  // 막힌 session 이면 즉시 poisoned. 파일 크기 / total_token_usage 검사 skip.
+  if (sessionBlocklist.has(agentId)) {
+    return {
+      isPoisoned: true,
+      reason: "runtime blocklist (이전 spawn 에서 Reconnecting 5/5 또는 명시 차단)",
+    };
+  }
   try {
     const sessionFile = findCodexSessionFileById(agentId);
     if (!sessionFile) {
@@ -1915,6 +1947,19 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
           stderrTail = stderrTail.slice(-STDERR_KEEP);
         }
         logToFile("warn", `Codex stderr: ${decoded.trimEnd()}`);
+        // Phase 61 (v0.5.49): "Reconnecting... 5/5" 또는 "websocket closed before response.completed"
+        // pattern 감지 → 그 session 을 자동 blocklist. 다음 spawn 의 inspectCodexSessionFile
+        // 가드가 우선 검사로 즉시 차단.
+        // K 다른 PC 진단: 비대한 resume session 에서 stream 안정성 깨짐 → 5번 retry 후 실패 패턴.
+        if (effectiveAgentId && (
+          /Reconnecting[\s\S]*5\/5/.test(decoded) ||
+          /websocket closed before response\.completed/.test(decoded)
+        )) {
+          blockSession(
+            effectiveAgentId,
+            `Codex stderr 에 Reconnecting 5/5 또는 websocket close 감지 — 다음 spawn 부터 resume 차단`,
+          );
+        }
       });
     }
 
