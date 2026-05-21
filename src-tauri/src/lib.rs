@@ -1062,6 +1062,78 @@ async fn run_install_deps() -> Result<String, String> {
     run_install_deps_internal(false).await
 }
 
+// ────────── Phase 66 (v0.6.1) — K-Personal MCP 자동 설치 ──────────
+//
+// K 가 다른 PC 에서도 KDA + MCP 도구 (ui_*, web_*, fm_*, app_*, clip_*, db_*, cc_*) 를
+// 한 클릭으로 셋업. Settings UI 의 "MCP 도구 자동 설치" 버튼이 이 command 호출.
+//
+// 패턴은 run_install_deps_internal 과 동일 — scripts/install-kpersonal-mcp.ps1 을
+// powershell.exe -AsJson 으로 실행 + CREATE_NO_WINDOW 로 콘솔 깜빡임 방지.
+
+async fn install_kpersonal_mcp_internal(dry_run: bool) -> Result<String, String> {
+    log_lifecycle(
+        "runtime.log",
+        &format!("install_kpersonal_mcp invoked dry_run={}", dry_run),
+    );
+    let script = resolve_script_path("install-kpersonal-mcp.ps1")
+        .map_err(|e| format!("install-kpersonal-mcp script 없음: {}", e))?;
+    let mut args = vec![
+        "-NoProfile".to_string(),
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
+        "-File".to_string(),
+        script.to_str().unwrap().to_string(),
+        "-AsJson".to_string(),
+    ];
+    if dry_run {
+        args.push("-DryRun".to_string());
+    }
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("install-kpersonal-mcp.ps1 실행 실패: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout_trimmed = stdout.trim();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let code = output.status.code().unwrap_or(-1);
+    if !stdout_trimmed.is_empty() && stdout_trimmed.starts_with('{') {
+        log_lifecycle(
+            "runtime.log",
+            &format!(
+                "install-kpersonal-mcp.ps1 done exit={} stdout_len={} stderr_len={}",
+                code,
+                stdout_trimmed.len(),
+                stderr.len()
+            ),
+        );
+        return Ok(stdout_trimmed.to_string());
+    }
+    Err(format!(
+        "install-kpersonal-mcp.ps1 실행 실패 (exit={}, stdout 비어있음) — stderr: {}",
+        code,
+        stderr.trim()
+    ))
+}
+
+#[tauri::command]
+async fn check_kpersonal_mcp() -> Result<String, String> {
+    install_kpersonal_mcp_internal(true).await
+}
+
+#[tauri::command]
+async fn install_kpersonal_mcp() -> Result<String, String> {
+    install_kpersonal_mcp_internal(false).await
+}
+
 // ────────── Phase 15 — 외부 webview 창 + Codex 통합 ──────────
 //
 // K 의 의도: K-Desktop-Agent 안에서 모든 게 완결.
@@ -2190,6 +2262,9 @@ pub fn run_with_options(start_minimized: bool) {
             mark_first_run_complete,
             check_dependencies,
             run_install_deps,
+            // Phase 66 (v0.6.1) — K-Personal MCP 자동 설치
+            check_kpersonal_mcp,
+            install_kpersonal_mcp,
             // Phase 25 — Portable data dir
             get_data_dir_info,
             change_data_dir,

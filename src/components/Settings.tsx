@@ -646,6 +646,21 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [depsError, setDepsError] = useState<string | null>(null);
   const [isFirstRun, setIsFirstRun] = useState<boolean>(false);
 
+  // Phase 66 (v0.6.1) — K-Personal MCP 자동 설치 상태
+  type KpmcpResult = {
+    success: boolean;
+    alreadyInstalled: boolean;
+    target: string;
+    serverPyExists: boolean;
+    pythonAvailable: boolean;
+    gitAvailable: boolean;
+    steps: string[];
+    error: string | null;
+  };
+  const [kpmcpResult, setKpmcpResult] = useState<KpmcpResult | null>(null);
+  const [kpmcpBusy, setKpmcpBusy] = useState<"idle" | "installing">("idle");
+  const [kpmcpError, setKpmcpError] = useState<string | null>(null);
+
   // Phase 25 (v0.5.11): Portable data dir
   type DataDirInfo = {
     data_root: string;
@@ -1382,6 +1397,29 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       setDepsError(String(e));
     } finally {
       setDepsBusy("idle");
+    }
+  }
+
+  // Phase 66 (v0.6.1) — K-Personal MCP 자동 설치 핸들러
+  async function handleInstallKpersonalMCP() {
+    setKpmcpBusy("installing");
+    setKpmcpError(null);
+    try {
+      const json = await invoke<string>("install_kpersonal_mcp");
+      const parsed = JSON.parse(json) as KpmcpResult;
+      setKpmcpResult(parsed);
+      if (parsed.success && !parsed.alreadyInstalled) {
+        // 새로 설치됐으니 sidecar 재시작 → MCP detect
+        try {
+          await invoke("reload_sidecar");
+        } catch (e) {
+          console.warn("sidecar 재시작 실패 (수동 재시작 필요):", e);
+        }
+      }
+    } catch (e) {
+      setKpmcpError(String(e));
+    } finally {
+      setKpmcpBusy("idle");
     }
   }
 
@@ -2504,6 +2542,94 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   title="KDA 재시작 시 first-run 마법사가 다시 자동으로 뜨게 함 (디버그용)"
                 >
                   마법사 가드 초기화
+                </button>
+              </div>
+            </div>
+
+            {/* Phase 66 (v0.6.1) — K-Personal MCP 자동 설치 */}
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">K-Personal MCP 도구 설치</div>
+                <div className="settings-row-desc">
+                  K 의 자동화 도구셋 (ui_*, web_*, fm_*, app_*, clip_*, db_*, cc_*) 을
+                  <code style={{ marginLeft: "0.3em", marginRight: "0.3em", padding: "0.1em 0.3em", background: "var(--bg-0)", borderRadius: "3px" }}>
+                    ~/Documents/K-Personal-MCP
+                  </code>
+                  에 git clone + pip install. 다른 PC 에서 KDA 처음 깔 때 1회 클릭으로 셋업.
+                  Git + Python 필요 (위 의존성 셋업 먼저).
+                </div>
+              </div>
+
+              {kpmcpBusy === "installing" && (
+                <div className="update-downloading-section">
+                  <div className="update-status update-downloading">
+                    <span className="update-spinner">⟳</span> git clone + install.bat 진행 중... (수십 초~수 분 소요)
+                  </div>
+                  <div className="update-progress-bar">
+                    <div className="update-progress-fill" style={{ width: "100%" }} />
+                  </div>
+                </div>
+              )}
+
+              {kpmcpBusy === "idle" && kpmcpResult && (
+                <div className="deps-result">
+                  <div
+                    className="update-status"
+                    style={{
+                      color: kpmcpResult.success
+                        ? "var(--success, #4ec9b0)"
+                        : "var(--danger, #f48771)",
+                    }}
+                  >
+                    {kpmcpResult.success
+                      ? kpmcpResult.alreadyInstalled
+                        ? "✓ 이미 설치되어 있음"
+                        : "✓ 설치 완료 — sidecar 자동 재시작 됨, MCP 도구 곧 활성화"
+                      : `✗ 설치 실패: ${kpmcpResult.error ?? "원인 불명"}`}
+                  </div>
+                  <div className="settings-row-desc" style={{ marginTop: "0.4rem", fontSize: "0.85em" }}>
+                    target: <span style={{ fontFamily: "monospace" }}>{kpmcpResult.target}</span> ·
+                    {" "}server.py: {kpmcpResult.serverPyExists ? "✓" : "✗"} ·
+                    {" "}git: {kpmcpResult.gitAvailable ? "✓" : "✗"} ·
+                    {" "}python: {kpmcpResult.pythonAvailable ? "✓" : "✗"}
+                  </div>
+                  {kpmcpResult.steps && kpmcpResult.steps.length > 0 && (
+                    <details style={{ marginTop: "0.5rem" }}>
+                      <summary style={{ cursor: "pointer", fontSize: "0.85em", opacity: 0.75 }}>
+                        설치 로그 ({kpmcpResult.steps.length} 줄)
+                      </summary>
+                      <pre style={{
+                        marginTop: "0.4rem",
+                        padding: "0.5rem",
+                        background: "var(--bg-0)",
+                        borderRadius: "4px",
+                        fontSize: "0.8em",
+                        maxHeight: "240px",
+                        overflow: "auto",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-all",
+                      }}>
+                        {kpmcpResult.steps.join("\n")}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {kpmcpError && (
+                <div className="update-error-section">
+                  <div className="update-status update-error">⚠ {kpmcpError}</div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
+                <button
+                  className="settings-btn settings-btn-primary"
+                  onClick={handleInstallKpersonalMCP}
+                  disabled={kpmcpBusy !== "idle"}
+                  title="git clone https://github.com/lee30934-byte/K-Personal-MCP.git ~/Documents/K-Personal-MCP + install.bat"
+                >
+                  {kpmcpBusy === "installing" ? "설치 중…" : "MCP 도구 자동 설치"}
                 </button>
               </div>
             </div>
