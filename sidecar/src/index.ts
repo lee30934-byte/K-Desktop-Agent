@@ -974,6 +974,65 @@ const activeTurns = new Map<string, ChildProcess>();
 const activeRestTurns = new Map<string, AbortController>();
 let cachedMCPHealth: MCPStatus = { configured: false, serverPathExists: false, pythonAvailable: false, claudeCliAvailable: false };
 
+// ─── Phase 68 (v0.6.12) — MCP 도구 listing 통합 emit helper ────────────────
+//
+// 호출 path 두 가지:
+//   1. ping handler / recheck_mcp handler → cause="auto" (Settings 가 listen 중이면 받음)
+//   2. list_mcp_tools handler → cause="request" (Settings 의 명시 요청 응답)
+//
+// 어느 path 든 동일하게:
+//   - cachedMCPHealth 검사 → fail 시 빈 tools + error 박은 mcp_tools emit
+//   - listTools(refresh) 호출
+//   - getServerInfo() 결과 같이 박음 (UI tooltip 의 "source" 표시용)
+//
+// throw 안 함 — 호출자가 .catch(...) 로 swallow 가능하게.
+async function emitMcpToolsListing(
+  cause: "request" | "auto",
+  refresh = false,
+): Promise<void> {
+  if (!cachedMCPHealth.serverPathExists || !cachedMCPHealth.pythonAvailable) {
+    emit({
+      type: "mcp_tools",
+      server: "k-personal",
+      tools: [],
+      error: cachedMCPHealth.error ?? "K-Personal MCP 가 설정되지 않았습니다.",
+      cause,
+    });
+    return;
+  }
+  try {
+    const client = getKPersonalMCPClient({
+      command: PYTHON_EXE,
+      args: [K_PERSONAL_PATH],
+      logger: (level, m) => logToFile(level, m),
+    });
+    const tools = await client.listTools(refresh);
+    const info = client.getServerInfo();
+    logToFile(
+      "info",
+      `[mcp:k-personal] emit mcp_tools cause=${cause} count=${tools.length} server=${info.name ?? "?"}@${info.version ?? "?"}`,
+    );
+    emit({
+      type: "mcp_tools",
+      server: "k-personal",
+      tools,
+      serverName: info.name,
+      serverVersion: info.version,
+      cause,
+    });
+  } catch (e) {
+    const msg_ = e instanceof Error ? e.message : String(e);
+    logToFile("warn", `[mcp:k-personal] emitMcpToolsListing failed (cause=${cause}): ${msg_}`);
+    emit({
+      type: "mcp_tools",
+      server: "k-personal",
+      tools: [],
+      error: msg_,
+      cause,
+    });
+  }
+}
+
 // ─── Provider 라우터 ──────────────────────────────────
 async function handleUserMessage(msg: UserMessage): Promise<void> {
   const provider: Provider = msg.provider ?? "claude";
@@ -3099,6 +3158,13 @@ rl.on("line", (line) => {
         server: "k-personal",
         error: cachedMCPHealth.error,
       });
+      // Phase 68 (v0.6.12) — ping 시점에 자발적 mcp_tools emit.
+      // Settings 가 mount 시점에 invoke("list_mcp_tools") 보내도 sidecar 가 그 사이에 ready 이거나
+      // command not registered (옛 binary) 인 경우가 있어, ping 마다 한 번씩 자동 emit 으로 UI 가 받게 함.
+      // cache 있으면 즉시, 없으면 background listTools — fire-and-forget. emit 실패해도 ping pong 흐름 무관.
+      emitMcpToolsListing("auto").catch((e) =>
+        logToFile("warn", `[mcp:k-personal] auto emit on ping failed: ${e instanceof Error ? e.message : String(e)}`),
+      );
       break;
     case "recheck_mcp": {
       cachedMCPHealth = checkMCPHealth();
@@ -3108,6 +3174,10 @@ rl.on("line", (line) => {
         server: "k-personal",
         error: cachedMCPHealth.error,
       });
+      // Phase 68 — recheck 후에도 자동 emit (sidecar 재시작 직후 시나리오)
+      emitMcpToolsListing("auto").catch((e) =>
+        logToFile("warn", `[mcp:k-personal] auto emit on recheck failed: ${e instanceof Error ? e.message : String(e)}`),
+      );
       break;
     }
     // Phase 67a (v0.6.2) — MCP 도구 인스펙터.
@@ -3116,39 +3186,11 @@ rl.on("line", (line) => {
     // refresh=true 면 tools cache 무효화 후 재조회 (server.py 재기동 후 새 도구 노출 시).
     case "list_mcp_tools": {
       const refresh = (msg as { refresh?: boolean }).refresh === true;
-      (async () => {
-        if (!cachedMCPHealth.serverPathExists || !cachedMCPHealth.pythonAvailable) {
-          emit({
-            type: "mcp_tools",
-            server: "k-personal",
-            tools: [],
-            error: cachedMCPHealth.error ?? "K-Personal MCP 가 설정되지 않았습니다.",
-          });
-          return;
-        }
-        try {
-          const client = getKPersonalMCPClient({
-            command: PYTHON_EXE,
-            args: [K_PERSONAL_PATH],
-            logger: (level, m) => logToFile(level, m),
-          });
-          const tools = await client.listTools(refresh);
-          emit({
-            type: "mcp_tools",
-            server: "k-personal",
-            tools,
-          });
-        } catch (e) {
-          const msg_ = e instanceof Error ? e.message : String(e);
-          logToFile("warn", `list_mcp_tools failed: ${msg_}`);
-          emit({
-            type: "mcp_tools",
-            server: "k-personal",
-            tools: [],
-            error: msg_,
-          });
-        }
-      })();
+      // Phase 68 (v0.6.12) — 명시 로깅. K 가 sidecar.log 에서 "frontend 가 요청 보냈는지" 추적 가능.
+      logToFile("info", `[mcp:k-personal] list_mcp_tools handler invoked (refresh=${refresh})`);
+      emitMcpToolsListing("request", refresh).catch((e) =>
+        logToFile("warn", `list_mcp_tools failed: ${e instanceof Error ? e.message : String(e)}`),
+      );
       break;
     }
     case "elicitation_response": {

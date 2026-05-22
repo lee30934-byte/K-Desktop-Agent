@@ -787,6 +787,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [mcpToolsBusy, setMcpToolsBusy] = useState(false);
   const [toolFilter, setToolFilter] = useState("");
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
+  // Phase 68 (v0.6.12) — UI tooltip 의 "source: k-personal@1.27.1" 표시용. sidecar 의 mcp_tools event
+  // payload 에 새로 박힌 serverName/serverVersion 받아 저장. cause="auto" / "request" 도 같이 받아
+  // 마지막 갱신 출처를 사용자에게 보이게.
+  const [mcpServerInfo, setMcpServerInfo] = useState<{ name?: string; version?: string; cause?: string; receivedAt?: number } | null>(null);
 
   // 67c: KDA 가 K-Personal-MCP/modules/kda_plugins/ 에 박은 커스텀 plugin 목록 + 에디터
   type PluginInfo = { file: string; size: number; modified_ms: number };
@@ -929,6 +933,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         server?: string;
         tools?: McpToolInfo[];
         error?: string;
+        serverName?: string;
+        serverVersion?: string;
+        cause?: "request" | "auto";
       }>("sidecar-event", (ev) => {
         const payload = ev.payload;
         if (payload && payload.type === "mcp_tools") {
@@ -941,6 +948,14 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             setMcpToolsError(null);
             setMcpTools(payload.tools ?? []);
           }
+          // Phase 68 — server identity 도 같이 저장 (UI tooltip 의 source 표시).
+          // serverName/Version 가 undefined 면 옛 sidecar (v0.6.11 이하) → name "?" 표시.
+          setMcpServerInfo({
+            name: payload.serverName,
+            version: payload.serverVersion,
+            cause: payload.cause,
+            receivedAt: Date.now(),
+          });
         }
       });
       mcpToolsUnlistenRef.current = unlisten;
@@ -1634,7 +1649,25 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       await invoke("list_mcp_tools", { refresh });
       // 응답은 sidecar event listener 가 받아 setMcpTools 호출.
       // 5초 안 오면 timeout 으로 busy 해제 (UI 멈춤 회피).
-      setTimeout(() => setMcpToolsBusy(false), 5000);
+      //
+      // Phase 68 (v0.6.12) — timeout 시 단순 busy 해제만 하지 말고:
+      //   - mcpTools 가 아직 null = 응답 한 번도 안 받음 → friendly warning + 재시도 안내
+      //   - mcpTools 가 이미 있음 = 이미 받았던 cache 유지 (busy 만 해제)
+      //
+      // 옛 binary (v0.6.11 이하) 의 KDA 에선 list_mcp_tools Rust command 가 invoke 단계에서 throw —
+      // 위 catch 로 잡혀 안 옴. 여기 timeout 경로는 sidecar 가 죽었거나 응답이 안 오는 케이스.
+      setTimeout(() => {
+        setMcpToolsBusy(false);
+        // setMcpTools 가 다른 render 사이클에서 바뀔 수 있어 setter 함수 형태로 검사.
+        setMcpTools((current) => {
+          if (current === null) {
+            setMcpToolsError(
+              "sidecar 가 5초 안에 응답하지 않았습니다. KDA 의 'Settings → 시스템 → 지금 sidecar 재시작' 클릭 후 다시 시도하세요.",
+            );
+          }
+          return current; // mutation 없음
+        });
+      }, 5000);
     } catch (e) {
       setMcpToolsError(String(e));
       setMcpToolsBusy(false);
@@ -3300,6 +3333,19 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   {mcpTools && mcpTools.length > 0 && (
                     <span style={{ marginLeft: "0.5em", opacity: 0.7, fontSize: "0.85em" }}>
                       ({mcpTools.length}개)
+                    </span>
+                  )}
+                  {/* Phase 68 (v0.6.12) — server identity tooltip (옛 sidecar 면 "?@?" 로 표시되거나 빈 상태) */}
+                  {mcpServerInfo && (mcpServerInfo.name || mcpServerInfo.version) && (
+                    <span
+                      style={{ marginLeft: "0.6em", opacity: 0.55, fontSize: "0.78em", fontFamily: "var(--mono, monospace)" }}
+                      title={
+                        `source: ${mcpServerInfo.name ?? "?"}@${mcpServerInfo.version ?? "?"}` +
+                        (mcpServerInfo.cause === "auto" ? " (sidecar 의 ping 시점에 자동 갱신)" :
+                          mcpServerInfo.cause === "request" ? " (Settings 의 명시 요청 응답)" : "")
+                      }
+                    >
+                      {mcpServerInfo.name ?? "?"}@{mcpServerInfo.version ?? "?"}
                     </span>
                   )}
                 </div>

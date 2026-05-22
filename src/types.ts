@@ -81,6 +81,10 @@ export type SidecarEvent =
   | {
       // Phase 67a (v0.6.2) — list_mcp_tools 응답.
       // Settings 의 "MCP 도구" 탭이 받아 카드 list 렌더. tools 비어 있으면 빈 상태 표시.
+      //
+      // Phase 68 (v0.6.12) — Settings 가 mount 전이라도 sidecar 가 ping 시점에 자발적
+      // emit (cause=auto). + serverName/serverVersion 박아 UI tooltip 의 source 표시.
+      // cause: "request" (list_mcp_tools handler), "auto" (ping 시점 자발적).
       type: "mcp_tools";
       server: string;
       tools: Array<{
@@ -89,6 +93,9 @@ export type SidecarEvent =
         inputSchema?: Record<string, unknown>;
       }>;
       error?: string;
+      serverName?: string;
+      serverVersion?: string;
+      cause?: "request" | "auto";
     }
   | {
       type: "elicitation_request";
