@@ -925,48 +925,73 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   useEffect(() => {
     if (!open) return;
 
-    // sidecar 의 mcp_tools event 한 번만 등록 (open 사이클 동안 유지)
-    let cancelled = false;
+    // Phase 69 (v0.6.13) — 종전 cancelled flag race fix.
+    //
+    // 종전 코드의 함정:
+    //   let cancelled = false;
+    //   await listen(...)  // ← await 동안 effect cleanup 이 한 번 호출되면
+    //   return () => { cancelled = true; }  // ← cancelled=true 박혀 모든 callback 무시
+    //
+    // React 가 [open] 의존성 effect 를 같은 cycle 에 두 번 (특히 strict mode 또는 ref 변경) 실행하면
+    // 첫 effect 의 cleanup → cancelled=true → 그 effect 의 listener 가 등록은 됐는데 모든 event 무시.
+    // 두 번째 effect 의 listener 는 새로 등록되지만 mcpToolsUnlistenRef 에 첫 effect 의 unlisten 만
+    // 박혀 있어 leak. 결과: listener 가 두 개 떠 있는데 한 개는 cancelled=true 라 무시, 두 번째는
+    // 또 다음 cleanup 에서 같은 함정으로 cancelled=true 박힘.
+    //
+    // 새 패턴: closure-local unlisten 변수만 사용. cancelled flag 제거. 각 effect 의 cleanup 이
+    // 자기 unlisten 만 호출. 새 effect 가 자기 listener 등록. race 없음.
+    let unlisten: (() => void) | undefined;
     (async () => {
-      const unlisten = await listen<{
-        type: string;
-        server?: string;
-        tools?: McpToolInfo[];
-        error?: string;
-        serverName?: string;
-        serverVersion?: string;
-        cause?: "request" | "auto";
-      }>("sidecar-event", (ev) => {
-        const payload = ev.payload;
-        if (payload && payload.type === "mcp_tools") {
-          if (cancelled) return;
-          setMcpToolsBusy(false);
-          if (payload.error) {
-            setMcpToolsError(payload.error);
-            setMcpTools([]);
-          } else {
-            setMcpToolsError(null);
-            setMcpTools(payload.tools ?? []);
+      try {
+        unlisten = await listen<{
+          type: string;
+          server?: string;
+          tools?: McpToolInfo[];
+          error?: string;
+          serverName?: string;
+          serverVersion?: string;
+          cause?: "request" | "auto";
+        }>("sidecar-event", (ev) => {
+          const payload = ev.payload;
+          if (payload && payload.type === "mcp_tools") {
+            const count = payload.tools?.length ?? 0;
+            // Phase 69 — frontend 수신 흔적을 sidecar.log 에 echo. K 의 다음 진단이 즉시 가능.
+            // frontend_log Tauri command 없는 옛 binary 면 silently swallow.
+            invoke("frontend_log", {
+              message: `[settings] mcp_tools received cause=${payload.cause ?? "?"} count=${count} hasError=${!!payload.error}`,
+            }).catch(() => {});
+
+            setMcpToolsBusy(false);
+            if (payload.error) {
+              setMcpToolsError(payload.error);
+              setMcpTools([]);
+            } else {
+              setMcpToolsError(null);
+              setMcpTools(payload.tools ?? []);
+            }
+            // Phase 68 — server identity 도 같이 저장 (UI tooltip 의 source 표시).
+            // serverName/Version 가 undefined 면 옛 sidecar (v0.6.11 이하) → name "?" 표시.
+            setMcpServerInfo({
+              name: payload.serverName,
+              version: payload.serverVersion,
+              cause: payload.cause,
+              receivedAt: Date.now(),
+            });
           }
-          // Phase 68 — server identity 도 같이 저장 (UI tooltip 의 source 표시).
-          // serverName/Version 가 undefined 면 옛 sidecar (v0.6.11 이하) → name "?" 표시.
-          setMcpServerInfo({
-            name: payload.serverName,
-            version: payload.serverVersion,
-            cause: payload.cause,
-            receivedAt: Date.now(),
-          });
-        }
-      });
-      mcpToolsUnlistenRef.current = unlisten;
+        });
+        // Phase 69 — listener 등록 성공 echo. K 의 sidecar.log 에 "frontend ready to receive" 흔적.
+        invoke("frontend_log", { message: "[settings] mcp_tools listener registered" }).catch(() => {});
+        mcpToolsUnlistenRef.current = unlisten;
+      } catch (e) {
+        invoke("frontend_log", { message: `[settings] mcp_tools listen 등록 실패: ${String(e)}` }).catch(() => {});
+      }
     })();
 
     return () => {
-      cancelled = true;
-      if (mcpToolsUnlistenRef.current) {
-        try { mcpToolsUnlistenRef.current(); } catch {}
-        mcpToolsUnlistenRef.current = null;
+      if (unlisten) {
+        try { unlisten(); } catch {}
       }
+      mcpToolsUnlistenRef.current = null;
     };
   }, [open]);
 

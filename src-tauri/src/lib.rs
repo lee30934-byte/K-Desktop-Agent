@@ -262,6 +262,20 @@ async fn interrupt(id: String) -> Result<(), String> {
     Ok(())
 }
 
+// Phase 69 (v0.6.13) — frontend 가 sidecar.log 에 진단 메시지를 박을 path.
+//
+// Settings.tsx 의 mcp_tools listener / 다른 React component 가 invoke("frontend_log", { message })
+// 호출 → 이 command 가 그대로 sidecar.log 에 `[frontend] ...` 라인 박음. K 가 "frontend 가 진짜
+// listener 등록했나? 진짜 event 받았나?" 같은 질문을 sidecar.log grep 한 번으로 확정.
+//
+// 옛 frontend 가 이 command 호출 시도해도 unknown command 로 fail — 호출자가 .catch(() => {}) 로
+// silently swallow. backward compat 보장.
+#[tauri::command]
+fn frontend_log(message: String) -> Result<(), String> {
+    log_lifecycle("sidecar.log", &format!("[frontend] {}", message));
+    Ok(())
+}
+
 #[tauri::command]
 async fn ping_sidecar() -> Result<(), String> {
     let payload = serde_json::json!({ "type": "ping" });
@@ -2449,6 +2463,8 @@ pub fn run_with_options(start_minimized: bool) {
             interrupt,
             reload_sidecar,
             ping_sidecar,
+            // Phase 69 (v0.6.13) — frontend → sidecar.log echo bridge
+            frontend_log,
             elicitation_response,
             show_main_window,
             hide_main_window,
