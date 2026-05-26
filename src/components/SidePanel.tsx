@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+// Phase 74 (v0.6.17): plugin-fs/plugin-shell 의 default scope 가 너무 strict 해서
+// ~/.kda/cwd/runtime/previews/... 같은 K 워크스페이스 path 를 거부 ("forbidden path",
+// "Scoped command argument ... regex validation"). Rust 측 명시적 command (read_preview_file
+// / open_path) 로 갈아탐 — capabilities scope 우회 + 신뢰 prefix 검증.
 import { readTextFile, readFile } from "@tauri-apps/plugin-fs";
 import { open as openShell } from "@tauri-apps/plugin-shell";
 import logger from "../utils/logger";
@@ -62,15 +66,44 @@ export async function loadPreview(
   if (isUrl(pathOrUrl)) {
     return { dataUrl: pathOrUrl };
   }
+
+  // Phase 74 — Rust 측 read_preview_file 우선 시도 (capabilities scope 우회).
+  // 옛 binary (~v0.6.16) 면 invoke 자체가 throw → plugin-fs 폴백.
+  const tryRustRead = async (asText: boolean): Promise<{ text?: string; bytes?: Uint8Array } | null> => {
+    try {
+      const result = await invoke<{ text?: string; bytes?: number[] }>("read_preview_file", {
+        path: pathOrUrl,
+        asText,
+      });
+      if (asText) return { text: result.text };
+      if (result.bytes) return { bytes: new Uint8Array(result.bytes) };
+      return null;
+    } catch (e) {
+      logger.warn(`[SidePanel] read_preview_file invoke 실패 (옛 binary 가능): ${e}`);
+      return null;
+    }
+  };
+
   try {
     if (category === "text") {
+      const rust = await tryRustRead(true);
+      if (rust?.text !== undefined) {
+        return { text: rust.text };
+      }
+      // 폴백 — 옛 binary 에서만. v0.6.16 이하면 capabilities scope 거부 가능성 큼.
       const content = await readTextFile(pathOrUrl);
-      // 너무 큰 텍스트는 잘라 표시
       const truncated = content.length > 100_000 ? content.slice(0, 100_000) + "\n\n... [잘림: 100KB 까지만]" : content;
       return { text: truncated };
     }
     if (category === "image" || category === "video" || category === "audio" || category === "pdf") {
-      const bytes = await readFile(pathOrUrl);
+      let bytes: Uint8Array | null = null;
+      const rust = await tryRustRead(false);
+      if (rust?.bytes) {
+        bytes = rust.bytes;
+      } else {
+        // 폴백
+        bytes = await readFile(pathOrUrl);
+      }
       // bytes (Uint8Array) → base64
       let bin = "";
       const chunkSize = 0x8000;

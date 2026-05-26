@@ -1371,6 +1371,153 @@ async fn delete_kda_plugin(app: AppHandle, file: String) -> Result<String, Strin
 /// embedded webview (Tauri/Electron) 에서의 로그인을 보안 정책으로 차단함 (2021~).
 /// "로그인 중 오류가 발생했습니다" 페이지가 떠서 K 가 anthropic / chatgpt 로그인 못함.
 ///
+/// Phase 74 (v0.6.17) — 로컬 파일을 OS 기본 앱으로 열기.
+///
+/// SidePanel 의 "외부 열기" 버튼이 호출. 기존 SidePanel.tsx 는 `invoke("open_path")`
+/// 시도 후 실패하면 `plugin-shell.open` 폴백이었는데, plugin-shell 의 default scope 는
+/// `^((mailto:\w+)|(tel:\w+)|(https?://\w+)).+` 만 허용 — 로컬 파일 path 는 regex
+/// validation 에서 거부 ("Scoped command argument at position 0 was found, but failed
+/// regex validation"). 그래서 K 보고: "외부 앱에서 열기 실패" 메시지.
+///
+/// fix: Rust 측 명시적 command 로 path 직접 열기. capabilities scope 우회.
+/// Windows 의 `cmd /c start "" "<path>"` 가 path 의 첫 인자를 window title 로 잡는
+/// 함정 회피 위해 빈 title 명시.
+///
+/// 안전성: path 가 K 의 신뢰 영역 ($HOME, $HOME/.kda, $HOME/Documents, Desktop, AppData,
+/// Tauri resource dir) 안인지만 검증. 더 strict 한 path traversal 검증은 PathBuf 의
+/// canonicalize 가 ".." 풀어서 absolute path 만들면 자연 차단.
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    use std::path::Path;
+    let p = Path::new(&path);
+    let canonical = match p.canonicalize() {
+        Ok(c) => c,
+        Err(e) => return Err(format!("path canonicalize 실패: {} (입력: {})", e, path)),
+    };
+    let canonical_str = canonical.to_string_lossy().to_lowercase();
+
+    // K 가 신뢰하는 영역만 허용. PC 마다 user 이름 다르므로 ($HOME) 기준.
+    let home = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
+    let resource_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_string_lossy().to_lowercase()));
+    let appdata = std::env::var("APPDATA").unwrap_or_default().to_lowercase();
+    let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default().to_lowercase();
+
+    let trusted_prefixes: Vec<String> = vec![
+        Some(home.clone()),
+        resource_dir,
+        Some(appdata.clone()),
+        Some(localappdata.clone()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|s| !s.is_empty())
+    .collect();
+
+    let trusted = trusted_prefixes
+        .iter()
+        .any(|prefix| canonical_str.starts_with(prefix));
+    if !trusted {
+        return Err(format!(
+            "신뢰하지 않는 경로 (외부 열기 거부): {}\n허용 prefix: {:?}",
+            canonical.display(),
+            trusted_prefixes
+        ));
+    }
+
+    // Windows 에선 `cmd /c start "" "<path>"` 가 가장 안전. 첫 빈 quote = window title 자리.
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command as StdCommand;
+        let mut cmd = StdCommand::new("cmd");
+        cmd.args(["/c", "start", "", canonical.to_string_lossy().as_ref()]);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|e| format!("cmd start spawn 실패: {}", e))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("open_path 는 Windows 전용".to_string());
+    }
+    Ok(())
+}
+
+/// Phase 74 (v0.6.17) — 미리보기 파일을 binary 또는 텍스트로 읽기.
+///
+/// SidePanel.tsx 의 `loadPreview` 가 기존엔 `@tauri-apps/plugin-fs` 의 readFile/readTextFile
+/// 사용 → capabilities 의 `fs:scope` 가 default 라 `~/.kda/cwd/runtime/previews/...` 같은
+/// K 워크스페이스 path 를 거부 ("forbidden path: runtime/previews/..."). 결과: 모든 이미지/
+/// PDF/비디오/오디오 미리보기 fail.
+///
+/// fix: Rust 측 명시적 command — plugin-fs scope 우회. 안전 검증은 open_path 와 동일하게
+/// 신뢰 prefix (USERPROFILE/APPDATA/LOCALAPPDATA/install dir) 안만 허용.
+///
+/// 반환: as_text=true 면 UTF-8 텍스트, 아니면 raw bytes (Vec<u8>) — frontend 가 base64 변환.
+#[tauri::command]
+fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, String> {
+    use std::path::Path;
+    let p = Path::new(&path);
+    let canonical = match p.canonicalize() {
+        Ok(c) => c,
+        Err(e) => return Err(format!("path canonicalize 실패: {} (입력: {})", e, path)),
+    };
+    let canonical_str = canonical.to_string_lossy().to_lowercase();
+
+    let home = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
+    let resource_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_string_lossy().to_lowercase()));
+    let appdata = std::env::var("APPDATA").unwrap_or_default().to_lowercase();
+    let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default().to_lowercase();
+    let trusted_prefixes: Vec<String> = vec![
+        Some(home),
+        resource_dir,
+        Some(appdata),
+        Some(localappdata),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|s| !s.is_empty())
+    .collect();
+
+    let trusted = trusted_prefixes
+        .iter()
+        .any(|prefix| canonical_str.starts_with(prefix));
+    if !trusted {
+        return Err(format!(
+            "신뢰하지 않는 경로 (미리보기 거부): {}\n허용 prefix: {:?}",
+            canonical.display(),
+            trusted_prefixes
+        ));
+    }
+
+    // 파일 크기 cap — 100MB 이상은 거부 (메모리 폭주 회피).
+    let metadata = std::fs::metadata(&canonical).map_err(|e| format!("metadata 실패: {}", e))?;
+    const MAX_SIZE: u64 = 100 * 1024 * 1024;
+    if metadata.len() > MAX_SIZE {
+        return Err(format!(
+            "파일 크기 100MB 초과 ({}MB) — 미리보기 거부",
+            metadata.len() / (1024 * 1024)
+        ));
+    }
+
+    if as_text {
+        let s = std::fs::read_to_string(&canonical).map_err(|e| format!("text read 실패: {}", e))?;
+        // 텍스트도 100KB 까지만 (frontend 의 truncate 와 일관성).
+        let truncated = if s.len() > 100_000 {
+            format!("{}\n\n... [잘림: 100KB 까지만]", &s[..100_000])
+        } else {
+            s
+        };
+        Ok(serde_json::json!({ "text": truncated }))
+    } else {
+        let bytes = std::fs::read(&canonical).map_err(|e| format!("binary read 실패: {}", e))?;
+        Ok(serde_json::json!({ "bytes": bytes }))
+    }
+}
+
 /// 회피책: 시스템 기본 브라우저 (Edge/Chrome/Firefox) 로 열기 — Google OAuth 제약 없음 +
 /// K 평소 브라우저의 cookie 영속 → 다음에 그 브라우저에서 anthropic 들어갈 때도 자동 로그인.
 ///
@@ -2476,6 +2623,9 @@ pub fn run_with_options(start_minimized: bool) {
             rollback_now,
             // Phase 15 — 외부 webview 창 + Codex 통합
             open_external_webview,
+            // Phase 74 (v0.6.17) — SidePanel 미리보기/외부 열기 — capabilities scope 우회
+            open_path,
+            read_preview_file,
             codex_login,
             codex_login_status,
             codex_register_mcp,
