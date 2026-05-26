@@ -2400,13 +2400,12 @@ pub fn run_with_options(start_minimized: bool) {
                 }
             }
 
-            #[cfg(debug_assertions)]
-            {
-                // 개발 중에만, 그리고 명시적으로 원할 때만 DevTools 자동 오픈
-                if std::env::var("KDA_OPEN_DEVTOOLS").is_ok() {
-                    if let Some(window) = app.get_webview_window("main") {
-                        window.open_devtools();
-                    }
+            // Phase 70 — prod build 에서도 KDA_OPEN_DEVTOOLS=1 환경변수 있으면 DevTools 자동 오픈.
+            // tauri.conf.json 의 "devtools": true 와 짝 — 진단 가능성을 영구히 열어둠.
+            // 우클릭→검사 / Ctrl+Shift+I 도 prod 에서 작동 (devtools: true 덕분).
+            if std::env::var("KDA_OPEN_DEVTOOLS").is_ok() {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
                 }
             }
 

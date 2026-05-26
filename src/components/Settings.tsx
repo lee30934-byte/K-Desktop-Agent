@@ -969,6 +969,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               setMcpToolsError(null);
               setMcpTools(payload.tools ?? []);
             }
+            // Phase 70 — 진단: setMcpTools 직후 payload shape echo. mcpTools=null silent 케이스 추적용.
+            invoke("frontend_log", {
+              message: `[settings] setMcpTools 호출됨 — payload.tools type=${Array.isArray(payload.tools) ? "array" : typeof payload.tools} length=${count} firstName=${payload.tools?.[0]?.name ?? "?"}`,
+            }).catch(() => {});
             // Phase 68 — server identity 도 같이 저장 (UI tooltip 의 source 표시).
             // serverName/Version 가 undefined 면 옛 sidecar (v0.6.11 이하) → name "?" 표시.
             setMcpServerInfo({
@@ -3407,6 +3411,14 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     K-Personal MCP 가 설치 안 됐거나 Python 이 없는 상태일 수 있습니다.
                     위의 "MCP 도구 자동 설치" 또는 "외부 의존성 자동 설치" 먼저 확인하세요.
                   </div>
+                </div>
+              )}
+
+              {/* Phase 70 — mcpTools=null 케이스 visible 안내 (이전엔 분기 셋 다 false 라 진짜 빈 화면이었음) */}
+              {!mcpTools && !mcpToolsError && (
+                <div className="settings-row-desc" style={{ marginTop: "0.5rem", opacity: 0.85, color: "#fa0" }}>
+                  ⏳ mcpTools state = null (listener 트리거 됐는데 state 갱신 안 됨).
+                  sidecar.log 의 <code>[settings] setMcpTools</code> 라인 확인 + KDA 재시작.
                 </div>
               )}
 
