@@ -787,6 +787,13 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [mcpToolsBusy, setMcpToolsBusy] = useState(false);
   const [toolFilter, setToolFilter] = useState("");
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
+
+  // Phase 75 (v0.6.18) — 좀비 codex process detect.
+  // K 다른 PC: "Reconnecting... 2/5 (timeout waiting for child process to exit)" 의 root cause.
+  type StaleProcess = { pid: number; name: string; start_time: string; age_hours: number; command_line: string };
+  const [staleProcesses, setStaleProcesses] = useState<StaleProcess[] | null>(null);
+  const [staleProcessesBusy, setStaleProcessesBusy] = useState(false);
+  const [staleProcessesError, setStaleProcessesError] = useState<string | null>(null);
   // Phase 68 (v0.6.12) — UI tooltip 의 "source: k-personal@1.27.1" 표시용. sidecar 의 mcp_tools event
   // payload 에 새로 박힌 serverName/serverVersion 받아 저장. cause="auto" / "request" 도 같이 받아
   // 마지막 갱신 출처를 사용자에게 보이게.
@@ -3332,6 +3339,149 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   <span className="shortcut-desc">빠른 명령 팔레트</span>
                 </div>
               </div>
+            </div>
+          </section>
+
+          {/* Phase 75 (v0.6.18) — Codex 좀비 process detect + 안전 정리 */}
+          <section className="settings-section" data-tab="system">
+            <div className="eyebrow">🧟 좀비 codex 프로세스</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">오래된 codex / node / powershell 프로세스</div>
+                <div className="settings-row-desc">
+                  KDA 가 "Reconnecting... 2/5 (timeout waiting for child process to exit)" 같이 막힐 때,
+                  이전 세션의 codex 자식 프로세스가 정리 안 된 게 원인. 1시간 이상 떠있고 commandLine 에
+                  "codex" 가 포함된 것들을 찾아서 K 가 직접 정리. <strong>자동 kill 안 함</strong> —
+                  K 의 다른 PC 작업을 죽일 위험 회피.
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+                <button
+                  className="settings-btn"
+                  disabled={staleProcessesBusy}
+                  onClick={async () => {
+                    setStaleProcessesBusy(true);
+                    setStaleProcessesError(null);
+                    try {
+                      const list = await invoke<StaleProcess[]>("list_stale_codex_processes");
+                      setStaleProcesses(list);
+                    } catch (e) {
+                      setStaleProcessesError(String(e));
+                      setStaleProcesses(null);
+                    } finally {
+                      setStaleProcessesBusy(false);
+                    }
+                  }}
+                  title="현재 K's user 권한의 stale codex 프로세스 검색"
+                >
+                  {staleProcessesBusy ? "검색 중…" : "🔍 지금 검사"}
+                </button>
+                {staleProcesses && staleProcesses.length > 0 && (
+                  <button
+                    className="settings-btn settings-btn-danger"
+                    disabled={staleProcessesBusy}
+                    onClick={async () => {
+                      if (!confirm(`${staleProcesses.length}개의 좀비 프로세스를 모두 정리합니다. 진행할까요?`)) return;
+                      setStaleProcessesBusy(true);
+                      let killed = 0;
+                      let failed: string[] = [];
+                      for (const p of staleProcesses) {
+                        try {
+                          await invoke("kill_process_tree", { pid: p.pid });
+                          killed++;
+                        } catch (e) {
+                          failed.push(`PID ${p.pid}: ${e}`);
+                        }
+                      }
+                      // 재검사
+                      try {
+                        const list = await invoke<StaleProcess[]>("list_stale_codex_processes");
+                        setStaleProcesses(list);
+                        if (failed.length > 0) {
+                          setStaleProcessesError(`정리 완료 ${killed}개, 실패 ${failed.length}개:\n${failed.join("\n")}`);
+                        } else {
+                          setStaleProcessesError(null);
+                        }
+                      } finally {
+                        setStaleProcessesBusy(false);
+                      }
+                    }}
+                    title="모두 taskkill /F /T 실행"
+                  >
+                    🧹 모두 정리 ({staleProcesses.length}개)
+                  </button>
+                )}
+              </div>
+
+              {staleProcessesError && (
+                <div className="update-error-section" style={{ marginTop: "0.5rem" }}>
+                  <div className="update-status update-error" style={{ whiteSpace: "pre-wrap" }}>
+                    ⚠ {staleProcessesError}
+                  </div>
+                </div>
+              )}
+
+              {staleProcesses && staleProcesses.length === 0 && !staleProcessesError && (
+                <div className="settings-row-desc" style={{ marginTop: "0.5rem", color: "#4a9" }}>
+                  ✓ 좀비 프로세스 없음 (1시간 이상 떠있는 codex 관련 프로세스 0개).
+                </div>
+              )}
+
+              {staleProcesses && staleProcesses.length > 0 && (
+                <div style={{ marginTop: "0.7rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                  {staleProcesses.map((p) => (
+                    <div
+                      key={p.pid}
+                      style={{
+                        padding: "0.5rem 0.7rem",
+                        background: "var(--bg-1)",
+                        border: "1px solid var(--border-subtle)",
+                        borderRadius: "4px",
+                        fontSize: "0.85em",
+                      }}
+                    >
+                      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                        <span className="mono" style={{ fontWeight: 600 }}>PID {p.pid}</span>
+                        <span className="mono">{p.name}</span>
+                        <span style={{ opacity: 0.7 }}>{p.start_time}</span>
+                        <span style={{ opacity: 0.7, color: p.age_hours > 24 ? "#fa0" : undefined }}>
+                          {p.age_hours.toFixed(1)}h 전 시작
+                        </span>
+                        <button
+                          className="settings-btn settings-btn-danger"
+                          style={{ marginLeft: "auto", padding: "0.2rem 0.5rem", fontSize: "0.85em" }}
+                          disabled={staleProcessesBusy}
+                          onClick={async () => {
+                            if (!confirm(`PID ${p.pid} (${p.name}) 및 child tree 를 강제 종료합니다.`)) return;
+                            try {
+                              await invoke("kill_process_tree", { pid: p.pid });
+                              const list = await invoke<StaleProcess[]>("list_stale_codex_processes");
+                              setStaleProcesses(list);
+                            } catch (e) {
+                              setStaleProcessesError(`PID ${p.pid} kill 실패: ${e}`);
+                            }
+                          }}
+                        >
+                          ✕ kill
+                        </button>
+                      </div>
+                      {p.command_line && (
+                        <div
+                          className="mono"
+                          style={{
+                            marginTop: "0.3rem",
+                            fontSize: "0.8em",
+                            opacity: 0.75,
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {p.command_line}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
 

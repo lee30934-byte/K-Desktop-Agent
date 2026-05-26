@@ -1444,6 +1444,122 @@ fn open_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Phase 75 (v0.6.18) — Codex 좀비 process detect.
+///
+/// K 보고 (다른 PC): KDA 가 "Reconnecting... 2/5 (timeout waiting for child process to exit)" 로
+/// 막히는데, 원인은 **이전 세션의 codex.exe / node.exe / powershell 가 K 의 user 권한으로
+/// 살아있어서** KDA 의 reconnect 시 child 정리 timeout. 2026-05-22 부터 11일째 떠있는
+/// process 까지 확인됨 (`codex exec resume 019e4d8e...`).
+///
+/// 회피 — Phase 75 의 default OFF + visible UI:
+/// 1. Settings 시스템 탭의 "🧟 좀비 codex 프로세스" 섹션이 이 command 로 stale 후보 목록 표시.
+/// 2. K 가 직접 "정리하기" 누르면 kill_process_tree 가 taskkill /F /T 호출.
+/// 3. 자동 kill 은 default OFF — K 의 다른 PC 의 codex 작업을 죽일 위험 회피.
+///
+/// "stale" 의 정의 (3가지 동시 만족):
+/// (a) 이름이 codex.exe / node.exe / powershell.exe / pwsh.exe 중 하나
+/// (b) CommandLine 에 "codex" 포함 (false positive 회피)
+/// (c) StartTime 이 1시간 이전 (현재 KDA 의 codex subprocess 는 아닌 게 확실)
+/// (d) ParentProcessId 가 현재 KDA process tree 안이 아님 — 다른 KDA 인스턴스 의 child 거나 orphan
+///
+/// (d) 검증은 비용이 커서 (모든 process 의 parent 추적) v1 에선 (a)+(b)+(c) 만 + KDA 의 PID 자체는 제외.
+/// false positive 한 두 개 있어도 K 가 UI 에서 확인하고 직접 kill 하므로 안전.
+#[derive(serde::Serialize)]
+struct StaleProcess {
+    pid: u32,
+    name: String,
+    start_time: String,
+    age_hours: f64,
+    command_line: String,
+}
+
+#[tauri::command]
+fn list_stale_codex_processes() -> Result<Vec<StaleProcess>, String> {
+    use std::process::Command as StdCommand;
+    // PowerShell Get-CimInstance Win32_Process — StartTime, ParentProcessId, CommandLine 다 한 번에.
+    // Format: csv (단순). Json 도 가능하지만 datetime 직렬화 까다로움.
+    let script = r#"
+$now = Get-Date
+Get-CimInstance Win32_Process |
+  Where-Object {
+    ($_.Name -in @('codex.exe','node.exe','powershell.exe','pwsh.exe')) -and
+    ($_.CommandLine -like '*codex*') -and
+    ($_.CreationDate -lt $now.AddHours(-1))
+  } |
+  ForEach-Object {
+    $age = [math]::Round(($now - $_.CreationDate).TotalHours, 2)
+    $cmd = if ($_.CommandLine) { $_.CommandLine.Substring(0, [Math]::Min(300, $_.CommandLine.Length)) } else { '' }
+    "$($_.ProcessId)|$($_.Name)|$($_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss'))|$age|$cmd"
+  }
+"#;
+    let output = StdCommand::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .map_err(|e| format!("powershell spawn 실패: {}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "powershell exit {}: {}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let kda_pid = std::process::id();
+    let mut results = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(5, '|').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        let pid: u32 = match parts[0].parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        // 자기 자신 (KDA) 제외
+        if pid == kda_pid {
+            continue;
+        }
+        let age_hours: f64 = parts[3].parse().unwrap_or(0.0);
+        results.push(StaleProcess {
+            pid,
+            name: parts[1].to_string(),
+            start_time: parts[2].to_string(),
+            age_hours,
+            command_line: parts[4].to_string(),
+        });
+    }
+    Ok(results)
+}
+
+/// Phase 75 (v0.6.18) — process tree kill.
+///
+/// taskkill /F /T /PID <pid> — child 까지 강제 종료. K 가 UI 의 "정리하기" 누를 때 호출.
+#[tauri::command]
+fn kill_process_tree(pid: u32) -> Result<(), String> {
+    use std::process::Command as StdCommand;
+    let kda_pid = std::process::id();
+    if pid == kda_pid {
+        return Err(format!("KDA 자기 자신 (PID {}) 은 kill 거부", pid));
+    }
+    let output = StdCommand::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output()
+        .map_err(|e| format!("taskkill spawn 실패: {}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "taskkill PID {} 실패 (exit {}): {}",
+            pid,
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
 /// Phase 74 (v0.6.17) — 미리보기 파일을 binary 또는 텍스트로 읽기.
 ///
 /// SidePanel.tsx 의 `loadPreview` 가 기존엔 `@tauri-apps/plugin-fs` 의 readFile/readTextFile
@@ -2653,7 +2769,10 @@ pub fn run_with_options(start_minimized: bool) {
             unwatch_folder,
             // Phase 59 — Sidecar config (Anthropic rate polling toggle)
             get_sidecar_config,
-            set_sidecar_config_flag
+            set_sidecar_config_flag,
+            // Phase 75 (v0.6.18) — Codex 좀비 process detect + 안전 정리
+            list_stale_codex_processes,
+            kill_process_tree
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
