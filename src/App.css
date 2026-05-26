@@ -2283,6 +2283,7 @@
 .settings-body[data-active-tab="agent"] section[data-tab="agent"],
 .settings-body[data-active-tab="appearance"] section[data-tab="appearance"],
 .settings-body[data-active-tab="system"] section[data-tab="system"],
+.settings-body[data-active-tab="tools"] section[data-tab="tools"],
 .settings-body[data-active-tab="safety"] section[data-tab="safety"] {
   display: flex;
 }
