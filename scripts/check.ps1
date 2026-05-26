@@ -504,6 +504,57 @@ Invoke-Step "Phase 26 (bundled-mcp auto deploy)" {
     Write-Host "  OK .gitignore has bundled-mcp/" -ForegroundColor DarkGray
 }
 
+# 4.13 Phase 72 - Settings tabs ↔ App.css selectors 정합성
+#
+# Phase 71 함정 재발 방지: Phase 67 (MCP 도구 탭 추가) 에서 Settings.tsx 에 jsx + state +
+# 카탈로그 다 박았지만 App.css 의 `.settings-body[data-active-tab="X"] section[data-tab="X"]`
+# selector 에 새 id ("tools") 를 빠뜨려서 v0.6.13~14 의 환경설정 MCP 도구 탭 본문이 영구
+# display:none. silent throw 처럼 보였지만 단순 CSS 누락. Phase 71 (v0.6.15) 에서 fix.
+#
+# 새 탭 추가 시 셋 (tabs 배열 + jsx section + CSS selector) 한 세트로 따라가야 함을 강제.
+Invoke-Step "Phase 72 (Settings tabs ↔ App.css selectors 정합성)" {
+    $settingsPath = "src/components/Settings.tsx"
+    $cssPath = "src/App.css"
+    if (-not (Test-Path $settingsPath)) { throw "$settingsPath not found" }
+    if (-not (Test-Path $cssPath)) { throw "$cssPath not found" }
+
+    # (a) Settings.tsx 의 tabs 배열에서 `{ id: "X", icon: "...", label: "..." }` 패턴의 X 추출
+    $settingsContent = Get-Content $settingsPath -Raw
+    $tabIds = [regex]::Matches($settingsContent, '\{\s*id:\s*"([a-z-]+)",\s*icon:\s*"') |
+        ForEach-Object { $_.Groups[1].Value } |
+        Sort-Object -Unique
+    if ($tabIds.Count -lt 5) {
+        throw "Settings.tsx tabs 배열 추출 실패 (받은 $($tabIds.Count) 개, 5+ 기대). regex pattern 점검 필요"
+    }
+    Write-Host "  OK Settings.tsx tabs 추출: $($tabIds -join ', ')" -ForegroundColor DarkGray
+
+    # (b) App.css 의 `.settings-body[data-active-tab="X"]` selector key 추출
+    $cssContent = Get-Content $cssPath -Raw
+    $cssActiveTabs = [regex]::Matches($cssContent, '\.settings-body\[data-active-tab="([a-z-]+)"\]') |
+        ForEach-Object { $_.Groups[1].Value } |
+        Sort-Object -Unique
+    Write-Host "  OK App.css data-active-tab selectors: $($cssActiveTabs -join ', ')" -ForegroundColor DarkGray
+
+    # (c) diff — Settings 에 있는데 css 에 없는 id 가 함정
+    $missing = $tabIds | Where-Object { $cssActiveTabs -notcontains $_ }
+    if ($missing) {
+        Write-Host "Settings.tsx tabs 중 App.css selector 매칭 없음:" -ForegroundColor Red
+        $missing | ForEach-Object { Write-Host "  - id=`"$_`" → 필요: .settings-body[data-active-tab=`"$_`"] section[data-tab=`"$_`"]" -ForegroundColor Red }
+        throw "Phase 71 함정 재발 — App.css 에 새 탭 selector 추가 필요"
+    }
+
+    # (d) section data-tab 도 추출해서 모든 tabs id 가 대응되는 section 갖고 있는지
+    $sectionTabs = [regex]::Matches($settingsContent, 'data-tab="([a-z-]+)"') |
+        ForEach-Object { $_.Groups[1].Value } |
+        Sort-Object -Unique
+    $orphanTabs = $tabIds | Where-Object { $sectionTabs -notcontains $_ }
+    if ($orphanTabs) {
+        Write-Host "Settings.tsx tabs 중 jsx section 매칭 없음 (탭은 있는데 본문 없음):" -ForegroundColor Red
+        $orphanTabs | ForEach-Object { Write-Host "  - id=`"$_`" → 필요: <section data-tab=`"$_`">" -ForegroundColor Red }
+        throw "Phase 72 함정 — Settings.tsx 에 새 탭 section 추가 필요"
+    }
+}
+
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
 if (-not $SkipDeps) {
     Invoke-Step "npm ls (root, depth=0)" {
