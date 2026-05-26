@@ -790,7 +790,15 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
   // Phase 75 (v0.6.18) — 좀비 codex process detect.
   // K 다른 PC: "Reconnecting... 2/5 (timeout waiting for child process to exit)" 의 root cause.
-  type StaleProcess = { pid: number; name: string; start_time: string; age_hours: number; command_line: string };
+  // Phase 76 (v0.6.19) — `suspected` 필드 추가: cmdline 못 읽은 node.exe 도 후보로 포함 시 true.
+  type StaleProcess = {
+    pid: number;
+    name: string;
+    start_time: string;
+    age_hours: number;
+    command_line: string;
+    suspected?: boolean;
+  };
   const [staleProcesses, setStaleProcesses] = useState<StaleProcess[] | null>(null);
   const [staleProcessesBusy, setStaleProcessesBusy] = useState(false);
   const [staleProcessesError, setStaleProcessesError] = useState<string | null>(null);
@@ -3381,7 +3389,17 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     className="settings-btn settings-btn-danger"
                     disabled={staleProcessesBusy}
                     onClick={async () => {
-                      if (!confirm(`${staleProcesses.length}개의 좀비 프로세스를 모두 정리합니다. 진행할까요?`)) return;
+                      // Phase 76 (v0.6.19): 의심 후보가 섞여있으면 추가 경고
+                      const confirmedCount = staleProcesses.filter((p) => !p.suspected).length;
+                      const suspectedCount = staleProcesses.filter((p) => p.suspected).length;
+                      const msg =
+                        suspectedCount > 0
+                          ? `${staleProcesses.length}개의 프로세스를 모두 정리합니다.\n` +
+                            `  ✓ 확정 후보 (cmdline 에 "codex"): ${confirmedCount}개\n` +
+                            `  ⚠ 의심 후보 (cmdline 못 읽음): ${suspectedCount}개\n\n` +
+                            `의심 후보는 다른 도구의 node 일 수도 있습니다. 진행할까요?`
+                          : `${staleProcesses.length}개의 좀비 프로세스를 모두 정리합니다. 진행할까요?`;
+                      if (!confirm(msg)) return;
                       setStaleProcessesBusy(true);
                       let killed = 0;
                       let failed: string[] = [];
@@ -3443,6 +3461,23 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
                         <span className="mono" style={{ fontWeight: 600 }}>PID {p.pid}</span>
                         <span className="mono">{p.name}</span>
+                        {/* Phase 76 (v0.6.19): suspected 라벨 — cmdline 못 읽은 후보 (false positive 위험) */}
+                        {p.suspected && (
+                          <span
+                            title="cmdline 못 읽음 (권한 부족) — 다른 도구(IDE, dev server 등)의 node 일 수도 있음. K가 직접 판단."
+                            style={{
+                              padding: "0.1rem 0.4rem",
+                              borderRadius: "3px",
+                              background: "rgba(255, 170, 0, 0.15)",
+                              color: "#fa0",
+                              border: "1px solid rgba(255, 170, 0, 0.4)",
+                              fontSize: "0.75em",
+                              fontWeight: 600,
+                            }}
+                          >
+                            ⚠ 의심
+                          </span>
+                        )}
                         <span style={{ opacity: 0.7 }}>{p.start_time}</span>
                         <span style={{ opacity: 0.7, color: p.age_hours > 24 ? "#fa0" : undefined }}>
                           {p.age_hours.toFixed(1)}h 전 시작
@@ -3452,7 +3487,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                           style={{ marginLeft: "auto", padding: "0.2rem 0.5rem", fontSize: "0.85em" }}
                           disabled={staleProcessesBusy}
                           onClick={async () => {
-                            if (!confirm(`PID ${p.pid} (${p.name}) 및 child tree 를 강제 종료합니다.`)) return;
+                            const warn = p.suspected
+                              ? `\n⚠ 의심 후보 (cmdline 못 읽음) — 다른 도구의 node 일 수도 있음. 확실하지 않으면 작업관리자에서 먼저 확인하세요.`
+                              : "";
+                            if (!confirm(`PID ${p.pid} (${p.name}) 및 child tree 를 강제 종료합니다.${warn}`)) return;
                             try {
                               await invoke("kill_process_tree", { pid: p.pid });
                               const list = await invoke<StaleProcess[]>("list_stale_codex_processes");

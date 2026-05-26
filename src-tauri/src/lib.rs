@@ -1458,12 +1458,20 @@ fn open_path(path: String) -> Result<(), String> {
 ///
 /// "stale" 의 정의 (3가지 동시 만족):
 /// (a) 이름이 codex.exe / node.exe / powershell.exe / pwsh.exe 중 하나
-/// (b) CommandLine 에 "codex" 포함 (false positive 회피)
+/// (b) CommandLine 에 "codex" 포함 (false positive 회피) — 또는 Phase 76 의 "suspected" 분기
 /// (c) StartTime 이 1시간 이전 (현재 KDA 의 codex subprocess 는 아닌 게 확실)
 /// (d) ParentProcessId 가 현재 KDA process tree 안이 아님 — 다른 KDA 인스턴스 의 child 거나 orphan
 ///
 /// (d) 검증은 비용이 커서 (모든 process 의 parent 추적) v1 에선 (a)+(b)+(c) 만 + KDA 의 PID 자체는 제외.
 /// false positive 한 두 개 있어도 K 가 UI 에서 확인하고 직접 kill 하므로 안전.
+///
+/// Phase 76 (v0.6.19) — 좀비 검출 강화:
+/// K 의 다른 PC 진단 결과 7.5시간 떠있는 node.exe 7개가 cmdline=null (권한 부족 / elevated 등)
+/// 이라 (b) 조건 못 통과 → UI 가 "좀비 0개" 거짓 표시.
+/// 강화: cmdline 빈 node.exe / codex.exe 도 suspected 후보로 포함 (1시간+ AND KDA 자기 PID 아닌 경우).
+/// UI 가 suspected 라벨로 구분 표시 + K 가 직접 판단해서 kill 결정.
+/// false positive 위험 ↑ (다른 IDE/도구의 node 가 잡힐 수 있음) — UI 에 명시 라벨 + cmdline 빈 경우
+/// "권한 부족으로 명령줄 못 가져옴" 안내. 자동 kill 은 여전히 OFF (Phase 75 정책 유지).
 #[derive(serde::Serialize)]
 struct StaleProcess {
     pid: u32,
@@ -1471,25 +1479,39 @@ struct StaleProcess {
     start_time: String,
     age_hours: f64,
     command_line: String,
+    /// Phase 76 (v0.6.19): true 면 cmdline 못 읽어서 "codex 일 가능성만 있음" 으로 잡힌 후보.
+    /// false 면 cmdline 에 "codex" 가 명시적으로 들어간 확정 후보.
+    suspected: bool,
 }
 
 #[tauri::command]
 fn list_stale_codex_processes() -> Result<Vec<StaleProcess>, String> {
     use std::process::Command as StdCommand;
     // PowerShell Get-CimInstance Win32_Process — StartTime, ParentProcessId, CommandLine 다 한 번에.
-    // Format: csv (단순). Json 도 가능하지만 datetime 직렬화 까다로움.
+    // Format: pipe-delimited. Json 도 가능하지만 datetime 직렬화 까다로움.
+    //
+    // Phase 76 (v0.6.19): 검출 조건을 두 분기로 확장.
+    //   분기 A (확정 후보, suspected=false): cmdline 에 "codex" 포함 (Phase 75 와 동일)
+    //   분기 B (의심 후보, suspected=true):  cmdline 이 null/empty 인 node.exe 또는 codex.exe
+    //                                        (powershell 은 워낙 많아서 분기 B 제외 — false positive 폭증 방지)
+    // 두 분기 OR + 1시간+ AND KDA 자기 PID 아닌 경우. 7번째 컬럼에 suspected 플래그 박음.
     let script = r#"
 $now = Get-Date
 Get-CimInstance Win32_Process |
   Where-Object {
     ($_.Name -in @('codex.exe','node.exe','powershell.exe','pwsh.exe')) -and
-    ($_.CommandLine -like '*codex*') -and
-    ($_.CreationDate -lt $now.AddHours(-1))
+    ($_.CreationDate -lt $now.AddHours(-1)) -and
+    (
+      ($_.CommandLine -like '*codex*') -or
+      (($_.Name -in @('node.exe','codex.exe')) -and [string]::IsNullOrEmpty($_.CommandLine))
+    )
   } |
   ForEach-Object {
     $age = [math]::Round(($now - $_.CreationDate).TotalHours, 2)
-    $cmd = if ($_.CommandLine) { $_.CommandLine.Substring(0, [Math]::Min(300, $_.CommandLine.Length)) } else { '' }
-    "$($_.ProcessId)|$($_.Name)|$($_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss'))|$age|$cmd"
+    $hasCodex = ($_.CommandLine -like '*codex*')
+    $suspected = if ($hasCodex) { '0' } else { '1' }
+    $cmd = if ($_.CommandLine) { $_.CommandLine.Substring(0, [Math]::Min(300, $_.CommandLine.Length)) } else { '<권한 부족으로 명령줄 못 가져옴>' }
+    "$($_.ProcessId)|$($_.Name)|$($_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss'))|$age|$suspected|$cmd"
   }
 "#;
     let output = StdCommand::new("powershell")
@@ -1511,8 +1533,9 @@ Get-CimInstance Win32_Process |
         if line.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.splitn(5, '|').collect();
-        if parts.len() < 5 {
+        // Phase 76: 6개 필드 (pid|name|start|age|suspected|cmd)
+        let parts: Vec<&str> = line.splitn(6, '|').collect();
+        if parts.len() < 6 {
             continue;
         }
         let pid: u32 = match parts[0].parse() {
@@ -1524,12 +1547,14 @@ Get-CimInstance Win32_Process |
             continue;
         }
         let age_hours: f64 = parts[3].parse().unwrap_or(0.0);
+        let suspected = parts[4] == "1";
         results.push(StaleProcess {
             pid,
             name: parts[1].to_string(),
             start_time: parts[2].to_string(),
             age_hours,
-            command_line: parts[4].to_string(),
+            command_line: parts[5].to_string(),
+            suspected,
         });
     }
     Ok(results)
@@ -1538,6 +1563,10 @@ Get-CimInstance Win32_Process |
 /// Phase 75 (v0.6.18) — process tree kill.
 ///
 /// taskkill /F /T /PID <pid> — child 까지 강제 종료. K 가 UI 의 "정리하기" 누를 때 호출.
+///
+/// Phase 76 (v0.6.19) — stdout/stderr 캡처는 유지하되 (에러 메시지 추출 위해),
+/// 부모 prosess (Tauri main) 의 stdout/stderr 로 새지 않음. `.output()` 은 inherit 안 함 — OK.
+/// 별도 fix 는 sidecar 측에서 Codex 의 stdout 라인 중 "SUCCESS:" / "성공:" prefix skip (Fix #2-B).
 #[tauri::command]
 fn kill_process_tree(pid: u32) -> Result<(), String> {
     use std::process::Command as StdCommand;

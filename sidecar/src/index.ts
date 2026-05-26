@@ -2412,6 +2412,14 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
           }
         }
       } catch (parseErr) {
+        // Phase 76 (v0.6.19): Codex CLI 가 자체 child process 를 taskkill 로 정리할 때 그 stdout
+        // ("SUCCESS: The process with PID ... has been terminated." 영어 / "성공: PID ..." 한국어 /
+        //  "정보:" / "INFO:" 등) 이 stdout 으로 새서 JSON 라인 parse 가 fail → spam warn.
+        // 이 패턴들은 진짜 Codex event 가 아니므로 silent skip (log 도 안 박음 — info 한 번도 비효율).
+        // 다른 parse error 는 그대로 warn — 진짜 schema 변경 알림 보존.
+        if (/^(SUCCESS:|INFO:|성공:|정보:)/i.test(line.trim())) {
+          continue;
+        }
         logToFile("warn", `Codex JSON parse error: ${line}`);
       }
     }
@@ -3368,6 +3376,25 @@ function spawnNpx(args: string[], timeoutMs: number): { stdout: string; ok: bool
   };
 }
 
+// Phase 76 (v0.6.19) — ccusage weekly 의 `current.week` 가 invalid Date 인 경우 (ccusage schema
+// 변경 / 빈 값 / 다른 format) `new Date(...).toISOString()` 이 RangeError throw → 기존 코드는
+// 5분 polling 마다 같은 warn 박혀 sidecar.log spam (K 의 다른 PC 에서 약 50줄/시간 누적 확인됨).
+// 회피: invalid 검출 시 silent skip + 같은 메시지 30분 throttle 로 한 번씩만 warn.
+let __ccusageWeeklyLastWarnAt: number = 0;
+let __ccusageWeeklyLastWarnMsg: string = "";
+function ccusageWeeklyWarn(msg: string): void {
+  const now = Date.now();
+  if (
+    __ccusageWeeklyLastWarnMsg === msg &&
+    now - __ccusageWeeklyLastWarnAt < 30 * 60 * 1000
+  ) {
+    return; // 같은 메시지 30분 안 중복 차단
+  }
+  log("warn", `ccusage weekly: ${msg}`);
+  __ccusageWeeklyLastWarnAt = now;
+  __ccusageWeeklyLastWarnMsg = msg;
+}
+
 function pollCcusageOnce(): void {
   try {
     const blocks = spawnNpx(["ccusage@latest", "blocks", "--active", "--json"], 30_000);
@@ -3405,17 +3432,26 @@ function pollCcusageOnce(): void {
         const current = Array.isArray(j.weekly) && j.weekly.length > 0 ? j.weekly[0] : null;
         if (current) {
           // weekly entry 의 `week` 는 ISO date (YYYY-MM-DD). 다음 reset = week + 7일 0:00.
+          // Phase 76 (v0.6.19): week 가 invalid 면 Date 가 NaN → toISOString() RangeError.
+          // 사전 검사 + throttled warn 으로 spam 차단.
           const weekStart = new Date(current.week);
-          const nextReset = new Date(weekStart);
-          nextReset.setDate(nextReset.getDate() + 7);
-          secondary = {
-            used_tokens: current.totalTokens,
-            reset_at: nextReset.toISOString(),
-            week_start: current.week,
-          };
+          if (isNaN(weekStart.getTime())) {
+            ccusageWeeklyWarn(
+              `entry.week 가 invalid Date (ccusage schema 변경 의심): week=${JSON.stringify(current.week)} — secondary skip`
+            );
+          } else {
+            const nextReset = new Date(weekStart);
+            nextReset.setDate(nextReset.getDate() + 7);
+            secondary = {
+              used_tokens: current.totalTokens,
+              reset_at: nextReset.toISOString(),
+              week_start: current.week,
+            };
+          }
         }
       } catch (err) {
-        log("warn", `ccusage weekly JSON 파싱 실패: ${err}`);
+        // Phase 76 (v0.6.19): throttle 적용해서 5분 polling spam 차단.
+        ccusageWeeklyWarn(`JSON 파싱 실패: ${err}`);
       }
     }
 
