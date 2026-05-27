@@ -1392,6 +1392,27 @@ async fn delete_kda_plugin(app: AppHandle, file: String) -> Result<String, Strin
 /// canonicalize 가 이 percent-encoded path 못 풀어서 "path canonicalize 실패" 거부.
 /// frontend (SidePanel.normalizeLocalPath) 가 이미 처리하지만 옛 binary 호환 / 다른 호출자
 /// (CLI, 외부 trigger) 안전망으로 양방향 방어. % 가 없으면 raw return — no-op.
+/// Phase 78.1 (v0.6.23) — Windows 의 Path::canonicalize 가 반환하는 UNC long path prefix
+/// (`\\?\C:\...`) 제거. canonical_str.starts_with("c:\\users\\...") 매칭이 깨지는 함정.
+///
+/// Windows API 의 GetFinalPathNameByHandle (canonicalize 가 내부 호출) 은 32K path 지원 위해
+/// `\\?\` prefix 를 자동 추가하는데, K 의 trusted_prefixes 는 USERPROFILE/APPDATA 등 env var
+/// 기반 raw path 라 prefix 안 붙음 → starts_with 항상 false → "신뢰하지 않는 경로" 거부.
+///
+/// 회피: canonical_str 의 `\\?\` prefix 만 strip 후 비교. Drive letter (`C:`) 로 시작하는
+/// 단순 케이스만 처리 (`\\?\UNC\server\...` 같은 UNC server share 는 strip 안 함 — KDA scope 밖).
+fn strip_unc_prefix(s: &str) -> &str {
+    // `\\?\C:\...` 또는 `\\?\D:\...` 등 drive letter 형식만. UNC server share 는 보존.
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        // rest 가 `UNC\...` 면 원본 유지 (server share — 별도 케이스)
+        if rest.to_lowercase().starts_with("unc\\") {
+            return s;
+        }
+        return rest;
+    }
+    s
+}
+
 fn percent_decode_local_path(input: &str) -> String {
     // file:// prefix 제거 (Windows path 는 file:///C:/...)
     let stripped = input
@@ -1427,6 +1448,10 @@ fn percent_decode_local_path(input: &str) -> String {
 /// canonicalize 가 ".." 풀어서 absolute path 만들면 자연 차단.
 ///
 /// Phase 78 (v0.6.21) — percent_decode_local_path 로 URL-encoded path 양방향 방어.
+/// Phase 78.1 (v0.6.23) — Windows canonicalize 의 `\\?\` UNC long path prefix strip.
+///   canonicalize 결과: `\\?\C:\Users\user\Pictures\캡처.PNG`
+///   trusted_prefixes: `c:\users\user`
+///   strip_unc_prefix 없으면 starts_with 영구 false → forbidden.
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     use std::path::Path;
@@ -1436,7 +1461,9 @@ fn open_path(path: String) -> Result<(), String> {
         Ok(c) => c,
         Err(e) => return Err(format!("path canonicalize 실패: {} (입력: {} / 정규화: {})", e, path, normalized)),
     };
-    let canonical_str = canonical.to_string_lossy().to_lowercase();
+    let canonical_full = canonical.to_string_lossy().to_string();
+    // Phase 78.1 (v0.6.23): UNC prefix strip 후 비교
+    let canonical_str = strip_unc_prefix(&canonical_full).to_lowercase();
 
     // K 가 신뢰하는 영역만 허용. PC 마다 user 이름 다르므로 ($HOME) 기준.
     let home = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
@@ -1469,11 +1496,13 @@ fn open_path(path: String) -> Result<(), String> {
     }
 
     // Windows 에선 `cmd /c start "" "<path>"` 가 가장 안전. 첫 빈 quote = window title 자리.
+    // Phase 78.1 (v0.6.23): cmd start 도 UNC prefix 가 있으면 동작 불안정 — strip 된 raw path 전달.
     #[cfg(target_os = "windows")]
     {
         use std::process::Command as StdCommand;
+        let safe_path = strip_unc_prefix(&canonical_full);
         let mut cmd = StdCommand::new("cmd");
-        cmd.args(["/c", "start", "", canonical.to_string_lossy().as_ref()]);
+        cmd.args(["/c", "start", "", safe_path]);
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         cmd.spawn()
             .map(|_| ())
@@ -1652,7 +1681,10 @@ fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, S
         Ok(c) => c,
         Err(e) => return Err(format!("path canonicalize 실패: {} (입력: {} / 정규화: {})", e, path, normalized)),
     };
-    let canonical_str = canonical.to_string_lossy().to_lowercase();
+    // Phase 78.1 (v0.6.23): UNC `\\?\` prefix strip 후 비교. Windows canonicalize 가
+    // long path 위해 자동 추가 → trusted_prefixes 매칭 영구 fail. K 의 다른 PC 진단 4중 함정 #4.
+    let canonical_full = canonical.to_string_lossy().to_string();
+    let canonical_str = strip_unc_prefix(&canonical_full).to_lowercase();
 
     let home = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
     let resource_dir = std::env::current_exe()
