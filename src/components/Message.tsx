@@ -6,6 +6,8 @@ import { open } from "@tauri-apps/plugin-shell";
 import type { ChatMessage } from "../types";
 import { loadPreview, getCategory, isUrl } from "./SidePanel";
 import logger from "../utils/logger";
+// Phase 85 (v0.6.28) — Tool Safety Layer 후속. tool_use 카드 risk 배지.
+import { RISK_BADGES } from "../utils/toolSafety";
 
 interface MessageProps {
   message: ChatMessage;
@@ -433,14 +435,43 @@ function formatBytes(n: number): string {
 }
 
 function ToolMessageView({ message }: { message: Extract<ChatMessage, { role: "tool" }> }) {
+  // Phase 85 (v0.6.28) — risk 배지. sidecar 가 분류 못 한 도구는 risk=undefined → 배지 숨김.
+  const riskBadge = message.risk ? RISK_BADGES[message.risk.level] : null;
+  const isHighRisk = message.risk?.level === "high" || message.risk?.level === "critical";
   // 컴팩트 모드: 한 줄로 표시, 클릭 시 펼침
   return (
-    <details className={`msg-tool-compact msg-tool-${message.status}`}>
+    <details
+      className={`msg-tool-compact msg-tool-${message.status}`}
+      data-risk={message.risk?.level ?? "unknown"}
+      style={
+        isHighRisk && riskBadge
+          ? { borderLeft: `3px solid ${riskBadge.color}`, paddingLeft: "0.4rem" }
+          : undefined
+      }
+    >
       <summary className="msg-tool-summary">
         <span className={`tool-pill tool-pill-${message.status}`}>
           {statusLabel(message.status)}
         </span>
         <span className="mono msg-tool-name">{message.toolName}</span>
+        {riskBadge && (
+          <span
+            title={message.risk?.summary ?? ""}
+            style={{
+              marginLeft: "0.4rem",
+              fontSize: "0.7em",
+              padding: "0.1em 0.45em",
+              borderRadius: 4,
+              background: `${riskBadge.color}22`,
+              border: `1px solid ${riskBadge.color}66`,
+              color: riskBadge.color,
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {riskBadge.icon} {riskBadge.label}
+          </span>
+        )}
         <span className="mono msg-time">
           {new Date(message.timestamp).toLocaleTimeString("ko-KR", {
             hour: "2-digit",
@@ -450,6 +481,22 @@ function ToolMessageView({ message }: { message: Extract<ChatMessage, { role: "t
         </span>
       </summary>
       <div className="msg-tool-expanded">
+        {message.risk && (
+          <div className="msg-tool-section" style={{ fontSize: "0.85em", opacity: 0.85 }}>
+            <span className="eyebrow">Risk</span>
+            <div style={{ marginTop: 4 }}>
+              <strong style={{ color: riskBadge?.color }}>
+                {riskBadge?.icon} {riskBadge?.label}
+              </strong>
+              {message.risk.categoryId && (
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>
+                  · category={message.risk.categoryId}
+                </span>
+              )}
+              <div style={{ marginTop: 2, opacity: 0.85 }}>{message.risk.summary}</div>
+            </div>
+          </div>
+        )}
         {message.toolInput != null && (
           <div className="msg-tool-section">
             <span className="eyebrow">Arguments</span>

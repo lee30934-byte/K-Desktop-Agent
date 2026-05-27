@@ -42,6 +42,13 @@ export interface ToolMessage extends BaseMessage {
   toolInput?: unknown;
   toolOutput?: string;
   status: "pending" | "success" | "error";
+  // Phase 85 (v0.6.28) — Connector/Tool Safety Layer 의 후속.
+  // sidecar 가 tool_use emit 시 함께 박은 위험도 메타. 없으면 sidecar 가 분류 못 한 도구.
+  risk?: {
+    level: "low" | "medium" | "high" | "critical";
+    categoryId: string | null;
+    summary: string;
+  };
 }
 
 export type ChatMessage =
@@ -61,6 +68,12 @@ export type SidecarEvent =
       tool_id: string;
       name: string;
       input: unknown;
+      // Phase 85 (v0.6.28) — sidecar 가 toolSafety 로 분류한 위험도. UI 에서 배지 표시 + 강조.
+      risk?: {
+        level: "low" | "medium" | "high" | "critical";
+        categoryId: string | null;
+        summary: string;
+      };
     }
   | { type: "tool_result"; id: string; tool_id: string; output: string }
   | { type: "done"; id: string; usage?: TokenUsage | null; computed_usage?: TokenUsage | null; maxTurnUsage?: MaxTurnUsage | null; agentId?: string | null }
@@ -108,6 +121,20 @@ export type SidecarEvent =
       severity: "info" | "warn" | "danger";
       confirm_label: string;
       cancel_label: string;
+    }
+  | {
+      // Phase 85 (v0.6.28) — Tool Safety Layer 가시성. SafeMode 가 balanced/strict 일 때
+      // high/critical 도구가 dispatch 되는 시점에 sidecar 가 자발적 emit.
+      // App.tsx 가 채팅에 visible system message 로 박아 K 에게 "이 도구가 돌았다" 즉시 인식.
+      // CLI 모드에선 진정한 blocking 은 아직 불가 — 다음 phase 후보.
+      type: "safety_alert";
+      id: string;
+      tool_name: string;
+      source: string;
+      level: "high" | "critical";
+      category_id: string | null;
+      summary: string;
+      safe_mode: "balanced" | "strict";
     }
   | {
       // Phase 52 (v0.5.40) — Codex 런타임이 token_count event 의 model_context_window 로

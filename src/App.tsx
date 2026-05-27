@@ -831,6 +831,7 @@ export default function App() {
       case "tool_use": {
         // 도구 호출 시점에도 즉시 DB 저장 — 도중에 끊겨도 "어떤 도구를 호출했는지" 가
         // history 에 남도록 (Resume 시 재호출 방지).
+        // Phase 85 (v0.6.28) — sidecar 가 박은 risk 메타를 ToolMessage 에 저장 (UI 배지용).
         const toolMsg: ChatMessage = {
           id: `${ev.id}-tool-${ev.tool_id}`,
           role: "tool",
@@ -840,6 +841,7 @@ export default function App() {
           content: "",
           status: "pending",
           timestamp: Date.now(),
+          ...(ev.risk ? { risk: ev.risk } : {}),
         };
         setMessages((prev) => [...prev, toolMsg]);
         queueMessageSave(toolMsg);
@@ -1123,6 +1125,27 @@ export default function App() {
         finalizeLongTask(String(e.taskId), status, e.handoffMd ?? null).catch((err) =>
           logger.warn(`[long_task_done] finalize 실패: ${err}`),
         );
+        break;
+      }
+
+      // Phase 85 (v0.6.28) — Tool Safety Layer 가시성. SafeMode 가 balanced/strict 일 때
+      // high/critical 도구 호출 시 sidecar 가 자발적 emit. 채팅에 visible system 메시지로 박음.
+      // K 가 sidecar.log 안 봐도 "어떤 위험 도구가 돌았다" 즉시 인식 가능.
+      case "safety_alert": {
+        const e = ev as {
+          tool_name: string;
+          source: string;
+          level: "high" | "critical";
+          category_id: string | null;
+          summary: string;
+          safe_mode: "balanced" | "strict";
+        };
+        const emoji = e.level === "critical" ? "🔴" : "🟠";
+        const txt = `${emoji} ${e.level.toUpperCase()} 도구 호출 — ${e.tool_name}\n` +
+          `· source=${e.source} · category=${e.category_id ?? "?"} · SafeMode=${e.safe_mode}\n` +
+          `· ${e.summary}`;
+        pushSystem(txt, e.level === "critical" ? "error" : "warn");
+        logger.warn(`[ToolSafety] ${e.level.toUpperCase()} alert — ${e.tool_name} (${e.source})`);
         break;
       }
 

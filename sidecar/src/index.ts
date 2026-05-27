@@ -902,8 +902,21 @@ function toolToCategory(namespacedName: string): string | undefined {
 }
 
 /**
+ * Phase 85 — 현재 turn 의 SafeMode 추적 (buildToolFlags 호출 시점에 set).
+ * buildRiskMeta 가 critical/high 도구 호출 시 알림을 박을지 결정에 사용.
+ * 동시 turn 은 K 가 안 함 — race 안전 가정.
+ */
+let _currentTurnSafeMode: SafeMode = "off";
+let _currentTurnId: string | null = null;
+
+/**
  * Phase 84 — tool_use emit 의 risk 메타데이터 빌더 + sidecar.log high/critical 라인.
  * 호출 path (claude/codex/REST) 마다 한 줄로 박으려고 헬퍼 분리.
+ *
+ * Phase 85 (v0.6.28) — SafeMode 가 balanced/strict 일 때 high+ 도구 호출 시 추가로
+ *   `safety_alert` event emit. App.tsx 가 받아 채팅에 visible system message 로 박음.
+ *   (CLI mode 에선 진정한 blocking 은 불가 — disallowed-tools 가 hard 게이트.
+ *    이건 가시성/감사 path. K 가 "왜 이 도구가 돌았지" 즉시 인식.)
  */
 function buildRiskMeta(toolName: string, sourceTag: string): {
   level: string;
@@ -917,6 +930,24 @@ function buildRiskMeta(toolName: string, sourceTag: string): {
       "info",
       `[ToolSafety][${sourceTag}] ${info.level.toUpperCase()} tool dispatched name=${toolName} category=${cat ?? "?"} reason=${info.summary}`,
     );
+  }
+  // Phase 85 — SafeMode 가 켜져 있고 도구가 high+ 면 frontend 에 알림.
+  // off 면 emit 안 함 (백 호환 + 매 high 도구마다 알림 박으면 시끄러움 — SafeMode 가 K 의 의식적
+  // 보호 선언일 때만 알림).
+  if (
+    _currentTurnSafeMode !== "off" &&
+    (info.level === "high" || info.level === "critical")
+  ) {
+    emit({
+      type: "safety_alert",
+      id: _currentTurnId ?? "unknown",
+      tool_name: toolName,
+      source: sourceTag,
+      level: info.level,
+      category_id: cat ?? null,
+      summary: info.summary,
+      safe_mode: _currentTurnSafeMode,
+    });
   }
   return { level: info.level, categoryId: cat ?? null, summary: info.summary };
 }
@@ -1339,6 +1370,9 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   // --allowed-tools 는 미사용 (default-allow → 새 MCP 도구 자동 허용 → 자동화 능력 보존).
   // --permission-mode 는 bypassPermissions (interactive prompt 우회, 실제 게이트는 disallowed-tools).
   const toolFlags = buildToolFlags(msg.permissions, msg.lockedTools, msg.safeMode ?? "off");
+  // Phase 85 — 현재 turn 의 SafeMode + id 를 buildRiskMeta 가 볼 수 있도록 set
+  _currentTurnSafeMode = toolFlags.safeMode ?? "off";
+  _currentTurnId = msg.id;
   if (toolFlags.safeMode && toolFlags.safeMode !== "off" && toolFlags.safeModeImpact) {
     log("info", `[ToolSafety] SafeMode=${toolFlags.safeMode} — ${toolFlags.safeModeImpact.summary}`);
   }
@@ -3049,6 +3083,9 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   // Phase 84 — REST path 도 동일하게 SafeMode 적용. provider=anthropic-rest 는 tool 없으니 미영향이지만,
   // openai/gemini/openrouter 는 disallowedSet 에 직접 박힘.
   const permFlags = buildToolFlags(msg.permissions, msg.lockedTools, msg.safeMode ?? "off");
+  // Phase 85 — REST path 도 buildRiskMeta 가 알람 박을 수 있게 set
+  _currentTurnSafeMode = permFlags.safeMode ?? "off";
+  _currentTurnId = msg.id;
   if (permFlags.safeMode && permFlags.safeMode !== "off" && permFlags.safeModeImpact) {
     log("info", `[ToolSafety][REST] SafeMode=${permFlags.safeMode} — ${permFlags.safeModeImpact.summary}`);
   }
