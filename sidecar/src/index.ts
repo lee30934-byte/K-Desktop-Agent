@@ -16,6 +16,7 @@ import {
   rmSync,
   readdirSync,
   readFileSync,
+  copyFileSync,
   openSync,
   readSync,
   closeSync,
@@ -411,25 +412,30 @@ logToFile(
 
 function getMemoryDir(): string {
   // Phase 61 (v0.5.49): K 다른 PC 진단으로 candidate path 확장.
-  // 기존 path 모두 fail 시 사용자가 단순히 둘 수 있는 위치 추가:
-  //   - ~/.kda/memory/ (KDA 표준 user-scoped 위치)
-  //   - ~/.claude/memory/ (Claude CLI 와 공유)
-  // 이 path 들도 검사하면 다른 PC 에서도 K 가 메모리 두기 쉬워짐.
+  // Phase 94 (v0.6.36): ~/.kda/memory/ 우선순위 1순위로 격상.
+  //   종전엔 ~/.claude/projects/<inferred-key>/memory/ 가 1순위라
+  //   Git Memory Sync (Phase 87) 의 working dir (~/.kda/) 와 불일치 →
+  //   K 의 누적 메모리가 GitHub repo 에 영원히 안 박히는 함정 (lee-profile + memory/
+  //   양쪽 다 .gitignore 화이트리스트라 추적은 가능했으나 폴더 자체가 빈 상태).
+  //   이제 ~/.kda/memory/ 우선 + migrateLegacyMemoryToKda() 가 시작 시 기존
+  //   legacy 위치의 메모리를 ~/.kda/memory/ 로 1회 복사 → 그 후 sync 자동.
   const home = os.homedir();
   const candidates: string[] = [];
 
   const envOverride = process.env.KDA_MEMORY_DIR;
   if (envOverride) candidates.push(envOverride);
 
-  // 1. 추론한 프로젝트 루트 키
+  // 1. Phase 94 (v0.6.36) — KDA 표준 user-scoped 위치 (Git Memory Sync 의 working dir 와 일치).
+  //    여기를 1순위로 두면 K 의 누적 메모리가 자동으로 GitHub repo 와 동기화됨.
+  candidates.push(path.join(home, ".kda", "memory"));
+
+  // 2. legacy 추론한 프로젝트 루트 키 (Phase 56 ~ Phase 93 의 default).
+  //    migrateLegacyMemoryToKda() 가 시작 시 1회 복사하므로 이건 fallback.
   const inferredRoot = path.resolve(__dirname_local, "..", "..");
   const inferredKey = inferredRoot.replace(/[:\\]/g, "-");
   candidates.push(path.join(home, ".claude", "projects", inferredKey, "memory"));
 
-  // 2. 새 candidate: KDA 표준 user-scoped 위치 (사용자가 직접 둘 수 있음)
-  candidates.push(path.join(home, ".kda", "memory"));
-
-  // 3. 새 candidate: Claude CLI 와 공유 가능
+  // 3. Claude CLI 와 공유 가능
   candidates.push(path.join(home, ".claude", "memory"));
 
   // 4. Phase 22 fallback: Documents/K-Desktop-Agent 추론 키 (dev 환경)
@@ -440,9 +446,85 @@ function getMemoryDir(): string {
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
-  // 모두 실패 — 첫 candidate (env override 또는 inferred path) 반환
+  // 모두 실패 — 첫 candidate (env override 또는 ~/.kda/memory/) 반환
   // 그 경로에 memory load 시 ENOENT → empty memory context 처리됨
   return candidates[0];
+}
+
+/**
+ * Phase 94 (v0.6.36) — 메모리 위치 통일을 위한 1회 마이그레이션.
+ *
+ * 종전 KDA 가 메모리를 `~/.claude/projects/<inferred-key>/memory/` 에 박았지만,
+ * Git Memory Sync (Phase 87) 의 working dir 는 `~/.kda/` — 두 위치 분리로
+ * K 의 11개+ 누적 메모리 (pitfall_*, feedback_*, MEMORY.md) 가 GitHub repo 에
+ * 안 박히는 함정. K 의 root_cause 정신 → 단순 우선순위 swap 만으로는 부족,
+ * 기존 콘텐츠 이동까지 자동 처리.
+ *
+ * 이 함수는 sidecar 시작 직후 1회 실행:
+ *   - `~/.kda/memory/` 가 비어 있거나 존재 안 함
+ *   - legacy 위치 중 하나에 *.md 가 있으면
+ *   → `~/.kda/memory/` 로 복사 (legacy 위치는 보존 — 회귀 위험 0)
+ *
+ * 이미 `~/.kda/memory/` 에 *.md 가 있으면 skip — 사용자 누적 상태 절대 안 건드림.
+ * `loadMemoryContext()` 다음 호출부터 새 위치의 메모리 사용 → 다음 GitSync 에서
+ * 자동 commit + push.
+ */
+function migrateLegacyMemoryToKda(): void {
+  const home = os.homedir();
+  const kdaMemory = path.join(home, ".kda", "memory");
+
+  // 이미 ~/.kda/memory/ 에 *.md 있으면 skip
+  if (existsSync(kdaMemory)) {
+    try {
+      const existing = readdirSync(kdaMemory);
+      if (existing.some((f) => f.toLowerCase().endsWith(".md"))) {
+        return;
+      }
+    } catch {
+      /* read 실패 — 진행 (mkdirSync recursive 가 알아서 처리) */
+    }
+  }
+
+  // legacy candidates — getMemoryDir() 의 2~4번 순서와 동일
+  const inferredRoot = path.resolve(__dirname_local, "..", "..");
+  const inferredKey = inferredRoot.replace(/[:\\]/g, "-");
+  const fallbackProjectPath = path.join(home, "Documents", "K-Desktop-Agent");
+  const fallbackKey = fallbackProjectPath.replace(/[:\\]/g, "-");
+  const legacyCandidates = [
+    path.join(home, ".claude", "projects", inferredKey, "memory"),
+    path.join(home, ".claude", "memory"),
+    path.join(home, ".claude", "projects", fallbackKey, "memory"),
+  ];
+
+  for (const legacy of legacyCandidates) {
+    if (!existsSync(legacy)) continue;
+    try {
+      const files = readdirSync(legacy).filter((f) =>
+        f.toLowerCase().endsWith(".md"),
+      );
+      if (files.length === 0) continue;
+
+      mkdirSync(kdaMemory, { recursive: true });
+      let copied = 0;
+      for (const f of files) {
+        const src = path.join(legacy, f);
+        const dst = path.join(kdaMemory, f);
+        try {
+          copyFileSync(src, dst);
+          copied++;
+        } catch (e) {
+          log("warn", `[MemoryMigration] copy 실패 ${f}: ${e}`);
+        }
+      }
+      log(
+        "info",
+        `[MemoryMigration] ${copied}개 메모리 파일 복사: ${legacy} → ${kdaMemory}`,
+      );
+      return; // 첫 매치만 — 여러 legacy 위치에 분산돼 있을 가능성 낮음
+    } catch (e) {
+      log("warn", `[MemoryMigration] legacy 위치 read 실패 ${legacy}: ${e}`);
+    }
+  }
 }
 
 interface MemoryContext {
@@ -4329,6 +4411,15 @@ cachedMCPHealth = checkMCPHealth();
 installStatusLine();
 // rate limit polling start
 startRateLimitPolling();
+// Phase 94 (v0.6.36) — 메모리 위치 통일을 위한 1회 마이그레이션.
+// startMemorySync() 보다 먼저 호출해야 첫 sync 가 새 위치의 메모리를 commit 함.
+// 이미 ~/.kda/memory/ 에 *.md 있으면 silent skip (idempotent).
+try {
+  migrateLegacyMemoryToKda();
+} catch (e) {
+  log("warn", `[MemoryMigration] 실패 (sync 는 그대로 진행): ${e}`);
+}
+
 // Phase 87 — Git Memory Sync (enabled 일 때만 실제 시작)
 startMemorySync();
 
