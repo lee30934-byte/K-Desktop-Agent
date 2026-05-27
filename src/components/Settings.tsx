@@ -723,6 +723,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // Phase 80 (v0.6.24) — Final-Review Gate toggle (default true). 같은 sidecar-config 파일.
   const [finalReviewGate, setFinalReviewGate] = useState(true);
   const [finalReviewGateBusy, setFinalReviewGateBusy] = useState(false);
+  // Phase 81 (v0.6.25) — Lee Profile 정보 (예시 template 자동 생성 + path 표시)
+  const [leeProfile, setLeeProfile] = useState<{ path: string; bytes: number; justCreated: boolean } | null>(null);
+  const [leeProfileBusy, setLeeProfileBusy] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
@@ -3347,6 +3350,77 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </button>
               </div>
             )}
+          </section>
+
+          {/* Phase 81 (v0.6.25) — Lee Profile + Memory Auto-Loader.
+              ~/.kda/lee-profile.md 의 내용이 매 turn 시작 시 system prompt 첫머리에 prepend.
+              K 본인이 직접 정의한 응답 스타일/규칙 (예: "한국어 우선", "증거 없는 완료 보고 금지" 등). */}
+          <section className="settings-section" data-tab="safety">
+            <div className="eyebrow">🪪 Lee Profile (개인 응답 규칙)</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">~/.kda/lee-profile.md</div>
+                <div className="settings-row-desc">
+                  K 본인이 직접 정의한 응답 스타일 / 작업 규칙 / 금지 사항을 마크다운으로 작성하면,
+                  매 turn 시작 시 sidecar 가 system prompt 첫머리에 자동 prepend 합니다.
+                  같은 폴더의 <code>memory/*.md</code> (pitfall / feedback) 도 함께 박힙니다
+                  (Lee 의 학습효과 패치 #1 — Memory Auto-Loader).
+                  <br />
+                  <span style={{ opacity: 0.7 }}>
+                    파일이 없으면 "지금 편집" 클릭 시 example template 자동 생성.
+                    합쳐서 32KB 초과하면 자동 trim (system prompt 폭발 방지).
+                  </span>
+                </div>
+                {leeProfile && (
+                  <div className="mono" style={{ fontSize: "0.8em", opacity: 0.75, marginTop: 6 }}>
+                    📄 {leeProfile.path} ({leeProfile.bytes} bytes)
+                    {leeProfile.justCreated && (
+                      <span style={{ color: "#fa0", marginLeft: 8 }}>
+                        ⓘ 방금 example template 생성됨 — 편집해서 K 의 규칙을 채우세요
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button
+                  className="settings-btn"
+                  disabled={leeProfileBusy}
+                  onClick={async () => {
+                    setLeeProfileBusy(true);
+                    try {
+                      const result = await invoke<{ path: string; bytes: number; justCreated: boolean }>(
+                        "read_lee_profile"
+                      );
+                      setLeeProfile(result);
+                      await invoke("open_lee_profile_in_editor");
+                    } catch (e) {
+                      alert(`lee-profile.md 열기 실패: ${e}`);
+                    } finally {
+                      setLeeProfileBusy(false);
+                    }
+                  }}
+                >
+                  ✏️ 지금 편집 (OS 기본 에디터)
+                </button>
+                <button
+                  className="settings-btn"
+                  disabled={leeProfileBusy}
+                  onClick={async () => {
+                    try {
+                      const result = await invoke<{ path: string; bytes: number; justCreated: boolean }>(
+                        "read_lee_profile"
+                      );
+                      setLeeProfile(result);
+                    } catch (e) {
+                      alert(`lee-profile.md 읽기 실패: ${e}`);
+                    }
+                  }}
+                >
+                  🔄 상태 새로고침
+                </button>
+              </div>
+            </div>
           </section>
 
           {/* Phase 80 (v0.6.24) — Final-Review Gate toggle. SIGILFALL 등 대량 생성 raw 컷이

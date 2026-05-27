@@ -418,46 +418,115 @@ interface MemoryContext {
   dir: string;
 }
 
+/**
+ * Phase 81 (v0.6.25) — Lee Profile loader.
+ *
+ * `~/.kda/lee-profile.md` 의 내용을 read. 없으면 빈 string.
+ * loadMemoryContext 의 결과 prefix 로 박혀 system prompt 의 첫머리에 위치 — K 의 응답 스타일 /
+ * 개인 규칙이 매 turn 마다 자연스럽게 반영되게 함.
+ *
+ * Lee 의 학습효과 패치 #1 (Memory Auto-Loader) 의 일부. 기존 memory/ 자동 prepend (Phase 56 등)
+ * 가 K 의 "함정/선호" 메타데이터라면, lee-profile.md 는 K 본인이 직접 채우는 자기 규칙
+ * (예: "증거 없는 완료 보고 금지", "한국어 우선", "긴 작업은 5분 단위 evidence update").
+ */
+function loadLeeProfile(): { content: string; bytes: number; exists: boolean; path: string } {
+  const profilePath = path.join(os.homedir(), ".kda", "lee-profile.md");
+  if (!existsSync(profilePath)) {
+    return { content: "", bytes: 0, exists: false, path: profilePath };
+  }
+  try {
+    const raw = readFileSync(profilePath, "utf-8");
+    // UTF-8 BOM strip (Windows 에디터가 자주 박음)
+    const cleaned = raw.replace(/^﻿/, "").trim();
+    return { content: cleaned, bytes: cleaned.length, exists: true, path: profilePath };
+  } catch (e) {
+    logToFile(
+      "warn",
+      `lee-profile.md read 실패: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return { content: "", bytes: 0, exists: false, path: profilePath };
+  }
+}
+
+// Phase 81 (v0.6.25) — system prompt 폭발 방지: lee-profile + memory 합쳐 32KB 초과 시 trim.
+// K 의 다른 PC 진단 (pitfall_codex_model_context_window_dynamic) 에서 memory_context 18.6KB →
+// 매 turn 마다 stdin 으로 박혀 context 자연 증가. cap 으로 단일 turn 폭발 차단.
+const MEMORY_CONTEXT_HARD_CAP_BYTES = 32 * 1024;
+
 function loadMemoryContext(): MemoryContext {
   const dir = getMemoryDir();
+  const leeProfile = loadLeeProfile();
   try {
-    if (!existsSync(dir)) {
-      return { count: 0, bytes: 0, content: "", dir };
-    }
-    const files = readdirSync(dir)
-      .filter((f) => f.endsWith(".md"))
-      .sort();
-    if (files.length === 0) {
-      return { count: 0, bytes: 0, content: "", dir };
-    }
-    const sections: string[] = [];
-    let bytes = 0;
-    for (const f of files) {
-      try {
-        const body = readFileSync(path.join(dir, f), "utf-8");
-        sections.push(`### ${f}\n${body.trim()}`);
-        bytes += body.length;
-      } catch (e) {
-        logToFile(
-          "warn",
-          `memory file read 실패 ${f}: ${e instanceof Error ? e.message : String(e)}`,
-        );
+    let memoryContent = "";
+    let memorySectionCount = 0;
+    let memoryBytes = 0;
+
+    if (existsSync(dir)) {
+      const files = readdirSync(dir)
+        .filter((f) => f.endsWith(".md"))
+        .sort();
+      const sections: string[] = [];
+      for (const f of files) {
+        try {
+          const body = readFileSync(path.join(dir, f), "utf-8");
+          sections.push(`### ${f}\n${body.trim()}`);
+          memoryBytes += body.length;
+        } catch (e) {
+          logToFile(
+            "warn",
+            `memory file read 실패 ${f}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+      if (sections.length > 0) {
+        memoryContent = [
+          "",
+          "## K님의 누적 메모리 (memory/)",
+          "",
+          "다음은 이전 세션들에서 K님과 합의했거나 기록한 선호·함정·패턴입니다.",
+          "매 응답에서 자연스럽게 반영하세요. 특히 `pitfall_*` 항목은 동일 패턴을 반복하지 마세요.",
+          "",
+          sections.join("\n\n"),
+        ].join("\n");
+        memorySectionCount = sections.length;
       }
     }
-    if (sections.length === 0) {
+
+    // Phase 81 (v0.6.25): lee-profile.md 가 있으면 memory 보다 먼저 박힘 (K 의 개인 규칙이 최우선)
+    const leeBlock = leeProfile.exists && leeProfile.content
+      ? [
+          "",
+          "",
+          "## K(Lee)의 개인 응답 규칙 (lee-profile.md)",
+          "",
+          "다음은 K 본인이 직접 정의한 응답 스타일/규칙입니다. 위반 시 K 가 명시적으로 지적합니다.",
+          "",
+          leeProfile.content,
+        ].join("\n")
+      : "";
+
+    let combined = (leeBlock + (memoryContent ? "\n" + memoryContent : "")).trim();
+
+    // Phase 81 (v0.6.25): hard cap — 32KB 초과 시 tail trim + 경고 라인.
+    if (combined.length > MEMORY_CONTEXT_HARD_CAP_BYTES) {
+      const original = combined.length;
+      combined = combined.slice(0, MEMORY_CONTEXT_HARD_CAP_BYTES) +
+        `\n\n[⚠ memory_context 가 ${(original / 1024).toFixed(1)}KB → ${(MEMORY_CONTEXT_HARD_CAP_BYTES / 1024).toFixed(0)}KB 로 trim 됨. ~/.kda/memory/ 정리 권장.]`;
+      logToFile(
+        "warn",
+        `loadMemoryContext: combined ${original} bytes > ${MEMORY_CONTEXT_HARD_CAP_BYTES} cap → trim. memory dir = ${dir}`,
+      );
+    }
+
+    if (!combined) {
       return { count: 0, bytes: 0, content: "", dir };
     }
-    const content = [
-      "",
-      "",
-      "## K님의 누적 메모리 (memory/)",
-      "",
-      "다음은 이전 세션들에서 K님과 합의했거나 기록한 선호·함정·패턴입니다.",
-      "매 응답에서 자연스럽게 반영하세요. 특히 `pitfall_*` 항목은 동일 패턴을 반복하지 마세요.",
-      "",
-      sections.join("\n\n"),
-    ].join("\n");
-    return { count: sections.length, bytes, content, dir };
+    return {
+      count: memorySectionCount + (leeProfile.exists ? 1 : 0),
+      bytes: combined.length,
+      content: "\n" + combined,
+      dir,
+    };
   } catch (e) {
     logToFile(
       "warn",

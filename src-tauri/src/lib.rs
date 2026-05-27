@@ -1814,6 +1814,105 @@ fn read_qa_report(folder_path: String) -> Result<serde_json::Value, String> {
     }
 }
 
+/// Phase 81 (v0.6.25) — Lee Profile read + 첫 진입 시 example template 자동 생성.
+///
+/// `~/.kda/lee-profile.md` 파일 read. 없으면 example template 박아 K 가 즉시 편집 가능하게 함.
+/// sidecar 의 loadMemoryContext 가 매 turn 시작 시 이 파일 내용을 system prompt 첫머리에 prepend.
+///
+/// 반환: { path: "...", exists: bool, content: "<markdown>", bytes: N, justCreated: bool }
+#[tauri::command]
+fn read_lee_profile() -> Result<serde_json::Value, String> {
+    let home = std::env::var("USERPROFILE").map_err(|e| format!("USERPROFILE 못 읽음: {}", e))?;
+    let kda_dir = std::path::PathBuf::from(&home).join(".kda");
+    let profile_path = kda_dir.join("lee-profile.md");
+
+    if profile_path.exists() {
+        let raw = std::fs::read_to_string(&profile_path)
+            .map_err(|e| format!("lee-profile.md read 실패: {}", e))?;
+        let cleaned = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw).to_string();
+        let bytes = cleaned.len();
+        return Ok(serde_json::json!({
+            "path": profile_path.to_string_lossy(),
+            "exists": true,
+            "content": cleaned,
+            "bytes": bytes,
+            "justCreated": false,
+        }));
+    }
+
+    // 첫 진입 — 부모 폴더 보장 + example template 생성. K 가 편집해서 자기 규칙 채울 수 있게.
+    if let Err(e) = std::fs::create_dir_all(&kda_dir) {
+        return Err(format!("~/.kda 폴더 생성 실패 ({}): {}", kda_dir.display(), e));
+    }
+
+    let template = "# K(Lee) 의 개인 응답 규칙\n\
+\n\
+> 이 파일에 K 본인이 직접 정의한 응답 스타일/규칙을 채우세요.\n\
+> 매 turn 시작 시 sidecar 가 system prompt 첫머리에 자동 prepend 합니다.\n\
+> Settings → 안전 탭 → \"🪪 Lee Profile\" 섹션에서 토글 OFF 하면 prepend 안 됩니다.\n\
+\n\
+## 응답 스타일\n\
+\n\
+- 한국어 우선 (코드/명령어 제외)\n\
+- 증거 없는 완료 보고 금지 — 항상 검증 가능한 출력으로 마무리\n\
+- 긴 작업은 5분 단위 evidence update 또는 진행 상황 보고\n\
+\n\
+## 자주 하는 작업의 규칙\n\
+\n\
+- SIGILFALL: 의도 → 룰 → 콘티 → QA 순서 먼저, 그 다음 생성\n\
+- 링크는 K 가 KDA 안에서 미리보기 가능한 로컬 경로 우선 (http URL 보다)\n\
+- raw 생성컷은 final-review 통과한 것만 K 에게 노출 (qa-report.json + Phase 80 Gate 활용)\n\
+\n\
+## 금지 사항\n\
+\n\
+- 파괴적 작업 (force push / 대량 삭제 / 자동시작 등록 등) 은 사전 명시 승인 없이 실행 금지\n\
+- (필요한 항목 추가)\n";
+
+    if let Err(e) = std::fs::write(&profile_path, template.as_bytes()) {
+        return Err(format!("lee-profile.md template 쓰기 실패: {}", e));
+    }
+    Ok(serde_json::json!({
+        "path": profile_path.to_string_lossy(),
+        "exists": true,
+        "content": template,
+        "bytes": template.len(),
+        "justCreated": true,
+    }))
+}
+
+/// Phase 81 (v0.6.25) — lee-profile.md 를 OS 기본 텍스트 에디터로 open.
+///
+/// open_path 와 같은 cmd start 사용 — Windows 의 .md 기본 연결 앱 (메모장 / VS Code 등) 호출.
+/// 신뢰 prefix 검증 생략 (~/.kda 안 고정 path 라 안전).
+#[tauri::command]
+fn open_lee_profile_in_editor() -> Result<(), String> {
+    let home = std::env::var("USERPROFILE").map_err(|e| format!("USERPROFILE 못 읽음: {}", e))?;
+    let profile_path = std::path::PathBuf::from(home).join(".kda").join("lee-profile.md");
+    if !profile_path.exists() {
+        // read_lee_profile 가 먼저 호출되어야 — template 생성 path. 안전망으로 빈 파일 박음.
+        if let Some(parent) = profile_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&profile_path, "# K(Lee) 의 개인 응답 규칙\n").ok();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command as StdCommand;
+        let path_str = profile_path.to_string_lossy().to_string();
+        let mut cmd = StdCommand::new("cmd");
+        cmd.args(["/c", "start", "", &path_str]);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|e| format!("cmd start spawn 실패: {}", e))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("open_lee_profile_in_editor 는 Windows 전용".to_string());
+    }
+    Ok(())
+}
+
 /// 회피책: 시스템 기본 브라우저 (Edge/Chrome/Firefox) 로 열기 — Google OAuth 제약 없음 +
 /// K 평소 브라우저의 cookie 영속 → 다음에 그 브라우저에서 anthropic 들어갈 때도 자동 로그인.
 ///
@@ -2956,7 +3055,10 @@ pub fn run_with_options(start_minimized: bool) {
             list_stale_codex_processes,
             kill_process_tree,
             // Phase 80 (v0.6.24) — Final-Review Gate
-            read_qa_report
+            read_qa_report,
+            // Phase 81 (v0.6.25) — Lee Profile + Memory Auto-Loader
+            read_lee_profile,
+            open_lee_profile_in_editor
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
