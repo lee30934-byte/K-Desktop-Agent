@@ -57,6 +57,14 @@ KDA 실행 후 Settings → AI 탭:
 
 회사 PC 와 별도 계정 인증 필요 (Claude/Codex 의 토큰은 PC 마다 별도 저장).
 
+### 5. (선택) 바탕화면 바로가기 — `npm run tauri:dev` 더블클릭 launcher
+
+```powershell
+.\scripts\create-dev-shortcut.ps1
+```
+
+바탕화면에 **"KDA Dev"** 아이콘 생성. 더블클릭 시 PowerShell 창이 떠서 자동으로 `cd <repo> && npm run tauri:dev`. 매번 터미널 열고 cd 칠 필요 없음. 각 PC 에서 한 번씩 실행하면 그 PC 의 바탕화면에 박힘 (자동 sync 가 아니라 *방법의 재현성* — 미래에 PC 추가될 때마다 같은 명령 한 번).
+
 ## 🔧 일상 개발 흐름
 
 ### 코드 수정 + 로컬 검증
