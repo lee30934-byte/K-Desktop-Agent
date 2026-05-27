@@ -65,7 +65,12 @@ import "./App.css";
 import logger from "./utils/logger";
 import { useStableCallback } from "./utils/useStableCallback";
 // Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
-import { loadSchedule, evaluateScheduleAt } from "./utils/safeModeSchedule";
+import {
+  loadSchedule,
+  evaluateScheduleAt,
+  isWithinManualOverride,
+  getManualOverrideInfo,
+} from "./utils/safeModeSchedule";
 
 // ─── Rate Limit Normalization (Phase 15.5) ────────────────────────────────
 //
@@ -661,6 +666,11 @@ export default function App() {
   // 매 60초마다 현재 시각이 매칭되는 규칙이 있는지 검사 → localStorage "kda_safe_mode" 직접 갱신
   // App.tsx 다른 부분과 충돌 없음 (send_message 가 매 turn localStorage 읽기). UI 즉시 반영은
   // Settings 가 storage event 또는 다음 진입 시 읽음. 1분 tick 으로 분 단위 정확도.
+  //
+  // Phase 92 (v0.6.34) — K manual override 5분 보존.
+  // K 가 Settings 에서 SafeMode 토글을 직접 누르면 markManualOverride() 가 호출되어
+  // localStorage 에 timestamp 박힘. tick 이 그 윈도우 안 (5분) 에 있으면 자동 전환 skip —
+  // K 가 "잠깐 풀었는데 1분 만에 다시 잠겼다" 같은 답답함 회피.
   useEffect(() => {
     const evaluate = () => {
       try {
@@ -673,6 +683,15 @@ export default function App() {
           | "balanced"
           | "strict";
         if (current === result.mode) return;
+        // K manual override 보호 윈도우 (5분) 안이면 skip
+        if (isWithinManualOverride()) {
+          const info = getManualOverrideInfo();
+          const remainSec = info ? Math.ceil(info.remainingMs / 1000) : 0;
+          logger.log(
+            `[SafeMode][schedule] K manual override 활성 — 자동 전환 skip (${remainSec}s 남음, 규칙 "${result.rule.label || result.rule.id}" → ${result.mode})`,
+          );
+          return;
+        }
         localStorage.setItem("kda_safe_mode", result.mode);
         logger.log(
           `[SafeMode][schedule] ${current} → ${result.mode} (rule "${result.rule.label || result.rule.id}")`,

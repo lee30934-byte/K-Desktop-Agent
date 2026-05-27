@@ -7,7 +7,7 @@
 
 import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
-import type { ChatMessage, Conversation } from "./types";
+import type { ChatMessage, Conversation, ToolMessage } from "./types";
 import logger from "./utils/logger";
 
 // 싱글톤 DB 인스턴스
@@ -92,6 +92,10 @@ export async function initDB(): Promise<Database> {
   try { await db.execute(`ALTER TABLE conversations ADD COLUMN is_favorite INTEGER DEFAULT 0`); } catch {}
   try { await db.execute(`ALTER TABLE conversations ADD COLUMN color TEXT`); } catch {}
   try { await db.execute(`ALTER TABLE conversations ADD COLUMN icon TEXT`); } catch {}
+  // Phase 92 (v0.6.34) — ToolMessage 의 risk 메타 (Phase 85 Connector/Tool Safety Layer) 영속화.
+  // 종전엔 in-memory 만 박혀 KDA 재시작 또는 다른 PC 에서 history 불러올 때 위험도 배지 사라짐.
+  // 컬럼 추가 후 messageToDbParams + dbRowToMessage 양방향 JSON 직렬화.
+  try { await db.execute(`ALTER TABLE messages ADD COLUMN tool_risk TEXT`); } catch {}
   await db.execute(`
     CREATE INDEX IF NOT EXISTS idx_conversations_folder ON conversations(folder_id)
   `);
@@ -110,6 +114,7 @@ export async function initDB(): Promise<Database> {
       tool_input TEXT,
       tool_output TEXT,
       tool_status TEXT,
+      tool_risk TEXT,
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
     )
   `);
@@ -747,6 +752,8 @@ interface DBMessage {
   tool_input: string | null;
   tool_output: string | null;
   tool_status: string | null;
+  // Phase 92 (v0.6.34) — JSON 직렬화된 risk 메타 ({level, categoryId, summary}). 없으면 null.
+  tool_risk: string | null;
 }
 
 /**
@@ -777,8 +784,8 @@ export async function saveMessage(
   await database.execute(
     `INSERT OR REPLACE INTO messages
      (id, conversation_id, role, content, timestamp, streaming, level,
-      tool_id, tool_name, tool_input, tool_output, tool_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      tool_id, tool_name, tool_input, tool_output, tool_status, tool_risk)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     params
   );
 
@@ -800,8 +807,8 @@ export async function saveMessages(
     await database.execute(
       `INSERT OR REPLACE INTO messages
        (id, conversation_id, role, content, timestamp, streaming, level,
-        tool_id, tool_name, tool_input, tool_output, tool_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        tool_id, tool_name, tool_input, tool_output, tool_status, tool_risk)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params
     );
   }
@@ -848,7 +855,31 @@ function dbRowToMessage(row: DBMessage): ChatMessage {
         level: (row.level as "info" | "warn" | "error") ?? "info",
       };
 
-    case "tool":
+    case "tool": {
+      // Phase 92 (v0.6.34) — risk 메타 역직렬화. 구버전 DB row 는 tool_risk 컬럼 자체가 없거나
+      // null — 그 케이스는 risk undefined 로 graceful (UI 배지 안 뜸).
+      let risk: ToolMessage["risk"] | undefined;
+      try {
+        if (row.tool_risk) {
+          const parsed = JSON.parse(row.tool_risk);
+          if (
+            parsed &&
+            typeof parsed === "object" &&
+            (parsed.level === "low" ||
+              parsed.level === "medium" ||
+              parsed.level === "high" ||
+              parsed.level === "critical")
+          ) {
+            risk = {
+              level: parsed.level,
+              categoryId: typeof parsed.categoryId === "string" ? parsed.categoryId : null,
+              summary: typeof parsed.summary === "string" ? parsed.summary : "",
+            };
+          }
+        }
+      } catch {
+        /* malformed JSON — 안전하게 무시 */
+      }
       return {
         ...base,
         role: "tool",
@@ -857,7 +888,9 @@ function dbRowToMessage(row: DBMessage): ChatMessage {
         toolInput: row.tool_input ? JSON.parse(row.tool_input) : undefined,
         toolOutput: row.tool_output ?? undefined,
         status: (row.tool_status as "pending" | "success" | "error") ?? "pending",
+        ...(risk ? { risk } : {}),
       };
+    }
 
     default:
       return { ...base, role: "system" };
@@ -886,6 +919,7 @@ function messageToDbParams(
       null, // tool_input
       null, // tool_output
       null, // tool_status
+      null, // tool_risk (Phase 92)
     ];
   }
 
@@ -899,6 +933,7 @@ function messageToDbParams(
       null,
       null,
       null,
+      null, // tool_risk (Phase 92)
     ];
   }
 
@@ -912,11 +947,13 @@ function messageToDbParams(
       message.toolInput ? JSON.stringify(message.toolInput) : null,
       message.toolOutput ?? null,
       message.status,
+      // Phase 92 (v0.6.34) — Phase 85 의 risk 메타를 영속화. 없으면 null.
+      message.risk ? JSON.stringify(message.risk) : null,
     ];
   }
 
   // user
-  return [...base, 0, null, null, null, null, null, null];
+  return [...base, 0, null, null, null, null, null, null, null];
 }
 
 /**
@@ -1061,8 +1098,8 @@ export async function importConversation(
     await database.execute(
       `INSERT INTO messages
        (id, conversation_id, role, content, timestamp, streaming, level,
-        tool_id, tool_name, tool_input, tool_output, tool_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        tool_id, tool_name, tool_input, tool_output, tool_status, tool_risk)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params
     );
   }

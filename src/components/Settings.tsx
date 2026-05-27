@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { check } from "@tauri-apps/plugin-updater";
@@ -21,6 +21,7 @@ import {
   type RiskLevel,
 } from "../utils/toolSafety";
 // Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
+// Phase 92 (v0.6.34) — K manual override 5분 보존 헬퍼
 import {
   loadSchedule,
   saveSchedule,
@@ -28,9 +29,103 @@ import {
   formatHourRange,
   newRule,
   DAYS_LIST,
+  markManualOverride,
+  getManualOverrideInfo,
+  clearManualOverride,
+  MANUAL_OVERRIDE_WINDOW_MS,
   type SafeModeRule,
   type DayOfWeek,
 } from "../utils/safeModeSchedule";
+
+// ─── Phase 92 (v0.6.34) — 통계 CSV export 헬퍼 ────────────────
+// safetyStats 의 buckets 를 일자별 long-form CSV 로 평탄화.
+// 한 일자에 도구별 분포 (byTool) 가 있으면 각 도구마다 row 추가 — Excel pivot 으로 분석 용이.
+// 도구 분포 없는 일자는 summary 한 줄만 박힘.
+// quote/comma/줄바꿈/큰따옴표 모두 RFC 4180 quoted form 으로 escape.
+interface SafetyStatsForExport {
+  total_alerts: number;
+  total_blocks: number;
+  last7_alerts: number;
+  last7_blocks: number;
+  by_mode: { off: number; balanced: number; strict: number };
+  buckets: Array<{
+    date: string;
+    alerts: number;
+    blocks: number;
+    byMode: { off: number; balanced: number; strict: number };
+    byTool?: Record<string, number>;
+  }>;
+  since_at: number;
+  last_updated_at: number;
+}
+
+function csvCell(v: string | number): string {
+  const s = String(v);
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function buildSafetyStatsCsv(stats: SafetyStatsForExport): string {
+  const lines: string[] = [];
+  // 헤더 — long form (한 row = 한 (date, tool) 또는 (date, ALL))
+  lines.push(
+    ["date", "tool", "alerts", "blocks", "mode_off", "mode_balanced", "mode_strict"]
+      .map(csvCell)
+      .join(","),
+  );
+  // 메타 한 줄 (subject= __summary, date= "totals") — 외부 도구가 필터로 쉽게 분리 가능
+  lines.push(
+    [
+      "__totals",
+      "ALL",
+      stats.total_alerts,
+      stats.total_blocks,
+      stats.by_mode.off,
+      stats.by_mode.balanced,
+      stats.by_mode.strict,
+    ]
+      .map(csvCell)
+      .join(","),
+  );
+  lines.push(
+    [
+      "__last7",
+      "ALL",
+      stats.last7_alerts,
+      stats.last7_blocks,
+      "",
+      "",
+      "",
+    ]
+      .map(csvCell)
+      .join(","),
+  );
+  // 일자별 + 도구별
+  for (const b of stats.buckets) {
+    // 일자 합계 한 줄
+    lines.push(
+      [
+        b.date,
+        "ALL",
+        b.alerts,
+        b.blocks,
+        b.byMode.off,
+        b.byMode.balanced,
+        b.byMode.strict,
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+    // 도구별 분포 (있으면) — 카운트 내림차순
+    const entries = Object.entries(b.byTool ?? {}).sort((a, b2) => b2[1] - a[1]);
+    for (const [tool, count] of entries) {
+      lines.push(
+        [b.date, tool, count, "", "", "", ""].map(csvCell).join(","),
+      );
+    }
+  }
+  return lines.join("\r\n") + "\r\n";
+}
 
 interface SettingsProps {
   open: boolean;
@@ -824,6 +919,8 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [scheduleRules, setScheduleRules] = useState<
     import("../utils/safeModeSchedule").SafeModeRule[]
   >([]);
+  // Phase 92 (v0.6.34) — K manual override 남은 ms (1초마다 tick — 카운트다운 표시용)
+  const [manualOverrideRemainingMs, setManualOverrideRemainingMs] = useState<number>(0);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
@@ -1192,6 +1289,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       });
       // Phase 91 — 스케줄 규칙 초기 로드 (localStorage)
       setScheduleRules(loadSchedule());
+      // Phase 92 (v0.6.34) — manual override 가 살아 있으면 카운트다운 시작
+      const info = getManualOverrideInfo();
+      setManualOverrideRemainingMs(info ? info.remainingMs : 0);
       // 초기 status + stats 요청
       try {
         await invoke("git_sync_status_request");
@@ -1203,6 +1303,20 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     return () => {
       if (unlistenStatus) unlistenStatus();
     };
+  }, [open]);
+
+  // Phase 92 (v0.6.34) — manual override 1초 tick (카운트다운 표시).
+  // Settings 가 열려 있을 때만 active. 윈도우 만료되면 remainingMs 가 0 으로 떨어져 UI 자동 숨김.
+  // 매초 setState 하지만 Settings 렌더 트리만 갱신 — 다른 컴포넌트 영향 X.
+  useEffect(() => {
+    if (!open) return;
+    const tick = () => {
+      const info = getManualOverrideInfo();
+      setManualOverrideRemainingMs(info ? info.remainingMs : 0);
+    };
+    tick(); // 즉시 1회
+    const interval = window.setInterval(tick, 1000);
+    return () => window.clearInterval(interval);
   }, [open]);
 
   useEffect(() => {
@@ -3865,7 +3979,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       </div>
                     );
                   })()}
-                  <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+                  <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                     <button
                       className="settings-btn"
                       style={{ fontSize: "0.78em", padding: "2px 8px" }}
@@ -3878,6 +3992,35 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       }}
                     >
                       🔄 새로고침
+                    </button>
+                    {/* Phase 92 (v0.6.34) — 통계 CSV export.
+                        K 가 외부 spreadsheet / 다른 분석 도구로 들고 갈 수 있게.
+                        7일 buckets 의 (date, alerts, blocks, byMode 분포, byTool 분포) 평탄화. */}
+                    <button
+                      className="settings-btn"
+                      style={{ fontSize: "0.78em", padding: "2px 8px" }}
+                      onClick={async () => {
+                        if (!safetyStats) return;
+                        try {
+                          const csv = buildSafetyStatsCsv(safetyStats);
+                          const today = new Date().toISOString().slice(0, 10);
+                          const filePath = await saveDialog({
+                            defaultPath: `kda_safety_stats_${today}.csv`,
+                            filters: [{ name: "CSV", extensions: ["csv"] }],
+                          });
+                          if (!filePath) return;
+                          const fs = await import("@tauri-apps/plugin-fs");
+                          // BOM 박지 않음 — 외부 도구가 읽을 텍스트라 memory/pitfall_powershell_secret_bom
+                          // 의 함정 정신. Excel 한글 깨짐 우려 시 K 가 "다른 이름으로 저장 → UTF-8" 가능.
+                          await fs.writeTextFile(filePath, csv);
+                          alert(`📥 CSV 내보내기 완료\n${filePath}`);
+                        } catch (e) {
+                          alert(`CSV 내보내기 실패: ${e}`);
+                        }
+                      }}
+                      title="7일 통계를 CSV 파일로 저장 — Excel / Google Sheets 에서 열기"
+                    >
+                      📥 CSV 내보내기
                     </button>
                     <button
                       className="settings-btn"
@@ -4716,6 +4859,15 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                         } catch {
                           /* ignore */
                         }
+                        // Phase 92 (v0.6.34) — K manual override 5분 보호. 다음 schedule tick (1분
+                        // 단위) 이 K 의 선택을 즉시 덮어쓰지 않도록 윈도우 박음. K 가 "잠깐 풀었는데
+                        // 1분 안에 도로 strict 됐다" 답답함 회피.
+                        try {
+                          markManualOverride();
+                          setManualOverrideRemainingMs(MANUAL_OVERRIDE_WINDOW_MS);
+                        } catch {
+                          /* ignore */
+                        }
                       }}
                       style={{
                         flex: 1,
@@ -4740,6 +4892,54 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   );
                 })}
               </div>
+
+              {/* Phase 92 (v0.6.34) — K manual override 5분 카운트다운 배지.
+                  K 가 위 토글을 직접 누른 후 5분 동안 자동 schedule 이 그 선택을 덮어쓰지 않는다는
+                  visual feedback. 만료되면 자동 사라짐. 윈도우 안에 schedule rule 이 있어도
+                  K 의 선택 우선. */}
+              {manualOverrideRemainingMs > 0 && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "6px 10px",
+                    background: "rgba(79,232,225,0.10)",
+                    border: "1px dashed rgba(79,232,225,0.45)",
+                    borderRadius: 6,
+                    fontSize: "0.78em",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                  }}
+                  title="K 가 직접 SafeMode 를 선택한 후 5분 안엔 자동 전환 스케줄이 덮어쓰지 않습니다"
+                >
+                  <span>
+                    🔒 K 수동 선택 유지 중 —{" "}
+                    <strong>
+                      {Math.floor(manualOverrideRemainingMs / 60_000)}:
+                      {String(
+                        Math.floor((manualOverrideRemainingMs % 60_000) / 1000),
+                      ).padStart(2, "0")}
+                    </strong>{" "}
+                    남음
+                  </span>
+                  <button
+                    className="settings-btn"
+                    style={{ fontSize: "0.78em", padding: "1px 6px" }}
+                    onClick={() => {
+                      try {
+                        clearManualOverride();
+                        setManualOverrideRemainingMs(0);
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    title="지금 즉시 자동 스케줄 적용으로 돌아가기"
+                  >
+                    해제
+                  </button>
+                </div>
+              )}
 
               {/* 카테고리별 위험도 표 */}
               <div style={{ marginTop: 14 }}>

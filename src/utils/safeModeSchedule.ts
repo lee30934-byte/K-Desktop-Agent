@@ -32,6 +32,61 @@ export interface SafeModeRule {
 }
 
 const STORAGE_KEY = "kda_safe_mode_schedule";
+// Phase 92 (v0.6.34) — K manual override 보존.
+// K 가 Settings 의 SafeMode 토글로 직접 mode 를 바꾸면 그 시각을 박아두고, schedule tick 은
+// 5분 안엔 자동 전환 skip. K 가 "방금 잠깐 풀었는데 1분 만에 다시 strict 로 되돌아갔다" 같은
+// 답답함 회피.
+const OVERRIDE_KEY = "kda_safe_mode_manual_override_at";
+const OVERRIDE_WINDOW_MS = 5 * 60 * 1000;
+
+/** K 가 SafeMode 를 직접 변경했을 때 호출. localStorage 에 timestamp 박음. */
+export function markManualOverride(now: number = Date.now()): void {
+  try {
+    localStorage.setItem(OVERRIDE_KEY, String(now));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 현재 시점이 manual override 보호 윈도우 안인지 (5분). */
+export function isWithinManualOverride(now: number = Date.now()): boolean {
+  try {
+    const raw = localStorage.getItem(OVERRIDE_KEY);
+    if (!raw) return false;
+    const t = Number(raw);
+    if (!Number.isFinite(t)) return false;
+    return now - t < OVERRIDE_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** override timestamp 와 남은 ms — UI 가 "K manual: 4:23 남음" 표시할 때 사용. */
+export function getManualOverrideInfo(
+  now: number = Date.now(),
+): { at: number; remainingMs: number } | null {
+  try {
+    const raw = localStorage.getItem(OVERRIDE_KEY);
+    if (!raw) return null;
+    const t = Number(raw);
+    if (!Number.isFinite(t)) return null;
+    const remainingMs = OVERRIDE_WINDOW_MS - (now - t);
+    if (remainingMs <= 0) return null;
+    return { at: t, remainingMs };
+  } catch {
+    return null;
+  }
+}
+
+export function clearManualOverride(): void {
+  try {
+    localStorage.removeItem(OVERRIDE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export const MANUAL_OVERRIDE_WINDOW_MS = OVERRIDE_WINDOW_MS;
 
 export function loadSchedule(): SafeModeRule[] {
   try {
