@@ -1126,6 +1126,24 @@ export default function App() {
         break;
       }
 
+      // Phase 83 (v0.6.26) — Session Recovery Hook: sidecar 가 Codex reconnect timeout 감지
+      // 시 emit. 즉시 long_tasks 재스캔 + 결과 있으면 상단 RecoveryBanner 갱신.
+      // K 의 다른 PC root cause (Reconnecting 2/5 timeout) 가 작업 중단으로 이어지지 않게.
+      case "session_recovery_triggered": {
+        const e = ev as any;
+        logger.warn(`[Recovery] sidecar 가 session_recovery_triggered emit — reason=${e.reason} taskId=${e.taskId ?? "(없음)"}`);
+        // staleMs 를 짧게 (5초) — 방금 timeout 난 작업도 즉시 후보로 잡힘
+        listRecoverableLongTasks(5_000)
+          .then((tasks) => {
+            if (tasks.length > 0) {
+              logger.log(`[Recovery] ${tasks.length}개 복구 후보 — 배너 표시`);
+              setRecoverableTasks(tasks);
+            }
+          })
+          .catch((err) => logger.warn(`[Recovery] listRecoverableLongTasks 실패: ${err}`));
+        break;
+      }
+
       case "ask_user_question": {
         // Phase 50 — 모델이 AskUserQuestion tool 호출. sidecar 가 questions[] 를 그대로 전달.
         // 첫 질문을 ElicitationDialog 로 띄우고, K 가 선택하면 다음 질문 또는 다음 turn 의

@@ -141,6 +141,15 @@ export type SidecarEvent =
       handoffMd?: string | null;
     }
   | {
+      // Phase 83 (v0.6.26) — Session Recovery Hook. sidecar 의 Codex reconnect path 에서
+      // 5/5 timeout 또는 partial (2-4/5) 감지 시 emit. App.tsx 가 받아서 RecoveryBanner 즉시
+      // 재스캔 + K 에게 알림 — 끊긴 작업이 작업 중단으로 이어지지 않게.
+      type: "session_recovery_triggered";
+      reason: "codex_reconnect_5_5" | "codex_reconnect_partial" | string;
+      agentId?: string | null;
+      taskId?: string | null;
+    }
+  | {
       // Phase 50 — 모델이 AskUserQuestion tool 호출 시 sidecar 가 가로채서 KDA UI 로 라우팅.
       // questions[].options 가 라디오/방향키 선택 가능한 옵션 리스트로 띄워짐.
       type: "ask_user_question";

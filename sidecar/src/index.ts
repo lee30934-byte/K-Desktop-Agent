@@ -453,6 +453,46 @@ function loadLeeProfile(): { content: string; bytes: number; exists: boolean; pa
 // 매 turn 마다 stdin 으로 박혀 context 자연 증가. cap 으로 단일 turn 폭발 차단.
 const MEMORY_CONTEXT_HARD_CAP_BYTES = 32 * 1024;
 
+/**
+ * Phase 82 (v0.6.26) — Pitfall Guard: pitfall_*.md 의 핵심만 압축 추출.
+ *
+ * memory/ 폴더의 pitfall_*.md 파일들은 길고 자세함 (1KB ~ 10KB). LLM 이 긴 memory 안에서
+ * 묻혀 같은 함정 반복 가능성. 회피: 각 pitfall_*.md 의 frontmatter `description:` 한 줄만
+ * 추출해서 system prompt 첫 부분에 [⚠ 절대 반복 금지] 압축 리스트로 별도 박음.
+ *
+ * Lee 의 학습효과 패치 #2 (Pitfall Guard) 의 LLM-native 구현 — 별도 detection layer 없이
+ * 강조된 anti-pattern 리스트만으로 LLM 의 self-check 유도.
+ */
+function extractPitfallSummary(memoryDir: string): { count: number; lines: string[] } {
+  if (!existsSync(memoryDir)) return { count: 0, lines: [] };
+  try {
+    const files = readdirSync(memoryDir)
+      .filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"))
+      .sort();
+    const lines: string[] = [];
+    for (const f of files) {
+      try {
+        const body = readFileSync(path.join(memoryDir, f), "utf-8");
+        // frontmatter 의 `description: ` 한 줄 추출. 첫 줄만, 최대 200자.
+        const descMatch = body.match(/^description:\s*(.+?)(?:\r?\n|$)/m);
+        const desc = descMatch ? descMatch[1].trim().slice(0, 200) : null;
+        const slug = f.replace(/^pitfall_/, "").replace(/\.md$/, "");
+        if (desc) {
+          lines.push(`- **[${slug}]** ${desc}`);
+        } else {
+          // description 없으면 name 만이라도
+          lines.push(`- **[${slug}]** (자세한 내용은 memory 의 ${f} 참조)`);
+        }
+      } catch {
+        // skip
+      }
+    }
+    return { count: lines.length, lines };
+  } catch {
+    return { count: 0, lines: [] };
+  }
+}
+
 function loadMemoryContext(): MemoryContext {
   const dir = getMemoryDir();
   const leeProfile = loadLeeProfile();
@@ -505,7 +545,23 @@ function loadMemoryContext(): MemoryContext {
         ].join("\n")
       : "";
 
-    let combined = (leeBlock + (memoryContent ? "\n" + memoryContent : "")).trim();
+    // Phase 82 (v0.6.26) — Pitfall Guard 압축 섹션. memory 보다 먼저, lee-profile 보다 뒤.
+    // LLM 이 긴 memory 안에서 함정을 놓치는 걸 방지하기 위해 description 한 줄씩만 강조 리스트로.
+    const pitfallSummary = extractPitfallSummary(dir);
+    const pitfallBlock = pitfallSummary.count > 0
+      ? [
+          "",
+          "",
+          "## ⚠ 절대 반복 금지 함정 (pitfall summary)",
+          "",
+          `다음 ${pitfallSummary.count}개는 K 와 이미 한 번 겪은 함정입니다. 같은 패턴 반복 금지.`,
+          "각 항목의 자세한 진단/회피책은 위의 memory_context 안 같은 이름의 pitfall_*.md 참조.",
+          "",
+          ...pitfallSummary.lines,
+        ].join("\n")
+      : "";
+
+    let combined = (leeBlock + pitfallBlock + (memoryContent ? "\n" + memoryContent : "")).trim();
 
     // Phase 81 (v0.6.25): hard cap — 32KB 초과 시 tail trim + 경고 라인.
     if (combined.length > MEMORY_CONTEXT_HARD_CAP_BYTES) {
@@ -2150,6 +2206,26 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             effectiveAgentId,
             `Codex stderr 에 Reconnecting 5/5 또는 websocket close 감지 — 다음 spawn 부터 resume 차단`,
           );
+          // Phase 83 (v0.6.26) — Session Recovery Hook: 5/5 timeout 시 frontend 에 즉시
+          // 알려 RecoveryBanner 재스캔 trigger. K 가 conversation 으로 이동해 long_task
+          // 진행 상황 확인 가능. Lee 의 학습효과 패치 #7 (Session Recovery Hook) 의 자동
+          // 진입 path — 끊긴 세션이 작업 중단으로 이어지지 않게.
+          emit({
+            type: "session_recovery_triggered",
+            reason: "codex_reconnect_5_5",
+            agentId: effectiveAgentId,
+            taskId: msg.id,
+          } as any);
+        }
+        // Phase 83 (v0.6.26): 2/5 timeout 도 캡처 — K 의 다른 PC 진단의 핵심 ("Reconnecting 2/5
+        // timeout waiting for child process to exit"). 차단까지는 안 가지만 알림은 띄움.
+        else if (effectiveAgentId && /Reconnecting[\s\S]*[2-4]\/5/.test(decoded)) {
+          emit({
+            type: "session_recovery_triggered",
+            reason: "codex_reconnect_partial",
+            agentId: effectiveAgentId,
+            taskId: msg.id,
+          } as any);
         }
       });
     }
