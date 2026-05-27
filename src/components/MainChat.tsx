@@ -83,6 +83,31 @@ function MainChat({
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
 
+  // Phase 90 (v0.6.32) — tool_use 카드 visibility + 카테고리/위험도 필터.
+  // default OFF (기존 K 흐름 무변경). 토글 ON 시 tool 메시지 visible + filter chip 사용 가능.
+  const [showToolCards, setShowToolCards] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("kda_show_tool_cards") === "1";
+    } catch {
+      return false;
+    }
+  });
+  // activeFilter: 클릭한 위험도 또는 카테고리. null = 필터 없음 (전체 보임).
+  const [activeFilter, setActiveFilter] = useState<
+    | { kind: "risk"; value: "low" | "medium" | "high" | "critical" }
+    | { kind: "category"; value: string }
+    | null
+  >(null);
+  const setShowToolCardsPersist = useCallback((v: boolean) => {
+    setShowToolCards(v);
+    try {
+      localStorage.setItem("kda_show_tool_cards", v ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+    if (!v) setActiveFilter(null); // off 면 filter 도 클리어
+  }, []);
+
   // 대화 내용 복사 함수
   const handleCopyChat = async () => {
     const visibleMessages = messages.filter((msg) => msg.role !== "tool");
@@ -194,26 +219,142 @@ function MainChat({
         </div>
       </div>
 
+      {/* Phase 90 — tool_use 카드 visibility 토글 + 필터 chip (상단 sticky bar) */}
+      {(showToolCards || activeFilter) && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "6px 12px",
+            fontSize: "0.78em",
+            background: "rgba(79,232,225,0.06)",
+            borderBottom: "1px solid rgba(79,232,225,0.2)",
+            flexWrap: "wrap",
+          }}
+        >
+          <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={showToolCards}
+              onChange={(e) => setShowToolCardsPersist(e.target.checked)}
+            />
+            <span>🔧 도구 호출 카드 표시</span>
+          </label>
+          {activeFilter && (
+            <span
+              style={{
+                padding: "2px 8px",
+                background: "rgba(249,115,22,0.15)",
+                border: "1px solid rgba(249,115,22,0.4)",
+                borderRadius: 12,
+                fontWeight: 600,
+              }}
+            >
+              필터:{" "}
+              {activeFilter.kind === "risk"
+                ? `위험도=${activeFilter.value}`
+                : `카테고리=${activeFilter.value}`}
+              <button
+                onClick={() => setActiveFilter(null)}
+                style={{
+                  marginLeft: 6,
+                  background: "transparent",
+                  border: "none",
+                  color: "inherit",
+                  cursor: "pointer",
+                  opacity: 0.7,
+                }}
+                title="필터 해제"
+              >
+                ✕
+              </button>
+            </span>
+          )}
+          <span style={{ marginLeft: "auto", opacity: 0.6 }}>
+            tool 카드의 🟢🟡🟠🔴 배지 또는 category 라벨을 클릭하면 필터 토글
+          </span>
+        </div>
+      )}
+      {!showToolCards && !activeFilter && (
+        <div
+          style={{
+            padding: "4px 12px",
+            fontSize: "0.75em",
+            opacity: 0.5,
+            display: "flex",
+            justifyContent: "flex-end",
+          }}
+        >
+          <button
+            onClick={() => setShowToolCardsPersist(true)}
+            style={{
+              background: "transparent",
+              border: "1px dashed var(--border-subtle)",
+              color: "inherit",
+              cursor: "pointer",
+              borderRadius: 4,
+              padding: "2px 8px",
+              fontSize: "0.92em",
+            }}
+            title="채팅에 도구 호출 카드 표시 + 카테고리/위험도 필터 활성"
+          >
+            🔧 도구 호출 보기
+          </button>
+        </div>
+      )}
+
       {/* 메시지 영역 */}
       <div className="main-body">
         <div className="messages" ref={messagesContainerRef}>
           {(() => {
-            // Tool 메시지 필터링 - user/assistant/system만 표시
-            const visibleMessages = messages.filter(
-              (msg) => msg.role !== "tool"
-            );
+            // Phase 90 — showToolCards 면 tool 메시지도 visible, OFF 면 기존 동작 (tool 빠짐).
+            const visibleMessages = showToolCards
+              ? messages
+              : messages.filter((msg) => msg.role !== "tool");
 
             if (visibleMessages.length === 0) {
               return <EmptyState />;
             }
 
+            // activeFilter 매칭 헬퍼 — tool 메시지의 risk 와 매칭. tool 아닌 메시지는 항상 통과.
+            const matchesFilter = (msg: ChatMessage): boolean => {
+              if (!activeFilter) return true;
+              if (msg.role !== "tool") return true; // user/assistant/system 은 dim 안 함
+              const r = (msg as any).risk;
+              if (!r) return false;
+              if (activeFilter.kind === "risk") return r.level === activeFilter.value;
+              return r.categoryId === activeFilter.value;
+            };
+
             return (
               <>
                 {/* 메시지가 적을 때 위쪽 빈 공간 채우기 */}
                 <div className="messages-spacer" />
-                {visibleMessages.map((msg) => (
-                  <Message key={msg.id} message={msg} onPreviewRequest={onPreviewRequest} />
-                ))}
+                {visibleMessages.map((msg) => {
+                  const dimmed = activeFilter && !matchesFilter(msg);
+                  return (
+                    <div
+                      key={msg.id}
+                      style={
+                        dimmed
+                          ? { opacity: 0.25, transition: "opacity 0.2s" }
+                          : { transition: "opacity 0.2s" }
+                      }
+                    >
+                      <Message
+                        message={msg}
+                        onPreviewRequest={onPreviewRequest}
+                        onToolFilterToggle={(kind, value) => {
+                          setActiveFilter((cur) => {
+                            if (cur && cur.kind === kind && cur.value === value) return null;
+                            return { kind, value } as typeof activeFilter;
+                          });
+                        }}
+                      />
+                    </div>
+                  );
+                })}
               </>
             );
           })()}

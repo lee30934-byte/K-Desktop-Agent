@@ -66,6 +66,14 @@ import {
   type GitSyncResult,
   type SyncKind,
 } from "./memorySync.js";
+// Phase 90 (v0.6.32) — SafeMode 주간 통계 (~/.kda/safety-stats.json)
+import {
+  recordAlert,
+  recordBlock,
+  loadSafetyStats,
+  resetSafetyStats,
+  summariseSafetyStats,
+} from "./safetyStats.js";
 import {
   runOpenAIChatRound,
   runGeminiRound,
@@ -1070,6 +1078,12 @@ function buildRiskMeta(toolName: string, sourceTag: string): {
       summary: info.summary,
       safe_mode: _currentTurnSafeMode,
     });
+    // Phase 90 — alert 통계 누적 (~/.kda/safety-stats.json)
+    try {
+      recordAlert(_currentTurnSafeMode);
+    } catch (e) {
+      logToFile("warn", `safety stats recordAlert failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   return { level: info.level, categoryId: cat ?? null, summary: info.summary };
 }
@@ -3461,6 +3475,12 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
               "info",
               `REST tool BLOCKED by safety elicit id=${msg.id} round=${roundsRun} name=${tc.name}`,
             );
+            // Phase 90 — block 통계 누적
+            try {
+              recordBlock();
+            } catch (e) {
+              logToFile("warn", `safety stats recordBlock failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
             if (controller.signal.aborted) break;
             continue; // 다음 tool call 로 — 전체 turn 중단 안 함
           }
@@ -3716,6 +3736,40 @@ rl.on("line", (line) => {
         action: "store-credential",
         reason: "manual",
       });
+      break;
+    }
+    // Phase 90 — SafeMode 주간 통계 요청/리셋
+    case "safety_stats_request": {
+      const stats = loadSafetyStats();
+      const summary = summariseSafetyStats(stats);
+      emit({
+        type: "safety_stats_response",
+        total_alerts: summary.totalAlerts,
+        total_blocks: summary.totalBlocks,
+        last7_alerts: summary.last7DaysAlerts,
+        last7_blocks: summary.last7DaysBlocks,
+        by_mode: summary.byMode,
+        buckets: summary.buckets,
+        since_at: summary.sinceAt,
+        last_updated_at: summary.lastUpdatedAt,
+      });
+      break;
+    }
+    case "safety_stats_reset": {
+      const stats = resetSafetyStats();
+      const summary = summariseSafetyStats(stats);
+      emit({
+        type: "safety_stats_response",
+        total_alerts: summary.totalAlerts,
+        total_blocks: summary.totalBlocks,
+        last7_alerts: summary.last7DaysAlerts,
+        last7_blocks: summary.last7DaysBlocks,
+        by_mode: summary.byMode,
+        buckets: summary.buckets,
+        since_at: summary.sinceAt,
+        last_updated_at: summary.lastUpdatedAt,
+      });
+      log("info", "[SafetyStats] reset by user request");
       break;
     }
     case "git_sync_status_request": {

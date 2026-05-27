@@ -395,6 +395,18 @@ async fn git_sync_status_request() -> Result<(), String> {
     send_to_sidecar(serde_json::json!({ "type": "git_sync_status_request" })).await
 }
 
+// ─── Phase 90 (v0.6.32) — SafeMode 주간 통계 ──────────────
+
+#[tauri::command]
+async fn safety_stats_request() -> Result<(), String> {
+    send_to_sidecar(serde_json::json!({ "type": "safety_stats_request" })).await
+}
+
+#[tauri::command]
+async fn safety_stats_reset() -> Result<(), String> {
+    send_to_sidecar(serde_json::json!({ "type": "safety_stats_reset" })).await
+}
+
 #[tauri::command]
 async fn reload_sidecar(app: AppHandle) -> Result<(), String> {
     log_lifecycle("sidecar.log", "reload_sidecar requested");
@@ -3108,6 +3120,9 @@ pub fn run_with_options(start_minimized: bool) {
             git_sync_now,
             git_sync_resolve_conflict,
             git_sync_status_request,
+            // Phase 90 — SafeMode 주간 통계
+            safety_stats_request,
+            safety_stats_reset,
             show_main_window,
             hide_main_window,
             quit_app,

@@ -781,6 +781,23 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       return true;
     }
   });
+
+  // Phase 90 (v0.6.32) — SafeMode 주간 통계
+  const [safetyStats, setSafetyStats] = useState<{
+    total_alerts: number;
+    total_blocks: number;
+    last7_alerts: number;
+    last7_blocks: number;
+    by_mode: { off: number; balanced: number; strict: number };
+    buckets: Array<{
+      date: string;
+      alerts: number;
+      blocks: number;
+      byMode: { off: number; balanced: number; strict: number };
+    }>;
+    since_at: number;
+    last_updated_at: number;
+  } | null>(null);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
@@ -1126,11 +1143,23 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           }
           // status 갱신 (lastSyncAt 반영)
           invoke("git_sync_status_request").catch(() => {});
+        } else if (ev.type === "safety_stats_response") {
+          setSafetyStats({
+            total_alerts: ev.total_alerts,
+            total_blocks: ev.total_blocks,
+            last7_alerts: ev.last7_alerts,
+            last7_blocks: ev.last7_blocks,
+            by_mode: ev.by_mode,
+            buckets: ev.buckets,
+            since_at: ev.since_at,
+            last_updated_at: ev.last_updated_at,
+          });
         }
       });
-      // 초기 status 요청
+      // 초기 status + stats 요청
       try {
         await invoke("git_sync_status_request");
+        await invoke("safety_stats_request");
       } catch {
         /* sidecar 안 떠 있으면 skip */
       }
@@ -3563,6 +3592,239 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </button>
               </div>
             )}
+          </section>
+
+          {/* Phase 90 (v0.6.32) — 안전장치 탭 최상단 요약 카드.
+              SafeMode 현재값 + Memory Sync 상태 + Final-Review Gate + Lee Profile 한눈에. */}
+          <section className="settings-section" data-tab="safety">
+            <div className="eyebrow">📊 안전 상태 요약</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">한눈에 보는 안전 layer</div>
+                <div className="settings-row-desc">
+                  현재 활성화된 안전망과 SafeMode 주간 통계를 한 곳에 모았습니다. 자세한 설정은 아래 각 섹션에서.
+                </div>
+              </div>
+              {/* 1행: SafeMode / Memory Sync / Final-Review Gate / Lee Profile 상태 칩 */}
+              <div
+                style={{
+                  marginTop: 10,
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                  gap: 8,
+                  fontSize: "0.82em",
+                }}
+              >
+                <div
+                  style={{
+                    padding: "8px 10px",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                  }}
+                >
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🛡️ SafeMode</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {safeMode === "off"
+                      ? "🟢 끔"
+                      : safeMode === "balanced"
+                        ? "🟡 균형"
+                        : "🔴 엄격"}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    padding: "8px 10px",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                  }}
+                >
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🔄 Memory Sync</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {gitSyncEnabled
+                      ? gitSyncStatus?.last_sync_at && gitSyncStatus.last_sync_at > 0
+                        ? `✓ ${new Date(gitSyncStatus.last_sync_at * 1000).toLocaleString("ko-KR", { hour: "2-digit", minute: "2-digit" })}`
+                        : "✓ 활성 (아직 sync 안 함)"
+                      : "— 비활성"}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    padding: "8px 10px",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                  }}
+                >
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🛡️ Final-Review Gate</div>
+                  <div style={{ fontWeight: 600 }}>{finalReviewGate ? "✓ ON" : "— OFF"}</div>
+                </div>
+                <div
+                  style={{
+                    padding: "8px 10px",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                  }}
+                >
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🪪 Lee Profile</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {leeProfile
+                      ? leeProfile.bytes > 0
+                        ? `✓ ${leeProfile.bytes}B`
+                        : "— 빈 파일"
+                      : "— 미로딩"}
+                  </div>
+                </div>
+              </div>
+
+              {/* 2행: SafeMode 주간 통계 카드 */}
+              {safetyStats && (safetyStats.total_alerts > 0 || safetyStats.total_blocks > 0) && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: "10px 12px",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                  }}
+                >
+                  <div style={{ fontWeight: 600, fontSize: "0.88em", marginBottom: 6 }}>
+                    📊 SafeMode 주간 통계 (지난 7일)
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                      gap: 8,
+                      fontSize: "0.82em",
+                    }}
+                  >
+                    <div>
+                      ⚠ <strong>{safetyStats.last7_alerts}</strong>회 alert
+                      <span style={{ opacity: 0.6 }}>
+                        {" "}(누적 {safetyStats.total_alerts})
+                      </span>
+                    </div>
+                    <div>
+                      🚫 <strong>{safetyStats.last7_blocks}</strong>회 blocked
+                      <span style={{ opacity: 0.6 }}>
+                        {" "}(누적 {safetyStats.total_blocks})
+                      </span>
+                    </div>
+                  </div>
+                  {(safetyStats.by_mode.balanced > 0 || safetyStats.by_mode.strict > 0) && (
+                    <div style={{ marginTop: 6, opacity: 0.85, fontSize: "0.82em" }}>
+                      Alert 분포: 🟡 balanced {safetyStats.by_mode.balanced}회 · 🔴 strict{" "}
+                      {safetyStats.by_mode.strict}회
+                    </div>
+                  )}
+                  {/* 7-day mini chart (텍스트 막대) */}
+                  {safetyStats.buckets.length > 0 && (() => {
+                    const maxVal = Math.max(
+                      1,
+                      ...safetyStats.buckets.map((b) => b.alerts + b.blocks),
+                    );
+                    return (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          display: "flex",
+                          alignItems: "flex-end",
+                          gap: 4,
+                          height: 32,
+                          fontFamily: "monospace",
+                          fontSize: "0.72em",
+                        }}
+                      >
+                        {safetyStats.buckets.map((b) => {
+                          const total = b.alerts + b.blocks;
+                          const h = Math.max(2, Math.round((total / maxVal) * 28));
+                          const dayLabel = b.date.slice(5); // MM-DD
+                          return (
+                            <div
+                              key={b.date}
+                              title={`${b.date}: ${b.alerts} alerts, ${b.blocks} blocks`}
+                              style={{
+                                flex: 1,
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "center",
+                                gap: 2,
+                              }}
+                            >
+                              <div
+                                style={{
+                                  width: "100%",
+                                  height: h,
+                                  background:
+                                    total === 0
+                                      ? "rgba(255,255,255,0.08)"
+                                      : b.blocks > 0
+                                        ? "rgba(239,68,68,0.6)"
+                                        : "rgba(234,179,8,0.6)",
+                                  borderRadius: 2,
+                                }}
+                              />
+                              <div style={{ opacity: 0.55, fontSize: "0.85em" }}>{dayLabel}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                  <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+                    <button
+                      className="settings-btn"
+                      style={{ fontSize: "0.78em", padding: "2px 8px" }}
+                      onClick={async () => {
+                        try {
+                          await invoke("safety_stats_request");
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                    >
+                      🔄 새로고침
+                    </button>
+                    <button
+                      className="settings-btn"
+                      style={{ fontSize: "0.78em", padding: "2px 8px", opacity: 0.7 }}
+                      onClick={async () => {
+                        if (!confirm("SafeMode 통계를 모두 지울까요?")) return;
+                        try {
+                          await invoke("safety_stats_reset");
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                      title="누적 + 7일 history 모두 리셋"
+                    >
+                      🗑️ 지우기
+                    </button>
+                  </div>
+                </div>
+              )}
+              {safetyStats &&
+                safetyStats.total_alerts === 0 &&
+                safetyStats.total_blocks === 0 && (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      padding: "10px 12px",
+                      background: "var(--bg-1)",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: 6,
+                      fontSize: "0.82em",
+                      opacity: 0.7,
+                    }}
+                  >
+                    📊 SafeMode 통계: 아직 alert/block 기록 없음 (SafeMode 가 off 이거나 위험 도구
+                    호출 없음).
+                  </div>
+                )}
+            </div>
           </section>
 
           {/* Phase 87 (v0.6.30) — Git Memory Sync + Phase 88 가이드 + Phase 89 hybrid (team repo).

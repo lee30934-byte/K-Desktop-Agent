@@ -13,6 +13,9 @@ interface MessageProps {
   message: ChatMessage;
   // Phase 44 (v0.5.32): markdown link / file 클릭 → SidePanel 트리거
   onPreviewRequest?: (pathOrUrl: string, label?: string) => void;
+  // Phase 90 (v0.6.32): tool_use 카드의 risk/category 배지 클릭 → MainChat filter toggle
+  // kind="risk" 면 value=low|medium|high|critical, kind="category" 면 value=string (categoryId)
+  onToolFilterToggle?: (kind: "risk" | "category", value: string) => void;
 }
 
 // React children 트리에서 평문 텍스트 추출 — 코드 블록 복사용.
@@ -140,11 +143,11 @@ function CodeBlock({ children }: { children: ReactNode }) {
   );
 }
 
-function Message({ message, onPreviewRequest }: MessageProps) {
+function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps) {
   const [copied, setCopied] = useState(false);
 
   if (message.role === "tool") {
-    return <ToolMessageView message={message} />;
+    return <ToolMessageView message={message} onFilterToggle={onToolFilterToggle} />;
   }
 
   const isAssistant = message.role === "assistant";
@@ -434,7 +437,13 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function ToolMessageView({ message }: { message: Extract<ChatMessage, { role: "tool" }> }) {
+function ToolMessageView({
+  message,
+  onFilterToggle,
+}: {
+  message: Extract<ChatMessage, { role: "tool" }>;
+  onFilterToggle?: (kind: "risk" | "category", value: string) => void;
+}) {
   // Phase 85 (v0.6.28) — risk 배지. sidecar 가 분류 못 한 도구는 risk=undefined → 배지 숨김.
   const riskBadge = message.risk ? RISK_BADGES[message.risk.level] : null;
   const isHighRisk = message.risk?.level === "high" || message.risk?.level === "critical";
@@ -454,9 +463,19 @@ function ToolMessageView({ message }: { message: Extract<ChatMessage, { role: "t
           {statusLabel(message.status)}
         </span>
         <span className="mono msg-tool-name">{message.toolName}</span>
-        {riskBadge && (
+        {riskBadge && message.risk && (
           <span
-            title={message.risk?.summary ?? ""}
+            title={
+              onFilterToggle
+                ? `클릭하면 위험도 "${message.risk.level}" 만 보기 — ${message.risk.summary}`
+                : (message.risk?.summary ?? "")
+            }
+            onClick={(e) => {
+              if (!onFilterToggle || !message.risk) return;
+              e.preventDefault();
+              e.stopPropagation();
+              onFilterToggle("risk", message.risk.level);
+            }}
             style={{
               marginLeft: "0.4rem",
               fontSize: "0.7em",
@@ -467,9 +486,38 @@ function ToolMessageView({ message }: { message: Extract<ChatMessage, { role: "t
               color: riskBadge.color,
               fontWeight: 600,
               whiteSpace: "nowrap",
+              cursor: onFilterToggle ? "pointer" : "default",
             }}
           >
             {riskBadge.icon} {riskBadge.label}
+          </span>
+        )}
+        {message.risk?.categoryId && (
+          <span
+            title={
+              onFilterToggle
+                ? `클릭하면 카테고리 "${message.risk.categoryId}" 만 보기`
+                : `category: ${message.risk.categoryId}`
+            }
+            onClick={(e) => {
+              if (!onFilterToggle || !message.risk?.categoryId) return;
+              e.preventDefault();
+              e.stopPropagation();
+              onFilterToggle("category", message.risk.categoryId);
+            }}
+            style={{
+              marginLeft: "0.3rem",
+              fontSize: "0.7em",
+              padding: "0.1em 0.45em",
+              borderRadius: 4,
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid var(--border-subtle)",
+              opacity: 0.85,
+              whiteSpace: "nowrap",
+              cursor: onFilterToggle ? "pointer" : "default",
+            }}
+          >
+            📁 {message.risk.categoryId}
           </span>
         )}
         <span className="mono msg-time">

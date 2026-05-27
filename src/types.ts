@@ -150,6 +150,24 @@ export type SidecarEvent =
       target?: "personal" | "team";
     }
   | {
+      // Phase 90 (v0.6.32) — SafeMode 주간 통계.
+      // Settings 의 "🛡️ SafeMode 주간 통계" 카드가 listen 해서 표시.
+      type: "safety_stats_response";
+      total_alerts: number;
+      total_blocks: number;
+      last7_alerts: number;
+      last7_blocks: number;
+      by_mode: { off: number; balanced: number; strict: number };
+      buckets: Array<{
+        date: string;
+        alerts: number;
+        blocks: number;
+        byMode: { off: number; balanced: number; strict: number };
+      }>;
+      since_at: number;
+      last_updated_at: number;
+    }
+  | {
       // Phase 87 — git_sync_status_request 의 응답.
       // Phase 89 — personal + team 둘 다 상태 박힘.
       type: "git_sync_status";
