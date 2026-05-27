@@ -20,6 +20,17 @@ import {
   type SafeMode,
   type RiskLevel,
 } from "../utils/toolSafety";
+// Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
+import {
+  loadSchedule,
+  saveSchedule,
+  formatDays,
+  formatHourRange,
+  newRule,
+  DAYS_LIST,
+  type SafeModeRule,
+  type DayOfWeek,
+} from "../utils/safeModeSchedule";
 
 interface SettingsProps {
   open: boolean;
@@ -783,6 +794,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   });
 
   // Phase 90 (v0.6.32) — SafeMode 주간 통계
+  // Phase 91 (v0.6.33) — buckets 에 byTool 추가 + 막대 클릭 시 펼침 state
   const [safetyStats, setSafetyStats] = useState<{
     total_alerts: number;
     total_blocks: number;
@@ -794,10 +806,24 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       alerts: number;
       blocks: number;
       byMode: { off: number; balanced: number; strict: number };
+      byTool?: Record<string, number>;
     }>;
     since_at: number;
     last_updated_at: number;
   } | null>(null);
+  const [expandedStatDate, setExpandedStatDate] = useState<string | null>(null);
+  // Phase 91 — Memory Sync commit history viewer
+  const [gitSyncLog, setGitSyncLog] = useState<{
+    target: "personal" | "team";
+    ok: boolean;
+    message: string;
+    commits: Array<{ hash: string; date: string; author: string; subject: string }>;
+  } | null>(null);
+  const [gitSyncLogBusy, setGitSyncLogBusy] = useState(false);
+  // Phase 91 — SafeMode 자동 전환 스케줄
+  const [scheduleRules, setScheduleRules] = useState<
+    import("../utils/safeModeSchedule").SafeModeRule[]
+  >([]);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
@@ -1154,8 +1180,18 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             since_at: ev.since_at,
             last_updated_at: ev.last_updated_at,
           });
+        } else if (ev.type === "git_sync_log_response") {
+          setGitSyncLogBusy(false);
+          setGitSyncLog({
+            target: ev.target,
+            ok: ev.ok,
+            message: ev.message,
+            commits: ev.commits ?? [],
+          });
         }
       });
+      // Phase 91 — 스케줄 규칙 초기 로드 (localStorage)
+      setScheduleRules(loadSchedule());
       // 초기 status + stats 요청
       try {
         await invoke("git_sync_status_request");
@@ -3720,7 +3756,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       {safetyStats.by_mode.strict}회
                     </div>
                   )}
-                  {/* 7-day mini chart (텍스트 막대) */}
+                  {/* 7-day mini chart (텍스트 막대) — Phase 91: 막대 클릭 시 펼침 */}
                   {safetyStats.buckets.length > 0 && (() => {
                     const maxVal = Math.max(
                       1,
@@ -3742,16 +3778,21 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                           const total = b.alerts + b.blocks;
                           const h = Math.max(2, Math.round((total / maxVal) * 28));
                           const dayLabel = b.date.slice(5); // MM-DD
+                          const isExpanded = expandedStatDate === b.date;
                           return (
                             <div
                               key={b.date}
-                              title={`${b.date}: ${b.alerts} alerts, ${b.blocks} blocks`}
+                              title={`${b.date}: ${b.alerts} alerts, ${b.blocks} blocks (클릭하면 도구별 상세)`}
+                              onClick={() => setExpandedStatDate(isExpanded ? null : b.date)}
                               style={{
                                 flex: 1,
                                 display: "flex",
                                 flexDirection: "column",
                                 alignItems: "center",
                                 gap: 2,
+                                cursor: total > 0 ? "pointer" : "default",
+                                outline: isExpanded ? "2px solid var(--accent, #4fe8e1)" : "none",
+                                borderRadius: 3,
                               }}
                             >
                               <div
@@ -3771,6 +3812,56 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                             </div>
                           );
                         })}
+                      </div>
+                    );
+                  })()}
+                  {/* Phase 91 — 펼침 패널: byTool 상세 */}
+                  {expandedStatDate && (() => {
+                    const bucket = safetyStats.buckets.find((b) => b.date === expandedStatDate);
+                    if (!bucket) return null;
+                    const tools = bucket.byTool ?? {};
+                    const entries = Object.entries(tools).sort((a, b) => b[1] - a[1]);
+                    return (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: "8px 10px",
+                          background: "rgba(79,232,225,0.06)",
+                          border: "1px solid rgba(79,232,225,0.25)",
+                          borderRadius: 4,
+                          fontSize: "0.82em",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <strong>{bucket.date} 상세</strong>
+                          <button
+                            onClick={() => setExpandedStatDate(null)}
+                            style={{
+                              background: "transparent",
+                              border: "none",
+                              color: "inherit",
+                              cursor: "pointer",
+                              opacity: 0.6,
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <div style={{ marginTop: 4, opacity: 0.85 }}>
+                          ⚠ {bucket.alerts}회 alert · 🚫 {bucket.blocks}회 blocked
+                        </div>
+                        {entries.length > 0 ? (
+                          <div style={{ marginTop: 6, fontFamily: "monospace", fontSize: "0.85em" }}>
+                            {entries.map(([tool, count]) => (
+                              <div key={tool} style={{ display: "flex", justifyContent: "space-between" }}>
+                                <span>{tool}</span>
+                                <strong>{count}회</strong>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 6, opacity: 0.6 }}>도구별 기록 없음 (v0.6.32 이전 데이터)</div>
+                        )}
                       </div>
                     );
                   })()}
@@ -4290,6 +4381,306 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   <div>상태: {gitSyncStatus.last_sync_status || "(없음)"}</div>
                 </div>
               )}
+
+              {/* Phase 91 — Commit history viewer */}
+              <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  className="settings-btn"
+                  disabled={gitSyncLogBusy || !gitSyncRepoUrl}
+                  onClick={async () => {
+                    setGitSyncLogBusy(true);
+                    try {
+                      await invoke("git_sync_log_request", { target: "personal", limit: 20 });
+                    } catch (err) {
+                      setGitSyncLogBusy(false);
+                      setGitSyncMessage({ kind: "error", text: String(err) });
+                    }
+                  }}
+                  style={{ fontSize: "0.85em" }}
+                >
+                  📜 Personal history
+                </button>
+                <button
+                  className="settings-btn"
+                  disabled={gitSyncLogBusy || !gitSyncTeamRepoUrl}
+                  onClick={async () => {
+                    setGitSyncLogBusy(true);
+                    try {
+                      await invoke("git_sync_log_request", { target: "team", limit: 20 });
+                    } catch (err) {
+                      setGitSyncLogBusy(false);
+                      setGitSyncMessage({ kind: "error", text: String(err) });
+                    }
+                  }}
+                  style={{ fontSize: "0.85em" }}
+                >
+                  📜 Team history
+                </button>
+                {gitSyncLog && (
+                  <button
+                    className="settings-btn"
+                    onClick={() => setGitSyncLog(null)}
+                    style={{ fontSize: "0.85em", opacity: 0.7 }}
+                  >
+                    ✕ 닫기
+                  </button>
+                )}
+              </div>
+              {gitSyncLog && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: "10px 12px",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                    fontSize: "0.82em",
+                  }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                    📜 {gitSyncLog.target === "personal" ? "💻 Personal" : "👥 Team"} commit history ({gitSyncLog.commits.length}개)
+                  </div>
+                  {!gitSyncLog.ok && (
+                    <div style={{ color: "#f87171", marginBottom: 6 }}>⚠ {gitSyncLog.message}</div>
+                  )}
+                  {gitSyncLog.commits.length === 0 ? (
+                    <div style={{ opacity: 0.6 }}>commit 없음</div>
+                  ) : (
+                    <div
+                      style={{
+                        maxHeight: 240,
+                        overflowY: "auto",
+                        fontFamily: "monospace",
+                        fontSize: "0.85em",
+                      }}
+                    >
+                      {gitSyncLog.commits.map((c) => (
+                        <div
+                          key={c.hash}
+                          style={{
+                            padding: "4px 0",
+                            borderBottom: "1px dashed var(--border-subtle)",
+                          }}
+                          title={`${c.hash}\n${c.author} @ ${c.date}`}
+                        >
+                          <div style={{ opacity: 0.7, fontSize: "0.92em" }}>
+                            {c.hash.slice(0, 7)} · {c.date.slice(0, 16)} · {c.author}
+                          </div>
+                          <div style={{ marginTop: 1 }}>{c.subject}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄. */}
+          <section className="settings-section" data-tab="safety">
+            <div className="eyebrow">🕒 SafeMode 자동 전환 스케줄</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">요일·시간대별 자동 모드 변경</div>
+                <div className="settings-row-desc">
+                  설정한 시각에 SafeMode 가 자동 전환됩니다. 매칭 규칙이 없으면 K 의 마지막 수동 선택 유지.
+                  여러 규칙이 동시 매칭되면 위에 있는 것이 우선.
+                  <br />
+                  <span style={{ opacity: 0.7 }}>
+                    예: 평일 9-18시 strict (회사) · 주말 종일 off · 야간 22-24시 balanced
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                {scheduleRules.length === 0 && (
+                  <div
+                    style={{
+                      padding: "10px 12px",
+                      background: "var(--bg-1)",
+                      border: "1px dashed var(--border-subtle)",
+                      borderRadius: 6,
+                      fontSize: "0.85em",
+                      opacity: 0.7,
+                    }}
+                  >
+                    아직 규칙 없음 — 아래 "+ 규칙 추가" 로 시작
+                  </div>
+                )}
+                {scheduleRules.map((rule, idx) => (
+                  <div
+                    key={rule.id}
+                    style={{
+                      padding: "8px 10px",
+                      background: rule.enabled ? "var(--bg-1)" : "rgba(255,255,255,0.02)",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: 6,
+                      opacity: rule.enabled ? 1 : 0.55,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      fontSize: "0.85em",
+                    }}
+                  >
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        type="checkbox"
+                        checked={rule.enabled}
+                        onChange={(e) => {
+                          const next = [...scheduleRules];
+                          next[idx] = { ...rule, enabled: e.target.checked };
+                          setScheduleRules(next);
+                          saveSchedule(next);
+                        }}
+                        title="활성화 토글"
+                      />
+                      <input
+                        type="text"
+                        className="settings-input"
+                        placeholder="라벨 (예: 회사 PC)"
+                        value={rule.label ?? ""}
+                        onChange={(e) => {
+                          const next = [...scheduleRules];
+                          next[idx] = { ...rule, label: e.target.value };
+                          setScheduleRules(next);
+                          saveSchedule(next);
+                        }}
+                        style={{ flex: 1, minWidth: 120, fontSize: "0.92em" }}
+                      />
+                      <select
+                        value={rule.mode}
+                        onChange={(e) => {
+                          const next = [...scheduleRules];
+                          next[idx] = { ...rule, mode: e.target.value as SafeMode };
+                          setScheduleRules(next);
+                          saveSchedule(next);
+                        }}
+                        style={{ fontSize: "0.92em" }}
+                      >
+                        <option value="off">🟢 끔</option>
+                        <option value="balanced">🟡 균형</option>
+                        <option value="strict">🔴 엄격</option>
+                      </select>
+                      <button
+                        onClick={() => {
+                          const next = scheduleRules.filter((_, i) => i !== idx);
+                          setScheduleRules(next);
+                          saveSchedule(next);
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: "1px solid var(--border-subtle)",
+                          color: "inherit",
+                          cursor: "pointer",
+                          fontSize: "0.85em",
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          opacity: 0.7,
+                        }}
+                        title="규칙 삭제"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ opacity: 0.7, fontSize: "0.88em" }}>요일:</span>
+                      {DAYS_LIST.map((d) => (
+                        <label
+                          key={d.value}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 2,
+                            cursor: "pointer",
+                            fontSize: "0.85em",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={rule.days.includes(d.value)}
+                            onChange={(e) => {
+                              const next = [...scheduleRules];
+                              const newDays = e.target.checked
+                                ? [...rule.days, d.value]
+                                : rule.days.filter((x) => x !== d.value);
+                              next[idx] = { ...rule, days: newDays as DayOfWeek[] };
+                              setScheduleRules(next);
+                              saveSchedule(next);
+                            }}
+                          />
+                          {d.label}
+                        </label>
+                      ))}
+                      <span style={{ marginLeft: 8, opacity: 0.7, fontSize: "0.88em" }}>시간:</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={23}
+                        value={rule.startHour}
+                        onChange={(e) => {
+                          const next = [...scheduleRules];
+                          const v = Math.max(0, Math.min(23, parseInt(e.target.value) || 0));
+                          next[idx] = { ...rule, startHour: v };
+                          setScheduleRules(next);
+                          saveSchedule(next);
+                        }}
+                        style={{ width: 54, fontSize: "0.92em" }}
+                        title="시작 시 (0-23)"
+                      />
+                      <span style={{ opacity: 0.6 }}>~</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={24}
+                        value={rule.endHour}
+                        onChange={(e) => {
+                          const next = [...scheduleRules];
+                          const v = Math.max(1, Math.min(24, parseInt(e.target.value) || 24));
+                          next[idx] = { ...rule, endHour: v };
+                          setScheduleRules(next);
+                          saveSchedule(next);
+                        }}
+                        style={{ width: 54, fontSize: "0.92em" }}
+                        title="끝 시 (1-24, 배제)"
+                      />
+                    </div>
+                    <div style={{ opacity: 0.6, fontSize: "0.78em" }}>
+                      → {formatDays(rule.days)} {formatHourRange(rule.startHour, rule.endHour)} ·{" "}
+                      {rule.mode === "off" ? "🟢 끔" : rule.mode === "balanced" ? "🟡 균형" : "🔴 엄격"}
+                    </div>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                  <button
+                    className="settings-btn"
+                    onClick={() => {
+                      const next = [...scheduleRules, newRule()];
+                      setScheduleRules(next);
+                      saveSchedule(next);
+                    }}
+                    style={{ fontSize: "0.85em" }}
+                  >
+                    + 규칙 추가
+                  </button>
+                  <button
+                    className="settings-btn"
+                    onClick={() => {
+                      // preset: 평일 9-18 strict / 주말 off / 야간 balanced
+                      const preset: SafeModeRule[] = [
+                        { ...newRule(), label: "회사 평일", days: [1, 2, 3, 4, 5], startHour: 9, endHour: 18, mode: "strict" },
+                        { ...newRule(), label: "주말 자유", days: [0, 6], startHour: 0, endHour: 24, mode: "off" },
+                        { ...newRule(), label: "야간", days: [0, 1, 2, 3, 4, 5, 6], startHour: 22, endHour: 24, mode: "balanced" },
+                      ];
+                      setScheduleRules(preset);
+                      saveSchedule(preset);
+                    }}
+                    style={{ fontSize: "0.85em", opacity: 0.85 }}
+                    title="평일 9-18 strict / 주말 off / 야간 balanced"
+                  >
+                    📋 기본 preset 적용
+                  </button>
+                </div>
+              </div>
             </div>
           </section>
 

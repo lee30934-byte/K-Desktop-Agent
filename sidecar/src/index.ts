@@ -53,10 +53,12 @@ import {
 } from "./toolSafety.js";
 // Phase 87 (v0.6.30) — Git Memory Sync. lee-profile + memory/ ↔ GitHub private repo
 // Phase 89 (v0.6.31) — Hybrid: personal + team repo 둘 다 sync 가능 (SyncTarget 패턴).
+// Phase 91 (v0.6.33) — syncLog (commit history viewer)
 import {
   syncFull,
   syncStatus,
   syncResolveConflict,
+  syncLog,
   storeGitCredential,
   checkGitInstalled,
   makeSyncTarget,
@@ -1079,8 +1081,9 @@ function buildRiskMeta(toolName: string, sourceTag: string): {
       safe_mode: _currentTurnSafeMode,
     });
     // Phase 90 — alert 통계 누적 (~/.kda/safety-stats.json)
+    // Phase 91 — toolName 함께 박음 (byTool 분포)
     try {
-      recordAlert(_currentTurnSafeMode);
+      recordAlert(_currentTurnSafeMode, toolName);
     } catch (e) {
       logToFile("warn", `safety stats recordAlert failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -3770,6 +3773,34 @@ rl.on("line", (line) => {
         last_updated_at: summary.lastUpdatedAt,
       });
       log("info", "[SafetyStats] reset by user request");
+      break;
+    }
+    case "git_sync_log_request": {
+      // Phase 91 — commit history 요청. target=personal|team, limit=N
+      const m = msg as { target?: string; limit?: number };
+      const targetKind = m.target === "team" ? "team" : "personal";
+      const cfg = readSidecarConfig();
+      const url = targetKind === "personal" ? cfg.gitSync.repoUrl : cfg.gitSync.teamRepoUrl;
+      if (!url) {
+        emit({
+          type: "git_sync_log_response",
+          target: targetKind,
+          ok: false,
+          message: `${targetKind} repoUrl 미설정`,
+          commits: [],
+        });
+        break;
+      }
+      const target = makeSyncTarget(targetKind, url);
+      const limit = typeof m.limit === "number" ? m.limit : 20;
+      const r = syncLog(target, limit);
+      emit({
+        type: "git_sync_log_response",
+        target: targetKind,
+        ok: r.ok,
+        message: r.message,
+        commits: r.commits,
+      });
       break;
     }
     case "git_sync_status_request": {

@@ -64,6 +64,8 @@ import type { Folder } from "./types";
 import "./App.css";
 import logger from "./utils/logger";
 import { useStableCallback } from "./utils/useStableCallback";
+// Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
+import { loadSchedule, evaluateScheduleAt } from "./utils/safeModeSchedule";
 
 // ─── Rate Limit Normalization (Phase 15.5) ────────────────────────────────
 //
@@ -654,6 +656,36 @@ export default function App() {
     const timer = window.setTimeout(() => setRecentRestartInfo(null), 5000);
     return () => window.clearTimeout(timer);
   }, [recentRestartInfo]);
+
+  // ─── Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄 tick ──────────────
+  // 매 60초마다 현재 시각이 매칭되는 규칙이 있는지 검사 → localStorage "kda_safe_mode" 직접 갱신
+  // App.tsx 다른 부분과 충돌 없음 (send_message 가 매 turn localStorage 읽기). UI 즉시 반영은
+  // Settings 가 storage event 또는 다음 진입 시 읽음. 1분 tick 으로 분 단위 정확도.
+  useEffect(() => {
+    const evaluate = () => {
+      try {
+        const rules = loadSchedule();
+        if (rules.length === 0) return;
+        const result = evaluateScheduleAt(new Date(), rules);
+        if (!result) return;
+        const current = (localStorage.getItem("kda_safe_mode") ?? "off") as
+          | "off"
+          | "balanced"
+          | "strict";
+        if (current === result.mode) return;
+        localStorage.setItem("kda_safe_mode", result.mode);
+        logger.log(
+          `[SafeMode][schedule] ${current} → ${result.mode} (rule "${result.rule.label || result.rule.id}")`,
+        );
+      } catch (e) {
+        logger.warn(`[SafeMode][schedule] tick 실패: ${e}`);
+      }
+    };
+    // 즉시 1회 + 60초 interval
+    evaluate();
+    const t = window.setInterval(evaluate, 60_000);
+    return () => window.clearInterval(t);
+  }, []);
 
   // ─── 앱 내 단축키 (Ctrl+P: 명령 팔레트) ─────────────────
   useEffect(() => {

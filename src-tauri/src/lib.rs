@@ -395,6 +395,21 @@ async fn git_sync_status_request() -> Result<(), String> {
     send_to_sidecar(serde_json::json!({ "type": "git_sync_status_request" })).await
 }
 
+#[tauri::command]
+async fn git_sync_log_request(target: String, limit: Option<u32>) -> Result<(), String> {
+    if target != "personal" && target != "team" {
+        return Err(format!("invalid target kind: {}", target));
+    }
+    let mut payload = serde_json::json!({
+        "type": "git_sync_log_request",
+        "target": target,
+    });
+    if let Some(n) = limit {
+        payload["limit"] = serde_json::Value::Number(n.into());
+    }
+    send_to_sidecar(payload).await
+}
+
 // ─── Phase 90 (v0.6.32) — SafeMode 주간 통계 ──────────────
 
 #[tauri::command]
@@ -3120,6 +3135,8 @@ pub fn run_with_options(start_minimized: bool) {
             git_sync_now,
             git_sync_resolve_conflict,
             git_sync_status_request,
+            // Phase 91 — Memory Sync history viewer
+            git_sync_log_request,
             // Phase 90 — SafeMode 주간 통계
             safety_stats_request,
             safety_stats_reset,

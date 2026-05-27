@@ -150,6 +150,19 @@ export type SidecarEvent =
       target?: "personal" | "team";
     }
   | {
+      // Phase 91 (v0.6.33) — Memory Sync commit history viewer 응답.
+      type: "git_sync_log_response";
+      target: "personal" | "team";
+      ok: boolean;
+      message: string;
+      commits: Array<{
+        hash: string;
+        date: string;
+        author: string;
+        subject: string;
+      }>;
+    }
+  | {
       // Phase 90 (v0.6.32) — SafeMode 주간 통계.
       // Settings 의 "🛡️ SafeMode 주간 통계" 카드가 listen 해서 표시.
       type: "safety_stats_response";
@@ -163,6 +176,8 @@ export type SidecarEvent =
         alerts: number;
         blocks: number;
         byMode: { off: number; balanced: number; strict: number };
+        // Phase 91 (v0.6.33) — 도구별 alert 분포 (UI mini chart 클릭 시 펼침)
+        byTool?: Record<string, number>;
       }>;
       since_at: number;
       last_updated_at: number;

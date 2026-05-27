@@ -484,6 +484,70 @@ export function syncResolveConflict(target: SyncTarget, keepSide: "local" | "rem
 }
 
 /**
+ * Phase 91 (v0.6.33) — Commit history viewer.
+ * `git log --pretty=format:"%H|%ai|%an|%s" -n {limit}` 결과 파싱.
+ * UI 의 "📜 history 보기" 펼침 패널에 표시.
+ *
+ * @returns 최신 commit 부터 limit 개 (기본 20).
+ */
+export interface CommitEntry {
+  hash: string;
+  /** ISO author date (예: "2026-05-27 12:34:56 +0900") */
+  date: string;
+  author: string;
+  subject: string;
+}
+
+export function syncLog(target: SyncTarget, limit = 20): {
+  ok: boolean;
+  message: string;
+  commits: CommitEntry[];
+  kind: SyncKind;
+} {
+  if (!isGitRepo(target.cwd)) {
+    return {
+      ok: false,
+      message: "git repo not initialized",
+      commits: [],
+      kind: target.kind,
+    };
+  }
+  const safeLimit = Math.max(1, Math.min(200, limit));
+  // 구분자에 잘 안 들어가는 문자열 사용 ("\x1f" = unit separator). subject 의 "|" 깨짐 회피.
+  const SEP = "\x1f";
+  const r = runGit(
+    ["log", `--pretty=format:%H${SEP}%ai${SEP}%an${SEP}%s`, "-n", String(safeLimit)],
+    { cwd: target.cwd, timeoutMs: 15_000 },
+  );
+  if (!r.ok) {
+    // 빈 repo (commit 0) — fatal: your current branch ... has no commits
+    if (/no commits|does not have any commits|unknown revision/i.test(r.stderr)) {
+      return { ok: true, message: "commit 없음 (빈 repo)", commits: [], kind: target.kind };
+    }
+    return {
+      ok: false,
+      message: `git log 실패: ${r.stderr.slice(0, 200)}`,
+      commits: [],
+      kind: target.kind,
+    };
+  }
+  const commits: CommitEntry[] = [];
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(SEP);
+    if (parts.length < 4) continue;
+    commits.push({
+      hash: parts[0],
+      date: parts[1],
+      author: parts[2],
+      subject: parts.slice(3).join(SEP), // subject 에 SEP 들어가도 graceful
+    });
+  }
+  return { ok: true, message: `${commits.length}개 commit`, commits, kind: target.kind };
+}
+
+/**
  * Status 요약 — UI 에 "마지막 sync: 2분 전 ✓" 표시용.
  */
 export function syncStatus(target: SyncTarget): {

@@ -33,6 +33,12 @@ export interface SafetyDayBucket {
     balanced: number;
     strict: number;
   };
+  /**
+   * Phase 91 (v0.6.33) — 도구별 alert 카운트.
+   * UI 의 mini chart 막대 클릭 시 "그 날 Bash 5번, fm_organize_folder 2번" 등 상세 표시.
+   * 누락된 옛 데이터(v0.6.32 박힌 bucket) 는 빈 객체로 graceful fallback.
+   */
+  byTool?: Record<string, number>;
 }
 
 export interface SafetyStats {
@@ -89,6 +95,7 @@ function trimAndEnsureToday(buckets: SafetyDayBucket[]): SafetyDayBucket[] {
       alerts: 0,
       blocks: 0,
       byMode: { off: 0, balanced: 0, strict: 0 },
+      byTool: {},
     });
   }
   // 날짜 정렬 (오래된 → 최신)
@@ -130,6 +137,11 @@ export function loadSafetyStats(): SafetyStats {
                 balanced: b.byMode?.balanced ?? 0,
                 strict: b.byMode?.strict ?? 0,
               },
+              // Phase 91 — byTool 누락 (옛 데이터) 시 빈 객체로 graceful
+              byTool:
+                b.byTool && typeof b.byTool === "object" && !Array.isArray(b.byTool)
+                  ? { ...(b.byTool as Record<string, number>) }
+                  : {},
             })),
           )
         : [],
@@ -154,14 +166,22 @@ function writeSafetyStats(stats: SafetyStats): void {
  * Alert 카운트 1 증가 — safety_alert event 발생 시 호출.
  *
  * @param mode 발생 시점의 SafeMode (off 면 alert 안 띄우지만 그래도 일관성 위해 받음)
+ * @param toolName Phase 91 — 호출된 도구 이름 (byTool 분포 누적용). 미지정 시 "unknown".
  */
-export function recordAlert(mode: "off" | "balanced" | "strict"): SafetyStats {
+export function recordAlert(
+  mode: "off" | "balanced" | "strict",
+  toolName?: string,
+): SafetyStats {
   const stats = loadSafetyStats();
   stats.totals.alerts += 1;
   stats.last7Days = trimAndEnsureToday(stats.last7Days);
   const today = stats.last7Days[stats.last7Days.length - 1];
   today.alerts += 1;
   today.byMode[mode] += 1;
+  // Phase 91 — byTool 분포 누적
+  if (!today.byTool) today.byTool = {};
+  const key = toolName && toolName.trim() ? toolName : "unknown";
+  today.byTool[key] = (today.byTool[key] ?? 0) + 1;
   stats.lastUpdatedAt = Math.floor(Date.now() / 1000);
   writeSafetyStats(stats);
   return stats;
