@@ -1128,6 +1128,38 @@ export default function App() {
         break;
       }
 
+      // Phase 87 (v0.6.30) — Git Memory Sync 알림. ok 는 silent (Settings UI 에서만 표시),
+      // error / conflict 는 채팅 system 메시지로 박아 K 가 즉시 인식.
+      // Settings.tsx 가 자체적으로 같은 event 를 listen 해서 sync 카드 갱신함 (별도 effect).
+      case "git_sync_event": {
+        const e = ev as {
+          kind: "ok" | "error" | "conflict";
+          message: string;
+          reason: "startup" | "interval" | "manual";
+          action?: string;
+          conflicted_files?: string[];
+        };
+        if (e.kind === "ok") {
+          // 성공은 너무 잦아서 채팅에 박지 않음 — Settings 카드에서만 보임
+          logger.log(`[GitSync][${e.reason}] ${e.action ?? ""}: ${e.message}`);
+        } else if (e.kind === "conflict") {
+          const files = e.conflicted_files ?? [];
+          pushSystem(
+            `🔀 Memory Sync 충돌 — ${files.length}개 파일\n` +
+              `${files.slice(0, 5).join(", ")}${files.length > 5 ? " ..." : ""}\n` +
+              `환경설정 → 안전장치 → Memory Sync 에서 "충돌 해결" 클릭`,
+            "warn",
+          );
+        } else {
+          pushSystem(`⚠ Memory Sync 실패 (${e.reason}): ${e.message}`, "error");
+        }
+        break;
+      }
+
+      // git_sync_status 는 Settings.tsx 의 자체 effect 가 listen — App.tsx 는 skip
+      case "git_sync_status":
+        break;
+
       // Phase 85 (v0.6.28) — Tool Safety Layer 가시성. SafeMode 가 balanced/strict 일 때
       // high/critical 도구 호출 시 sidecar 가 자발적 emit. 채팅에 visible system 메시지로 박음.
       // K 가 sidecar.log 안 봐도 "어떤 위험 도구가 돌았다" 즉시 인식 가능.

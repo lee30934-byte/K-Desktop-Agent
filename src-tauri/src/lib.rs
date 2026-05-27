@@ -313,6 +313,78 @@ async fn elicitation_response(id: String, confirmed: bool) -> Result<(), String>
     Ok(())
 }
 
+// ─── Phase 87 (v0.6.30) — Git Memory Sync Tauri commands ──────────────
+//
+// 모두 sidecar stdin 으로 JSON 라인 흘리는 thin wrapper.
+// PAT 는 git_sync_store_credential 의 인자로만 sidecar 에 전달 — Rust 측에도 저장 X.
+// sidecar 가 git credential helper (Windows Credential Manager) 에 박은 뒤
+// 그 다음 호출부터는 git 이 알아서 사용.
+
+async fn send_to_sidecar(payload: serde_json::Value) -> Result<(), String> {
+    let line = format!("{}\n", payload);
+    let tx_holder = get_tx_holder().clone();
+    let guard = tx_holder.lock().await;
+    let tx = guard.as_ref().ok_or("sidecar not initialized")?;
+    tx.send(line).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn git_sync_store_credential(
+    repo_url: String,
+    pat: String,
+    username: Option<String>,
+) -> Result<(), String> {
+    send_to_sidecar(serde_json::json!({
+        "type": "git_sync_store_credential",
+        "repoUrl": repo_url,
+        "pat": pat,
+        "username": username.unwrap_or_else(|| "x-access-token".to_string()),
+    }))
+    .await
+}
+
+#[tauri::command]
+async fn git_sync_config_update(
+    enabled: Option<bool>,
+    repo_url: Option<String>,
+    interval_ms: Option<u64>,
+) -> Result<(), String> {
+    let mut payload = serde_json::json!({ "type": "git_sync_config_update" });
+    if let Some(e) = enabled {
+        payload["enabled"] = serde_json::Value::Bool(e);
+    }
+    if let Some(u) = repo_url {
+        payload["repoUrl"] = serde_json::Value::String(u);
+    }
+    if let Some(ms) = interval_ms {
+        payload["intervalMs"] = serde_json::Value::Number(ms.into());
+    }
+    send_to_sidecar(payload).await
+}
+
+#[tauri::command]
+async fn git_sync_now() -> Result<(), String> {
+    send_to_sidecar(serde_json::json!({ "type": "git_sync_now" })).await
+}
+
+#[tauri::command]
+async fn git_sync_resolve_conflict(keep: String) -> Result<(), String> {
+    if keep != "local" && keep != "remote" {
+        return Err(format!("invalid keep side: {}", keep));
+    }
+    send_to_sidecar(serde_json::json!({
+        "type": "git_sync_resolve_conflict",
+        "keep": keep,
+    }))
+    .await
+}
+
+#[tauri::command]
+async fn git_sync_status_request() -> Result<(), String> {
+    send_to_sidecar(serde_json::json!({ "type": "git_sync_status_request" })).await
+}
+
 #[tauri::command]
 async fn reload_sidecar(app: AppHandle) -> Result<(), String> {
     log_lifecycle("sidecar.log", "reload_sidecar requested");
@@ -3020,6 +3092,12 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 69 (v0.6.13) — frontend → sidecar.log echo bridge
             frontend_log,
             elicitation_response,
+            // Phase 87 (v0.6.30) — Git Memory Sync commands
+            git_sync_store_credential,
+            git_sync_config_update,
+            git_sync_now,
+            git_sync_resolve_conflict,
+            git_sync_status_request,
             show_main_window,
             hide_main_window,
             quit_app,

@@ -137,6 +137,32 @@ export type SidecarEvent =
       safe_mode: "balanced" | "strict";
     }
   | {
+      // Phase 87 (v0.6.30) — Git Memory Sync 결과 알림.
+      // kind="ok" / "error" / "conflict". conflict 시 conflicted_files 있음 →
+      // Settings UI 가 ElicitationDialog 로 K 결정 받음 ("local" 또는 "remote" keep).
+      type: "git_sync_event";
+      kind: "ok" | "error" | "conflict";
+      message: string;
+      reason: "startup" | "interval" | "manual";
+      action?: string;
+      conflicted_files?: string[];
+    }
+  | {
+      // Phase 87 — git_sync_status_request 의 응답.
+      // Settings UI 가 "마지막 sync: 2분 전 ✓" + git 미설치 안내 등 표시.
+      type: "git_sync_status";
+      git_installed: boolean;
+      git_version: string | null;
+      initialized: boolean;
+      has_remote: boolean;
+      local_changes: number;
+      branch: string | null;
+      last_sync_at: number;
+      last_sync_status: string;
+      enabled: boolean;
+      repo_url: string;
+    }
+  | {
       // Phase 52 (v0.5.40) — Codex 런타임이 token_count event 의 model_context_window 로
       // 실제 model 한도를 보고함. K-Desktop-Agent 의 hardcode lookup (gpt-5* → 400K) 과 어긋나는
       // 케이스 (예: gpt-5.5 실제 보고 258400) 가 있어 % 가 모델 실제 한도와 안 맞음. frontend 가

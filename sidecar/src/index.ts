@@ -51,6 +51,17 @@ import {
   summariseSafeModeImpact,
   type SafeMode,
 } from "./toolSafety.js";
+// Phase 87 (v0.6.30) — Git Memory Sync. lee-profile + memory/ ↔ GitHub private repo
+import {
+  syncFull,
+  syncStatus,
+  syncResolveConflict,
+  storeGitCredential,
+  checkGitInstalled,
+  GIT_SYNC_CONFIG_DEFAULTS,
+  type GitSyncConfig,
+  type GitSyncResult,
+} from "./memorySync.js";
 import {
   runOpenAIChatRound,
   runGeminiRound,
@@ -3589,6 +3600,103 @@ rl.on("line", (line) => {
       );
       break;
     }
+    // Phase 87 — Git Memory Sync 명령. Tauri lib.rs 의 commands 가 sidecar stdin 으로 흘림.
+    case "git_sync_now": {
+      // 명시 호출 — runGitSyncCycle 직접
+      runGitSyncCycle("manual");
+      break;
+    }
+    case "git_sync_resolve_conflict": {
+      const side = (msg as { keep?: string }).keep;
+      if (side !== "local" && side !== "remote") {
+        emit({ type: "git_sync_event", kind: "error", message: `invalid keep side: ${side}`, reason: "manual" });
+        break;
+      }
+      const r = syncResolveConflict(side);
+      emit({
+        type: "git_sync_event",
+        kind: r.ok ? "ok" : "error",
+        message: r.message,
+        action: r.action,
+        reason: "manual",
+      });
+      // 충돌 해결 후 push 시도
+      if (r.ok) runGitSyncCycle("manual");
+      break;
+    }
+    case "git_sync_store_credential": {
+      const url = (msg as { repoUrl?: string }).repoUrl ?? "";
+      const pat = (msg as { pat?: string }).pat ?? "";
+      const username = (msg as { username?: string }).username ?? "x-access-token";
+      if (!url || !pat) {
+        emit({ type: "git_sync_event", kind: "error", message: "repoUrl 또는 pat 누락", reason: "manual" });
+        break;
+      }
+      const r = storeGitCredential(url, pat, username);
+      emit({
+        type: "git_sync_event",
+        kind: r.ok ? "ok" : "error",
+        message: r.message,
+        action: "store-credential",
+        reason: "manual",
+      });
+      break;
+    }
+    case "git_sync_status_request": {
+      const installed = checkGitInstalled();
+      const status = installed.ok ? syncStatus() : {
+        initialized: false,
+        hasRemote: false,
+        localChanges: 0,
+        branch: null,
+      };
+      const cfg = readSidecarConfig();
+      emit({
+        type: "git_sync_status",
+        git_installed: installed.ok,
+        git_version: installed.version ?? null,
+        // snake_case 로 명시 (frontend types.ts 와 정렬)
+        initialized: status.initialized,
+        has_remote: status.hasRemote,
+        local_changes: status.localChanges,
+        branch: status.branch,
+        last_sync_at: cfg.gitSync.lastSyncAt,
+        last_sync_status: cfg.gitSync.lastSyncStatus,
+        enabled: cfg.gitSync.enabled,
+        repo_url: cfg.gitSync.repoUrl,
+      });
+      break;
+    }
+    case "git_sync_config_update": {
+      // Settings UI 에서 enabled/repoUrl/intervalMs 변경. sidecar 가 즉시 반영 + interval 재시작.
+      const m = msg as { enabled?: boolean; repoUrl?: string; intervalMs?: number };
+      writeSidecarConfigField((c) => ({
+        ...c,
+        gitSync: {
+          ...c.gitSync,
+          enabled: typeof m.enabled === "boolean" ? m.enabled : c.gitSync.enabled,
+          repoUrl: typeof m.repoUrl === "string" ? m.repoUrl : c.gitSync.repoUrl,
+          intervalMs:
+            typeof m.intervalMs === "number" && m.intervalMs >= 60_000 ? m.intervalMs : c.gitSync.intervalMs,
+        },
+      }));
+      // interval 재시작
+      if (_gitSyncInterval) {
+        clearInterval(_gitSyncInterval);
+        _gitSyncInterval = null;
+      }
+      startMemorySync();
+      const cfg = readSidecarConfig();
+      emit({
+        type: "git_sync_event",
+        kind: "ok",
+        message: `config 업데이트 — enabled=${cfg.gitSync.enabled} repo=${cfg.gitSync.repoUrl || "(미설정)"}`,
+        action: "config-update",
+        reason: "manual",
+      });
+      break;
+    }
+
     case "elicitation_response": {
       // Phase 86 — pending safety elicitation 의 resolver 호출 (REST path 의 critical 도구 confirm).
       // pendingElicitations 에 박혀 있으면 그게 우리 거 → resolve. 없으면 CLI 모드의 다른 elicitation
@@ -3693,27 +3801,156 @@ function installStatusLine(): void {
 interface SidecarConfig {
   // ccusage polling 활성화. 기본 true (기존 동작 유지).
   anthropicRatePollingEnabled: boolean;
+  // Phase 87 — Git Memory Sync. 기본 disabled (백 호환).
+  gitSync: GitSyncConfig;
 }
 
+const SIDECAR_CONFIG_PATH = path.join(os.homedir(), ".kda", "sidecar-config.json");
+
 function readSidecarConfig(): SidecarConfig {
-  const defaults: SidecarConfig = { anthropicRatePollingEnabled: true };
-  const configPath = path.join(os.homedir(), ".kda", "sidecar-config.json");
+  const defaults: SidecarConfig = {
+    anthropicRatePollingEnabled: true,
+    gitSync: { ...GIT_SYNC_CONFIG_DEFAULTS },
+  };
   try {
-    if (!existsSync(configPath)) return defaults;
-    const raw = readFileSync(configPath, "utf-8");
+    if (!existsSync(SIDECAR_CONFIG_PATH)) return defaults;
+    const raw = readFileSync(SIDECAR_CONFIG_PATH, "utf-8");
     // BOM strip — Tauri 가 UTF-8 with BOM 으로 쓰면 JSON.parse 가 fail.
     const stripped = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
     const parsed = JSON.parse(stripped) as Record<string, unknown>;
+    // Phase 87 — gitSync 필드 영역 별도 파싱 (PAT 는 절대 받지 않음 — credential helper 만)
+    const gsRaw = (parsed.gitSync ?? {}) as Record<string, unknown>;
     return {
       anthropicRatePollingEnabled:
         typeof parsed.anthropicRatePollingEnabled === "boolean"
           ? parsed.anthropicRatePollingEnabled
           : defaults.anthropicRatePollingEnabled,
+      gitSync: {
+        enabled: typeof gsRaw.enabled === "boolean" ? gsRaw.enabled : defaults.gitSync.enabled,
+        repoUrl: typeof gsRaw.repoUrl === "string" ? gsRaw.repoUrl : defaults.gitSync.repoUrl,
+        intervalMs:
+          typeof gsRaw.intervalMs === "number" && gsRaw.intervalMs >= 60_000
+            ? gsRaw.intervalMs
+            : defaults.gitSync.intervalMs,
+        lastSyncAt: typeof gsRaw.lastSyncAt === "number" ? gsRaw.lastSyncAt : 0,
+        lastSyncStatus: typeof gsRaw.lastSyncStatus === "string" ? gsRaw.lastSyncStatus : "",
+      },
     };
   } catch (err) {
     log("warn", `sidecar-config.json 읽기 실패 (기본값 사용): ${err}`);
     return defaults;
   }
+}
+
+/**
+ * Phase 87 — Tauri command 가 write_sidecar_config 직접 처리.
+ * sidecar 가 직접 write 하는 path 는 lastSyncAt / lastSyncStatus 갱신용.
+ * PAT 는 절대 여기 박지 않음 — credential helper 만 사용.
+ */
+function writeSidecarConfigField(updater: (cfg: SidecarConfig) => SidecarConfig): void {
+  try {
+    const current = readSidecarConfig();
+    const next = updater(current);
+    // PAT/credential 류는 SidecarConfig 에 절대 안 들어옴 — 구조적으로 type 이 그렇게 짜여 있음.
+    writeFileSync(SIDECAR_CONFIG_PATH, JSON.stringify(next, null, 2), "utf-8");
+  } catch (err) {
+    log("warn", `sidecar-config.json 쓰기 실패: ${err}`);
+  }
+}
+
+/**
+ * Phase 87 — Git Memory Sync 시작.
+ *   - startup 시 1회 syncFull (enabled & repoUrl 있을 때만)
+ *   - intervalMs 마다 syncFull 반복
+ *   - 충돌 시 git_sync_event {type:"conflict"} emit + frontend ElicitationDialog 활용
+ *
+ * V3 같은 백신은 git.exe (system git) 를 일반적으로 신뢰함 (오랜 평판) — 백신 알림 위험 낮음.
+ * 그래도 user toggle (cfg.gitSync.enabled) 로 사후 비활성화 가능 — pitfall_av_blocks_bundled_native_binary 원칙.
+ */
+let _gitSyncInterval: NodeJS.Timeout | null = null;
+
+function runGitSyncCycle(reason: "startup" | "interval" | "manual"): void {
+  const cfg = readSidecarConfig();
+  if (!cfg.gitSync.enabled) return;
+  if (!cfg.gitSync.repoUrl) {
+    log("warn", `[GitSync][${reason}] enabled 지만 repoUrl 비어 있음 — skip`);
+    return;
+  }
+  const installed = checkGitInstalled();
+  if (!installed.ok) {
+    log("warn", `[GitSync][${reason}] git 미설치: ${installed.reason}`);
+    emit({
+      type: "git_sync_event",
+      kind: "error",
+      message: installed.reason ?? "git 미설치",
+      reason,
+    });
+    return;
+  }
+  log("info", `[GitSync][${reason}] sync 시작 — repo=${cfg.gitSync.repoUrl}`);
+  let result: GitSyncResult;
+  try {
+    result = syncFull(cfg.gitSync.repoUrl);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log("error", `[GitSync][${reason}] syncFull throw: ${msg}`);
+    emit({ type: "git_sync_event", kind: "error", message: msg, reason });
+    return;
+  }
+  // 결과 처리
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (result.action === "conflict" && !result.ok) {
+    log(
+      "warn",
+      `[GitSync][${reason}] 충돌 — ${result.conflictedFiles?.length ?? 0}개 파일: ${result.message}`,
+    );
+    emit({
+      type: "git_sync_event",
+      kind: "conflict",
+      message: result.message,
+      conflicted_files: result.conflictedFiles ?? [],
+      reason,
+    });
+    writeSidecarConfigField((c) => ({
+      ...c,
+      gitSync: { ...c.gitSync, lastSyncAt: nowSec, lastSyncStatus: "conflict" },
+    }));
+    return;
+  }
+  if (!result.ok) {
+    log("warn", `[GitSync][${reason}] 실패: ${result.message}`);
+    emit({ type: "git_sync_event", kind: "error", message: result.message, reason });
+    writeSidecarConfigField((c) => ({
+      ...c,
+      gitSync: { ...c.gitSync, lastSyncAt: nowSec, lastSyncStatus: `error: ${result.message.slice(0, 80)}` },
+    }));
+    return;
+  }
+  log("info", `[GitSync][${reason}] 성공 (${result.action}): ${result.message}`);
+  emit({ type: "git_sync_event", kind: "ok", message: result.message, action: result.action, reason });
+  writeSidecarConfigField((c) => ({
+    ...c,
+    gitSync: { ...c.gitSync, lastSyncAt: nowSec, lastSyncStatus: "ok" },
+  }));
+}
+
+function startMemorySync(): void {
+  const cfg = readSidecarConfig();
+  if (!cfg.gitSync.enabled) {
+    log("info", `[GitSync] disabled — 시작 안 함`);
+    return;
+  }
+  if (!cfg.gitSync.repoUrl) {
+    log("warn", `[GitSync] enabled 지만 repoUrl 비어있음 — Settings 에서 입력 필요`);
+    return;
+  }
+  // startup 시 1회 (지연 5초 — sidecar 가 ready 박은 후)
+  setTimeout(() => runGitSyncCycle("startup"), 5_000);
+  // interval
+  const ms = Math.max(60_000, cfg.gitSync.intervalMs ?? GIT_SYNC_CONFIG_DEFAULTS.intervalMs);
+  if (_gitSyncInterval) clearInterval(_gitSyncInterval);
+  _gitSyncInterval = setInterval(() => runGitSyncCycle("interval"), ms);
+  log("info", `[GitSync] started — interval=${Math.round(ms / 60000)}분, repo=${cfg.gitSync.repoUrl}`);
 }
 
 function startRateLimitPolling(): void {
@@ -3885,6 +4122,8 @@ cachedMCPHealth = checkMCPHealth();
 installStatusLine();
 // rate limit polling start
 startRateLimitPolling();
+// Phase 87 — Git Memory Sync (enabled 일 때만 실제 시작)
+startMemorySync();
 
 emit({ type: "ready", version: "0.4.0" });
 
