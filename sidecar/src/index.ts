@@ -910,6 +910,65 @@ let _currentTurnSafeMode: SafeMode = "off";
 let _currentTurnId: string | null = null;
 
 /**
+ * Phase 86 (v0.6.29) — Blocking Elicitation 인프라.
+ * REST path 의 dispatchModelToolCall 직전에 SafeMode=strict + critical 도구 호출 시
+ * elicitation_request 발사 → K 응답 기다림. cancel 누르면 dispatch 안 함.
+ *
+ * 동작:
+ *   1. requestUserConfirmForCriticalTool(toolName, risk, turnId): Promise<boolean>
+ *      - elicitation_request emit
+ *      - pendingElicitations map 에 resolver 저장
+ *      - 30초 timeout → 자동 false (안전 default = deny)
+ *   2. case "elicitation_response": pendingElicitations lookup → resolve
+ *
+ * CLI 모드 (Claude/Codex CLI) 는 sidecar 가 dispatch 안 함 (CLI 가 직접) — 적용 불가.
+ * 이 인프라는 REST path (openai/gemini/openrouter) 만 처리.
+ */
+const pendingElicitations = new Map<
+  string,
+  { resolve: (confirmed: boolean) => void; timeoutId: NodeJS.Timeout }
+>();
+let _elicitationCounter = 0;
+const ELICITATION_TIMEOUT_MS = 30_000;
+
+function requestUserConfirmForCriticalTool(
+  toolName: string,
+  toolInput: unknown,
+  risk: { level: string; categoryId: string | null; summary: string },
+  turnId: string,
+): Promise<boolean> {
+  const elicId = `safety-${turnId}-${++_elicitationCounter}`;
+  return new Promise<boolean>((resolve) => {
+    const timeoutId = setTimeout(() => {
+      if (pendingElicitations.delete(elicId)) {
+        log(
+          "warn",
+          `[ToolSafety][elicit] timeout (${ELICITATION_TIMEOUT_MS}ms) — auto-deny tool=${toolName}`,
+        );
+        resolve(false);
+      }
+    }, ELICITATION_TIMEOUT_MS);
+    pendingElicitations.set(elicId, { resolve, timeoutId });
+    emit({
+      type: "elicitation_request",
+      id: elicId,
+      turn_id: turnId,
+      tool_name: toolName,
+      tool_input: toolInput,
+      title: `🔴 ${risk.level === "critical" ? "치명" : "높음"} 위험 도구 호출 확인`,
+      message: `SafeMode=strict 에서 ${toolName} 호출이 요청됐습니다.\n사유: ${risk.summary}\n${ELICITATION_TIMEOUT_MS / 1000}초 내 응답 없으면 자동 차단됩니다.`,
+      severity: "danger",
+      confirm_label: "허용하고 진행",
+      cancel_label: "차단",
+    });
+    log(
+      "info",
+      `[ToolSafety][elicit] waiting K confirm — id=${elicId} tool=${toolName} risk=${risk.level}`,
+    );
+  });
+}
+
+/**
  * Phase 84 — tool_use emit 의 risk 메타데이터 빌더 + sidecar.log high/critical 라인.
  * 호출 path (claude/codex/REST) 마다 한 줄로 박으려고 헬퍼 분리.
  *
@@ -3308,14 +3367,42 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
         totalToolCalls++;
 
         // Phase 84 — 위험도 캡처 (REST path)
+        const _restRisk = buildRiskMeta(tc.name, "rest");
         emit({
           type: "tool_use",
           id: msg.id,
           tool_id: tc.id,
           name: tc.name,
           input: tc.args,
-          risk: buildRiskMeta(tc.name, "rest"),
+          risk: _restRisk,
         });
+
+        // Phase 86 — strict + critical 일 때 K confirm 받기 전엔 dispatch 안 함.
+        // K 가 cancel/timeout 누르면 tool_result 로 [BLOCKED by user] 박고 다음 도구로 넘어감.
+        if (
+          _currentTurnSafeMode === "strict" &&
+          _restRisk.level === "critical"
+        ) {
+          const ok = await requestUserConfirmForCriticalTool(
+            tc.name,
+            tc.args,
+            _restRisk,
+            msg.id,
+          );
+          if (!ok) {
+            const blockedTxt = `[BLOCKED by user] SafeMode=strict 에서 critical 도구 "${tc.name}" 호출이 차단됨 (K cancel 또는 30초 timeout)`;
+            log("warn", `[ToolSafety][elicit] BLOCKED tool=${tc.name} id=${tc.id}`);
+            dispatched.push({ id: tc.id, name: tc.name, output: blockedTxt, isError: true });
+            emit({ type: "tool_result", id: msg.id, tool_id: tc.id, output: blockedTxt });
+            logToFile(
+              "info",
+              `REST tool BLOCKED by safety elicit id=${msg.id} round=${roundsRun} name=${tc.name}`,
+            );
+            if (controller.signal.aborted) break;
+            continue; // 다음 tool call 로 — 전체 turn 중단 안 함
+          }
+          log("info", `[ToolSafety][elicit] K approved tool=${tc.name} — dispatching`);
+        }
 
         const result = await dispatchModelToolCall({
           client: mcp.client,
@@ -3503,8 +3590,23 @@ rl.on("line", (line) => {
       break;
     }
     case "elicitation_response": {
-      // CLI 모드에서는 elicitation 처리 안 함 (CLI가 자체 처리)
-      log("info", `elicitation_response received (ignored in CLI mode)`);
+      // Phase 86 — pending safety elicitation 의 resolver 호출 (REST path 의 critical 도구 confirm).
+      // pendingElicitations 에 박혀 있으면 그게 우리 거 → resolve. 없으면 CLI 모드의 다른 elicitation
+      // (ask_user_question 등) — 기존대로 ignore.
+      const respId = (msg as { id?: string }).id;
+      const confirmed = (msg as { confirmed?: boolean }).confirmed === true;
+      if (typeof respId === "string" && pendingElicitations.has(respId)) {
+        const entry = pendingElicitations.get(respId)!;
+        clearTimeout(entry.timeoutId);
+        pendingElicitations.delete(respId);
+        entry.resolve(confirmed);
+        log(
+          "info",
+          `[ToolSafety][elicit] resolved id=${respId} confirmed=${confirmed}`,
+        );
+      } else {
+        log("info", `elicitation_response received (no pending safety elicit — id=${respId ?? "?"})`);
+      }
       break;
     }
     default:
