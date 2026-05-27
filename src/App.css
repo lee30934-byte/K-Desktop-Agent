@@ -3001,6 +3001,27 @@
 
 /* ─── Theme Selector ──────────────────────────────── */
 
+/* Phase 96 (v0.6.38) — 테마 그룹 분리 (Cyber HUD vs Personality) */
+.theme-group {
+  margin-top: var(--space-md);
+}
+
+.theme-group + .theme-group {
+  margin-top: var(--space-lg);
+}
+
+.theme-group-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-sm);
+  padding-bottom: 4px;
+  border-bottom: 1px dashed var(--border-subtle);
+}
+
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -3060,6 +3081,47 @@
   right: 6px;
   font-size: 12px;
   color: var(--accent);
+}
+
+/* Phase 96 (v0.6.38) — Personality 테마 추가 정보 */
+.theme-font-hint {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+  text-align: center;
+  margin-top: 2px;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  font-size: 8px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.1em;
+  padding: 2px 5px;
+  background: var(--bg-3);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.theme-card.is-personality {
+  /* Personality 테마는 카드 자체에 약한 outline 으로 구분 */
+  padding: var(--space-md) var(--space-sm);
+}
+
+.theme-card.is-personality .theme-badge {
+  background: var(--accent-glow);
+  color: var(--accent);
+  border-color: var(--accent-dim);
 }
 
 /* ─── Bubble Color Settings ──────────────────────────────── */

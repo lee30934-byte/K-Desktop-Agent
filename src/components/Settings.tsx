@@ -162,12 +162,21 @@ interface AgentPermission {
 }
 
 // UI 테마 타입
+// Phase 96 (v0.6.38) — personality 필드 추가 (옵셔널, 기존 color-only 테마와 호환)
 interface Theme {
   id: string;
   name: string;
-  preview: string; // 색상 코드
-  accent: string;
-  background: string;
+  preview: string; // 색상 코드 (preview swatch)
+  accent: string; // RGB triple — legacy color-only 테마용. personality 테마는 CSS rule 에서 처리
+  background: string; // RGB triple — 동일
+  /** "color" = 액센트/배경만 바뀌는 기본 6개. "personality" = 폰트/모양/표면/데코까지 바뀜. */
+  kind?: "color" | "personality";
+  /** theme-card 의 보조 설명 (한 줄) */
+  description?: string;
+  /** 폰트 패밀리 hint — theme-card 의 글꼴 미리보기에 사용 */
+  fontHint?: string;
+  /** 카드 우상단 표시 배지 ("HUD", "MONO", "GLASS", "BRUTAL" 등) */
+  badge?: string;
 }
 
 // 안전장치 — 백업 메타데이터 (Tauri command get_latest_backup / list_backups 의 응답 형식과 동일)
@@ -585,13 +594,19 @@ const DEFAULT_PERMISSIONS: AgentPermission[] = [
 ];
 
 // 테마 목록
+// Phase 96 (v0.6.38) — 기존 color-only 6개 + personality 3개 분리
 const THEMES: Theme[] = [
+  // ─── Cyber HUD (color-only — P3Torrent 인스파이어드, accent/bg 만 교체) ───
   {
     id: "cyber-teal",
     name: "사이버 틸 (기본)",
     preview: "#4FE8E1",
     accent: "79, 232, 225",
     background: "12, 14, 18",
+    kind: "color",
+    description: "P3Torrent HUD · 시안 액센트 + 코너 브래킷",
+    fontHint: "Space Grotesk",
+    badge: "HUD",
   },
   {
     id: "neon-purple",
@@ -599,6 +614,10 @@ const THEMES: Theme[] = [
     preview: "#A855F7",
     accent: "168, 85, 247",
     background: "15, 10, 25",
+    kind: "color",
+    description: "사이버 HUD + 보랏빛 액센트",
+    fontHint: "Space Grotesk",
+    badge: "HUD",
   },
   {
     id: "matrix-green",
@@ -606,6 +625,10 @@ const THEMES: Theme[] = [
     preview: "#22C55E",
     accent: "34, 197, 94",
     background: "8, 15, 10",
+    kind: "color",
+    description: "사이버 HUD + 그린",
+    fontHint: "Space Grotesk",
+    badge: "HUD",
   },
   {
     id: "sunset-orange",
@@ -613,6 +636,10 @@ const THEMES: Theme[] = [
     preview: "#F97316",
     accent: "249, 115, 22",
     background: "20, 12, 8",
+    kind: "color",
+    description: "사이버 HUD + 오렌지",
+    fontHint: "Space Grotesk",
+    badge: "HUD",
   },
   {
     id: "arctic-blue",
@@ -620,6 +647,10 @@ const THEMES: Theme[] = [
     preview: "#3B82F6",
     accent: "59, 130, 246",
     background: "8, 12, 20",
+    kind: "color",
+    description: "사이버 HUD + 푸른 액센트",
+    fontHint: "Space Grotesk",
+    badge: "HUD",
   },
   {
     id: "rose-pink",
@@ -627,6 +658,45 @@ const THEMES: Theme[] = [
     preview: "#EC4899",
     accent: "236, 72, 153",
     background: "20, 10, 15",
+    kind: "color",
+    description: "사이버 HUD + 핑크 액센트",
+    fontHint: "Space Grotesk",
+    badge: "HUD",
+  },
+
+  // ─── Personality (폰트/모양/표면/데코까지 전부 다름) ───
+  {
+    id: "terminal-phosphor",
+    name: "터미널 포스퍼",
+    preview: "#39FF7A",
+    accent: "57, 255, 122",
+    background: "5, 8, 6",
+    kind: "personality",
+    description: "JetBrains Mono · sharp 0px · CRT 스캔라인 오버레이",
+    fontHint: "JetBrains Mono",
+    badge: "MONO",
+  },
+  {
+    id: "glass-acrylic",
+    name: "글래스 아크릴",
+    preview: "#9CC4FF",
+    accent: "156, 196, 255",
+    background: "14, 18, 28",
+    kind: "personality",
+    description: "Mica blur · 넉넉한 radius · Inter · 부드러움",
+    fontHint: "Inter",
+    badge: "GLASS",
+  },
+  {
+    id: "brutalist-bauhaus",
+    name: "브루털리스트 바우하우스",
+    preview: "#FFD400",
+    accent: "255, 212, 0",
+    background: "248, 246, 240",
+    kind: "personality",
+    description: "Sharp · 원색 · 두꺼운 보더 · 그림자 없음 · 라이트 모드",
+    fontHint: "Inter Bold",
+    badge: "BRUTAL",
   },
 ];
 
@@ -1843,14 +1913,35 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     setCurrentTheme(themeId);
     localStorage.setItem("kda_theme", themeId);
 
-    // CSS 변수 업데이트
-    document.documentElement.style.setProperty("--accent-rgb", theme.accent);
-    document.documentElement.style.setProperty("--bg-rgb", theme.background);
-    document.documentElement.style.setProperty("--accent", `rgb(${theme.accent})`);
-    document.documentElement.style.setProperty("--accent-glow", `rgba(${theme.accent}, 0.35)`);
-    document.documentElement.style.setProperty("--accent-strong-glow", `rgba(${theme.accent}, 0.5)`);
-    document.documentElement.style.setProperty("--accent-dim", `rgba(${theme.accent}, 0.4)`);
-    document.documentElement.style.setProperty("--bg-0", `rgb(${theme.background})`);
+    const root = document.documentElement;
+
+    // Phase 96 (v0.6.38) — data-theme 속성을 박아 CSS 가 personality rule 적용 가능하게.
+    // personality 테마들은 index.css 의 :root[data-theme="..."] selector 가 모든 변수 처리.
+    root.setAttribute("data-theme", theme.id);
+
+    // 이전에 박힌 inline accent override 를 항상 제거 (다른 테마 전환 시 stale 안 남게).
+    // personality 테마는 CSS rule 이 자체 정의함.
+    [
+      "--accent-rgb",
+      "--bg-rgb",
+      "--accent",
+      "--accent-glow",
+      "--accent-strong-glow",
+      "--accent-dim",
+      "--bg-0",
+    ].forEach((prop) => root.style.removeProperty(prop));
+
+    // kind: "color" (legacy 6개) 만 inline 으로 accent/bg override.
+    // personality 테마는 CSS rule 에서 처리하므로 inline 안 박음.
+    if (theme.kind !== "personality") {
+      root.style.setProperty("--accent-rgb", theme.accent);
+      root.style.setProperty("--bg-rgb", theme.background);
+      root.style.setProperty("--accent", `rgb(${theme.accent})`);
+      root.style.setProperty("--accent-glow", `rgba(${theme.accent}, 0.35)`);
+      root.style.setProperty("--accent-strong-glow", `rgba(${theme.accent}, 0.5)`);
+      root.style.setProperty("--accent-dim", `rgba(${theme.accent}, 0.4)`);
+      root.style.setProperty("--bg-0", `rgb(${theme.background})`);
+    }
   }
 
   // 앱 시작 시 저장된 테마 및 말풍선 색상 적용
@@ -2285,24 +2376,52 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   앱의 색상 테마를 선택합니다
                 </div>
               </div>
-              <div className="theme-grid">
-                {THEMES.map((theme) => (
-                  <button
-                    key={theme.id}
-                    className={`theme-card ${currentTheme === theme.id ? "active" : ""}`}
-                    onClick={() => changeTheme(theme.id)}
-                  >
-                    <div
-                      className="theme-preview"
-                      style={{ backgroundColor: theme.preview }}
-                    />
-                    <span className="theme-name">{theme.name}</span>
-                    {currentTheme === theme.id && (
-                      <span className="theme-check">✓</span>
-                    )}
-                  </button>
-                ))}
-              </div>
+              {/* Phase 96 (v0.6.38) — Cyber HUD (color-only 6개) vs Personality (3개) 그룹화 */}
+              {(["color", "personality"] as const).map((group) => {
+                const themesInGroup = THEMES.filter((t) =>
+                  group === "personality" ? t.kind === "personality" : t.kind !== "personality"
+                );
+                if (themesInGroup.length === 0) return null;
+                return (
+                  <div key={group} className="theme-group">
+                    <div className="theme-group-label">
+                      {group === "color" ? "사이버 HUD — 액센트 컬러" : "Personality — 폰트·모양·표면 전부 다름"}
+                    </div>
+                    <div className="theme-grid">
+                      {themesInGroup.map((theme) => (
+                        <button
+                          key={theme.id}
+                          className={`theme-card ${currentTheme === theme.id ? "active" : ""} ${
+                            theme.kind === "personality" ? "is-personality" : ""
+                          }`}
+                          onClick={() => changeTheme(theme.id)}
+                          title={theme.description || theme.name}
+                        >
+                          <div
+                            className="theme-preview"
+                            style={{ backgroundColor: theme.preview }}
+                          />
+                          <span className="theme-name">{theme.name}</span>
+                          {theme.fontHint && (
+                            <span
+                              className="theme-font-hint"
+                              style={{ fontFamily: theme.fontHint }}
+                            >
+                              Aa {theme.fontHint}
+                            </span>
+                          )}
+                          {theme.badge && (
+                            <span className="theme-badge">{theme.badge}</span>
+                          )}
+                          {currentTheme === theme.id && (
+                            <span className="theme-check">✓</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </section>
 

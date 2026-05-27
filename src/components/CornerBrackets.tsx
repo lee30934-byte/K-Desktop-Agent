@@ -17,17 +17,22 @@ export default function CornerBrackets({
   inset = -1,
   corners = ["tl", "tr", "bl", "br"],
 }: CornerBracketsProps) {
+  // Phase 96 (v0.6.38) — 테마가 --show-corner-brackets: 0 면 데코 숨김.
+  // data-corner-bracket 속성으로 App.css 에서 룰 한 번에 제어 가능.
   const common: React.CSSProperties = {
     position: "absolute",
     width: size,
     height: size,
     pointerEvents: "none",
+    // CSS opacity 로 토글 — display 안 건드려야 transform/layout 안 흔들림
+    opacity: "var(--show-corner-brackets, 1)",
   };
 
   return (
     <>
       {corners.includes("tl") && (
         <span
+          data-corner-bracket="tl"
           style={{
             ...common,
             top: inset,
@@ -39,6 +44,7 @@ export default function CornerBrackets({
       )}
       {corners.includes("tr") && (
         <span
+          data-corner-bracket="tr"
           style={{
             ...common,
             top: inset,
@@ -50,6 +56,7 @@ export default function CornerBrackets({
       )}
       {corners.includes("bl") && (
         <span
+          data-corner-bracket="bl"
           style={{
             ...common,
             bottom: inset,
@@ -61,6 +68,7 @@ export default function CornerBrackets({
       )}
       {corners.includes("br") && (
         <span
+          data-corner-bracket="br"
           style={{
             ...common,
             bottom: inset,

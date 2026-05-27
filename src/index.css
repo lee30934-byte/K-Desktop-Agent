@@ -165,3 +165,263 @@ input:focus-visible {
   background: var(--accent-strong-glow);
   color: var(--text-primary);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Phase 96 (v0.6.38) — Personality Themes
+   각 테마가 폰트/모양/표면/데코까지 통째로 바꿈.
+   Settings 의 changeTheme 가 <html data-theme="..."> 박아 활성화.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── 공통: data-theme 변수들 (모든 테마에서 reset 가능) ─── */
+:root {
+  /* 데코 토글 (1 = 보임, 0 = 숨김) — App.css 의 corner-bracket 룰이 참조 */
+  --show-corner-brackets: 1;
+  /* 표면 효과 (none/scanline/glass) */
+  --surface-effect: none;
+  /* glass blur 강도 (0 = 효과 없음) */
+  --surface-blur: 0px;
+  /* 카드/패널 표면 색 (테마별로 다르게) — 기본 fallback 은 var(--bg-2) */
+  --surface-card: var(--bg-2);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Terminal Phosphor — JetBrains Mono · sharp 0px · CRT scanline
+   ───────────────────────────────────────────────────────────── */
+:root[data-theme="terminal-phosphor"] {
+  /* 배경: 거의 검정에 약간의 녹청 */
+  --bg-0: #04070a;
+  --bg-1: #05080b;
+  --bg-2: #070b0e;
+  --bg-3: #0a1014;
+  --bg-4: #0e1519;
+
+  /* 보더: 인광 그린의 어두운 톤 */
+  --border-subtle: #0e2418;
+  --border-default: #1a3a26;
+  --border-strong: #2a5a3a;
+
+  /* 액센트: 인광 그린 */
+  --accent: #39ff7a;
+  --accent-rgb: 57, 255, 122;
+  --accent-dim: #2bb558;
+  --accent-glow: rgba(57, 255, 122, 0.18);
+  --accent-strong-glow: rgba(57, 255, 122, 0.4);
+
+  /* warn: amber (legacy CRT 색감) */
+  --warn: #ffb84d;
+  --warn-dim: #cc8e33;
+  --warn-glow: rgba(255, 184, 77, 0.18);
+
+  /* 상태 */
+  --success: #39ff7a;
+  --error: #ff5555;
+  --info: #5cf0f0;
+
+  /* 텍스트: 인광 그린의 옅은 톤 */
+  --text-primary: #c8ffcd;
+  --text-secondary: #6fc89a;
+  --text-tertiary: #3a7855;
+  --text-muted: #1f4838;
+
+  /* 타이포: 거의 모든 곳에서 mono */
+  --font-display: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --font-body: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+
+  /* 스케일: sharp 모서리 */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 2px;
+
+  /* 데코: 코너 브래킷 유지 (HUD 분위기 살리기) */
+  --show-corner-brackets: 1;
+  --surface-effect: scanline;
+  --surface-blur: 0px;
+  --surface-card: #070b0e;
+
+  color-scheme: dark;
+}
+
+/* Terminal 의 body 배경 — 라디얼 글로우 대신 vignette */
+:root[data-theme="terminal-phosphor"] body {
+  background: #04070a;
+  background-image:
+    radial-gradient(ellipse at 50% 50%, rgba(57, 255, 122, 0.04), transparent 60%),
+    linear-gradient(180deg, #04070a 0%, #05080b 100%);
+}
+
+/* Terminal 의 스캔라인 오버레이 (fixed, pointer 무관) */
+:root[data-theme="terminal-phosphor"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(57, 255, 122, 0.045) 0px,
+    rgba(57, 255, 122, 0.045) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: overlay;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Glass Acrylic — Mica blur · 넉넉한 radius · Inter
+   ───────────────────────────────────────────────────────────── */
+:root[data-theme="glass-acrylic"] {
+  /* 배경: 차분한 짙은 블루그레이 */
+  --bg-0: #0a1018;
+  --bg-1: #0e1422;
+  --bg-2: rgba(20, 28, 44, 0.55); /* 카드/패널은 반투명 — backdrop-filter 받음 */
+  --bg-3: rgba(28, 38, 58, 0.62);
+  --bg-4: rgba(40, 54, 80, 0.7);
+
+  /* 보더: 매우 옅게 */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
+
+  /* 액센트: 부드러운 sky blue */
+  --accent: #9cc4ff;
+  --accent-rgb: 156, 196, 255;
+  --accent-dim: #6f9cd8;
+  --accent-glow: rgba(156, 196, 255, 0.18);
+  --accent-strong-glow: rgba(156, 196, 255, 0.38);
+
+  /* warn: soft amber */
+  --warn: #ffcc80;
+  --warn-dim: #e0a868;
+  --warn-glow: rgba(255, 204, 128, 0.18);
+
+  /* 상태 */
+  --success: #88e0a8;
+  --error: #ff8a8a;
+  --info: #9cc4ff;
+
+  /* 텍스트 */
+  --text-primary: #f0f4fa;
+  --text-secondary: #b8c2d4;
+  --text-tertiary: #7e8aa0;
+  --text-muted: #4a5572;
+
+  /* 타이포: Inter 위주, mono 만 JetBrains */
+  --font-display: "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+
+  /* 스케일: 넉넉한 radius */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+
+  /* 데코: 코너 브래킷 숨김 (부드러운 미감과 안 맞음) */
+  --show-corner-brackets: 0;
+  --surface-effect: glass;
+  --surface-blur: 18px;
+  --surface-card: rgba(20, 28, 44, 0.55);
+
+  color-scheme: dark;
+}
+
+/* Glass 의 body 배경 — 부드러운 그라데이션 */
+:root[data-theme="glass-acrylic"] body {
+  background: #0a1018;
+  background-image:
+    radial-gradient(ellipse 60% 40% at 25% 10%, rgba(156, 196, 255, 0.12), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 80% 80%, rgba(156, 100, 255, 0.08), transparent 60%),
+    linear-gradient(160deg, #0a1018 0%, #121a2a 100%);
+}
+
+/* Glass 의 카드/패널에 backdrop-filter 적용 */
+:root[data-theme="glass-acrylic"] .sidebar,
+:root[data-theme="glass-acrylic"] .main-chat,
+:root[data-theme="glass-acrylic"] .metrics-panel,
+:root[data-theme="glass-acrylic"] .side-panel,
+:root[data-theme="glass-acrylic"] .settings-modal,
+:root[data-theme="glass-acrylic"] .settings-section,
+:root[data-theme="glass-acrylic"] .composer {
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  background-clip: padding-box;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Brutalist Bauhaus — Sharp · 원색 · 두꺼운 보더 · Light mode
+   ───────────────────────────────────────────────────────────── */
+:root[data-theme="brutalist-bauhaus"] {
+  /* 배경: 종이질 베이지 → 라이트모드 */
+  --bg-0: #f5f1e8;
+  --bg-1: #f8f6f0;
+  --bg-2: #ffffff;
+  --bg-3: #ece8de;
+  --bg-4: #e0dccc;
+
+  /* 보더: 두껍고 진한 검정 */
+  --border-subtle: #1a1a1a;
+  --border-default: #0a0a0a;
+  --border-strong: #000000;
+
+  /* 액센트: 바우하우스 노랑 */
+  --accent: #ffd400;
+  --accent-rgb: 255, 212, 0;
+  --accent-dim: #d9b300;
+  --accent-glow: rgba(255, 212, 0, 0); /* 그림자 없음 */
+  --accent-strong-glow: rgba(255, 212, 0, 0);
+
+  /* warn: 강렬한 빨강 */
+  --warn: #e63946;
+  --warn-dim: #c52a36;
+  --warn-glow: rgba(230, 57, 70, 0);
+
+  /* 상태: 원색 */
+  --success: #2a9d8f;
+  --error: #e63946;
+  --info: #1d4ed8;
+
+  /* 텍스트: 검정 위주 */
+  --text-primary: #0a0a0a;
+  --text-secondary: #2a2a2a;
+  --text-tertiary: #5a5a5a;
+  --text-muted: #8a8a8a;
+
+  /* 타이포: 두꺼운 Inter / Helvetica */
+  --font-display: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-body: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+
+  /* 스케일: 완전 sharp */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+
+  /* 데코: 코너 브래킷 숨김 (브루털리즘과 안 맞음) */
+  --show-corner-brackets: 0;
+  --surface-effect: none;
+  --surface-blur: 0px;
+  --surface-card: #ffffff;
+
+  color-scheme: light;
+}
+
+/* Brutalist 의 body 배경 — 평평한 종이질 */
+:root[data-theme="brutalist-bauhaus"] body {
+  background: #f5f1e8;
+  background-image: none;
+}
+
+/* Brutalist 의 카드/패널은 두꺼운 검정 보더 */
+:root[data-theme="brutalist-bauhaus"] .sidebar,
+:root[data-theme="brutalist-bauhaus"] .main-chat,
+:root[data-theme="brutalist-bauhaus"] .metrics-panel,
+:root[data-theme="brutalist-bauhaus"] .side-panel,
+:root[data-theme="brutalist-bauhaus"] .composer {
+  border: 2px solid #0a0a0a !important;
+  box-shadow: none !important;
+}
+
+/* Brutalist: 그라데이션 / 글로우 제거 */
+:root[data-theme="brutalist-bauhaus"] .brand-logo {
+  filter: none;
+}
