@@ -183,8 +183,18 @@ function Message({ message, onPreviewRequest }: MessageProps) {
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
+              // Phase 77 (v0.6.20): react-markdown v10 의 default urlTransform 은 보안 화이트리스트
+              // (http/https/mailto/tel + 상대경로) 외 URL — Windows path (C:\Users\...), file://,
+              // 등 — 을 빈 값으로 sanitize 한다. KDA 의 채팅 마크다운 링크는 K 의 로컬 파일을
+              // 가리키는 경우가 많아 default 가 그걸 모두 drop → onClick 의 `if (!href) return;`
+              // 에서 일찍 빠지고 SidePanel 호출 0. K 가 "사이드 패널 안 열린다" 로 인식.
+              // 회피: identity transform — KDA 는 onClick 에서 preventDefault + 명시적 처리하므로
+              // unsafe URL (javascript: 등) 도 native href click 으로 dispatch 안 됨. 안전.
+              urlTransform={(url) => url}
               components={{
                 // Phase 44 (v0.5.32): 링크 클릭 → SidePanel 미리보기 (있으면). 없으면 외부 열기.
+                // Phase 77 (v0.6.20): onClick path 진단 로그 추가 — 다음번 빈 화면 보고 시
+                // sidecar.log 에서 [Message a onClick] 라인 보고 어느 단계 실패인지 즉시 파악.
                 a: ({ href, children }) => {
                   const label = typeof children === "string" ? children : undefined;
                   return (
@@ -192,12 +202,25 @@ function Message({ message, onPreviewRequest }: MessageProps) {
                       href={href}
                       onClick={(e) => {
                         e.preventDefault();
-                        if (!href) return;
+                        logger.log("[Message a onClick]", {
+                          hasHref: !!href,
+                          hrefPrefix: href ? href.slice(0, 60) : null,
+                          hasOnPreviewRequest: !!onPreviewRequest,
+                          label,
+                        });
+                        if (!href) {
+                          logger.warn("[Message a onClick] href 없음 — 무시");
+                          return;
+                        }
                         if (onPreviewRequest) {
                           // SidePanel 우선 — 사용자가 거기서 "외부 열기" 버튼으로 dispatch 가능
                           onPreviewRequest(href, label);
                         } else {
-                          open(href).catch(console.error);
+                          // 폴백: Tauri 의 system shell 로 외부 열기
+                          logger.warn("[Message a onClick] onPreviewRequest 없음 — open(href) 폴백");
+                          open(href).catch((err) =>
+                            logger.error("[Message a onClick] open(href) 실패:", err)
+                          );
                         }
                       }}
                       className="md-link"
