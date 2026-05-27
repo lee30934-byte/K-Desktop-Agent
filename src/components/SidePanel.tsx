@@ -79,6 +79,89 @@ export function normalizeLocalPath(input: string): string {
 }
 
 /**
+ * Phase 80 (v0.6.24) — Final-Review Gate: 미리보기 표시 전 같은 폴더의 qa-report.json 검사.
+ * SIGILFALL 같은 대량 생성의 raw 컷이 사용자에게 노출 안 되도록 차단.
+ *
+ * qa-report.json (v1):
+ *   { "version": 1, "files": { "<filename>": { "status": "FINAL_CANDIDATE"|"HOLD"|"FAIL", "reason"?, "qa_at"? } } }
+ *
+ * 반환:
+ * - { blocked: false } — qa-report 없거나 FINAL_CANDIDATE
+ * - { blocked: true, status, reason, qaExists } — HOLD/FAIL 또는 누락
+ * - { blocked: false, gateDisabled: true } — Settings 에서 토글 OFF
+ */
+export interface GateResult {
+  blocked: boolean;
+  status?: string;
+  reason?: string;
+  qaExists?: boolean;
+  gateDisabled?: boolean;
+}
+
+export async function checkFinalReviewGate(localPath: string): Promise<GateResult> {
+  // Settings 의 토글 검사. 실패하면 (config 없음 등) default ON 으로 진행 — 안전 우선.
+  try {
+    const cfg = await invoke<Record<string, any>>("get_sidecar_config");
+    if (cfg && cfg.finalReviewGateEnabled === false) {
+      return { blocked: false, gateDisabled: true };
+    }
+  } catch {
+    // config 못 읽으면 default ON (블록 가능) — fall through.
+  }
+
+  // localPath 의 부모 폴더 + filename 분리. Windows separator + POSIX 둘 다 처리.
+  const normalized = normalizeLocalPath(localPath);
+  const sepIdx = Math.max(normalized.lastIndexOf("\\"), normalized.lastIndexOf("/"));
+  if (sepIdx < 0) return { blocked: false }; // 절대경로 아님 — gate 적용 불가
+  const folder = normalized.slice(0, sepIdx);
+  const filename = normalized.slice(sepIdx + 1);
+
+  let qaResult: any;
+  try {
+    qaResult = await invoke<any>("read_qa_report", { folderPath: folder });
+  } catch (e) {
+    // 신뢰 prefix fail 등 — Gate 자체가 안 도는 폴더. 통과 (legacy / scope 밖).
+    logger.warn(`[Gate] read_qa_report 호출 실패 (gate skip): ${e}`);
+    return { blocked: false, qaExists: false };
+  }
+
+  if (!qaResult?.exists) {
+    // qa-report.json 없음 — legacy 폴더로 간주, 통과.
+    return { blocked: false, qaExists: false };
+  }
+
+  if (qaResult.error) {
+    // qa-report.json 있는데 parse 실패 — 안전 우선으로 차단.
+    return {
+      blocked: true,
+      status: "PARSE_ERROR",
+      reason: qaResult.error,
+      qaExists: true,
+    };
+  }
+
+  const fileEntry = qaResult.content?.files?.[filename];
+  if (!fileEntry) {
+    return {
+      blocked: true,
+      status: "NOT_LISTED",
+      reason: "qa-report.json 에 이 파일 항목 없음",
+      qaExists: true,
+    };
+  }
+  const status = String(fileEntry.status ?? "").toUpperCase();
+  if (status === "FINAL_CANDIDATE") {
+    return { blocked: false, status, qaExists: true };
+  }
+  return {
+    blocked: true,
+    status,
+    reason: fileEntry.reason ? String(fileEntry.reason) : undefined,
+    qaExists: true,
+  };
+}
+
+/**
  * Tauri 의 fs read 로 파일을 base64 data URL 또는 텍스트로 로드.
  * - image/video/audio/pdf: bytes → base64 → data URL
  * - text: UTF-8 text 그대로
@@ -158,7 +241,15 @@ export async function loadPreview(
 
 export default function SidePanel({ open, onOpenChange, item, onClose }: SidePanelProps) {
   const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState<{ dataUrl?: string; text?: string; error?: string }>({});
+  // Phase 80 (v0.6.24): preview state 에 gate 차단 분기 추가
+  const [preview, setPreview] = useState<{
+    dataUrl?: string;
+    text?: string;
+    error?: string;
+    blockedByGate?: GateResult;
+  }>({});
+  // K 가 차단된 항목에 "강제 열기" 누른 케이스 추적 — 같은 item 에 대해 그 후로는 gate skip
+  const [gateOverrides, setGateOverrides] = useState<Set<string>>(new Set());
   const [width, setWidth] = useState<number>(() => {
     try {
       const saved = parseInt(localStorage.getItem("kda_side_panel_width") || "", 10);
@@ -193,7 +284,22 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
       return;
     }
     setLoading(true);
-    loadPreview(item.pathOrUrl, category).then((result) => {
+    (async () => {
+      // Phase 80 (v0.6.24): Final-Review Gate — image/video/audio/pdf 만 검사 (text 는 그대로 통과)
+      const gatedCategory = category === "image" || category === "video" || category === "audio" || category === "pdf";
+      if (gatedCategory && !gateOverrides.has(item.pathOrUrl)) {
+        const gate = await checkFinalReviewGate(item.pathOrUrl);
+        if (gate.blocked) {
+          logger.warn(`[Gate] BLOCKED: ${item.pathOrUrl} status=${gate.status} reason=${gate.reason ?? "(없음)"}`);
+          setPreview({ blockedByGate: gate });
+          setLoading(false);
+          return;
+        }
+        if (gate.qaExists) {
+          logger.log(`[Gate] PASS: ${item.pathOrUrl} status=${gate.status ?? "FINAL_CANDIDATE"}`);
+        }
+      }
+      const result = await loadPreview(item.pathOrUrl, category);
       setPreview(result);
       setLoading(false);
       if (result.error) {
@@ -201,8 +307,8 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
       } else {
         logger.log(`[SidePanel] preview 로드 성공 — hasDataUrl=${!!result.dataUrl} hasText=${!!result.text}`);
       }
-    });
-  }, [item, open]);
+    })();
+  }, [item, open, gateOverrides]);
 
   // 폭 drag
   useEffect(() => {
@@ -326,7 +432,72 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
 
             <div className="side-panel-preview">
               {loading && <div className="side-panel-loading">로딩 중...</div>}
-              {preview.error && (
+              {/* Phase 80 (v0.6.24): Final-Review Gate 차단 카드 */}
+              {!loading && preview.blockedByGate && (
+                <div
+                  style={{
+                    padding: "12px 14px",
+                    background: "rgba(255, 170, 0, 0.12)",
+                    border: "1px solid rgba(255, 170, 0, 0.45)",
+                    borderRadius: 6,
+                    margin: 8,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, fontSize: "1em", marginBottom: 6 }}>
+                    ⚠ Final-Review Gate
+                  </div>
+                  <div style={{ fontSize: "0.85em", marginBottom: 4 }}>
+                    이 파일은 <strong>최종 후보 (FINAL_CANDIDATE)</strong> 가 아니어서 차단됐습니다.
+                  </div>
+                  <div className="mono" style={{ fontSize: "0.8em", opacity: 0.85, marginTop: 8 }}>
+                    상태:{" "}
+                    <span
+                      style={{
+                        padding: "1px 6px",
+                        borderRadius: 3,
+                        background: preview.blockedByGate.status === "FAIL" ? "rgba(255,80,80,0.2)" : "rgba(255,170,0,0.2)",
+                        color: preview.blockedByGate.status === "FAIL" ? "#f88" : "#fa0",
+                      }}
+                    >
+                      {preview.blockedByGate.status ?? "(unknown)"}
+                    </span>
+                  </div>
+                  {preview.blockedByGate.reason && (
+                    <div style={{ fontSize: "0.8em", opacity: 0.85, marginTop: 4 }}>
+                      사유: {preview.blockedByGate.reason}
+                    </div>
+                  )}
+                  <div style={{ fontSize: "0.75em", opacity: 0.6, marginTop: 8 }}>
+                    qa-report.json {preview.blockedByGate.qaExists ? "발견됨" : "없음"}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button
+                      className="settings-btn"
+                      style={{ fontSize: "0.8em", padding: "3px 10px" }}
+                      onClick={() => {
+                        if (!item) return;
+                        if (!confirm(`⚠ 이 파일은 FINAL_CANDIDATE 가 아닙니다.\n그래도 강제로 미리보기를 표시할까요?\n\n파일: ${item.pathOrUrl}\n상태: ${preview.blockedByGate?.status}\n사유: ${preview.blockedByGate?.reason ?? "(없음)"}`)) return;
+                        // 같은 path 는 그 후로 gate 검사 skip
+                        setGateOverrides((prev) => {
+                          const next = new Set(prev);
+                          next.add(item.pathOrUrl);
+                          return next;
+                        });
+                      }}
+                    >
+                      ⚠ 강제 열기 (이 세션 한정)
+                    </button>
+                    <button
+                      className="settings-btn"
+                      style={{ fontSize: "0.8em", padding: "3px 10px" }}
+                      onClick={() => onClose?.()}
+                    >
+                      닫기
+                    </button>
+                  </div>
+                </div>
+              )}
+              {preview.error && !preview.blockedByGate && (
                 <div className="side-panel-error">
                   <strong>미리보기 실패</strong>
                   <div className="mono">{preview.error}</div>
@@ -335,7 +506,7 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
                   </p>
                 </div>
               )}
-              {!loading && !preview.error && (
+              {!loading && !preview.error && !preview.blockedByGate && (
                 <>
                   {category === "image" && preview.dataUrl && (
                     <img src={preview.dataUrl} alt={item.label || item.pathOrUrl} className="side-panel-image" />

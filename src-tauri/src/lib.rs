@@ -1739,6 +1739,81 @@ fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, S
     }
 }
 
+/// Phase 80 (v0.6.24) — Final-Review Gate.
+///
+/// folder_path 의 같은 폴더에서 `qa-report.json` 을 찾아 parse 후 반환. SidePanel 의
+/// loadPreview 직전에 호출 — FINAL_CANDIDATE 외 status 면 차단.
+///
+/// 안전성: read_preview_file 과 동일한 신뢰 prefix + UNC strip 검증.
+/// qa-report.json 형식 (v1):
+///   {
+///     "version": 1,
+///     "files": {
+///       "<filename>": { "status": "FINAL_CANDIDATE" | "HOLD" | "FAIL", "reason"?: "...", "qa_at"?: "..." }
+///     }
+///   }
+///
+/// 반환:
+/// - { "exists": false }                          - qa-report.json 없음 (legacy 폴더 = 통과)
+/// - { "exists": true, "content": <json>, "raw": "<text>" } - 정상 parse
+/// - { "exists": true, "error": "..." }           - 파일은 있는데 parse 실패
+#[tauri::command]
+fn read_qa_report(folder_path: String) -> Result<serde_json::Value, String> {
+    use std::path::Path;
+    let normalized = percent_decode_local_path(&folder_path);
+    let folder = Path::new(&normalized);
+    let canonical = match folder.canonicalize() {
+        Ok(c) => c,
+        Err(e) => return Err(format!("folder canonicalize 실패: {} (입력: {} / 정규화: {})", e, folder_path, normalized)),
+    };
+    let canonical_full = canonical.to_string_lossy().to_string();
+    let canonical_str = strip_unc_prefix(&canonical_full).to_lowercase();
+
+    let home = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
+    let appdata = std::env::var("APPDATA").unwrap_or_default().to_lowercase();
+    let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default().to_lowercase();
+    let trusted_prefixes: Vec<String> = vec![home, appdata, localappdata]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    let trusted = trusted_prefixes.iter().any(|p| canonical_str.starts_with(p));
+    if !trusted {
+        return Err(format!(
+            "신뢰하지 않는 경로 (qa-report 거부): {}\n허용 prefix: {:?}",
+            canonical.display(),
+            trusted_prefixes
+        ));
+    }
+
+    let qa_path = canonical.join("qa-report.json");
+    if !qa_path.exists() {
+        return Ok(serde_json::json!({ "exists": false }));
+    }
+    let raw = match std::fs::read_to_string(&qa_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(serde_json::json!({
+                "exists": true,
+                "error": format!("read 실패: {}", e),
+            }));
+        }
+    };
+    // UTF-8 BOM strip (Windows tooling 이 자주 생성)
+    let cleaned = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+    match serde_json::from_str::<serde_json::Value>(cleaned) {
+        Ok(parsed) => Ok(serde_json::json!({
+            "exists": true,
+            "content": parsed,
+            "raw": cleaned,
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "exists": true,
+            "error": format!("JSON parse 실패: {}", e),
+            "raw": cleaned,
+        })),
+    }
+}
+
 /// 회피책: 시스템 기본 브라우저 (Edge/Chrome/Firefox) 로 열기 — Google OAuth 제약 없음 +
 /// K 평소 브라우저의 cookie 영속 → 다음에 그 브라우저에서 anthropic 들어갈 때도 자동 로그인.
 ///
@@ -2104,8 +2179,10 @@ async fn get_sidecar_config() -> Result<serde_json::Value, String> {
     let path = sidecar_config_path()?;
     if !path.exists() {
         // 기본값 — sidecar 의 readSidecarConfig() 와 동기화 유지 필요.
+        // Phase 80 (v0.6.24): finalReviewGateEnabled 신규 — default true (안전 우선).
         return Ok(serde_json::json!({
             "anthropicRatePollingEnabled": true,
+            "finalReviewGateEnabled": true,
         }));
     }
     let raw =
@@ -2877,7 +2954,9 @@ pub fn run_with_options(start_minimized: bool) {
             set_sidecar_config_flag,
             // Phase 75 (v0.6.18) — Codex 좀비 process detect + 안전 정리
             list_stale_codex_processes,
-            kill_process_tree
+            kill_process_tree,
+            // Phase 80 (v0.6.24) — Final-Review Gate
+            read_qa_report
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

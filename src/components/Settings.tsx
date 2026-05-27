@@ -720,6 +720,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [anthropicRatePolling, setAnthropicRatePolling] = useState(true);
   const [sidecarReloadHint, setSidecarReloadHint] = useState(false);
   const [anthropicRatePollingBusy, setAnthropicRatePollingBusy] = useState(false);
+  // Phase 80 (v0.6.24) — Final-Review Gate toggle (default true). 같은 sidecar-config 파일.
+  const [finalReviewGate, setFinalReviewGate] = useState(true);
+  const [finalReviewGateBusy, setFinalReviewGateBusy] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
@@ -1284,6 +1287,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         const v = cfg?.anthropicRatePollingEnabled;
         // 기본값 true (sidecar 의 readSidecarConfig 와 동기화)
         setAnthropicRatePolling(typeof v === "boolean" ? v : true);
+        // Phase 80 (v0.6.24): finalReviewGateEnabled 도 같이 로드
+        const g = cfg?.finalReviewGateEnabled;
+        setFinalReviewGate(typeof g === "boolean" ? g : true);
       })
       .catch((err) => {
         console.error("get_sidecar_config failed:", err);
@@ -1309,6 +1315,25 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       setAnthropicRatePolling(!newValue); // 롤백
     } finally {
       setAnthropicRatePollingBusy(false);
+    }
+  }
+
+  // Phase 80 (v0.6.24): Final-Review Gate toggle. sidecar 재시작 불필요 (frontend 가 매번 invoke).
+  async function toggleFinalReviewGate() {
+    if (finalReviewGateBusy) return;
+    const newValue = !finalReviewGate;
+    setFinalReviewGateBusy(true);
+    setFinalReviewGate(newValue);
+    try {
+      await invoke("set_sidecar_config_flag", {
+        key: "finalReviewGateEnabled",
+        value: newValue,
+      });
+    } catch (err) {
+      console.error("set_sidecar_config_flag (finalReviewGate) failed:", err);
+      setFinalReviewGate(!newValue);
+    } finally {
+      setFinalReviewGateBusy(false);
     }
   }
 
@@ -3322,6 +3347,40 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </button>
               </div>
             )}
+          </section>
+
+          {/* Phase 80 (v0.6.24) — Final-Review Gate toggle. SIGILFALL 등 대량 생성 raw 컷이
+              사용자에게 노출되지 않도록 qa-report.json 의 FINAL_CANDIDATE 만 미리보기 허용. */}
+          <section className="settings-section" data-tab="safety">
+            <div className="eyebrow">🛡️ Final-Review Gate</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">미리보기 전 QA 리포트 검사 (default ON)</div>
+                <div className="settings-row-desc">
+                  채팅 마크다운의 이미지/비디오/PDF 링크 클릭 시 같은 폴더의 <code>qa-report.json</code> 을
+                  검사 → <code>FINAL_CANDIDATE</code> 만 표시. HOLD/FAIL/누락은 차단 + "강제 열기" 옵션 제공.
+                  raw 생성 컷이 K 에게 자동 노출되는 걸 방지 (Lee 의 학습효과 패치 #2).
+                  <br />
+                  <span style={{ opacity: 0.7 }}>
+                    qa-report.json 형식:
+                    <code>{` { "version": 1, "files": { "<filename>": { "status": "FINAL_CANDIDATE" } } }`}</code>
+                  </span>
+                  <br />
+                  <span style={{ opacity: 0.7 }}>
+                    OFF 면 검사 skip — 모든 파일이 그대로 미리보기 됩니다 (v0.6.23 이전 동작).
+                  </span>
+                </div>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={finalReviewGate}
+                  onChange={toggleFinalReviewGate}
+                  disabled={finalReviewGateBusy}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
           </section>
 
           <section className="settings-section" data-tab="system">
