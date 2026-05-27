@@ -1526,6 +1526,16 @@ export default function App() {
         console.warn("[App] lockedTools 로드 실패:", e);
       }
 
+      // Phase 84 (v0.6.27) — Connector/Tool Safety Layer SafeMode 토글.
+      // localStorage key "kda_safe_mode" = "off" | "balanced" | "strict". 미존재 = off.
+      let safeMode: "off" | "balanced" | "strict" = "off";
+      try {
+        const s = localStorage.getItem("kda_safe_mode");
+        if (s === "balanced" || s === "strict") safeMode = s;
+      } catch {
+        /* ignore */
+      }
+
       await invoke("send_message", {
         message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
@@ -1537,6 +1547,7 @@ export default function App() {
         model,
         permissions,
         lockedTools,
+        safeMode,
       });
     } catch (err) {
       setIsStreaming(false);
@@ -2071,6 +2082,15 @@ export default function App() {
         console.warn("[Resume] lockedTools 로드 실패:", e);
       }
 
+      // Phase 84 — Resume path 도 SafeMode 동일 적용
+      let safeMode: "off" | "balanced" | "strict" = "off";
+      try {
+        const s = localStorage.getItem("kda_safe_mode");
+        if (s === "balanced" || s === "strict") safeMode = s;
+      } catch {
+        /* ignore */
+      }
+
       pushSystem("↻ 같은 질문 재시도 중... (이전 도구 결과를 컨텍스트에 포함)", "info");
       logger.log(`[Resume] 재전송: turnId=${turnId}, agentId=${agentId ?? "(신규)"}`);
 
@@ -2086,6 +2106,7 @@ export default function App() {
         model,
         permissions,
         lockedTools,
+        safeMode,
       });
     } catch (err) {
       setIsStreaming(false);

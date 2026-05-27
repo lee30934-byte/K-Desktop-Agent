@@ -42,6 +42,15 @@ import {
   namespacedToolName,
   dispatchModelToolCall,
 } from "./toolSchema.js";
+// Phase 84 (v0.6.27) — Connector/Tool Safety Layer (Lee #6).
+// 위험도 분류 + SafeMode 강등 + critical 도구 자동 차단 + tool_use 가시성.
+import {
+  applySafeMode,
+  strictExtraDisallowed,
+  riskOfTool,
+  summariseSafeModeImpact,
+  type SafeMode,
+} from "./toolSafety.js";
 import {
   runOpenAIChatRound,
   runGeminiRound,
@@ -756,6 +765,11 @@ type UserMessage = {
   // 카테고리 토글과 독립적으로 작동 — 카테고리가 auto 여도 여기 들어 있으면 차단.
   // 예: ["Bash", "mcp__k-personal__fm_move_file", "mcp__k-personal__cc_keyboard_type"]
   lockedTools?: string[];
+  // Phase 84 (v0.6.27) — Connector/Tool Safety Layer (Lee #6).
+  // SafeMode 가 balanced/strict 면 카테고리 토글을 일괄 강등 (auto → ask 또는 manual).
+  // strict 면 STRICT_BLOCKED_TOOLS (fm_organize_folder / fm_restore_file / app_kill) 도 자동 차단.
+  // 미지정/"off" 면 기존 동작 — 백 호환.
+  safeMode?: SafeMode;
   // 첨부 파일 — Composer 에서 paste/drag/select 한 파일들 (base64 인코딩됨).
   // sidecar 가 turn 별 임시 폴더에 디코드해 저장하고, Claude CLI prompt 에 path 안내를 추가.
   // 이후 Claude CLI 가 Read 도구로 자동 분석 (image → vision, text → 본문 읽기).
@@ -873,6 +887,40 @@ const PERM_TOOL_MAP: Record<string, string[]> = {
   ],
 };
 
+// Phase 84 — 도구 풀네임 → 카테고리 ID 역색인 (lazy 계산, 위험도 분류용).
+// PERM_TOOL_MAP 이 모듈 로딩 시 고정이라 한 번 만들면 됨.
+let _toolToCategoryCache: Map<string, string> | null = null;
+function toolToCategory(namespacedName: string): string | undefined {
+  if (!_toolToCategoryCache) {
+    const m = new Map<string, string>();
+    for (const [catId, tools] of Object.entries(PERM_TOOL_MAP)) {
+      for (const t of tools) m.set(t, catId);
+    }
+    _toolToCategoryCache = m;
+  }
+  return _toolToCategoryCache.get(namespacedName);
+}
+
+/**
+ * Phase 84 — tool_use emit 의 risk 메타데이터 빌더 + sidecar.log high/critical 라인.
+ * 호출 path (claude/codex/REST) 마다 한 줄로 박으려고 헬퍼 분리.
+ */
+function buildRiskMeta(toolName: string, sourceTag: string): {
+  level: string;
+  categoryId: string | null;
+  summary: string;
+} {
+  const cat = toolToCategory(toolName);
+  const info = riskOfTool(toolName, cat);
+  if (info.level === "high" || info.level === "critical") {
+    log(
+      "info",
+      `[ToolSafety][${sourceTag}] ${info.level.toUpperCase()} tool dispatched name=${toolName} category=${cat ?? "?"} reason=${info.summary}`,
+    );
+  }
+  return { level: info.level, categoryId: cat ?? null, summary: info.summary };
+}
+
 // 권한 ID → 한국어 라벨 (시스템 프롬프트 안내문에 사용).
 const PERM_LABEL: Record<string, string> = {
   file_read: "파일 읽기",
@@ -925,20 +973,30 @@ interface ToolFlags {
   disallowed: string[];
   effective: Record<string, PermLevel>;
   lockedCount: number;
+  /** Phase 84 — SafeMode 가 강등시킨 카테고리 개수 + critical 차단 도구 수 요약 */
+  safeMode?: SafeMode;
+  safeModeImpact?: ReturnType<typeof summariseSafeModeImpact>;
 }
 
 function buildToolFlags(
   perms: PermissionsMap | undefined,
   lockedTools: string[] | undefined,
+  safeMode: SafeMode = "off",
 ): ToolFlags {
-  const effective: Record<string, PermLevel> = { ...DEFAULT_PERMISSIONS };
+  const baseEffective: Record<string, PermLevel> = { ...DEFAULT_PERMISSIONS };
   if (perms) {
     for (const [id, level] of Object.entries(perms)) {
       if (level === "auto" || level === "ask" || level === "manual") {
-        effective[id] = level;
+        baseEffective[id] = level;
       }
     }
   }
+
+  // Phase 84 — SafeMode 적용. off 면 baseEffective 그대로.
+  // balanced: high+ → ask. strict: medium → ask, high+ → manual.
+  const effective = applySafeMode(baseEffective, safeMode);
+  const safeModeImpact =
+    safeMode === "off" ? undefined : summariseSafeModeImpact(baseEffective, effective, safeMode);
 
   // ─── 정책 모델 (v0.4.1+: A안 회귀 + 개별 잠금 추가) ──────────────────
   //
@@ -983,10 +1041,16 @@ function buildToolFlags(
     disallowed.push(...HIGH_RISK_BUILTINS);
   }
 
+  // Phase 84 — SafeMode=strict 면 STRICT_BLOCKED_TOOLS 추가 차단 (fm_organize_folder 등).
+  // off/balanced 에선 미적용 (백 호환).
+  disallowed.push(...strictExtraDisallowed(safeMode));
+
   return {
     disallowed: Array.from(new Set(disallowed)),
     effective,
     lockedCount,
+    safeMode,
+    safeModeImpact,
   };
 }
 
@@ -1274,7 +1338,10 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   //   Bash/BashOutput/KillShell → file_write+file_delete+app_launch 가 모두 auto 일 때만 허용
   // --allowed-tools 는 미사용 (default-allow → 새 MCP 도구 자동 허용 → 자동화 능력 보존).
   // --permission-mode 는 bypassPermissions (interactive prompt 우회, 실제 게이트는 disallowed-tools).
-  const toolFlags = buildToolFlags(msg.permissions, msg.lockedTools);
+  const toolFlags = buildToolFlags(msg.permissions, msg.lockedTools, msg.safeMode ?? "off");
+  if (toolFlags.safeMode && toolFlags.safeMode !== "off" && toolFlags.safeModeImpact) {
+    log("info", `[ToolSafety] SafeMode=${toolFlags.safeMode} — ${toolFlags.safeModeImpact.summary}`);
+  }
 
   // Claude CLI 인자 구성 (인자에 박는 본문 최소화)
   const args: string[] = [
@@ -1663,12 +1730,14 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
                     // 기존 tool_use 이벤트도 함께 emit — 메시지 본문에 흔적 남겨 K 가 어떤 질문이
                     // 있었는지 history 로 볼 수 있게. ElicitationDialog 닫혀도 추후 추적 가능.
                   }
+                  // Phase 84 — 위험도 캡처 (Claude CLI path)
                   emit({
                     type: "tool_use",
                     id: msg.id,
                     tool_id: block.id,
                     name: block.name,
                     input: block.input,
+                    risk: buildRiskMeta(block.name, "claude"),
                   });
                 }
               }
@@ -2368,12 +2437,14 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               }
             } else if (it.type === "command_exec") {
               // Codex 자체 Bash 도구 호출. Claude 의 tool_use 패턴으로 중계.
+              const _cxCmdName = it.command_name ?? "Bash";
               emit({
                 type: "tool_use",
                 id: msg.id,
                 tool_id: it.id ?? `codex-${Date.now()}`,
-                name: it.command_name ?? "Bash",
+                name: _cxCmdName,
                 input: { command: it.command ?? it.text ?? "" },
+                risk: buildRiskMeta(_cxCmdName, "codex"),
               });
               if (it.output != null) {
                 emit({
@@ -2392,6 +2463,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                 tool_id: it.id ?? `codex-mcp-${Date.now()}`,
                 name: toolName,
                 input: it.arguments ?? it.input ?? {},
+                risk: buildRiskMeta(toolName, "codex-mcp"),
               });
               if (it.result != null) {
                 emit({
@@ -2408,6 +2480,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                 tool_id: it.id ?? `codex-file-${Date.now()}`,
                 name: "FileEdit",
                 input: { path: it.path, change: it.change ?? "edit" },
+                risk: buildRiskMeta("FileEdit", "codex-file"),
               });
             }
             // reasoning 등 다른 타입은 일단 로그만.
@@ -2973,7 +3046,12 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   const restSystemPrompt = SYSTEM_PROMPT_REST + memory.content;
 
   // ─── Resolve permission policy & MCP tool catalog ──────────────────────
-  const permFlags = buildToolFlags(msg.permissions, msg.lockedTools);
+  // Phase 84 — REST path 도 동일하게 SafeMode 적용. provider=anthropic-rest 는 tool 없으니 미영향이지만,
+  // openai/gemini/openrouter 는 disallowedSet 에 직접 박힘.
+  const permFlags = buildToolFlags(msg.permissions, msg.lockedTools, msg.safeMode ?? "off");
+  if (permFlags.safeMode && permFlags.safeMode !== "off" && permFlags.safeModeImpact) {
+    log("info", `[ToolSafety][REST] SafeMode=${permFlags.safeMode} — ${permFlags.safeModeImpact.summary}`);
+  }
   const disallowedSet = new Set(permFlags.disallowed);
 
   // Provider-side tool calling is currently scoped to OpenAI-shape and Gemini.
@@ -3192,12 +3270,14 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
       for (const tc of round.toolCalls) {
         totalToolCalls++;
 
+        // Phase 84 — 위험도 캡처 (REST path)
         emit({
           type: "tool_use",
           id: msg.id,
           tool_id: tc.id,
           name: tc.name,
           input: tc.args,
+          risk: buildRiskMeta(tc.name, "rest"),
         });
 
         const result = await dispatchModelToolCall({

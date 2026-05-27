@@ -202,6 +202,10 @@ async fn send_message(
     // None / 빈 배열 → 개별 잠금 없음.
     // (JS 호출 측은 Tauri 의 자동 케이스 변환에 따라 `lockedTools` 키로 전달)
     locked_tools: Option<serde_json::Value>,
+    // Phase 84 (v0.6.27) — Connector/Tool Safety Layer (Lee #6).
+    // "off" | "balanced" | "strict". sidecar 가 위험도 high+ 카테고리를 자동 강등.
+    // None / 미지정 → sidecar 가 "off" 로 가정 (백 호환).
+    safe_mode: Option<String>,
     // 첨부 파일: [{name, type, size, base64}]
     // sidecar 가 임시 폴더에 디코드해 파일로 저장 후 Claude CLI 에 path 로 안내.
     // Claude CLI 의 Read 도구가 path 를 받아 이미지면 vision, 텍스트면 그대로 처리.
@@ -238,6 +242,13 @@ async fn send_message(
     // 개별 잠금 도구 (sidecar 는 lockedTools 키로 읽음 — JSON 키 이름 유지)
     if let Some(lt) = locked_tools {
         payload["lockedTools"] = lt;
+    }
+    // Phase 84 — SafeMode (sidecar 는 safeMode 키로 읽음)
+    if let Some(sm) = safe_mode {
+        let s = sm.trim();
+        if s == "off" || s == "balanced" || s == "strict" {
+            payload["safeMode"] = serde_json::Value::String(s.to_string());
+        }
     }
     // 첨부 파일 (sidecar 가 임시 파일로 저장 후 prompt 에 path 안내 추가)
     if let Some(att) = attachments {

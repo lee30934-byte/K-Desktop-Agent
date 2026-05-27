@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "k-desktop-agent"
-version = "0.6.26"
+version = "0.6.27"
 dependencies = [
  "notify",
  "notify-debouncer-mini",

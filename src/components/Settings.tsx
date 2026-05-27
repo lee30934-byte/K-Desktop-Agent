@@ -8,6 +8,17 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import CornerBrackets from "./CornerBrackets";
 import type { WatchedFolder } from "../types";
+// Phase 84 (v0.6.27) — Connector/Tool Safety Layer (Lee #6)
+import {
+  RISK_BADGES,
+  CATEGORY_RISK,
+  SAFE_MODE_POLICIES,
+  STRICT_BLOCKED_TOOLS,
+  riskOfCategory,
+  previewSafeModeImpact,
+  type SafeMode,
+  type RiskLevel,
+} from "../utils/toolSafety";
 
 interface SettingsProps {
   open: boolean;
@@ -726,6 +737,17 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // Phase 81 (v0.6.25) — Lee Profile 정보 (예시 template 자동 생성 + path 표시)
   const [leeProfile, setLeeProfile] = useState<{ path: string; bytes: number; justCreated: boolean } | null>(null);
   const [leeProfileBusy, setLeeProfileBusy] = useState(false);
+  // Phase 84 (v0.6.27) — Connector/Tool Safety Layer SafeMode toggle.
+  // localStorage "kda_safe_mode" 와 동기화. App.tsx 의 send_message 가 동일 키 읽어서 sidecar 전달.
+  const [safeMode, setSafeMode] = useState<SafeMode>(() => {
+    try {
+      const s = localStorage.getItem("kda_safe_mode");
+      if (s === "balanced" || s === "strict") return s;
+    } catch {
+      /* ignore */
+    }
+    return "off";
+  });
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
@@ -2171,7 +2193,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     <div className="permission-info">
                       <span className="permission-icon">{perm.icon}</span>
                       <div>
-                        <div className="permission-name">{perm.name}</div>
+                        <div className="permission-name">
+                          {perm.name}
+                          {/* Phase 84 — 위험도 배지 (CATEGORY_RISK 기반). */}
+                          {(() => {
+                            const risk = riskOfCategory(perm.id);
+                            const badge = RISK_BADGES[risk.level];
+                            return (
+                              <span
+                                title={risk.summary}
+                                style={{
+                                  marginLeft: 8,
+                                  fontSize: "0.7em",
+                                  padding: "0.1em 0.5em",
+                                  borderRadius: 4,
+                                  background: `${badge.color}22`,
+                                  border: `1px solid ${badge.color}66`,
+                                  color: badge.color,
+                                  fontWeight: 600,
+                                  verticalAlign: "middle",
+                                }}
+                              >
+                                {badge.icon} {badge.label}
+                              </span>
+                            );
+                          })()}
+                        </div>
                         <div className="permission-desc">{perm.description}</div>
                       </div>
                     </div>
@@ -2193,7 +2240,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     <div className="permission-info">
                       <span className="permission-icon">{perm.icon}</span>
                       <div>
-                        <div className="permission-name">{perm.name}</div>
+                        <div className="permission-name">
+                          {perm.name}
+                          {/* Phase 84 — 위험도 배지 (CATEGORY_RISK 기반). */}
+                          {(() => {
+                            const risk = riskOfCategory(perm.id);
+                            const badge = RISK_BADGES[risk.level];
+                            return (
+                              <span
+                                title={risk.summary}
+                                style={{
+                                  marginLeft: 8,
+                                  fontSize: "0.7em",
+                                  padding: "0.1em 0.5em",
+                                  borderRadius: 4,
+                                  background: `${badge.color}22`,
+                                  border: `1px solid ${badge.color}66`,
+                                  color: badge.color,
+                                  fontWeight: 600,
+                                  verticalAlign: "middle",
+                                }}
+                              >
+                                {badge.icon} {badge.label}
+                              </span>
+                            );
+                          })()}
+                        </div>
                         <div className="permission-desc">{perm.description}</div>
                       </div>
                     </div>
@@ -2215,7 +2287,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     <div className="permission-info">
                       <span className="permission-icon">{perm.icon}</span>
                       <div>
-                        <div className="permission-name">{perm.name}</div>
+                        <div className="permission-name">
+                          {perm.name}
+                          {/* Phase 84 — 위험도 배지 (CATEGORY_RISK 기반). */}
+                          {(() => {
+                            const risk = riskOfCategory(perm.id);
+                            const badge = RISK_BADGES[risk.level];
+                            return (
+                              <span
+                                title={risk.summary}
+                                style={{
+                                  marginLeft: 8,
+                                  fontSize: "0.7em",
+                                  padding: "0.1em 0.5em",
+                                  borderRadius: 4,
+                                  background: `${badge.color}22`,
+                                  border: `1px solid ${badge.color}66`,
+                                  color: badge.color,
+                                  fontWeight: 600,
+                                  verticalAlign: "middle",
+                                }}
+                              >
+                                {badge.icon} {badge.label}
+                              </span>
+                            );
+                          })()}
+                        </div>
                         <div className="permission-desc">{perm.description}</div>
                       </div>
                     </div>
@@ -2237,7 +2334,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     <div className="permission-info">
                       <span className="permission-icon">{perm.icon}</span>
                       <div>
-                        <div className="permission-name">{perm.name}</div>
+                        <div className="permission-name">
+                          {perm.name}
+                          {/* Phase 84 — 위험도 배지 (CATEGORY_RISK 기반). */}
+                          {(() => {
+                            const risk = riskOfCategory(perm.id);
+                            const badge = RISK_BADGES[risk.level];
+                            return (
+                              <span
+                                title={risk.summary}
+                                style={{
+                                  marginLeft: 8,
+                                  fontSize: "0.7em",
+                                  padding: "0.1em 0.5em",
+                                  borderRadius: 4,
+                                  background: `${badge.color}22`,
+                                  border: `1px solid ${badge.color}66`,
+                                  color: badge.color,
+                                  fontWeight: 600,
+                                  verticalAlign: "middle",
+                                }}
+                              >
+                                {badge.icon} {badge.label}
+                              </span>
+                            );
+                          })()}
+                        </div>
                         <div className="permission-desc">{perm.description}</div>
                       </div>
                     </div>
@@ -3350,6 +3472,190 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </button>
               </div>
             )}
+          </section>
+
+          {/* Phase 84 (v0.6.27) — Connector/Tool Safety Layer (Lee #6).
+              카테고리별 위험도 schema + SafeMode 토글 (off/balanced/strict).
+              balanced: 높음↑ 카테고리를 ask 로. strict: 보통↑ ask, 높음↑ manual + 일부 도구 자동 차단.
+              실제 권한 게이트는 sidecar 가 강제 — 이 토글은 매 turn 시작 시 sidecar 로 전달. */}
+          <section className="settings-section" data-tab="safety">
+            <div className="eyebrow">🛡️ Connector/Tool Safety Layer</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">위험도 기반 안전 모드</div>
+                <div className="settings-row-desc">
+                  각 카테고리에 <strong>위험도</strong> (🟢 낮음 / 🟡 보통 / 🟠 높음 / 🔴 치명) 를 부여하고,
+                  Safe Mode 가 활성화되면 위험도 높은 카테고리를 자동으로 강등합니다.
+                  K 의 개별 권한 설정(에이전트 탭) 위에 적용되는 추가 안전망 — Bash / fm_organize_folder /
+                  app_kill 같은 도구는 strict 모드에서 카테고리와 무관하게 자동 차단됩니다.
+                </div>
+              </div>
+
+              {/* 3-way SafeMode 토글 */}
+              <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                {(["off", "balanced", "strict"] as SafeMode[]).map((mode) => {
+                  const policy = SAFE_MODE_POLICIES[mode];
+                  const isActive = safeMode === mode;
+                  return (
+                    <button
+                      key={mode}
+                      onClick={() => {
+                        setSafeMode(mode);
+                        try {
+                          localStorage.setItem("kda_safe_mode", mode);
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                      style={{
+                        flex: 1,
+                        minWidth: 140,
+                        padding: "8px 12px",
+                        background: isActive ? "rgba(79,232,225,0.18)" : "var(--bg-1)",
+                        border: isActive
+                          ? "1.5px solid var(--accent, #4fe8e1)"
+                          : "1px solid var(--border-subtle)",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        fontFamily: "inherit",
+                        color: "inherit",
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>{policy.title}</div>
+                      <div style={{ fontSize: "0.8em", opacity: 0.8, lineHeight: 1.45 }}>
+                        {policy.description}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 카테고리별 위험도 표 */}
+              <div style={{ marginTop: 14 }}>
+                <div className="eyebrow" style={{ fontSize: "0.78em", opacity: 0.8 }}>
+                  카테고리별 위험도
+                </div>
+                <div
+                  style={{
+                    marginTop: 6,
+                    display: "grid",
+                    gridTemplateColumns: "auto 1fr auto",
+                    gap: "4px 12px",
+                    fontSize: "0.85em",
+                  }}
+                >
+                  {Object.entries(CATEGORY_RISK)
+                    // 위험도 높은 순 정렬
+                    .sort((a, b) => {
+                      const order: Record<RiskLevel, number> = {
+                        critical: 0,
+                        high: 1,
+                        medium: 2,
+                        low: 3,
+                      };
+                      return order[a[1].level] - order[b[1].level];
+                    })
+                    .map(([id, row]) => {
+                      const badge = RISK_BADGES[row.level];
+                      return (
+                        <div
+                          key={id}
+                          style={{
+                            display: "contents",
+                          }}
+                        >
+                          <div
+                            style={{
+                              color: badge.color,
+                              fontWeight: 600,
+                              fontSize: "0.85em",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {badge.icon} {badge.label}
+                          </div>
+                          <div style={{ fontFamily: "monospace", opacity: 0.95 }}>
+                            {id}
+                            <span style={{ marginLeft: 8, opacity: 0.7, fontWeight: "normal" }}>
+                              {row.summary}
+                            </span>
+                          </div>
+                          <div style={{ opacity: 0.55, fontSize: "0.78em", whiteSpace: "nowrap" }}>
+                            {row.dimensions.join(" · ")}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+
+              {/* 현재 모드의 영향 미리보기 — 사용자가 어떤 카테고리가 강등될지 한눈에 */}
+              {safeMode !== "off" && (
+                <div
+                  style={{
+                    marginTop: 14,
+                    padding: "10px 12px",
+                    background: "rgba(249, 115, 22, 0.06)",
+                    border: "1px solid rgba(249, 115, 22, 0.3)",
+                    borderRadius: 6,
+                    fontSize: "0.85em",
+                  }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                    📊 현재 모드 ({SAFE_MODE_POLICIES[safeMode].title}) 의 영향
+                  </div>
+                  <ul style={{ margin: "4px 0 4px 18px", padding: 0, lineHeight: 1.55 }}>
+                    {SAFE_MODE_POLICIES[safeMode].effect.map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
+                  {/* 현재 K 의 permissions 상태 기반 카테고리 강등 미리보기 */}
+                  {(() => {
+                    const effective: Record<string, "auto" | "ask" | "manual"> = {};
+                    for (const p of permissions) {
+                      effective[p.id] = p.level;
+                    }
+                    const changes = previewSafeModeImpact(effective, safeMode);
+                    if (changes.length === 0) {
+                      return (
+                        <div style={{ marginTop: 6, opacity: 0.75 }}>
+                          현재 권한 설정에서 강등될 카테고리는 없습니다 (이미 ask/manual).
+                        </div>
+                      );
+                    }
+                    return (
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ opacity: 0.8, marginBottom: 4 }}>
+                          현재 설정에서 강등되는 카테고리 ({changes.length}개):
+                        </div>
+                        <div style={{ fontFamily: "monospace", fontSize: "0.82em", lineHeight: 1.6 }}>
+                          {changes.map((c) => (
+                            <div key={c.id}>
+                              {RISK_BADGES[c.risk].icon} <strong>{c.id}</strong> ·{" "}
+                              <span style={{ opacity: 0.7 }}>{c.from}</span> →{" "}
+                              <span style={{ color: "#f97316", fontWeight: 600 }}>{c.to}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  {safeMode === "strict" && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ opacity: 0.8, marginBottom: 4 }}>
+                        strict 추가 자동 차단 ({STRICT_BLOCKED_TOOLS.length}개):
+                      </div>
+                      <div style={{ fontFamily: "monospace", fontSize: "0.82em", opacity: 0.85 }}>
+                        {STRICT_BLOCKED_TOOLS.map((t) => (
+                          <div key={t}>🔴 {t}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </section>
 
           {/* Phase 81 (v0.6.25) — Lee Profile + Memory Auto-Loader.
