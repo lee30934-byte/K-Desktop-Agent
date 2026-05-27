@@ -1255,6 +1255,13 @@ export default function App() {
         // 첫 질문을 ElicitationDialog 로 띄우고, K 가 선택하면 다음 질문 또는 다음 turn 의
         // user message prefix 로 박음. 답 미선택 시 (cancel) 첫 옵션 자동 선택 + 다음 메시지에
         // prefix 박힘 — 작업이 멈추지 않게.
+        //
+        // Phase 95 (v0.6.37) — ToolMessage 즉시 박기 (race window 0).
+        //   종전엔 별도 tool_use event 가 박는 ToolMessage 를 기다렸지만 7회 모두 fail
+        //   (sidecar.log: "ToolMessage 못 찾음 — text-prefix 만 작동"). 이제 ask_user_question
+        //   event 받자마자 placeholder ToolMessage 를 박아둠 → K 답 시점에 patchAskToolMessageOutput
+        //   이 그 ToolMessage 의 toolOutput 자리를 채움 → 진짜 tool_result 가 history 에 합성됨
+        //   → model 이 K 답을 명시적 tool 응답으로 인식 (text-prefix 무시 위험 0).
         const evAny = ev as any;
         if (!evAny.questions || evAny.questions.length === 0) break;
 
@@ -1265,6 +1272,38 @@ export default function App() {
           currentIndex: 0,
           collectedAnswers: [],
         };
+
+        // Phase 95 — placeholder ToolMessage 즉시 박음. id 는 sidecar 가 tool_msg_id 로 명시
+        // 했으면 그대로, 없으면 fallback 으로 `${id}-tool-${tool_use_id}` 합성.
+        try {
+          const tmId =
+            typeof evAny.tool_msg_id === "string" && evAny.tool_msg_id
+              ? (evAny.tool_msg_id as string)
+              : `${evAny.id}-tool-${evAny.tool_use_id}`;
+          const askToolMsg: ChatMessage = {
+            id: tmId,
+            role: "tool",
+            toolId: evAny.tool_use_id,
+            toolName: "AskUserQuestion",
+            toolInput: { questions: evAny.questions },
+            content: "",
+            status: "pending",
+            timestamp: Date.now(),
+          };
+          setMessages((prev) => {
+            // 중복 박힘 방지 — 같은 id 의 ToolMessage 가 이미 있으면 skip
+            if (prev.some((m) => m.id === tmId)) return prev;
+            return [...prev, askToolMsg];
+          });
+          queueMessageSave(askToolMsg);
+          logger.log(
+            `[ask_user_question] placeholder ToolMessage 박음 (id=${tmId}, tool_use_id=${evAny.tool_use_id})`,
+          );
+        } catch (err) {
+          logger.warn(
+            `[ask_user_question] placeholder ToolMessage 박기 실패 — fallback patch 만 작동: ${err}`,
+          );
+        }
 
         const firstQ = evAny.questions[0];
         setElicitationRequest({
@@ -2472,27 +2511,60 @@ export default function App() {
   //   - DB 영속화로 다음 turn / resume 에도 보존
   const patchAskToolMessageOutput = useStableCallback(
     (turnId: string, toolUseId: string, kAnswer: string) => {
+      // Phase 68 (v0.6.4) — primary 매칭: `${turnId}-tool-${toolUseId}` 정확 일치.
+      // Phase 95 (v0.6.37) — fallback: primary 매칭 fail 시 `toolId === toolUseId` 인 가장 최근
+      //   ToolMessage 매칭. sidecar 의 tool_msg_id 가 다른 포맷으로 박혔거나 id 일부 mismatch 시도
+      //   K 의 답이 진짜 tool_result 로 박힘 (text-prefix fallback 안 거침). 7회 모두 fail 의
+      //   root-cause cleanup.
       const targetId = `${turnId}-tool-${toolUseId}`;
       let updated: ChatMessage | null = null;
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.role === "tool" && m.id === targetId) {
+      let matchedBy: "primary" | "fallback" | null = null;
+      setMessages((prev) => {
+        // 1) Primary 매칭 — 정확 id
+        let primaryHit = false;
+        const afterPrimary = prev.map((m) => {
+          if (!primaryHit && m.role === "tool" && m.id === targetId) {
+            primaryHit = true;
             const next: ChatMessage = {
               ...m,
               toolOutput: kAnswer,
               status: "success" as const,
             };
             updated = next;
+            matchedBy = "primary";
             return next;
           }
           return m;
-        }),
-      );
+        });
+        if (primaryHit) return afterPrimary;
+
+        // 2) Fallback — toolId === toolUseId 인 가장 최근 (배열 끝쪽) ToolMessage
+        for (let i = prev.length - 1; i >= 0; i--) {
+          const m = prev[i];
+          if (m.role === "tool" && m.toolId === toolUseId) {
+            const next: ChatMessage = {
+              ...m,
+              toolOutput: kAnswer,
+              status: "success" as const,
+            };
+            updated = next;
+            matchedBy = "fallback";
+            const copy = [...prev];
+            copy[i] = next;
+            return copy;
+          }
+        }
+        return prev; // 둘 다 실패
+      });
       if (updated) {
         queueMessageSave(updated);
-        logger.log(`[ask_user_question] ToolMessage.toolOutput patched (tool_use_id=${toolUseId})`);
+        logger.log(
+          `[ask_user_question] ToolMessage.toolOutput patched (tool_use_id=${toolUseId}, via=${matchedBy})`,
+        );
       } else {
-        logger.warn(`[ask_user_question] ToolMessage 못 찾음 (turnId=${turnId}, toolUseId=${toolUseId}) — text-prefix 만 작동`);
+        logger.warn(
+          `[ask_user_question] ToolMessage 못 찾음 — primary+fallback 둘 다 실패 (turnId=${turnId}, toolUseId=${toolUseId}) — text-prefix 만 작동`,
+        );
       }
     },
   );

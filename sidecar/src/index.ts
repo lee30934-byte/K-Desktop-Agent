@@ -1976,10 +1976,16 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
                       "info",
                       `[AskUserQuestion] 모델 질문 ${askInput.questions.length}개 캡처 → KDA elicitation 라우팅`,
                     );
+                    // Phase 95 (v0.6.37) — tool_msg_id 명시 추가.
+                    // 종전엔 App.tsx 가 ask_user_question event 받은 후 별도 tool_use event 의
+                    // ToolMessage 가 박히길 기다렸으나, race 또는 mismatch 로 patchAskToolMessageOutput
+                    // 이 7회 모두 fail (sidecar.log 확인). 이제 tool_msg_id 를 명시 전달 →
+                    // App.tsx 가 ask_user_question 받자마자 그 id 로 ToolMessage 미리 박을 수 있음.
                     emit({
                       type: "ask_user_question",
                       id: msg.id,
                       tool_use_id: block.id,
+                      tool_msg_id: `${msg.id}-tool-${block.id}`,
                       questions: askInput.questions,
                     } as any);
                     // 기존 tool_use 이벤트도 함께 emit — 메시지 본문에 흔적 남겨 K 가 어떤 질문이

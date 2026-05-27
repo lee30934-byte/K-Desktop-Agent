@@ -250,6 +250,11 @@ export type SidecarEvent =
       type: "ask_user_question";
       id: string;            // turn id (msg.id)
       tool_use_id: string;   // Anthropic 의 tool_use.id (재추적용)
+      // Phase 95 (v0.6.37) — App.tsx 가 ToolMessage 를 즉시 박을 수 있도록 sidecar 가 명시.
+      // 이전엔 별도 tool_use event 가 박는 ToolMessage 의 id 와 patchAskToolMessageOutput 의
+      // targetId 가 race / mismatch 로 7회 모두 fail (sidecar.log 확인) → text-prefix fallback 만
+      // 동작. 이제 명시 전달로 race window 0.
+      tool_msg_id?: string;  // `${id}-tool-${tool_use_id}` 형식
       questions: Array<{
         question: string;
         header: string;
