@@ -140,27 +140,36 @@ export type SidecarEvent =
       // Phase 87 (v0.6.30) — Git Memory Sync 결과 알림.
       // kind="ok" / "error" / "conflict". conflict 시 conflicted_files 있음 →
       // Settings UI 가 ElicitationDialog 로 K 결정 받음 ("local" 또는 "remote" keep).
+      // Phase 89 (v0.6.31) — target: "personal" | "team" 으로 어느 SyncTarget 인지 표시.
       type: "git_sync_event";
       kind: "ok" | "error" | "conflict";
       message: string;
       reason: "startup" | "interval" | "manual";
       action?: string;
       conflicted_files?: string[];
+      target?: "personal" | "team";
     }
   | {
       // Phase 87 — git_sync_status_request 의 응답.
-      // Settings UI 가 "마지막 sync: 2분 전 ✓" + git 미설치 안내 등 표시.
+      // Phase 89 — personal + team 둘 다 상태 박힘.
       type: "git_sync_status";
       git_installed: boolean;
       git_version: string | null;
+      // Personal
       initialized: boolean;
       has_remote: boolean;
       local_changes: number;
       branch: string | null;
+      // Phase 89 — Team (선택, teamRepoUrl 미설정이면 전부 false/0/null)
+      team_initialized: boolean;
+      team_has_remote: boolean;
+      team_local_changes: number;
+      team_branch: string | null;
       last_sync_at: number;
       last_sync_status: string;
       enabled: boolean;
       repo_url: string;
+      team_repo_url: string;
     }
   | {
       // Phase 52 (v0.5.40) — Codex 런타임이 token_count event 의 model_context_window 로

@@ -1,8 +1,10 @@
 /**
- * Git Memory Sync — Phase 87 (v0.6.30).
+ * Git Memory Sync — Phase 87 (v0.6.30) + Phase 89 (v0.6.31).
  *
- * lee-profile.md + memory/ 폴더만 GitHub private repo 와 동기화.
- * conversations.db, first-run-completed.flag, sidecar-config.json 등 K 의 다른 파일은 .gitignore 로 제외.
+ * Phase 87: lee-profile.md + memory/ 폴더만 GitHub private repo 와 동기화 (personal).
+ * Phase 89: + 선택적 team repo (~/.kda/team-memory/, memory/ 만, lee-profile 절대 X) hybrid sync.
+ *
+ * 두 sync 모두 같은 인프라 (SyncTarget 패턴) — kind + cwd + repoUrl + gitignore 만 다름.
  *
  * 설계 원칙 (memory/feedback_root_cause):
  *   - K 의 system git CLI 사용 (별도 dependency 0)
@@ -13,6 +15,7 @@
  * memory/pitfall_powershell_secret_bom + pitfall_av_blocks_bundled_native_binary 의 정신:
  *   - PAT 같은 secret 은 절대 평문 디스크 저장 X
  *   - K 가 명시적으로 enabled 안 한 sync 는 발사 안 함 (Settings 토글 — user affordance)
+ *   - team repo 는 .gitignore 에서 lee-profile.md 절대 제외 → 실수로 commit 불가
  */
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -22,10 +25,30 @@ import * as os from "node:os";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
+export type SyncKind = "personal" | "team";
+
+/**
+ * SyncTarget — 한 sync 의 모든 영역 (cwd + repo + gitignore 내용).
+ * personal / team 둘 다 동일 함수로 처리 — kind 로만 구분.
+ */
+export interface SyncTarget {
+  kind: SyncKind;
+  cwd: string;
+  repoUrl: string;
+  /** 박을 .gitignore 내용 (gitignore 의 라인들) */
+  gitignoreContent: string;
+}
+
 export interface GitSyncConfig {
   enabled: boolean;
-  /** GitHub repo URL — e.g. "https://github.com/lee30934-byte/kda-personal-memory.git" */
+  /** Personal repo URL — lee-profile.md + memory/ 동기화 */
   repoUrl: string;
+  /**
+   * Phase 89 — Team repo URL (선택). 빈 string 이면 team sync 비활성.
+   * Team repo 는 lee-profile.md 절대 안 박힘 — 회사 ID/password 같은 비밀 보호.
+   * 별도 폴더 ~/.kda/team-memory/ 안에 clone, sidecar 가 memory/ 로 prompt 에 추가.
+   */
+  teamRepoUrl: string;
   /** Sync 간격 (ms) — 기본 30분. 0 이면 시작/명시만 (interval 없음) */
   intervalMs: number;
   /** 마지막 sync 의 unix timestamp (sec). 0 = 아직 안 함 */
@@ -37,6 +60,7 @@ export interface GitSyncConfig {
 export const GIT_SYNC_CONFIG_DEFAULTS: GitSyncConfig = {
   enabled: false,
   repoUrl: "",
+  teamRepoUrl: "",
   intervalMs: 30 * 60 * 1000, // 30 minutes
   lastSyncAt: 0,
   lastSyncStatus: "",
@@ -49,13 +73,66 @@ export interface GitSyncResult {
   message: string;
   /** 충돌 발생 시 conflicted file paths (relative to repo root) */
   conflictedFiles?: string[];
+  /** Phase 89 — 어느 SyncTarget 의 결과인지 (frontend 가 personal/team 구분) */
+  kind?: SyncKind;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-/** ~/.kda/ — sidecar-config + lee-profile.md + memory/ 가 사는 폴더. git working dir. */
+/** ~/.kda/ — sidecar-config + lee-profile.md + memory/ 가 사는 폴더. git working dir (personal). */
 export function getKdaRoot(): string {
   return path.join(os.homedir(), ".kda");
+}
+
+/** Phase 89 — ~/.kda/team-memory/ — team repo 의 working dir. memory/ 만 추적, lee-profile 절대 X. */
+export function getTeamMemoryRoot(): string {
+  return path.join(os.homedir(), ".kda", "team-memory");
+}
+
+/**
+ * .gitignore 내용 — kind 별로 다름.
+ *   personal: lee-profile.md + memory/ 만 추적
+ *   team:     memory/ 만 추적 (lee-profile.md 명시적 무시 — 실수 commit 차단)
+ */
+const PERSONAL_GITIGNORE = [
+  "# KDA Personal Memory Sync — lee-profile.md + memory/ 만 추적",
+  "*",
+  "!lee-profile.md",
+  "!memory/",
+  "!memory/**",
+  "!.gitignore",
+  "",
+].join("\n");
+
+const TEAM_GITIGNORE = [
+  "# KDA Team Memory Sync — memory/ 만 추적, lee-profile 절대 X (개인 비밀 보호)",
+  "*",
+  "!memory/",
+  "!memory/**",
+  "!.gitignore",
+  "# 명시적 차단 (실수로 박혀도 무시):",
+  "lee-profile.md",
+  "sidecar-config.json",
+  "conversations.db",
+  "",
+].join("\n");
+
+/** Phase 89 — 한 SyncTarget 만들기 helper */
+export function makeSyncTarget(kind: SyncKind, repoUrl: string): SyncTarget {
+  if (kind === "personal") {
+    return {
+      kind,
+      cwd: getKdaRoot(),
+      repoUrl,
+      gitignoreContent: PERSONAL_GITIGNORE,
+    };
+  }
+  return {
+    kind,
+    cwd: getTeamMemoryRoot(),
+    repoUrl,
+    gitignoreContent: TEAM_GITIGNORE,
+  };
 }
 
 /** 모든 git CLI 호출의 공통 wrapper. cwd 고정, timeout 강제. */
@@ -141,29 +218,18 @@ export function storeGitCredential(repoUrl: string, pat: string, username = "x-a
   return { ok: true, message: `credential 저장됨 (host=${host}, username=${username})` };
 }
 
-/** ~/.kda/ 에 .git 이 있는지. */
-function isGitRepo(): boolean {
-  return existsSync(path.join(getKdaRoot(), ".git"));
+/** 지정 cwd 에 .git 이 있는지. */
+function isGitRepo(cwd: string): boolean {
+  return existsSync(path.join(cwd, ".git"));
 }
 
 /**
- * .gitignore 박음 — lee-profile.md + memory/ 만 추적. 나머지 (conversations.db 등) 제외.
+ * .gitignore 박음 — target.gitignoreContent 그대로.
  * 멱등 (이미 동일하면 skip).
  */
-function ensureGitignore(): void {
-  const ignorePath = path.join(getKdaRoot(), ".gitignore");
-  // K 의 ~/.kda/ 의 모든 파일을 default 제외 → lee-profile.md + memory/ + .gitignore 만 추적.
-  // sidecar-config.json 도 제외 — PAT 가 절대 commit 되지 않음.
-  const content = [
-    "# Auto-generated by KDA Phase 87 (Git Memory Sync)",
-    "# lee-profile.md + memory/ 만 추적, 나머지는 전부 제외.",
-    "*",
-    "!lee-profile.md",
-    "!memory/",
-    "!memory/**",
-    "!.gitignore",
-    "",
-  ].join("\n");
+function ensureGitignore(target: SyncTarget): void {
+  const ignorePath = path.join(target.cwd, ".gitignore");
+  const content = target.gitignoreContent;
   if (existsSync(ignorePath)) {
     try {
       const existing = readFileSync(ignorePath, "utf-8");
@@ -179,50 +245,74 @@ function ensureGitignore(): void {
  * 초기 setup — .git 없으면 init + .gitignore + user.name/email + remote 설정.
  * 멱등. 이미 setup 됐으면 remote URL 만 update.
  */
-function ensureRepoSetup(repoUrl: string): GitSyncResult {
-  const root = getKdaRoot();
-  if (!existsSync(root)) {
-    mkdirSync(root, { recursive: true });
+function ensureRepoSetup(target: SyncTarget): GitSyncResult {
+  if (!existsSync(target.cwd)) {
+    mkdirSync(target.cwd, { recursive: true });
   }
-  ensureGitignore();
-  if (!isGitRepo()) {
-    const init = runGit(["init", "-b", "main"]);
+  // Team 인 경우 memory/ 하위 폴더가 처음엔 없을 수 있음 → 빈 폴더 만들어서 git 이 인식하게
+  if (target.kind === "team") {
+    const memDir = path.join(target.cwd, "memory");
+    if (!existsSync(memDir)) mkdirSync(memDir, { recursive: true });
+  }
+  ensureGitignore(target);
+  if (!isGitRepo(target.cwd)) {
+    const init = runGit(["init", "-b", "main"], { cwd: target.cwd });
     if (!init.ok) {
       // 구 git 은 -b 옵션 없음 → 기본 branch 후 rename
-      const fallback = runGit(["init"]);
+      const fallback = runGit(["init"], { cwd: target.cwd });
       if (!fallback.ok) {
-        return { ok: false, action: "init", message: `git init 실패: ${init.stderr || fallback.stderr}` };
+        return {
+          ok: false,
+          action: "init",
+          message: `git init 실패: ${init.stderr || fallback.stderr}`,
+          kind: target.kind,
+        };
       }
-      runGit(["checkout", "-b", "main"]); // 기존 master/main 정리는 자동 (빈 repo)
+      runGit(["checkout", "-b", "main"], { cwd: target.cwd });
     }
     // user.name / user.email 은 commit 에 필수. K 가 global 로 안 박았을 수 있어 local 설정.
     const host = os.hostname() || "kda-host";
-    runGit(["config", "user.email", `kda@${host}.local`]);
-    runGit(["config", "user.name", `KDA Sync (${host})`]);
+    runGit(["config", "user.email", `kda@${host}.local`], { cwd: target.cwd });
+    runGit(["config", "user.name", `KDA Sync (${host})`], { cwd: target.cwd });
   }
   // remote 설정 — 이미 있으면 set-url, 없으면 add
-  const remoteShow = runGit(["remote", "get-url", "origin"]);
+  const remoteShow = runGit(["remote", "get-url", "origin"], { cwd: target.cwd });
   if (remoteShow.ok) {
-    if (remoteShow.stdout.trim() !== repoUrl) {
-      const setUrl = runGit(["remote", "set-url", "origin", repoUrl]);
+    if (remoteShow.stdout.trim() !== target.repoUrl) {
+      const setUrl = runGit(["remote", "set-url", "origin", target.repoUrl], { cwd: target.cwd });
       if (!setUrl.ok) {
-        return { ok: false, action: "init", message: `remote set-url 실패: ${setUrl.stderr}` };
+        return {
+          ok: false,
+          action: "init",
+          message: `remote set-url 실패: ${setUrl.stderr}`,
+          kind: target.kind,
+        };
       }
     }
   } else {
-    const addRemote = runGit(["remote", "add", "origin", repoUrl]);
+    const addRemote = runGit(["remote", "add", "origin", target.repoUrl], { cwd: target.cwd });
     if (!addRemote.ok) {
-      return { ok: false, action: "init", message: `remote add 실패: ${addRemote.stderr}` };
+      return {
+        ok: false,
+        action: "init",
+        message: `remote add 실패: ${addRemote.stderr}`,
+        kind: target.kind,
+      };
     }
   }
-  return { ok: true, action: "init", message: `repo setup 완료 (root=${root}, remote=${repoUrl})` };
+  return {
+    ok: true,
+    action: "init",
+    message: `repo setup 완료 (kind=${target.kind}, root=${target.cwd})`,
+    kind: target.kind,
+  };
 }
 
 /**
  * 충돌 파일 검출 — `git diff --name-only --diff-filter=U`.
  */
-function detectConflictFiles(): string[] {
-  const r = runGit(["diff", "--name-only", "--diff-filter=U"]);
+function detectConflictFiles(cwd: string): string[] {
+  const r = runGit(["diff", "--name-only", "--diff-filter=U"], { cwd });
   if (!r.ok) return [];
   return r.stdout
     .split(/\r?\n/)
@@ -236,94 +326,101 @@ function detectConflictFiles(): string[] {
  *
  * 충돌 처리: --rebase --autostash 로 자동 stash + replay. 충돌 시 rebase abort + 충돌 파일 리포트.
  */
-export function syncPull(): GitSyncResult {
-  if (!isGitRepo()) {
-    return { ok: false, action: "pull", message: "git repo not initialized" };
+export function syncPull(target: SyncTarget): GitSyncResult {
+  if (!isGitRepo(target.cwd)) {
+    return { ok: false, action: "pull", message: "git repo not initialized", kind: target.kind };
   }
   // fetch 먼저 — 빈 remote 면 여기서 reject 안 함
-  const fetch = runGit(["fetch", "origin"], { timeoutMs: 60_000 });
+  const fetch = runGit(["fetch", "origin"], { cwd: target.cwd, timeoutMs: 60_000 });
   if (!fetch.ok) {
-    // 첫 push 전이면 main branch 가 remote 에 없어 fetch 가 0 으로 끝나는 경우 있음.
-    // stderr 에 "couldn't find remote ref" 같은 메시지가 보이면 graceful skip.
     const benign = /couldn't find remote ref|remote ref does not exist|empty repository/i.test(
       fetch.stderr,
     );
     if (!benign) {
-      return { ok: false, action: "pull", message: `git fetch 실패: ${fetch.stderr.slice(0, 300)}` };
+      return {
+        ok: false,
+        action: "pull",
+        message: `git fetch 실패: ${fetch.stderr.slice(0, 300)}`,
+        kind: target.kind,
+      };
     }
-    return { ok: true, action: "pull", message: "empty remote (첫 push 전) — skip" };
+    return { ok: true, action: "pull", message: "empty remote (첫 push 전) — skip", kind: target.kind };
   }
   // origin/main 이 있는지 확인
-  const remoteRef = runGit(["rev-parse", "--verify", "origin/main"]);
+  const remoteRef = runGit(["rev-parse", "--verify", "origin/main"], { cwd: target.cwd });
   if (!remoteRef.ok) {
-    return { ok: true, action: "pull", message: "remote main 없음 (empty repo) — skip" };
+    return { ok: true, action: "pull", message: "remote main 없음 (empty repo) — skip", kind: target.kind };
   }
   // 로컬에 commit 이 없으면 reset --hard
-  const head = runGit(["rev-parse", "--verify", "HEAD"]);
+  const head = runGit(["rev-parse", "--verify", "HEAD"], { cwd: target.cwd });
   if (!head.ok) {
-    const reset = runGit(["reset", "--hard", "origin/main"]);
+    const reset = runGit(["reset", "--hard", "origin/main"], { cwd: target.cwd });
     if (!reset.ok) {
-      return { ok: false, action: "pull", message: `초기 reset 실패: ${reset.stderr}` };
+      return { ok: false, action: "pull", message: `초기 reset 실패: ${reset.stderr}`, kind: target.kind };
     }
-    return { ok: true, action: "pull", message: "초기 동기화 (remote → local)" };
+    return { ok: true, action: "pull", message: "초기 동기화 (remote → local)", kind: target.kind };
   }
   // rebase pull
-  const rebase = runGit(["rebase", "--autostash", "origin/main"], { timeoutMs: 60_000 });
+  const rebase = runGit(["rebase", "--autostash", "origin/main"], { cwd: target.cwd, timeoutMs: 60_000 });
   if (!rebase.ok) {
-    const conflicts = detectConflictFiles();
-    // rebase abort — K 가 elicit 결정 전까진 깨끗한 상태 유지
-    runGit(["rebase", "--abort"]);
+    const conflicts = detectConflictFiles(target.cwd);
+    runGit(["rebase", "--abort"], { cwd: target.cwd });
     return {
       ok: false,
       action: "conflict",
       message: `pull rebase 충돌 — ${conflicts.length}개 파일`,
       conflictedFiles: conflicts,
+      kind: target.kind,
     };
   }
-  return { ok: true, action: "pull", message: `pull 성공 ${rebase.stdout.slice(0, 200)}` };
+  return { ok: true, action: "pull", message: `pull 성공 ${rebase.stdout.slice(0, 200)}`, kind: target.kind };
 }
 
 /**
  * 로컬 변경이 있는지 검사. 있으면 commit + push.
- *
- * commit 메시지: "auto: <hostname> <ISO>"
- * push 실패 시 (remote 가 앞서 있으면) — 호출자가 syncPull() 먼저 호출 보장.
  */
-export function syncCommitAndPush(): GitSyncResult {
-  if (!isGitRepo()) {
-    return { ok: false, action: "commit-push", message: "git repo not initialized" };
+export function syncCommitAndPush(target: SyncTarget): GitSyncResult {
+  if (!isGitRepo(target.cwd)) {
+    return { ok: false, action: "commit-push", message: "git repo not initialized", kind: target.kind };
   }
-  // add 먼저 — .gitignore 가 lee-profile.md + memory/ 만 통과시킴
-  const add = runGit(["add", "-A"]);
+  const add = runGit(["add", "-A"], { cwd: target.cwd });
   if (!add.ok) {
-    return { ok: false, action: "commit-push", message: `git add 실패: ${add.stderr.slice(0, 200)}` };
+    return {
+      ok: false,
+      action: "commit-push",
+      message: `git add 실패: ${add.stderr.slice(0, 200)}`,
+      kind: target.kind,
+    };
   }
-  // 변경 있는지 확인
-  const status = runGit(["status", "--porcelain"]);
+  const status = runGit(["status", "--porcelain"], { cwd: target.cwd });
   if (!status.ok) {
-    return { ok: false, action: "commit-push", message: `git status 실패: ${status.stderr}` };
+    return { ok: false, action: "commit-push", message: `git status 실패: ${status.stderr}`, kind: target.kind };
   }
   if (status.stdout.trim().length === 0) {
-    return { ok: true, action: "no-change", message: "변경 없음 — push 생략" };
+    return { ok: true, action: "no-change", message: "변경 없음 — push 생략", kind: target.kind };
   }
-  // commit
   const hostname = os.hostname() || "host";
   const iso = new Date().toISOString();
   const msg = `auto: ${hostname} ${iso}`;
-  const commit = runGit(["commit", "-m", msg]);
+  const commit = runGit(["commit", "-m", msg], { cwd: target.cwd });
   if (!commit.ok) {
-    return { ok: false, action: "commit-push", message: `git commit 실패: ${commit.stderr.slice(0, 200)}` };
+    return {
+      ok: false,
+      action: "commit-push",
+      message: `git commit 실패: ${commit.stderr.slice(0, 200)}`,
+      kind: target.kind,
+    };
   }
-  // push
-  const push = runGit(["push", "-u", "origin", "main"], { timeoutMs: 60_000 });
+  const push = runGit(["push", "-u", "origin", "main"], { cwd: target.cwd, timeoutMs: 60_000 });
   if (!push.ok) {
     return {
       ok: false,
       action: "commit-push",
       message: `git push 실패 (remote 가 앞서 있을 수 있음 — 다음 sync 가 pull 후 재시도): ${push.stderr.slice(0, 200)}`,
+      kind: target.kind,
     };
   }
-  return { ok: true, action: "commit-push", message: `commit + push 완료: ${msg}` };
+  return { ok: true, action: "commit-push", message: `commit + push 완료: ${msg}`, kind: target.kind };
 }
 
 /**
@@ -331,80 +428,79 @@ export function syncCommitAndPush(): GitSyncResult {
  *
  * 충돌 시 conflictedFiles 박은 결과 리턴. 호출자가 frontend 에 elicit 발사 책임.
  */
-export function syncFull(repoUrl: string): GitSyncResult {
-  const setup = ensureRepoSetup(repoUrl);
+export function syncFull(target: SyncTarget): GitSyncResult {
+  const setup = ensureRepoSetup(target);
   if (!setup.ok) return setup;
-  const pull = syncPull();
-  if (!pull.ok && pull.action === "conflict") return pull; // 충돌 시 push 하지 말고 elicit
+  const pull = syncPull(target);
+  if (!pull.ok && pull.action === "conflict") return pull;
   if (!pull.ok) return pull;
-  const push = syncCommitAndPush();
+  const push = syncCommitAndPush(target);
   return push;
 }
 
 /**
  * 충돌 해결 — 한 파일에 대해 K 의 결정 ("local" | "remote") 을 받아 적용.
- * 모든 충돌 해결 후 rebase --continue 또는 commit 하나로 마무리.
- *
- * v1: 단순히 "양쪽 모두 local 채택" 또는 "양쪽 모두 remote 채택" 만 지원.
- * 파일 단위 / 라인 단위 세밀 해결은 다음 phase.
- *
- * 동작: detectConflictFiles() 가 비어있으면 no-op. 비어있지 않으면:
- *   - keepSide = "local" → `git checkout --ours .`
- *   - keepSide = "remote" → `git checkout --theirs .`
- *   그 후 `git add -A && git rebase --continue` (rebase 중이면) 또는 `git commit`
  */
-export function syncResolveConflict(keepSide: "local" | "remote"): GitSyncResult {
-  if (!isGitRepo()) {
-    return { ok: false, action: "conflict", message: "git repo not initialized" };
+export function syncResolveConflict(target: SyncTarget, keepSide: "local" | "remote"): GitSyncResult {
+  if (!isGitRepo(target.cwd)) {
+    return { ok: false, action: "conflict", message: "git repo not initialized", kind: target.kind };
   }
   const flag = keepSide === "local" ? "--ours" : "--theirs";
-  const checkout = runGit(["checkout", flag, "."]);
+  const checkout = runGit(["checkout", flag, "."], { cwd: target.cwd });
   if (!checkout.ok) {
     return {
       ok: false,
       action: "conflict",
       message: `checkout ${flag} 실패: ${checkout.stderr.slice(0, 200)}`,
+      kind: target.kind,
     };
   }
-  runGit(["add", "-A"]);
-  // rebase 진행 중인지 확인 — .git/rebase-merge 또는 rebase-apply 폴더
-  const rebaseMerge = existsSync(path.join(getKdaRoot(), ".git", "rebase-merge"));
-  const rebaseApply = existsSync(path.join(getKdaRoot(), ".git", "rebase-apply"));
+  runGit(["add", "-A"], { cwd: target.cwd });
+  const rebaseMerge = existsSync(path.join(target.cwd, ".git", "rebase-merge"));
+  const rebaseApply = existsSync(path.join(target.cwd, ".git", "rebase-apply"));
   if (rebaseMerge || rebaseApply) {
-    const cont = runGit(["rebase", "--continue"], { timeoutMs: 30_000 });
+    const cont = runGit(["rebase", "--continue"], { cwd: target.cwd, timeoutMs: 30_000 });
     if (!cont.ok) {
-      return { ok: false, action: "conflict", message: `rebase --continue 실패: ${cont.stderr.slice(0, 200)}` };
+      return {
+        ok: false,
+        action: "conflict",
+        message: `rebase --continue 실패: ${cont.stderr.slice(0, 200)}`,
+        kind: target.kind,
+      };
     }
   } else {
-    // 일반 merge 상태 — commit
     const hostname = os.hostname() || "host";
-    const cm = runGit(["commit", "-m", `resolve: keep ${keepSide} (${hostname})`]);
+    const cm = runGit(["commit", "-m", `resolve: keep ${keepSide} (${hostname})`], { cwd: target.cwd });
     if (!cm.ok) {
-      return { ok: false, action: "conflict", message: `merge resolve commit 실패: ${cm.stderr.slice(0, 200)}` };
+      return {
+        ok: false,
+        action: "conflict",
+        message: `merge resolve commit 실패: ${cm.stderr.slice(0, 200)}`,
+        kind: target.kind,
+      };
     }
   }
-  return { ok: true, action: "conflict", message: `충돌 해결 — keep ${keepSide}` };
+  return { ok: true, action: "conflict", message: `충돌 해결 — keep ${keepSide}`, kind: target.kind };
 }
 
 /**
  * Status 요약 — UI 에 "마지막 sync: 2분 전 ✓" 표시용.
- * 빠른 헬스 체크 (network 호출 없음).
  */
-export function syncStatus(): {
+export function syncStatus(target: SyncTarget): {
   initialized: boolean;
   hasRemote: boolean;
   localChanges: number;
   branch: string | null;
 } {
-  if (!isGitRepo()) {
+  if (!isGitRepo(target.cwd)) {
     return { initialized: false, hasRemote: false, localChanges: 0, branch: null };
   }
-  const status = runGit(["status", "--porcelain"]);
+  const status = runGit(["status", "--porcelain"], { cwd: target.cwd });
   const localChanges = status.ok
     ? status.stdout.split(/\r?\n/).filter((l) => l.trim().length > 0).length
     : 0;
-  const remote = runGit(["remote", "get-url", "origin"]);
-  const branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const remote = runGit(["remote", "get-url", "origin"], { cwd: target.cwd });
+  const branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: target.cwd });
   return {
     initialized: true,
     hasRemote: remote.ok && remote.stdout.trim().length > 0,

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -749,9 +750,12 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     return "off";
   });
   // Phase 87 (v0.6.30) — Git Memory Sync state
+  // Phase 89 (v0.6.31) — Hybrid: + team repo + 안내 워크스루 토글
   const [gitSyncEnabled, setGitSyncEnabled] = useState(false);
   const [gitSyncRepoUrl, setGitSyncRepoUrl] = useState("");
+  const [gitSyncTeamRepoUrl, setGitSyncTeamRepoUrl] = useState("");
   const [gitSyncPat, setGitSyncPat] = useState(""); // 평문 — Settings 떠 있는 동안만, 저장 후 즉시 비움
+  const [gitSyncTeamPat, setGitSyncTeamPat] = useState(""); // team PAT (선택, 같은 PAT 재사용 가능)
   const [gitSyncStatus, setGitSyncStatus] = useState<{
     git_installed: boolean;
     git_version: string | null;
@@ -759,12 +763,24 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     has_remote: boolean;
     local_changes: number;
     branch: string | null;
+    team_initialized: boolean;
+    team_has_remote: boolean;
+    team_local_changes: number;
+    team_branch: string | null;
     last_sync_at: number;
     last_sync_status: string;
   } | null>(null);
   const [gitSyncBusy, setGitSyncBusy] = useState(false);
-  const [gitSyncMessage, setGitSyncMessage] = useState<{ kind: "ok" | "error" | "conflict"; text: string } | null>(null);
-  const [gitSyncConflictFiles, setGitSyncConflictFiles] = useState<string[] | null>(null);
+  const [gitSyncMessage, setGitSyncMessage] = useState<{ kind: "ok" | "error" | "conflict"; text: string; target?: "personal" | "team" } | null>(null);
+  const [gitSyncConflict, setGitSyncConflict] = useState<{ files: string[]; target: "personal" | "team" } | null>(null);
+  // Phase 88 — 안내 워크스루 토글 (default 열림, 한 번 닫으면 localStorage 기억)
+  const [gitSyncShowGuide, setGitSyncShowGuide] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("kda_git_sync_guide_dismissed") !== "1";
+    } catch {
+      return true;
+    }
+  });
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "downloading" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateProgress, setUpdateProgress] = useState(0);
@@ -1083,21 +1099,30 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             has_remote: ev.has_remote,
             local_changes: ev.local_changes,
             branch: ev.branch,
+            team_initialized: !!ev.team_initialized,
+            team_has_remote: !!ev.team_has_remote,
+            team_local_changes: typeof ev.team_local_changes === "number" ? ev.team_local_changes : 0,
+            team_branch: ev.team_branch ?? null,
             last_sync_at: ev.last_sync_at,
             last_sync_status: ev.last_sync_status,
           });
           setGitSyncEnabled(!!ev.enabled);
           setGitSyncRepoUrl(typeof ev.repo_url === "string" ? ev.repo_url : "");
+          setGitSyncTeamRepoUrl(typeof ev.team_repo_url === "string" ? ev.team_repo_url : "");
         } else if (ev.type === "git_sync_event") {
           setGitSyncBusy(false);
           setGitSyncMessage({
             kind: ev.kind,
             text: ev.message ?? "",
+            target: ev.target,
           });
           if (ev.kind === "conflict") {
-            setGitSyncConflictFiles(ev.conflicted_files ?? []);
+            setGitSyncConflict({
+              files: ev.conflicted_files ?? [],
+              target: ev.target ?? "personal",
+            });
           } else if (ev.kind === "ok") {
-            setGitSyncConflictFiles(null);
+            setGitSyncConflict(null);
           }
           // status 갱신 (lastSyncAt 반영)
           invoke("git_sync_status_request").catch(() => {});
@@ -3540,19 +3565,123 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             )}
           </section>
 
-          {/* Phase 87 (v0.6.30) — Git Memory Sync.
-              lee-profile.md + memory/ 폴더를 K 본인의 GitHub private repo 와 자동 동기화.
-              PAT 는 KDA 가 저장 안 함 — system git credential helper 에 한 번 박음. */}
+          {/* Phase 87 (v0.6.30) — Git Memory Sync + Phase 88 가이드 + Phase 89 hybrid (team repo).
+              Personal repo: lee-profile.md + memory/.  Team repo (선택): memory/ 만 (lee-profile 절대 X). */}
           <section className="settings-section" data-tab="safety">
             <div className="eyebrow">🔄 Memory Sync (Git)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
-                <div className="settings-row-title">개인 메모리 클라우드 동기화</div>
+                <div className="settings-row-title">개인 + 팀 메모리 클라우드 동기화</div>
                 <div className="settings-row-desc">
                   <code>lee-profile.md</code> + <code>memory/</code> 폴더를 GitHub private repo 와
                   자동 동기화합니다. 여러 PC 에서 같은 규칙·함정 기록을 공유.
+                  팀과 함께 학습할 함정만 별도로 공유하려면 <strong>팀 공유 repo</strong> 도 등록 가능 (선택).
                 </div>
               </div>
+
+              {/* Phase 88 — 첫 설정 가이드 (3 단계 워크스루) */}
+              {gitSyncShowGuide && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: "12px 14px",
+                    background: "rgba(79, 232, 225, 0.06)",
+                    border: "1px solid rgba(79, 232, 225, 0.3)",
+                    borderRadius: 6,
+                    fontSize: "0.88em",
+                    lineHeight: 1.55,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ fontWeight: 600 }}>📘 처음 설정 가이드 (3 단계)</div>
+                    <button
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "inherit",
+                        cursor: "pointer",
+                        opacity: 0.6,
+                        fontSize: "0.85em",
+                      }}
+                      title="가이드 닫기 (다시 안 보임)"
+                      onClick={() => {
+                        setGitSyncShowGuide(false);
+                        try {
+                          localStorage.setItem("kda_git_sync_guide_dismissed", "1");
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                    >
+                      ✕ 닫기
+                    </button>
+                  </div>
+                  <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
+                    <li>
+                      <strong>Private repo 만들기</strong> — GitHub 에서 빈 private repo 생성 (예:{" "}
+                      <code>kda-personal-memory</code>). README 추가 X (빈 repo 가 첫 push 깔끔).
+                      <button
+                        className="settings-btn"
+                        style={{ marginLeft: 8, fontSize: "0.85em", padding: "2px 8px" }}
+                        onClick={async () => {
+                          try {
+                            await openExternal("https://github.com/new");
+                          } catch {
+                            window.open("https://github.com/new", "_blank");
+                          }
+                        }}
+                        title="시스템 브라우저로 열기"
+                      >
+                        🌐 github.com/new 열기
+                      </button>
+                    </li>
+                    <li>
+                      <strong>Personal Access Token 발급</strong> — Developer settings → Tokens (classic
+                      또는 fine-grained). <strong>repo scope 만</strong> 체크. 만료기간 길게 (1년+).
+                      <button
+                        className="settings-btn"
+                        style={{ marginLeft: 8, fontSize: "0.85em", padding: "2px 8px" }}
+                        onClick={async () => {
+                          try {
+                            await openExternal("https://github.com/settings/tokens/new");
+                          } catch {
+                            window.open("https://github.com/settings/tokens/new", "_blank");
+                          }
+                        }}
+                        title="시스템 브라우저로 열기"
+                      >
+                        🔑 PAT 발급 페이지 열기
+                      </button>
+                    </li>
+                    <li>
+                      <strong>아래 폼에 입력</strong> — Repo URL (.git 으로 끝나는 https URL) + PAT.
+                      "💾 저장 + credential 등록" 클릭 → PAT 가 Windows Credential Manager 에 저장됩니다
+                      (KDA 는 PAT 보관 X).
+                    </li>
+                  </ol>
+                  <div style={{ marginTop: 10, opacity: 0.75, fontSize: "0.82em" }}>
+                    💡 팀 공유 메모리는 같은 단계로 별도 repo (예: <code>kda-team-memory</code>) 만들어
+                    아래 "팀 공유 repo" 영역에 입력하면 됩니다 — <code>lee-profile.md</code> 는 절대 안 박힘.
+                  </div>
+                </div>
+              )}
+
+              {!gitSyncShowGuide && (
+                <button
+                  className="settings-btn"
+                  style={{ marginTop: 10, fontSize: "0.85em", padding: "4px 10px", alignSelf: "flex-start" }}
+                  onClick={() => {
+                    setGitSyncShowGuide(true);
+                    try {
+                      localStorage.removeItem("kda_git_sync_guide_dismissed");
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                >
+                  📘 가이드 다시 보기
+                </button>
+              )}
 
               <div
                 style={{
@@ -3566,12 +3695,13 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 }}
               >
                 <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                  📌 중요 — 자신만의 private repo 사용 권장
+                  📌 중요 — Personal repo 는 혼자만 access
                 </div>
                 <div style={{ opacity: 0.85 }}>
-                  다른 사람과 같은 repo 를 쓰면 <code>lee-profile.md</code> (개인 응답 규칙) 까지
+                  다른 사람과 같은 personal repo 를 쓰면 <code>lee-profile.md</code> (개인 응답 규칙) 까지
                   공유됩니다. 회사 ID/password 같은 비밀이 들어 있으면 위험.
-                  일반 사용은 <code>your-github-id/kda-personal-memory</code> (혼자만 access).
+                  팀 공유는 별도 <strong>팀 공유 repo</strong> 사용 — <code>memory/</code> 폴더만 박히고
+                  <code>lee-profile</code> 은 .gitignore 로 명시 차단됩니다.
                 </div>
               </div>
 
@@ -3595,98 +3725,167 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </div>
               )}
 
-              {/* 입력 폼 */}
-              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.88em" }}>
-                  <span style={{ opacity: 0.85 }}>Repo URL (https)</span>
-                  <input
-                    type="text"
-                    className="settings-input"
-                    value={gitSyncRepoUrl}
-                    onChange={(e) => setGitSyncRepoUrl(e.target.value)}
-                    placeholder="https://github.com/<your-username>/kda-personal-memory.git"
-                    disabled={gitSyncBusy || (gitSyncStatus && !gitSyncStatus.git_installed) || false}
-                  />
-                </label>
-                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.88em" }}>
-                  <span style={{ opacity: 0.85 }}>
-                    Personal Access Token (repo scope) — 저장 후 즉시 비워짐, KDA 가 저장 안 함
-                  </span>
-                  <input
-                    type="password"
-                    className="settings-input"
-                    value={gitSyncPat}
-                    onChange={(e) => setGitSyncPat(e.target.value)}
-                    placeholder="ghp_•••••••• 또는 github_pat_••••••••"
-                    disabled={gitSyncBusy || (gitSyncStatus && !gitSyncStatus.git_installed) || false}
-                  />
-                </label>
-
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      cursor: "pointer",
-                      fontSize: "0.88em",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={gitSyncEnabled}
-                      onChange={(e) => setGitSyncEnabled(e.target.checked)}
-                      disabled={gitSyncBusy}
-                    />
-                    <span>자동 동기화 활성화 (시작 시 1회 + 30분마다)</span>
-                  </label>
-
-                  <button
-                    className="settings-btn"
-                    disabled={gitSyncBusy || !gitSyncRepoUrl}
-                    onClick={async () => {
-                      setGitSyncBusy(true);
-                      setGitSyncMessage(null);
-                      try {
-                        // 1) PAT 있으면 credential 박기 (한 번만)
-                        if (gitSyncPat.trim()) {
-                          await invoke("git_sync_store_credential", {
-                            repoUrl: gitSyncRepoUrl,
-                            pat: gitSyncPat,
-                          });
-                          setGitSyncPat(""); // 즉시 비움 — KDA 평문 보관 X
-                        }
-                        // 2) config update
-                        await invoke("git_sync_config_update", {
-                          enabled: gitSyncEnabled,
-                          repoUrl: gitSyncRepoUrl,
-                        });
-                      } catch (err) {
-                        setGitSyncMessage({ kind: "error", text: String(err) });
-                        setGitSyncBusy(false);
-                      }
-                    }}
-                  >
-                    💾 저장 + credential 등록
-                  </button>
-
-                  <button
-                    className="settings-btn"
-                    disabled={gitSyncBusy || !gitSyncRepoUrl || (gitSyncStatus && !gitSyncStatus.git_installed) || false}
-                    onClick={async () => {
-                      setGitSyncBusy(true);
-                      setGitSyncMessage(null);
-                      try {
-                        await invoke("git_sync_now");
-                      } catch (err) {
-                        setGitSyncMessage({ kind: "error", text: String(err) });
-                        setGitSyncBusy(false);
-                      }
-                    }}
-                  >
-                    🔄 지금 동기화
-                  </button>
+              {/* Personal repo 입력 폼 */}
+              <div
+                style={{
+                  marginTop: 14,
+                  padding: "10px 12px",
+                  background: "var(--bg-1)",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: 6,
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: "0.9em", marginBottom: 8 }}>
+                  💻 Personal repo (lee-profile + memory/)
                 </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.88em" }}>
+                    <span style={{ opacity: 0.85 }}>Repo URL (https)</span>
+                    <input
+                      type="text"
+                      className="settings-input"
+                      value={gitSyncRepoUrl}
+                      onChange={(e) => setGitSyncRepoUrl(e.target.value)}
+                      placeholder="https://github.com/<your-username>/kda-personal-memory.git"
+                      disabled={gitSyncBusy || (gitSyncStatus && !gitSyncStatus.git_installed) || false}
+                    />
+                  </label>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.88em" }}>
+                    <span style={{ opacity: 0.85 }}>PAT (repo scope) — 저장 후 즉시 비워짐</span>
+                    <input
+                      type="password"
+                      className="settings-input"
+                      value={gitSyncPat}
+                      onChange={(e) => setGitSyncPat(e.target.value)}
+                      placeholder="ghp_•••••••• 또는 github_pat_••••••••"
+                      disabled={gitSyncBusy || (gitSyncStatus && !gitSyncStatus.git_installed) || false}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Phase 89 — Team repo 입력 폼 (선택) */}
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  background: "var(--bg-1)",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: 6,
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: "0.9em", marginBottom: 4 }}>
+                  👥 팀 공유 repo (선택) — memory/ 만, lee-profile 절대 X
+                </div>
+                <div style={{ fontSize: "0.82em", opacity: 0.75, marginBottom: 8, lineHeight: 1.5 }}>
+                  팀원과 같이 학습한 함정/규칙을 공유할 때만 등록. 별도 폴더{" "}
+                  <code>~/.kda/team-memory/</code> 에 clone 되고, 그 안의{" "}
+                  <code>memory/</code> 파일들이 system prompt 의 "팀 공유 메모리" 섹션으로 박힙니다.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.88em" }}>
+                    <span style={{ opacity: 0.85 }}>Team repo URL (선택, 비워두면 비활성)</span>
+                    <input
+                      type="text"
+                      className="settings-input"
+                      value={gitSyncTeamRepoUrl}
+                      onChange={(e) => setGitSyncTeamRepoUrl(e.target.value)}
+                      placeholder="https://github.com/<your-org>/kda-team-memory.git"
+                      disabled={gitSyncBusy || (gitSyncStatus && !gitSyncStatus.git_installed) || false}
+                    />
+                  </label>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.88em" }}>
+                    <span style={{ opacity: 0.85 }}>Team PAT (같은 host 면 personal PAT 재사용 가능 — 비워둬도 됨)</span>
+                    <input
+                      type="password"
+                      className="settings-input"
+                      value={gitSyncTeamPat}
+                      onChange={(e) => setGitSyncTeamPat(e.target.value)}
+                      placeholder="(선택) team repo 가 다른 PAT 면 입력"
+                      disabled={gitSyncBusy || (gitSyncStatus && !gitSyncStatus.git_installed) || false}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* 공통 액션 */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    cursor: "pointer",
+                    fontSize: "0.88em",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={gitSyncEnabled}
+                    onChange={(e) => setGitSyncEnabled(e.target.checked)}
+                    disabled={gitSyncBusy}
+                  />
+                  <span>자동 동기화 활성화 (시작 시 1회 + 30분마다)</span>
+                </label>
+
+                <button
+                  className="settings-btn"
+                  disabled={gitSyncBusy || (!gitSyncRepoUrl && !gitSyncTeamRepoUrl)}
+                  onClick={async () => {
+                    setGitSyncBusy(true);
+                    setGitSyncMessage(null);
+                    try {
+                      // 1) PAT 있으면 각각 credential 박기
+                      if (gitSyncPat.trim() && gitSyncRepoUrl) {
+                        await invoke("git_sync_store_credential", {
+                          repoUrl: gitSyncRepoUrl,
+                          pat: gitSyncPat,
+                        });
+                        setGitSyncPat("");
+                      }
+                      if (gitSyncTeamPat.trim() && gitSyncTeamRepoUrl) {
+                        await invoke("git_sync_store_credential", {
+                          repoUrl: gitSyncTeamRepoUrl,
+                          pat: gitSyncTeamPat,
+                        });
+                        setGitSyncTeamPat("");
+                      }
+                      // 2) config update — 두 repo URL + enabled 한 번에
+                      await invoke("git_sync_config_update", {
+                        enabled: gitSyncEnabled,
+                        repoUrl: gitSyncRepoUrl,
+                        teamRepoUrl: gitSyncTeamRepoUrl,
+                      });
+                    } catch (err) {
+                      setGitSyncMessage({ kind: "error", text: String(err) });
+                      setGitSyncBusy(false);
+                    }
+                  }}
+                >
+                  💾 저장 + credential 등록
+                </button>
+
+                <button
+                  className="settings-btn"
+                  disabled={
+                    gitSyncBusy ||
+                    (!gitSyncRepoUrl && !gitSyncTeamRepoUrl) ||
+                    (gitSyncStatus && !gitSyncStatus.git_installed) ||
+                    false
+                  }
+                  onClick={async () => {
+                    setGitSyncBusy(true);
+                    setGitSyncMessage(null);
+                    try {
+                      await invoke("git_sync_now");
+                    } catch (err) {
+                      setGitSyncMessage({ kind: "error", text: String(err) });
+                      setGitSyncBusy(false);
+                    }
+                  }}
+                >
+                  🔄 지금 동기화
+                </button>
               </div>
 
               {/* 결과 메시지 */}
@@ -3719,12 +3918,13 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                         ? "🔀 충돌 — "
                         : "⚠ "}
                   </strong>
+                  {gitSyncMessage.target ? `[${gitSyncMessage.target}] ` : ""}
                   {gitSyncMessage.text}
                 </div>
               )}
 
-              {/* 충돌 파일 + 해결 UI */}
-              {gitSyncConflictFiles && gitSyncConflictFiles.length > 0 && (
+              {/* 충돌 파일 + 해결 UI (Phase 89 — target 함께 박음) */}
+              {gitSyncConflict && gitSyncConflict.files.length > 0 && (
                 <div
                   style={{
                     marginTop: 10,
@@ -3736,14 +3936,14 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   }}
                 >
                   <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                    충돌 파일 ({gitSyncConflictFiles.length}개):
+                    [{gitSyncConflict.target}] 충돌 파일 ({gitSyncConflict.files.length}개):
                   </div>
                   <ul style={{ margin: "4px 0 8px 18px", padding: 0, fontFamily: "monospace", fontSize: "0.85em" }}>
-                    {gitSyncConflictFiles.slice(0, 8).map((f) => (
+                    {gitSyncConflict.files.slice(0, 8).map((f) => (
                       <li key={f}>{f}</li>
                     ))}
-                    {gitSyncConflictFiles.length > 8 && (
-                      <li style={{ opacity: 0.7 }}>... 외 {gitSyncConflictFiles.length - 8}개</li>
+                    {gitSyncConflict.files.length > 8 && (
+                      <li style={{ opacity: 0.7 }}>... 외 {gitSyncConflict.files.length - 8}개</li>
                     )}
                   </ul>
                   <div style={{ marginTop: 6, opacity: 0.85, fontSize: "0.82em" }}>
@@ -3756,7 +3956,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       onClick={async () => {
                         setGitSyncBusy(true);
                         try {
-                          await invoke("git_sync_resolve_conflict", { keep: "local" });
+                          await invoke("git_sync_resolve_conflict", {
+                            keep: "local",
+                            target: gitSyncConflict.target,
+                          });
                         } catch (err) {
                           setGitSyncMessage({ kind: "error", text: String(err) });
                           setGitSyncBusy(false);
@@ -3771,7 +3974,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       onClick={async () => {
                         setGitSyncBusy(true);
                         try {
-                          await invoke("git_sync_resolve_conflict", { keep: "remote" });
+                          await invoke("git_sync_resolve_conflict", {
+                            keep: "remote",
+                            target: gitSyncConflict.target,
+                          });
                         } catch (err) {
                           setGitSyncMessage({ kind: "error", text: String(err) });
                           setGitSyncBusy(false);
@@ -3784,7 +3990,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </div>
               )}
 
-              {/* 상태 카드 */}
+              {/* 상태 카드 — personal + team 둘 다 */}
               {gitSyncStatus && (
                 <div
                   style={{
@@ -3803,13 +4009,18 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       ? `✓ ${gitSyncStatus.git_version ?? ""}`
                       : "❌ 미설치"}
                   </div>
-                  <div>
-                    repo 초기화: {gitSyncStatus.initialized ? "✓" : "—"} · remote:{" "}
-                    {gitSyncStatus.has_remote ? "✓" : "—"} · branch:{" "}
-                    {gitSyncStatus.branch ?? "(없음)"}
+                  <div style={{ marginTop: 4 }}>
+                    💻 personal: init {gitSyncStatus.initialized ? "✓" : "—"} · remote{" "}
+                    {gitSyncStatus.has_remote ? "✓" : "—"} · branch {gitSyncStatus.branch ?? "(없음)"} · 변경{" "}
+                    {gitSyncStatus.local_changes}개
                   </div>
                   <div>
-                    로컬 변경: {gitSyncStatus.local_changes}개 · 마지막 sync:{" "}
+                    👥 team: init {gitSyncStatus.team_initialized ? "✓" : "—"} · remote{" "}
+                    {gitSyncStatus.team_has_remote ? "✓" : "—"} · branch {gitSyncStatus.team_branch ?? "(없음)"} · 변경{" "}
+                    {gitSyncStatus.team_local_changes}개
+                  </div>
+                  <div style={{ marginTop: 4 }}>
+                    마지막 sync:{" "}
                     {gitSyncStatus.last_sync_at > 0
                       ? new Date(gitSyncStatus.last_sync_at * 1000).toLocaleString("ko-KR")
                       : "(아직 안 함)"}

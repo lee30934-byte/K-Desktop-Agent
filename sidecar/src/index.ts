@@ -52,15 +52,19 @@ import {
   type SafeMode,
 } from "./toolSafety.js";
 // Phase 87 (v0.6.30) — Git Memory Sync. lee-profile + memory/ ↔ GitHub private repo
+// Phase 89 (v0.6.31) — Hybrid: personal + team repo 둘 다 sync 가능 (SyncTarget 패턴).
 import {
   syncFull,
   syncStatus,
   syncResolveConflict,
   storeGitCredential,
   checkGitInstalled,
+  makeSyncTarget,
+  getTeamMemoryRoot,
   GIT_SYNC_CONFIG_DEFAULTS,
   type GitSyncConfig,
   type GitSyncResult,
+  type SyncKind,
 } from "./memorySync.js";
 import {
   runOpenAIChatRound,
@@ -513,6 +517,37 @@ function extractPitfallSummary(memoryDir: string): { count: number; lines: strin
   }
 }
 
+/**
+ * Phase 89 — team-memory/memory/ 에서 추가 메모리 파일 로드.
+ * personal memory 와 별도 섹션으로 합치기 위해 분리. team 폴더 없으면 빈 결과.
+ */
+function loadTeamMemorySections(): { sections: string[]; bytes: number } {
+  const teamMemDir = path.join(getTeamMemoryRoot(), "memory");
+  if (!existsSync(teamMemDir)) return { sections: [], bytes: 0 };
+  let bytes = 0;
+  const sections: string[] = [];
+  try {
+    const files = readdirSync(teamMemDir)
+      .filter((f) => f.endsWith(".md"))
+      .sort();
+    for (const f of files) {
+      try {
+        const body = readFileSync(path.join(teamMemDir, f), "utf-8");
+        sections.push(`### ${f}\n${body.trim()}`);
+        bytes += body.length;
+      } catch (e) {
+        logToFile(
+          "warn",
+          `team memory file read 실패 ${f}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  } catch {
+    /* readdir 실패 시 graceful */
+  }
+  return { sections, bytes };
+}
+
 function loadMemoryContext(): MemoryContext {
   const dir = getMemoryDir();
   const leeProfile = loadLeeProfile();
@@ -550,6 +585,23 @@ function loadMemoryContext(): MemoryContext {
         ].join("\n");
         memorySectionCount = sections.length;
       }
+    }
+
+    // Phase 89 — team memory 추가 섹션 (별도 헤더, lee-profile 절대 X)
+    const team = loadTeamMemorySections();
+    if (team.sections.length > 0) {
+      const teamBlock = [
+        "",
+        "## 팀 공유 메모리 (team-memory/)",
+        "",
+        "다음은 팀이 함께 학습한 함정/규칙입니다 (개인 비밀 X — 누구나 볼 수 있음).",
+        "K 의 개인 lee-profile 과는 별도 — 회사/팀 공통 안전 가이드만 박혀 있음.",
+        "",
+        team.sections.join("\n\n"),
+      ].join("\n");
+      memoryContent = memoryContent ? memoryContent + "\n\n" + teamBlock : teamBlock;
+      memorySectionCount += team.sections.length;
+      memoryBytes += team.bytes;
     }
 
     // Phase 81 (v0.6.25): lee-profile.md 가 있으면 memory 보다 먼저 박힘 (K 의 개인 규칙이 최우선)
@@ -3608,17 +3660,41 @@ rl.on("line", (line) => {
     }
     case "git_sync_resolve_conflict": {
       const side = (msg as { keep?: string }).keep;
+      const targetKind = (msg as { target?: string }).target;
       if (side !== "local" && side !== "remote") {
         emit({ type: "git_sync_event", kind: "error", message: `invalid keep side: ${side}`, reason: "manual" });
         break;
       }
-      const r = syncResolveConflict(side);
+      if (targetKind !== "personal" && targetKind !== "team") {
+        emit({
+          type: "git_sync_event",
+          kind: "error",
+          message: `invalid target kind: ${targetKind} (personal/team 만 허용)`,
+          reason: "manual",
+        });
+        break;
+      }
+      const cfg = readSidecarConfig();
+      const url = targetKind === "personal" ? cfg.gitSync.repoUrl : cfg.gitSync.teamRepoUrl;
+      if (!url) {
+        emit({
+          type: "git_sync_event",
+          kind: "error",
+          message: `${targetKind} repoUrl 없음`,
+          reason: "manual",
+          target: targetKind,
+        });
+        break;
+      }
+      const target = makeSyncTarget(targetKind, url);
+      const r = syncResolveConflict(target, side);
       emit({
         type: "git_sync_event",
         kind: r.ok ? "ok" : "error",
         message: r.message,
         action: r.action,
         reason: "manual",
+        target: targetKind,
       });
       // 충돌 해결 후 push 시도
       if (r.ok) runGitSyncCycle("manual");
@@ -3644,38 +3720,52 @@ rl.on("line", (line) => {
     }
     case "git_sync_status_request": {
       const installed = checkGitInstalled();
-      const status = installed.ok ? syncStatus() : {
-        initialized: false,
-        hasRemote: false,
-        localChanges: 0,
-        branch: null,
-      };
       const cfg = readSidecarConfig();
+      const personalTarget = makeSyncTarget("personal", cfg.gitSync.repoUrl);
+      const teamTarget = makeSyncTarget("team", cfg.gitSync.teamRepoUrl);
+      const personalStatus = installed.ok && cfg.gitSync.repoUrl
+        ? syncStatus(personalTarget)
+        : { initialized: false, hasRemote: false, localChanges: 0, branch: null };
+      const teamStatus = installed.ok && cfg.gitSync.teamRepoUrl
+        ? syncStatus(teamTarget)
+        : { initialized: false, hasRemote: false, localChanges: 0, branch: null };
       emit({
         type: "git_sync_status",
         git_installed: installed.ok,
         git_version: installed.version ?? null,
-        // snake_case 로 명시 (frontend types.ts 와 정렬)
-        initialized: status.initialized,
-        has_remote: status.hasRemote,
-        local_changes: status.localChanges,
-        branch: status.branch,
+        // Personal (snake_case)
+        initialized: personalStatus.initialized,
+        has_remote: personalStatus.hasRemote,
+        local_changes: personalStatus.localChanges,
+        branch: personalStatus.branch,
+        // Phase 89 — team status 별도
+        team_initialized: teamStatus.initialized,
+        team_has_remote: teamStatus.hasRemote,
+        team_local_changes: teamStatus.localChanges,
+        team_branch: teamStatus.branch,
         last_sync_at: cfg.gitSync.lastSyncAt,
         last_sync_status: cfg.gitSync.lastSyncStatus,
         enabled: cfg.gitSync.enabled,
         repo_url: cfg.gitSync.repoUrl,
+        team_repo_url: cfg.gitSync.teamRepoUrl,
       });
       break;
     }
     case "git_sync_config_update": {
-      // Settings UI 에서 enabled/repoUrl/intervalMs 변경. sidecar 가 즉시 반영 + interval 재시작.
-      const m = msg as { enabled?: boolean; repoUrl?: string; intervalMs?: number };
+      // Settings UI 에서 enabled/repoUrl/teamRepoUrl/intervalMs 변경. sidecar 가 즉시 반영.
+      const m = msg as {
+        enabled?: boolean;
+        repoUrl?: string;
+        teamRepoUrl?: string;
+        intervalMs?: number;
+      };
       writeSidecarConfigField((c) => ({
         ...c,
         gitSync: {
           ...c.gitSync,
           enabled: typeof m.enabled === "boolean" ? m.enabled : c.gitSync.enabled,
           repoUrl: typeof m.repoUrl === "string" ? m.repoUrl : c.gitSync.repoUrl,
+          teamRepoUrl: typeof m.teamRepoUrl === "string" ? m.teamRepoUrl : c.gitSync.teamRepoUrl,
           intervalMs:
             typeof m.intervalMs === "number" && m.intervalMs >= 60_000 ? m.intervalMs : c.gitSync.intervalMs,
         },
@@ -3690,7 +3780,7 @@ rl.on("line", (line) => {
       emit({
         type: "git_sync_event",
         kind: "ok",
-        message: `config 업데이트 — enabled=${cfg.gitSync.enabled} repo=${cfg.gitSync.repoUrl || "(미설정)"}`,
+        message: `config 업데이트 — enabled=${cfg.gitSync.enabled} personal=${cfg.gitSync.repoUrl || "(미설정)"} team=${cfg.gitSync.teamRepoUrl || "(미설정)"}`,
         action: "config-update",
         reason: "manual",
       });
@@ -3828,6 +3918,9 @@ function readSidecarConfig(): SidecarConfig {
       gitSync: {
         enabled: typeof gsRaw.enabled === "boolean" ? gsRaw.enabled : defaults.gitSync.enabled,
         repoUrl: typeof gsRaw.repoUrl === "string" ? gsRaw.repoUrl : defaults.gitSync.repoUrl,
+        // Phase 89 — team repo (선택). 빈 string 이면 team sync 비활성.
+        teamRepoUrl:
+          typeof gsRaw.teamRepoUrl === "string" ? gsRaw.teamRepoUrl : defaults.gitSync.teamRepoUrl,
         intervalMs:
           typeof gsRaw.intervalMs === "number" && gsRaw.intervalMs >= 60_000
             ? gsRaw.intervalMs
@@ -3869,11 +3962,64 @@ function writeSidecarConfigField(updater: (cfg: SidecarConfig) => SidecarConfig)
  */
 let _gitSyncInterval: NodeJS.Timeout | null = null;
 
+/**
+ * Phase 87 + 89 — 한 SyncTarget 의 sync cycle 처리.
+ * personal/team 둘 다 같은 흐름. config update 시엔 personal 만 기록 (team 은 별도).
+ */
+function runOneSyncTarget(
+  kind: SyncKind,
+  repoUrl: string,
+  reason: "startup" | "interval" | "manual",
+): GitSyncResult | null {
+  if (!repoUrl) return null;
+  const target = makeSyncTarget(kind, repoUrl);
+  log("info", `[GitSync][${kind}][${reason}] sync 시작 — repo=${repoUrl}`);
+  let result: GitSyncResult;
+  try {
+    result = syncFull(target);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log("error", `[GitSync][${kind}][${reason}] syncFull throw: ${msg}`);
+    emit({ type: "git_sync_event", kind: "error", message: msg, reason, target: kind });
+    return { ok: false, action: "error", message: msg, kind };
+  }
+  if (result.action === "conflict" && !result.ok) {
+    log(
+      "warn",
+      `[GitSync][${kind}][${reason}] 충돌 — ${result.conflictedFiles?.length ?? 0}개 파일: ${result.message}`,
+    );
+    emit({
+      type: "git_sync_event",
+      kind: "conflict",
+      message: result.message,
+      conflicted_files: result.conflictedFiles ?? [],
+      reason,
+      target: kind,
+    });
+    return result;
+  }
+  if (!result.ok) {
+    log("warn", `[GitSync][${kind}][${reason}] 실패: ${result.message}`);
+    emit({ type: "git_sync_event", kind: "error", message: result.message, reason, target: kind });
+    return result;
+  }
+  log("info", `[GitSync][${kind}][${reason}] 성공 (${result.action}): ${result.message}`);
+  emit({
+    type: "git_sync_event",
+    kind: "ok",
+    message: result.message,
+    action: result.action,
+    reason,
+    target: kind,
+  });
+  return result;
+}
+
 function runGitSyncCycle(reason: "startup" | "interval" | "manual"): void {
   const cfg = readSidecarConfig();
   if (!cfg.gitSync.enabled) return;
-  if (!cfg.gitSync.repoUrl) {
-    log("warn", `[GitSync][${reason}] enabled 지만 repoUrl 비어 있음 — skip`);
+  if (!cfg.gitSync.repoUrl && !cfg.gitSync.teamRepoUrl) {
+    log("warn", `[GitSync][${reason}] enabled 지만 personal/team repoUrl 둘 다 비어 있음 — skip`);
     return;
   }
   const installed = checkGitInstalled();
@@ -3887,50 +4033,23 @@ function runGitSyncCycle(reason: "startup" | "interval" | "manual"): void {
     });
     return;
   }
-  log("info", `[GitSync][${reason}] sync 시작 — repo=${cfg.gitSync.repoUrl}`);
-  let result: GitSyncResult;
-  try {
-    result = syncFull(cfg.gitSync.repoUrl);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log("error", `[GitSync][${reason}] syncFull throw: ${msg}`);
-    emit({ type: "git_sync_event", kind: "error", message: msg, reason });
-    return;
-  }
-  // 결과 처리
+  // 1) Personal sync (있을 때)
+  const personalResult = runOneSyncTarget("personal", cfg.gitSync.repoUrl, reason);
+  // 2) Team sync (있을 때, personal 실패해도 진행)
+  const teamResult = runOneSyncTarget("team", cfg.gitSync.teamRepoUrl, reason);
+
+  // config 의 lastSync 기록 — personal 우선, 없으면 team
+  const primary = personalResult ?? teamResult;
+  if (!primary) return;
   const nowSec = Math.floor(Date.now() / 1000);
-  if (result.action === "conflict" && !result.ok) {
-    log(
-      "warn",
-      `[GitSync][${reason}] 충돌 — ${result.conflictedFiles?.length ?? 0}개 파일: ${result.message}`,
-    );
-    emit({
-      type: "git_sync_event",
-      kind: "conflict",
-      message: result.message,
-      conflicted_files: result.conflictedFiles ?? [],
-      reason,
-    });
-    writeSidecarConfigField((c) => ({
-      ...c,
-      gitSync: { ...c.gitSync, lastSyncAt: nowSec, lastSyncStatus: "conflict" },
-    }));
-    return;
-  }
-  if (!result.ok) {
-    log("warn", `[GitSync][${reason}] 실패: ${result.message}`);
-    emit({ type: "git_sync_event", kind: "error", message: result.message, reason });
-    writeSidecarConfigField((c) => ({
-      ...c,
-      gitSync: { ...c.gitSync, lastSyncAt: nowSec, lastSyncStatus: `error: ${result.message.slice(0, 80)}` },
-    }));
-    return;
-  }
-  log("info", `[GitSync][${reason}] 성공 (${result.action}): ${result.message}`);
-  emit({ type: "git_sync_event", kind: "ok", message: result.message, action: result.action, reason });
+  const status = primary.action === "conflict" && !primary.ok
+    ? "conflict"
+    : primary.ok
+      ? "ok"
+      : `error: ${primary.message.slice(0, 80)}`;
   writeSidecarConfigField((c) => ({
     ...c,
-    gitSync: { ...c.gitSync, lastSyncAt: nowSec, lastSyncStatus: "ok" },
+    gitSync: { ...c.gitSync, lastSyncAt: nowSec, lastSyncStatus: status },
   }));
 }
 
@@ -3940,8 +4059,8 @@ function startMemorySync(): void {
     log("info", `[GitSync] disabled — 시작 안 함`);
     return;
   }
-  if (!cfg.gitSync.repoUrl) {
-    log("warn", `[GitSync] enabled 지만 repoUrl 비어있음 — Settings 에서 입력 필요`);
+  if (!cfg.gitSync.repoUrl && !cfg.gitSync.teamRepoUrl) {
+    log("warn", `[GitSync] enabled 지만 personal/team repoUrl 둘 다 비어있음 — Settings 에서 입력 필요`);
     return;
   }
   // startup 시 1회 (지연 5초 — sidecar 가 ready 박은 후)
@@ -3950,7 +4069,10 @@ function startMemorySync(): void {
   const ms = Math.max(60_000, cfg.gitSync.intervalMs ?? GIT_SYNC_CONFIG_DEFAULTS.intervalMs);
   if (_gitSyncInterval) clearInterval(_gitSyncInterval);
   _gitSyncInterval = setInterval(() => runGitSyncCycle("interval"), ms);
-  log("info", `[GitSync] started — interval=${Math.round(ms / 60000)}분, repo=${cfg.gitSync.repoUrl}`);
+  log(
+    "info",
+    `[GitSync] started — interval=${Math.round(ms / 60000)}분, personal=${cfg.gitSync.repoUrl || "(none)"} team=${cfg.gitSync.teamRepoUrl || "(none)"}`,
+  );
 }
 
 function startRateLimitPolling(): void {

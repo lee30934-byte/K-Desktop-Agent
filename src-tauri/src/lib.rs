@@ -348,6 +348,7 @@ async fn git_sync_store_credential(
 async fn git_sync_config_update(
     enabled: Option<bool>,
     repo_url: Option<String>,
+    team_repo_url: Option<String>,
     interval_ms: Option<u64>,
 ) -> Result<(), String> {
     let mut payload = serde_json::json!({ "type": "git_sync_config_update" });
@@ -356,6 +357,9 @@ async fn git_sync_config_update(
     }
     if let Some(u) = repo_url {
         payload["repoUrl"] = serde_json::Value::String(u);
+    }
+    if let Some(u) = team_repo_url {
+        payload["teamRepoUrl"] = serde_json::Value::String(u);
     }
     if let Some(ms) = interval_ms {
         payload["intervalMs"] = serde_json::Value::Number(ms.into());
@@ -369,13 +373,19 @@ async fn git_sync_now() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn git_sync_resolve_conflict(keep: String) -> Result<(), String> {
+async fn git_sync_resolve_conflict(keep: String, target: Option<String>) -> Result<(), String> {
     if keep != "local" && keep != "remote" {
         return Err(format!("invalid keep side: {}", keep));
+    }
+    // Phase 89 — target: "personal" | "team". 미지정 시 "personal" (백 호환).
+    let t = target.unwrap_or_else(|| "personal".to_string());
+    if t != "personal" && t != "team" {
+        return Err(format!("invalid target kind: {} (personal/team 만 허용)", t));
     }
     send_to_sidecar(serde_json::json!({
         "type": "git_sync_resolve_conflict",
         "keep": keep,
+        "target": t,
     }))
     .await
 }
