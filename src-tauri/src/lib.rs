@@ -1383,16 +1383,58 @@ async fn delete_kda_plugin(app: AppHandle, file: String) -> Result<String, Strin
 /// Windows 의 `cmd /c start "" "<path>"` 가 path 의 첫 인자를 window title 로 잡는
 /// 함정 회피 위해 빈 title 명시.
 ///
+/// Phase 78 (v0.6.21) — input path normalize 헬퍼.
+///
+/// react-markdown 이 채팅 마크다운 link href 를 URL spec 에 따라 normalize 하면서 Windows
+/// path 의 `\` 와 한글을 percent-encode 함:
+///   C:\Users\user\Pictures\캡처.PNG
+///   → C:%5CUsers%5Cuser%5CPictures%5C%EC%BA%A1%EC%B2%98.PNG
+/// canonicalize 가 이 percent-encoded path 못 풀어서 "path canonicalize 실패" 거부.
+/// frontend (SidePanel.normalizeLocalPath) 가 이미 처리하지만 옛 binary 호환 / 다른 호출자
+/// (CLI, 외부 trigger) 안전망으로 양방향 방어. % 가 없으면 raw return — no-op.
+fn percent_decode_local_path(input: &str) -> String {
+    // file:// prefix 제거 (Windows path 는 file:///C:/...)
+    let stripped = input
+        .strip_prefix("file:///")
+        .or_else(|| input.strip_prefix("file://"))
+        .unwrap_or(input);
+    // 빠른 path: % 가 없으면 raw return (성능 + idempotent)
+    if !stripped.contains('%') {
+        return stripped.to_string();
+    }
+    // manual percent-decode (UTF-8 aware). decode 후 invalid UTF-8 면 원본 유지.
+    let bytes = stripped.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| stripped.to_string())
+}
+
 /// 안전성: path 가 K 의 신뢰 영역 ($HOME, $HOME/.kda, $HOME/Documents, Desktop, AppData,
 /// Tauri resource dir) 안인지만 검증. 더 strict 한 path traversal 검증은 PathBuf 의
 /// canonicalize 가 ".." 풀어서 absolute path 만들면 자연 차단.
+///
+/// Phase 78 (v0.6.21) — percent_decode_local_path 로 URL-encoded path 양방향 방어.
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     use std::path::Path;
-    let p = Path::new(&path);
+    let normalized = percent_decode_local_path(&path);
+    let p = Path::new(&normalized);
     let canonical = match p.canonicalize() {
         Ok(c) => c,
-        Err(e) => return Err(format!("path canonicalize 실패: {} (입력: {})", e, path)),
+        Err(e) => return Err(format!("path canonicalize 실패: {} (입력: {} / 정규화: {})", e, path, normalized)),
     };
     let canonical_str = canonical.to_string_lossy().to_lowercase();
 
@@ -1603,10 +1645,12 @@ fn kill_process_tree(pid: u32) -> Result<(), String> {
 #[tauri::command]
 fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, String> {
     use std::path::Path;
-    let p = Path::new(&path);
+    // Phase 78 (v0.6.21) — react-markdown URL-encoded path 양방향 방어. open_path 와 동일 로직.
+    let normalized = percent_decode_local_path(&path);
+    let p = Path::new(&normalized);
     let canonical = match p.canonicalize() {
         Ok(c) => c,
-        Err(e) => return Err(format!("path canonicalize 실패: {} (입력: {})", e, path)),
+        Err(e) => return Err(format!("path canonicalize 실패: {} (입력: {} / 정규화: {})", e, path, normalized)),
     };
     let canonical_str = canonical.to_string_lossy().to_lowercase();
 

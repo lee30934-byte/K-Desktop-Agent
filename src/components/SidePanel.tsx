@@ -55,6 +55,30 @@ export function getCategory(pathOrUrl: string): "image" | "video" | "audio" | "t
 }
 
 /**
+ * Phase 78 (v0.6.21) — react-markdown 이 href 를 URL spec 에 따라 normalize 하면서
+ * Windows path 의 `\` 와 한글을 percent-encode 함:
+ *   C:\Users\user\Pictures\캡처.PNG
+ *   → C:%5CUsers%5Cuser%5CPictures%5C%EC%BA%A1%EC%B2%98.PNG
+ * Rust 의 read_preview_file canonicalize 가 이 percent-encoded path 를 못 풀어
+ * "forbidden path" 로 거부. frontend 에서 invoke 전에 raw path 로 복원 필요.
+ *
+ * 또 K 가 file:// URL 로 줄 수도 있어 prefix 도 제거.
+ */
+export function normalizeLocalPath(input: string): string {
+  let p = input;
+  // file:// 또는 file:/// prefix 제거 (Windows path 는 file:///C:/...)
+  if (p.startsWith("file:///")) p = p.slice(8);
+  else if (p.startsWith("file://")) p = p.slice(7);
+  // URL-encoded 문자 (%XX) 복원. invalid escape 면 원본 유지 (defensive).
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    // 사용자가 잘못된 % 문자열 박은 경우 — 원본 그대로 두고 Rust 가 거부하도록
+  }
+  return p;
+}
+
+/**
  * Tauri 의 fs read 로 파일을 base64 data URL 또는 텍스트로 로드.
  * - image/video/audio/pdf: bytes → base64 → data URL
  * - text: UTF-8 text 그대로
@@ -67,12 +91,19 @@ export async function loadPreview(
     return { dataUrl: pathOrUrl };
   }
 
+  // Phase 78 (v0.6.21): URL-encoded local path 복원. 호출자가 이미 normalize 된 path 를
+  // 줘도 idempotent (raw path 에는 % 가 거의 없어 decode 가 no-op).
+  const normalizedPath = normalizeLocalPath(pathOrUrl);
+  if (normalizedPath !== pathOrUrl) {
+    logger.log(`[SidePanel] path normalize: "${pathOrUrl}" → "${normalizedPath}"`);
+  }
+
   // Phase 74 — Rust 측 read_preview_file 우선 시도 (capabilities scope 우회).
   // 옛 binary (~v0.6.16) 면 invoke 자체가 throw → plugin-fs 폴백.
   const tryRustRead = async (asText: boolean): Promise<{ text?: string; bytes?: Uint8Array } | null> => {
     try {
       const result = await invoke<{ text?: string; bytes?: number[] }>("read_preview_file", {
-        path: pathOrUrl,
+        path: normalizedPath,
         asText,
       });
       if (asText) return { text: result.text };
@@ -91,7 +122,7 @@ export async function loadPreview(
         return { text: rust.text };
       }
       // 폴백 — 옛 binary 에서만. v0.6.16 이하면 capabilities scope 거부 가능성 큼.
-      const content = await readTextFile(pathOrUrl);
+      const content = await readTextFile(normalizedPath);
       const truncated = content.length > 100_000 ? content.slice(0, 100_000) + "\n\n... [잘림: 100KB 까지만]" : content;
       return { text: truncated };
     }
@@ -102,7 +133,7 @@ export async function loadPreview(
         bytes = rust.bytes;
       } else {
         // 폴백
-        bytes = await readFile(pathOrUrl);
+        bytes = await readFile(normalizedPath);
       }
       // bytes (Uint8Array) → base64
       let bin = "";
@@ -112,9 +143,9 @@ export async function loadPreview(
       }
       const b64 = btoa(bin);
       const mimeMap: Record<string, string> = {
-        image: getExt(pathOrUrl) === "svg" ? "image/svg+xml" : `image/${getExt(pathOrUrl)}`,
-        video: `video/${getExt(pathOrUrl) === "mov" ? "quicktime" : getExt(pathOrUrl)}`,
-        audio: `audio/${getExt(pathOrUrl) === "mp3" ? "mpeg" : getExt(pathOrUrl)}`,
+        image: getExt(normalizedPath) === "svg" ? "image/svg+xml" : `image/${getExt(normalizedPath)}`,
+        video: `video/${getExt(normalizedPath) === "mov" ? "quicktime" : getExt(normalizedPath)}`,
+        audio: `audio/${getExt(normalizedPath) === "mp3" ? "mpeg" : getExt(normalizedPath)}`,
         pdf: "application/pdf",
       };
       return { dataUrl: `data:${mimeMap[category] || "application/octet-stream"};base64,${b64}` };
@@ -201,10 +232,12 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
         await openShell(item.pathOrUrl);
       } else {
         // Tauri 의 shell.open 이 절대 경로면 OS 기본 앱으로 엶
-        // 로컬 파일은 file:// prefix 추가가 안전
-        await invoke("open_path", { path: item.pathOrUrl }).catch(async () => {
+        // 로컬 파일은 file:// prefix 추가가 안전.
+        // Phase 78 (v0.6.21): react-markdown URL-encoded path 도 복원해서 OS 가 받음.
+        const normalizedPath = normalizeLocalPath(item.pathOrUrl);
+        await invoke("open_path", { path: normalizedPath }).catch(async () => {
           // open_path command 가 없으면 plugin-shell 시도
-          await openShell(item.pathOrUrl);
+          await openShell(normalizedPath);
         });
       }
     } catch (e) {
