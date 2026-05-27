@@ -4352,8 +4352,22 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                         repoUrl: gitSyncRepoUrl,
                         teamRepoUrl: gitSyncTeamRepoUrl,
                       });
+                      // 저장 후 상태 카드/상태 라벨 갱신 — sidecar 의 git_sync_status 재요청
+                      try {
+                        await invoke("git_sync_status_request");
+                      } catch {
+                        /* status 갱신 실패는 비치명 — busy reset 은 finally 가 처리 */
+                      }
+                      setGitSyncMessage({
+                        kind: "ok",
+                        text: "저장 + credential 등록 완료. '지금 동기화' 또는 다음 startup 에 자동 sync.",
+                      });
                     } catch (err) {
                       setGitSyncMessage({ kind: "error", text: String(err) });
+                    } finally {
+                      // Phase 93 (v0.6.35) — 종전엔 success path 에 setGitSyncBusy(false) 가 없어
+                      // 저장 성공 후 "지금 동기화" 버튼이 영구 disabled. K 의 root_cause 정신 →
+                      // finally 로 cleanup 보장 + sibling 핸들러도 같은 패턴 점검 (이번 phase 박음).
                       setGitSyncBusy(false);
                     }
                   }}
