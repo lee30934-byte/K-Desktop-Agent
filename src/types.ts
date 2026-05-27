@@ -120,6 +120,27 @@ export type SidecarEvent =
       source: string;            // "codex token_count" / "claude rate_limit" 등 — UI tooltip 에 표시
     }
   | {
+      // Phase 79 (v0.6.22) — Task State Manager. sidecar 가 long-running 작업 (Codex spawn,
+      // 큰 tool call 등) lifecycle 을 emit → App.tsx 가 long_tasks DB 테이블 갱신. KDA 재시작
+      // / OS reboot / sidecar crash 시 RecoveryBanner 가 끊긴 작업 알림 → 작업 중단 ≠ 끊김.
+      type: "long_task_started";
+      taskId: string;
+      kind: string;              // "codex" | "claude" | "tool_call" 등
+      title?: string;
+      manifest?: Record<string, unknown> | null;
+    }
+  | {
+      type: "long_task_evidence";
+      taskId: string;
+      manifest?: Record<string, unknown> | null;
+    }
+  | {
+      type: "long_task_done";
+      taskId: string;
+      status: "completed" | "failed" | "abandoned";
+      handoffMd?: string | null;
+    }
+  | {
       // Phase 50 — 모델이 AskUserQuestion tool 호출 시 sidecar 가 가로채서 KDA UI 로 라우팅.
       // questions[].options 가 라디오/방향키 선택 가능한 옵션 리스트로 띄워짐.
       type: "ask_user_question";

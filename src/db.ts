@@ -125,8 +125,172 @@ export async function initDB(): Promise<Database> {
     ON conversations(updated_at DESC)
   `);
 
+  // Phase 79 (v0.6.22) — Task State Manager: 장기 작업 (Codex spawn, 큰 tool call 등) 의
+  // lifecycle 을 DB 에 atomic 기록. KDA 재시작 / disconnect / reconnect 시 "복구 가능한 작업"
+  // 으로 K 에게 알려줘 작업 중단 → 끊김으로 이어지지 않게 함 (Lee 의 7개 큰 그림 중 #3).
+  //
+  // 컬럼:
+  // - id           : UUID. sidecar 가 emit 시 발급
+  // - kind         : "codex" | "claude" | "tool_call" 등 (작업 종류)
+  // - conversation_id : 그 작업이 속한 대화 ID (null 가능 — 대화 밖 작업 케이스 위함)
+  // - title        : K 가 알아볼 한 줄 (예: "Codex: 사이드 패널 fix push", first user message 일부)
+  // - status       : "running" | "completed" | "failed" | "abandoned"
+  // - started_at   : epoch ms
+  // - updated_at   : epoch ms (마지막 갱신 시각 — evidence 마다 갱신)
+  // - last_evidence_at : 마지막 token_count 또는 progress event 시각 — recovery 후보 판정용
+  // - handoff_md   : K 가 작업 재개할 때 참고할 마크다운 (v1 엔 sidecar 가 안 채움 — K 가 직접 또는 다음 phase)
+  // - manifest_json: 자유로운 metadata JSON (예: 모델, 토큰 합계, child PID 등)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS long_tasks (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      conversation_id TEXT,
+      title TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      started_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_evidence_at INTEGER,
+      handoff_md TEXT,
+      manifest_json TEXT
+    )
+  `);
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_long_tasks_status_updated
+    ON long_tasks(status, updated_at DESC)
+  `);
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_long_tasks_conversation
+    ON long_tasks(conversation_id)
+  `);
+
   logger.log("[DB] 초기화 완료");
   return db;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Long Tasks CRUD (Phase 79 / v0.6.22)
+// ─────────────────────────────────────────────────────────────────
+
+export interface DBLongTask {
+  id: string;
+  kind: string;
+  conversation_id: string | null;
+  title: string | null;
+  status: "running" | "completed" | "failed" | "abandoned";
+  started_at: number;
+  updated_at: number;
+  last_evidence_at: number | null;
+  handoff_md: string | null;
+  manifest_json: string | null;
+}
+
+/**
+ * 새 long task 시작 — sidecar 가 emit 한 long_task_started event 의 listener 에서 호출.
+ * upsert 패턴: 같은 id 가 있으면 status='running' 으로 reset (재시작 케이스).
+ */
+export async function insertLongTask(input: {
+  id: string;
+  kind: string;
+  conversationId?: string | null;
+  title?: string | null;
+  manifest?: Record<string, unknown> | null;
+}): Promise<void> {
+  const db = await initDB();
+  const now = Date.now();
+  await db.execute(
+    `INSERT OR REPLACE INTO long_tasks
+       (id, kind, conversation_id, title, status, started_at, updated_at, last_evidence_at, handoff_md, manifest_json)
+     VALUES (?, ?, ?, ?, 'running', ?, ?, NULL, NULL, ?)`,
+    [
+      input.id,
+      input.kind,
+      input.conversationId ?? null,
+      input.title ?? null,
+      now,
+      now,
+      input.manifest ? JSON.stringify(input.manifest) : null,
+    ]
+  );
+}
+
+/**
+ * 진행 evidence 갱신 — token_count 같은 event 마다 호출. updated_at + last_evidence_at 둘 다 갱신.
+ * manifest 가 있으면 merge (전체 교체).
+ */
+export async function updateLongTaskEvidence(
+  id: string,
+  manifest?: Record<string, unknown> | null
+): Promise<void> {
+  const db = await initDB();
+  const now = Date.now();
+  if (manifest) {
+    await db.execute(
+      `UPDATE long_tasks SET updated_at = ?, last_evidence_at = ?, manifest_json = ? WHERE id = ?`,
+      [now, now, JSON.stringify(manifest), id]
+    );
+  } else {
+    await db.execute(
+      `UPDATE long_tasks SET updated_at = ?, last_evidence_at = ? WHERE id = ?`,
+      [now, now, id]
+    );
+  }
+}
+
+/**
+ * 종결 — turn.completed (성공) / error (실패) / K manual (abandoned) 시 호출.
+ */
+export async function finalizeLongTask(
+  id: string,
+  status: "completed" | "failed" | "abandoned",
+  handoffMd?: string | null
+): Promise<void> {
+  const db = await initDB();
+  const now = Date.now();
+  await db.execute(
+    `UPDATE long_tasks SET status = ?, updated_at = ?, handoff_md = COALESCE(?, handoff_md) WHERE id = ?`,
+    [status, now, handoffMd ?? null, id]
+  );
+}
+
+/**
+ * 복구 후보 = status='running' 이고 updated_at 이 staleMs 이상 지난 row.
+ * KDA 가 startup 시 호출 — sidecar 가 정상 종결한 작업은 이미 completed/failed 로 update 됐을 것이므로
+ * 여기 안 잡힘. 끊긴 (KDA 강제 종료 / OS reboot / sidecar crash) 작업만 남음.
+ *
+ * 기본 staleMs = 30초 — sidecar 의 normal completion 이 그 안에 안 들어오면 끊겼다고 판정.
+ */
+export async function listRecoverableLongTasks(staleMs = 30_000): Promise<DBLongTask[]> {
+  const db = await initDB();
+  const threshold = Date.now() - staleMs;
+  const rows = await db.select<DBLongTask[]>(
+    `SELECT * FROM long_tasks
+     WHERE status = 'running' AND updated_at < ?
+     ORDER BY updated_at DESC
+     LIMIT 20`,
+    [threshold]
+  );
+  return rows;
+}
+
+/**
+ * K 가 UI 에서 "버림" 선택 — status='abandoned' 로 mark.
+ */
+export async function discardLongTask(id: string): Promise<void> {
+  await finalizeLongTask(id, "abandoned");
+}
+
+/**
+ * (옵션) 오래된 long_tasks 정리 — status != 'running' 이고 N일 지난 것 삭제.
+ * 호출자가 명시적으로 부를 때만 (자동 prune 안 함, 데이터 보존 우선).
+ */
+export async function pruneOldLongTasks(olderThanDays = 30): Promise<number> {
+  const db = await initDB();
+  const threshold = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+  const result = await db.execute(
+    `DELETE FROM long_tasks WHERE status != 'running' AND updated_at < ?`,
+    [threshold]
+  );
+  return result.rowsAffected ?? 0;
 }
 
 // ─────────────────────────────────────────────────────────────────

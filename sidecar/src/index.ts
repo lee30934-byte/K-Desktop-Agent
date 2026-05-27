@@ -2038,6 +2038,21 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
     activeTurns.set(msg.id, proc);
 
+    // Phase 79 (v0.6.22) — Task State Manager: Codex 작업 시작을 DB 에 기록.
+    // App.tsx 의 listener 가 long_tasks 테이블에 row insert. KDA 재시작/끊김 시 복구 가능 후보로 표시.
+    emit({
+      type: "long_task_started",
+      taskId: msg.id,
+      kind: "codex",
+      title: (msg.content ?? "").slice(0, 80) || "Codex 작업",
+      manifest: {
+        provider: "codex",
+        agentId: effectiveAgentId ?? null,
+        pid: proc.pid ?? null,
+        startedAt: Date.now(),
+      },
+    } as any);
+
     if (proc.stdin) {
       proc.stdin.on("error", (e) => {
         logToFile("warn", `Codex stdin error: ${e instanceof Error ? e.message : String(e)}`);
@@ -2171,6 +2186,21 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                 maxTurnCacheRead = cached;
               }
             }
+            // Phase 79 (v0.6.22) — Task State Manager: 매 token_count 마다 evidence emit.
+            // App.tsx 가 long_tasks 의 last_evidence_at + manifest 갱신. K 의 복구 후보
+            // 판정에 사용 (이게 안 들어오면 끊긴 작업).
+            emit({
+              type: "long_task_evidence",
+              taskId: msg.id,
+              manifest: {
+                provider: "codex",
+                modelContextWindow: lastSeenModelContextWindow ?? null,
+                inputTokens: ltu?.input_tokens ?? null,
+                cachedInputTokens: ltu?.cached_input_tokens ?? null,
+                maxTurnContextTokens,
+                maxCachePeak: maxLastTokenUsageCachePeak,
+              },
+            } as any);
             break;
           }
           case "item.delta": {
@@ -2627,11 +2657,20 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     if (!sawCompletion && activeTurns.has(msg.id)) {
       emit({ type: "done", id: msg.id, agentId: sessionId });
     }
+    // Phase 79 (v0.6.22): Codex 정상 종료 — long_tasks status 갱신.
+    emit({ type: "long_task_done", taskId: msg.id, status: "completed" } as any);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
     logToFile("error", `Codex query error id=${msg.id}: ${message}${stack ? `\n${stack}` : ""}`);
     emit({ type: "error", id: msg.id, message });
+    // Phase 79 (v0.6.22): Codex 실패 종료 — long_tasks status='failed' 로 mark.
+    emit({
+      type: "long_task_done",
+      taskId: msg.id,
+      status: "failed",
+      handoffMd: `Codex 작업 실패: ${message}`,
+    } as any);
   } finally {
     logToFile("info", `Codex query end id=${msg.id}`);
     activeTurns.delete(msg.id);

@@ -52,6 +52,13 @@ import {
   setConversationColor,
   setConversationIcon,
   searchConversations,
+  // Phase 79 (v0.6.22) — Task State Manager
+  insertLongTask,
+  updateLongTaskEvidence,
+  finalizeLongTask,
+  listRecoverableLongTasks,
+  discardLongTask,
+  type DBLongTask,
 } from "./db";
 import type { Folder } from "./types";
 import "./App.css";
@@ -266,6 +273,9 @@ export default function App() {
     startedAt: Date.now(),
   });
   const [dbReady, setDbReady] = useState(false);
+  // Phase 79 (v0.6.22) — Task State Manager: startup 시 끊긴 long_task 후보 (running + stale).
+  // RecoveryBanner 가 K 에게 표시 + "복구" or "버림" 버튼.
+  const [recoverableTasks, setRecoverableTasks] = useState<DBLongTask[]>([]);
   const [elicitationRequest, setElicitationRequest] = useState<ElicitationRequest | null>(null);
   const elicitationResolveRef = useRef<((response: ElicitationResponse) => void) | null>(null);
   // Phase 50 — ask_user_question 추적용. 응답 시 어떤 turn 의 질문이었는지 기록 + multi-question
@@ -684,6 +694,19 @@ export default function App() {
         })));
         setDbReady(true);
         logger.log("[App] DB 초기화 완료, 대화 수:", convs.length, ", 폴더 수:", fols.length);
+
+        // Phase 79 (v0.6.22) — Task State Manager: startup 시 끊긴 작업 스캔.
+        // status='running' 인데 updated_at 이 30초+ 지난 row = sidecar normal completion 안 박힘
+        // = KDA 강제 종료 / OS reboot / sidecar crash 로 끊긴 작업. K 에게 RecoveryBanner 로 알림.
+        try {
+          const recoverable = await listRecoverableLongTasks(30_000);
+          if (recoverable.length > 0) {
+            logger.log(`[App] 복구 가능한 long_tasks ${recoverable.length}개 발견 — 배너 표시`);
+            setRecoverableTasks(recoverable);
+          }
+        } catch (e) {
+          logger.warn(`[App] listRecoverableLongTasks 실패: ${e}`);
+        }
       } catch (err) {
         console.error("[App] DB 초기화 실패:", err);
         setDbReady(true); // 실패해도 앱은 동작하게
@@ -1062,6 +1085,44 @@ export default function App() {
             `[Context] 런타임 보고 model_context_window=${evAny.contextWindow} (${evAny.source}) — hardcode override`,
           );
         }
+        break;
+      }
+
+      // Phase 79 (v0.6.22) — Task State Manager: sidecar 가 emit 한 long task lifecycle 을
+      // long_tasks 테이블에 atomic 기록. KDA 재시작 / OS reboot 시 'running' 상태 row 만
+      // 남아 RecoveryBanner 가 K 에게 알림 — 작업 중단이 끊김으로 이어지지 않게.
+      case "long_task_started": {
+        const e = ev as any;
+        if (!e.taskId || !e.kind) break;
+        insertLongTask({
+          id: String(e.taskId),
+          kind: String(e.kind),
+          conversationId: activeConversationId ?? null,
+          title: e.title ? String(e.title) : null,
+          manifest: e.manifest ?? null,
+        }).catch((err) => logger.warn(`[long_task_started] insert 실패: ${err}`));
+        break;
+      }
+
+      case "long_task_evidence": {
+        const e = ev as any;
+        if (!e.taskId) break;
+        updateLongTaskEvidence(String(e.taskId), e.manifest ?? null).catch((err) =>
+          logger.warn(`[long_task_evidence] update 실패: ${err}`),
+        );
+        break;
+      }
+
+      case "long_task_done": {
+        const e = ev as any;
+        if (!e.taskId) break;
+        const status = (e.status === "failed" || e.status === "abandoned" ? e.status : "completed") as
+          | "completed"
+          | "failed"
+          | "abandoned";
+        finalizeLongTask(String(e.taskId), status, e.handoffMd ?? null).catch((err) =>
+          logger.warn(`[long_task_done] finalize 실패: ${err}`),
+        );
         break;
       }
 
@@ -2542,6 +2603,76 @@ export default function App() {
         mcpConnected={mcpState.connected}
         onOpenSettings={openSettings}
       />
+
+      {/* Phase 79 (v0.6.22) — Task State Manager: 끊긴 long_task 복구 배너.
+          startup 시 listRecoverableLongTasks 결과가 있으면 표시. K 가 직접 "버림" 누르거나
+          conversation 으로 이동해서 수동 복구. v1 엔 자동 resume 없음 (안전 우선). */}
+      {recoverableTasks.length > 0 && (
+        <div
+          style={{
+            position: "fixed",
+            top: 8,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 1000,
+            background: "rgba(255, 170, 0, 0.15)",
+            border: "1px solid rgba(255, 170, 0, 0.5)",
+            borderRadius: 6,
+            padding: "8px 14px",
+            fontSize: "0.85em",
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            maxWidth: "90vw",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+          }}
+        >
+          <span style={{ fontWeight: 600 }}>⏸ 복구 가능한 작업 {recoverableTasks.length}개</span>
+          <span style={{ opacity: 0.8, fontSize: "0.85em" }}>
+            (이전 세션의 끊긴 long task — sidecar 정상 종료 신호가 안 옴)
+          </span>
+          <button
+            className="settings-btn"
+            style={{ padding: "2px 8px", fontSize: "0.85em" }}
+            onClick={() => {
+              const summary = recoverableTasks
+                .map((t) => {
+                  const age = Math.round((Date.now() - t.updated_at) / 60000);
+                  return `• [${t.kind}] ${t.title ?? "(제목 없음)"}  — ${age}분 전 마지막 evidence (conv=${t.conversation_id ?? "없음"})`;
+                })
+                .join("\n");
+              alert(`복구 가능한 작업 목록:\n\n${summary}\n\n각 작업의 대화를 선택해서 직접 이어가세요. 자동 resume 은 다음 phase 에서 지원 예정.`);
+            }}
+          >
+            📋 상세
+          </button>
+          <button
+            className="settings-btn"
+            style={{ padding: "2px 8px", fontSize: "0.85em" }}
+            onClick={async () => {
+              if (!confirm(`${recoverableTasks.length}개 작업을 모두 "버림" 으로 mark 합니다 (DB 에서 status='abandoned'). 진행할까요?`)) return;
+              for (const t of recoverableTasks) {
+                try {
+                  await discardLongTask(t.id);
+                } catch (e) {
+                  logger.warn(`[RecoveryBanner] discard 실패 id=${t.id}: ${e}`);
+                }
+              }
+              setRecoverableTasks([]);
+            }}
+          >
+            🗑️ 모두 버림
+          </button>
+          <button
+            className="settings-btn"
+            style={{ padding: "2px 8px", fontSize: "0.85em" }}
+            onClick={() => setRecoverableTasks([])}
+            title="배너만 숨김 — DB 의 row 는 그대로 유지"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <MainChat
         messages={messages}
