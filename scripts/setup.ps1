@@ -122,6 +122,13 @@ Write-Host ""
 Write-Host "다음 단계:" -ForegroundColor Yellow
 Write-Host "  1. **새 PowerShell 창**을 열어주세요 (PATH 갱신 위해)"
 Write-Host "  2. cd $projectRoot"
-Write-Host "  3. npm run tauri:dev"
+Write-Host "  3. npm run tauri:dev   # 로컬 개발용 KDA 실행 — 첫 실행 2~5분 ☕"
 Write-Host ""
-Write-Host "최초 실행 시 Rust 의존성 컴파일로 2~5분 걸립니다. ☕"
+Write-Host "Release 빌드 흐름 (다른 PC 에서도 동일):" -ForegroundColor Yellow
+Write-Host "  1. 코드 수정 + npm run build (TypeScript 검증)"
+Write-Host "  2. version bump (package.json / Cargo.toml / tauri.conf.json / Cargo.lock 4개 동기화)"
+Write-Host "  3. git commit + git tag vX.Y.Z + git push origin main + git push origin vX.Y.Z"
+Write-Host "  4. GitHub Actions 가 자동 빌드 + sign + release publish (~14분)"
+Write-Host ""
+Write-Host "Signing key 는 GitHub Secrets 에만 — PC 어디에도 보관 불필요." -ForegroundColor DarkGray
+Write-Host "자세한 안내: docs\DEV_SETUP.md" -ForegroundColor DarkGray
