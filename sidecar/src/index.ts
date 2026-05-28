@@ -1410,6 +1410,52 @@ function buildPromptWithHistory(
   return memoryBlock + lines.join("\n");
 }
 
+const CODEX_BOOTSTRAP_HISTORY_MAX_ITEMS = 24;
+const CODEX_BOOTSTRAP_HISTORY_MAX_CHARS = 24_000;
+
+function compactHistoryForCodexBootstrap(
+  history?: Array<HistoryItem>,
+): Array<HistoryItem> | undefined {
+  if (!history || history.length === 0) return history;
+
+  const selected: Array<HistoryItem> = [];
+  let chars = 0;
+  let omitted = 0;
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const item = history[i];
+    const itemChars =
+      item.role === "tool"
+        ? (item.toolName?.length ?? 0) +
+          JSON.stringify(item.toolInput ?? "").length +
+          (item.toolOutput?.length ?? 0)
+        : item.content.length;
+
+    if (
+      selected.length >= CODEX_BOOTSTRAP_HISTORY_MAX_ITEMS ||
+      (selected.length > 0 && chars + itemChars > CODEX_BOOTSTRAP_HISTORY_MAX_CHARS)
+    ) {
+      omitted = i + 1;
+      break;
+    }
+
+    selected.push(item);
+    chars += itemChars;
+  }
+
+  selected.reverse();
+  if (omitted > 0) {
+    selected.unshift({
+      role: "assistant",
+      content:
+        `[KDA Codex fast-start] Earlier conversation context was omitted for latency ` +
+        `(${omitted} older messages). Use the visible recent conversation first; ` +
+        `ask K if older details are required.`,
+    });
+  }
+  return selected;
+}
+
 const activeTurns = new Map<string, ChildProcess>();
 // REST API 모드의 turn은 fetch AbortController 로 취소.
 const activeRestTurns = new Map<string, AbortController>();
@@ -2402,9 +2448,13 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // Phase 48 (v0.5.36): Codex resume 사용 시 prior_conversation 안 박음 — Codex 가 thread state
   // 로 history 보유. 매 turn 마다 통째 재주입 시 context 폭발 (K 의 다른 PC root cause).
   // resume 아닐 때만 history 박음. Phase 59: effectiveAgentId 기준 (poisoned 시 새 세션 path).
+  const codexBootstrapHistory = effectiveAgentId
+    ? undefined
+    : compactHistoryForCodexBootstrap(msg.history);
   const promptWithHistory = effectiveAgentId
-    ? buildPromptWithHistory(baseContent, undefined, memory.content)
-    : buildPromptWithHistory(baseContent, msg.history, memory.content);
+    ? buildPromptWithHistory(baseContent, undefined, undefined)
+    : buildPromptWithHistory(baseContent, codexBootstrapHistory, memory.content);
+  const promptBytes = Buffer.byteLength(promptWithHistory, "utf-8");
 
   // Codex CLI 인자 — `codex exec` 의 sub-form.
   // resume 은 별도 subcommand 라 case 분기로 처리.
@@ -2441,7 +2491,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
   logToFile(
     "info",
-    `Codex query start id=${msg.id} model=${msg.model ?? "default"} resume=${msg.agent_id ?? "none"} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} attachments=${msg.attachments?.length ?? 0}`,
+    `Codex query start id=${msg.id} model=${msg.model ?? "default"} resume=${msg.agent_id ?? "none"} promptBytes=${promptBytes} historyIn=${msg.history?.length ?? 0} historySent=${codexBootstrapHistory?.length ?? 0} memorySent=${effectiveAgentId ? 0 : memory.bytes} attachments=${msg.attachments?.length ?? 0}`,
   );
 
   // Per-turn usage 집계 — Codex 는 turn.completed 에 정확한 컨텍스트 크기 한 번 옴.
