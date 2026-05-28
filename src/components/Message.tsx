@@ -437,6 +437,71 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// Phase 98.5 (v0.6.44) — 이미지 lightbox modal. 본문 썸네일 클릭 시 원본 크기로 띄움.
+// chat 메신저 (카톡/Slack/Discord) 의 표준 UX. ESC / ✕ / 빈 공간 클릭으로 닫힘.
+function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.88)",
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "zoom-out",
+      }}
+    >
+      <img
+        src={src}
+        alt="원본 이미지"
+        style={{
+          maxWidth: "95vw",
+          maxHeight: "95vh",
+          objectFit: "contain",
+          cursor: "default",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button
+        onClick={onClose}
+        style={{
+          position: "absolute",
+          top: 16,
+          right: 16,
+          background: "rgba(255,255,255,0.12)",
+          border: "1px solid rgba(255,255,255,0.2)",
+          color: "white",
+          fontSize: 20,
+          padding: "4px 12px",
+          cursor: "pointer",
+          borderRadius: 6,
+          lineHeight: 1,
+        }}
+        aria-label="닫기"
+        title="닫기 (ESC)"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
 function ToolMessageView({
   message,
   onFilterToggle,
@@ -448,23 +513,25 @@ function ToolMessageView({
   const riskBadge = message.risk ? RISK_BADGES[message.risk.level] : null;
   const isHighRisk = message.risk?.level === "high" || message.risk?.level === "critical";
   // Phase 98.2 — 이미지가 있는 도구 호출은 chat-like 한 본문 형태로 표시.
-  // K 피드백: "도구 말고 채팅창에 바로 띄워줘". 도구 카드 chrome (DONE pill, 도구명,
-  // RISK 배지, 시간 metadata) 가 시각적으로 무거워 이미지가 도구 결과로 묶여 보였음.
-  // 이제 image 가 있으면 카드 자체를 작은 footnote 로 축소, 이미지가 메시지가 됨.
+  // Phase 98.5 — 본문은 작은 썸네일, 클릭 시 in-app lightbox 로 원본 크기.
   const hasImages = Array.isArray(message.images) && message.images.length > 0;
-  // 이미지 있는 케이스: 본문 이미지 + 그 아래 한 줄 footnote (펼침/접힘 X)
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  // 이미지 있는 케이스: 본문 썸네일 + 클릭 시 lightbox + 그 아래 한 줄 footnote
   if (hasImages) {
     return (
       <div className="msg-tool-image-mode">
+        {lightboxSrc && (
+          <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+        )}
         <div
           className="msg-tool-images-inline"
           style={{
             display: "grid",
             gridTemplateColumns:
               message.images!.length === 1
-                ? "1fr"
-                : "repeat(auto-fill, minmax(320px, 1fr))",
-            gap: 10,
+                ? "minmax(0, 280px)"
+                : "repeat(auto-fill, minmax(180px, 220px))",
+            gap: 8,
             marginBottom: 8,
           }}
         >
@@ -474,14 +541,20 @@ function ToolMessageView({
               href={src}
               target="_blank"
               rel="noopener noreferrer"
-              title={`이미지 ${i + 1} — 클릭하면 새 창에서 원본 크기로`}
+              title={`이미지 ${i + 1} — 클릭하면 원본 크기로`}
+              onClick={(e) => {
+                e.preventDefault();
+                setLightboxSrc(src);
+              }}
               style={{
                 display: "block",
                 border: "1px solid var(--border-subtle)",
-                borderRadius: 10,
+                borderRadius: 8,
                 overflow: "hidden",
                 background: "rgba(255,255,255,0.02)",
                 lineHeight: 0,
+                cursor: "zoom-in",
+                transition: "opacity 0.15s",
               }}
             >
               <img
@@ -491,8 +564,8 @@ function ToolMessageView({
                   display: "block",
                   width: "100%",
                   height: "auto",
-                  maxHeight: 720,
-                  objectFit: "contain",
+                  maxHeight: 180,
+                  objectFit: "cover",
                 }}
                 loading="lazy"
               />
