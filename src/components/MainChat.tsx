@@ -1,4 +1,5 @@
-import { useEffect, useRef, useLayoutEffect, useState, useCallback, useMemo, memo } from "react";
+import { useRef, useState, useCallback, useMemo, memo } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
@@ -61,9 +62,6 @@ function formatToolName(name: string): string {
   return name;
 }
 
-// "맨 아래" 판정 임계값 (px). 사용자가 이 안에 있으면 자동 스크롤 따라감.
-const SCROLL_BOTTOM_THRESHOLD = 80;
-
 function MainChat({
   messages,
   status,
@@ -76,11 +74,10 @@ function MainChat({
   onFlushQueueNow,
   onPreviewRequest,
 }: MainChatProps) {
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const lastMessageCountRef = useRef(0);
-  // 사용자가 위로 스크롤했는지 — true 면 자동 스크롤 일시 중지.
-  // ref 로 들고서 effect 가 stale 안 되게.
-  const userScrolledUpRef = useRef(false);
+  // Phase 103 (v0.6.49) — react-virtuoso 박은 후 scroll 관리는 Virtuoso 가 자체 처리.
+  // 기존 messagesContainerRef + userScrolledUpRef + scrollToBottom + 4 useEffect 들 모두 제거.
+  // Virtuoso 의 followOutput / atBottomStateChange / scrollToIndex API 로 대체.
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
 
@@ -132,72 +129,14 @@ function MainChat({
     }
   };
 
-  // 컨테이너가 맨 아래에 있는가
-  const isAtBottom = useCallback(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return true;
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    return scrollHeight - (scrollTop + clientHeight) <= SCROLL_BOTTOM_THRESHOLD;
-  }, []);
-
-  // 스크롤 함수 (force=true 면 사용자 의도 무시하고 강제)
-  const scrollToBottom = useCallback((force = false) => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-    if (!force && userScrolledUpRef.current) return;
-    container.scrollTop = container.scrollHeight;
-  }, []);
-
-  // 사용자가 직접 클릭한 "맨 아래로 가기" — 자동 스크롤도 다시 켜짐
+  // Phase 103 (v0.6.49) — Virtuoso 기반 scroll 관리.
+  // "맨 아래로 가기" 버튼 클릭 → Virtuoso ref 로 마지막 item 강제 scroll. 자동 follow 도 재활성.
   const handleScrollToBottomClick = useCallback(() => {
-    userScrolledUpRef.current = false;
+    const v = virtuosoRef.current;
+    if (!v) return;
+    v.scrollToIndex({ index: "LAST", behavior: "smooth", align: "end" });
     setShowScrollToBottom(false);
-    scrollToBottom(true);
-  }, [scrollToBottom]);
-
-  // 사용자 스크롤 감지 — 위로 올렸으면 자동 스크롤 잠금, 다시 맨 아래로 가면 해제
-  useEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-
-    const handleScroll = () => {
-      const atBottom = isAtBottom();
-      userScrolledUpRef.current = !atBottom;
-      setShowScrollToBottom(!atBottom);
-    };
-
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, [isAtBottom]);
-
-  // 메시지 변경 시 — 사용자가 맨 아래일 때만 따라감
-  useLayoutEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
-
-  // 스트리밍 중 100ms 폴링 — 동일하게 사용자 의도 존중
-  useEffect(() => {
-    if (!isStreaming) return;
-    const interval = setInterval(() => scrollToBottom(), 100);
-    return () => clearInterval(interval);
-  }, [isStreaming, scrollToBottom]);
-
-  // 새 메시지 추가 시 — 신규 발화면 강제 스크롤 (대화 시작 시 위에 묶이는 거 방지)
-  useEffect(() => {
-    if (messages.length !== lastMessageCountRef.current) {
-      const isNewMessage = messages.length > lastMessageCountRef.current;
-      lastMessageCountRef.current = messages.length;
-      // 사용자가 자기 메시지 보냈을 때(=last is user)는 강제로 따라감
-      const lastMsg = messages[messages.length - 1];
-      if (isNewMessage && lastMsg?.role === "user") {
-        userScrolledUpRef.current = false;
-        setShowScrollToBottom(false);
-        scrollToBottom(true);
-      } else {
-        scrollToBottom();
-      }
-    }
-  }, [messages, scrollToBottom]);
+  }, []);
 
   return (
     <section className="main-chat">
@@ -307,12 +246,14 @@ function MainChat({
 
       {/* 메시지 영역 */}
       <div className="main-body">
-        <div className="messages" ref={messagesContainerRef}>
+        <div className="messages">
           {(() => {
             // Phase 90 — showToolCards 면 tool 메시지도 visible, OFF 면 기존 동작 (tool 빠짐).
             // Phase 98.4 — 단 OFF 라도 이미지가 있는 tool 메시지는 본문에 표시.
-            // Phase 101 — filter chain 을 src/utils/messageFilters.ts 로 분리. 새 inner
-            // conditional 박을 때 여기 와서 audit (pitfall_frontend_filter_chain_bypass).
+            // Phase 101 — filter chain 을 src/utils/messageFilters.ts 로 분리.
+            // Phase 103 — Virtuoso 로 list virtualization. 1717개 같은 큰 대화도 viewport 안 보이는
+            // 메시지는 DOM 에서 unmount → React reconciler 의 매 turn 비용 O(viewport) 로 cap.
+            // K 의 keystroke 시 UI thread 가 free 해져 타이핑 lag 사라짐.
             const visibleMessages = filterMessagesForBody(messages, showToolCards);
 
             if (visibleMessages.length === 0) {
@@ -330,14 +271,27 @@ function MainChat({
             };
 
             return (
-              <>
-                {/* 메시지가 적을 때 위쪽 빈 공간 채우기 */}
-                <div className="messages-spacer" />
-                {visibleMessages.map((msg) => {
+              <Virtuoso
+                ref={virtuosoRef}
+                data={visibleMessages}
+                computeItemKey={(_, msg) => msg.id}
+                followOutput={(isAtBottom) => {
+                  // 사용자가 위로 올린 상태면 자동 따라가지 않음 (Virtuoso 기본 동작).
+                  // 맨 아래일 때만 새 메시지 따라감 — chat 메신저 표준.
+                  return isAtBottom ? "smooth" : false;
+                }}
+                atBottomStateChange={(atBottom) => {
+                  setShowScrollToBottom(!atBottom);
+                }}
+                initialTopMostItemIndex={visibleMessages.length - 1}
+                increaseViewportBy={{ top: 800, bottom: 800 }}
+                components={{
+                  Header: () => <div className="messages-spacer" />,
+                }}
+                itemContent={(_, msg) => {
                   const dimmed = activeFilter && !matchesFilter(msg);
                   return (
                     <div
-                      key={msg.id}
                       style={
                         dimmed
                           ? { opacity: 0.25, transition: "opacity 0.2s" }
@@ -356,8 +310,9 @@ function MainChat({
                       />
                     </div>
                   );
-                })}
-              </>
+                }}
+                style={{ height: "100%" }}
+              />
             );
           })()}
         </div>
