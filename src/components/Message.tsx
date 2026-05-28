@@ -447,8 +447,54 @@ function ToolMessageView({
   // Phase 85 (v0.6.28) — risk 배지. sidecar 가 분류 못 한 도구는 risk=undefined → 배지 숨김.
   const riskBadge = message.risk ? RISK_BADGES[message.risk.level] : null;
   const isHighRisk = message.risk?.level === "high" || message.risk?.level === "critical";
+  // Phase 98.1 — 이미지가 있으면 도구 카드와 별개로 본문 인라인에 큰 썸네일 표시.
+  // 이전 버전(Phase 98) 은 expanded 안에만 박혀 K 가 매번 카드를 펼쳐야 했음.
+  const hasImages = Array.isArray(message.images) && message.images.length > 0;
   // 컴팩트 모드: 한 줄로 표시, 클릭 시 펼침
   return (
+    <>
+      {hasImages && (
+        <div
+          className="msg-tool-images-inline"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+            gap: 10,
+            marginBottom: 10,
+          }}
+        >
+          {message.images!.map((src, i) => (
+            <a
+              key={i}
+              href={src}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`이미지 ${i + 1} — 클릭하면 새 창에서 원본 크기로`}
+              style={{
+                display: "block",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: 8,
+                overflow: "hidden",
+                background: "rgba(255,255,255,0.02)",
+                lineHeight: 0,
+              }}
+            >
+              <img
+                src={src}
+                alt={`tool output ${i + 1}`}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  height: "auto",
+                  maxHeight: 600,
+                  objectFit: "contain",
+                }}
+                loading="lazy"
+              />
+            </a>
+          ))}
+        </div>
+      )}
     <details
       className={`msg-tool-compact msg-tool-${message.status}`}
       data-risk={message.risk?.level ?? "unknown"}
@@ -559,53 +605,11 @@ function ToolMessageView({
             <pre className="mono msg-tool-json">{message.toolOutput}</pre>
           </div>
         )}
-        {/* Phase 98 — MCP 도구가 반환한 이미지 (web_screenshot, cc_screenshot 등). */}
-        {message.images && message.images.length > 0 && (
-          <div className="msg-tool-section">
-            <span className="eyebrow">Images ({message.images.length})</span>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-                gap: 8,
-                marginTop: 6,
-              }}
-            >
-              {message.images.map((src, i) => (
-                <a
-                  key={i}
-                  href={src}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={`이미지 ${i + 1} — 클릭하면 새 창에서 원본 크기로`}
-                  style={{
-                    display: "block",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: 6,
-                    overflow: "hidden",
-                    background: "rgba(255,255,255,0.02)",
-                    lineHeight: 0,
-                  }}
-                >
-                  <img
-                    src={src}
-                    alt={`tool output ${i + 1}`}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      height: "auto",
-                      maxHeight: 400,
-                      objectFit: "contain",
-                    }}
-                    loading="lazy"
-                  />
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Phase 98.1 — 이미지 영역은 도구 카드 위쪽 inline 으로 분리됨 (위 fragment 참조).
+           카드 펼침 안 해도 K 가 바로 채팅 본문에서 볼 수 있도록 함. */}
       </div>
     </details>
+    </>
   );
 }
 
