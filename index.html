@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Phase 98.3 (v0.6.42) — webview2 cache busting. in-app updater 가 새 frontend
+         bundle 받아도 webview2 의 HTTP cache 가 옛 index-*.js 를 잡아서 K 가 v0.6.41
+         코드 못 보는 함정 회피. 다음 update 부터는 index.html 매번 fresh fetch. -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>K Desktop Agent</title>
   </head>
   <body>
