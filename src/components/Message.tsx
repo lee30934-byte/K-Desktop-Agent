@@ -438,11 +438,29 @@ function formatBytes(n: number): string {
 }
 
 // Phase 98.5 (v0.6.44) — 이미지 lightbox modal. 본문 썸네일 클릭 시 원본 크기로 띄움.
+// Phase 99 (v0.6.45) — ←/→ navigation + counter + download + clipboard.
 // chat 메신저 (카톡/Slack/Discord) 의 표준 UX. ESC / ✕ / 빈 공간 클릭으로 닫힘.
-function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+function ImageLightbox({
+  images,
+  index,
+  onClose,
+  onIndexChange,
+}: {
+  images: string[];
+  index: number;
+  onClose: () => void;
+  onIndexChange: (i: number) => void;
+}) {
+  const src = images[index];
+  const hasNav = images.length > 1;
+  const goPrev = () => onIndexChange((index - 1 + images.length) % images.length);
+  const goNext = () => onIndexChange((index + 1) % images.length);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      else if (hasNav && e.key === "ArrowLeft") goPrev();
+      else if (hasNav && e.key === "ArrowRight") goNext();
     };
     window.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
@@ -451,7 +469,61 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, images.length]);
+
+  const onDownload = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch(src);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `kda-image-${Date.now()}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("[ImageLightbox] download failed:", err);
+    }
+  };
+
+  const onCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch(src);
+      const blob = await res.blob();
+      // ClipboardItem 으로 이미지 type 보존. webview2 (Chromium) 지원.
+      await navigator.clipboard.write([
+        new ClipboardItem({ [blob.type]: blob }),
+      ]);
+    } catch (err) {
+      console.error("[ImageLightbox] clipboard write failed:", err);
+    }
+  };
+
+  const btnStyle: React.CSSProperties = {
+    background: "rgba(255,255,255,0.12)",
+    border: "1px solid rgba(255,255,255,0.2)",
+    color: "white",
+    fontSize: 18,
+    padding: "6px 12px",
+    cursor: "pointer",
+    borderRadius: 6,
+    lineHeight: 1,
+  };
+
+  const navBtnStyle: React.CSSProperties = {
+    ...btnStyle,
+    position: "absolute",
+    top: "50%",
+    transform: "translateY(-50%)",
+    fontSize: 28,
+    padding: "12px 16px",
+  };
+
   return (
     <div
       onClick={onClose}
@@ -466,9 +538,80 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
         cursor: "zoom-out",
       }}
     >
+      {/* counter — 좌상단, 다중 이미지일 때만 */}
+      {hasNav && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: 16,
+            left: 16,
+            background: "rgba(0,0,0,0.5)",
+            border: "1px solid rgba(255,255,255,0.2)",
+            color: "white",
+            fontSize: 14,
+            padding: "6px 12px",
+            borderRadius: 6,
+            fontFamily: "var(--font-mono, monospace)",
+          }}
+        >
+          {index + 1} / {images.length}
+        </div>
+      )}
+
+      {/* button cluster — 우상단 */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          top: 16,
+          right: 16,
+          display: "flex",
+          gap: 8,
+        }}
+      >
+        <button onClick={onCopy} style={btnStyle} title="클립보드에 복사">
+          📋
+        </button>
+        <button onClick={onDownload} style={btnStyle} title="다운로드">
+          ⬇
+        </button>
+        <button onClick={onClose} style={btnStyle} title="닫기 (ESC)" aria-label="닫기">
+          ✕
+        </button>
+      </div>
+
+      {/* prev/next — 좌우 가운데, 다중 이미지일 때만 */}
+      {hasNav && (
+        <>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              goPrev();
+            }}
+            style={{ ...navBtnStyle, left: 16 }}
+            title="이전 (←)"
+            aria-label="이전 이미지"
+          >
+            ◀
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              goNext();
+            }}
+            style={{ ...navBtnStyle, right: 16 }}
+            title="다음 (→)"
+            aria-label="다음 이미지"
+          >
+            ▶
+          </button>
+        </>
+      )}
+
       <img
         src={src}
-        alt="원본 이미지"
+        alt={`이미지 ${index + 1} / ${images.length}`}
         style={{
           maxWidth: "95vw",
           maxHeight: "95vh",
@@ -478,27 +621,61 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
         }}
         onClick={(e) => e.stopPropagation()}
       />
-      <button
-        onClick={onClose}
-        style={{
-          position: "absolute",
-          top: 16,
-          right: 16,
-          background: "rgba(255,255,255,0.12)",
-          border: "1px solid rgba(255,255,255,0.2)",
-          color: "white",
-          fontSize: 20,
-          padding: "4px 12px",
-          cursor: "pointer",
-          borderRadius: 6,
-          lineHeight: 1,
-        }}
-        aria-label="닫기"
-        title="닫기 (ESC)"
-      >
-        ✕
-      </button>
     </div>
+  );
+}
+
+// Phase 99 — 썸네일 hover 시 살짝 enlarge (chat 메신저 느낌).
+function ImageThumbnail({
+  src,
+  index,
+  total,
+  onClick,
+}: {
+  src: string;
+  index: number;
+  total: number;
+  onClick: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={`이미지 ${index + 1}${total > 1 ? ` / ${total}` : ""} — 클릭하면 원본 크기로`}
+      onClick={(e) => {
+        e.preventDefault();
+        onClick();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "block",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 8,
+        overflow: "hidden",
+        background: "rgba(255,255,255,0.02)",
+        lineHeight: 0,
+        cursor: "zoom-in",
+        transform: hover ? "scale(1.03)" : "scale(1)",
+        transition: "transform 0.15s ease-out, box-shadow 0.15s ease-out",
+        boxShadow: hover ? "0 4px 16px rgba(0,0,0,0.3)" : "none",
+      }}
+    >
+      <img
+        src={src}
+        alt={`screenshot ${index + 1}`}
+        style={{
+          display: "block",
+          width: "100%",
+          height: "auto",
+          maxHeight: 180,
+          objectFit: "cover",
+        }}
+        loading="lazy"
+      />
+    </a>
   );
 }
 
@@ -514,14 +691,20 @@ function ToolMessageView({
   const isHighRisk = message.risk?.level === "high" || message.risk?.level === "critical";
   // Phase 98.2 — 이미지가 있는 도구 호출은 chat-like 한 본문 형태로 표시.
   // Phase 98.5 — 본문은 작은 썸네일, 클릭 시 in-app lightbox 로 원본 크기.
+  // Phase 99 — lightbox ←/→ navigation + counter + download + clipboard, 썸네일 hover scale.
   const hasImages = Array.isArray(message.images) && message.images.length > 0;
-  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // 이미지 있는 케이스: 본문 썸네일 + 클릭 시 lightbox + 그 아래 한 줄 footnote
   if (hasImages) {
     return (
       <div className="msg-tool-image-mode">
-        {lightboxSrc && (
-          <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+        {lightboxIndex !== null && (
+          <ImageLightbox
+            images={message.images!}
+            index={lightboxIndex}
+            onClose={() => setLightboxIndex(null)}
+            onIndexChange={setLightboxIndex}
+          />
         )}
         <div
           className="msg-tool-images-inline"
@@ -536,40 +719,13 @@ function ToolMessageView({
           }}
         >
           {message.images!.map((src, i) => (
-            <a
+            <ImageThumbnail
               key={i}
-              href={src}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`이미지 ${i + 1} — 클릭하면 원본 크기로`}
-              onClick={(e) => {
-                e.preventDefault();
-                setLightboxSrc(src);
-              }}
-              style={{
-                display: "block",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: 8,
-                overflow: "hidden",
-                background: "rgba(255,255,255,0.02)",
-                lineHeight: 0,
-                cursor: "zoom-in",
-                transition: "opacity 0.15s",
-              }}
-            >
-              <img
-                src={src}
-                alt={`screenshot ${i + 1}`}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  height: "auto",
-                  maxHeight: 180,
-                  objectFit: "cover",
-                }}
-                loading="lazy"
-              />
-            </a>
+              src={src}
+              index={i}
+              total={message.images!.length}
+              onClick={() => setLightboxIndex(i)}
+            />
           ))}
         </div>
         {/* 도구 호출이었다는 한 줄 footnote — 작은 회색 글씨, 클릭 시 details 펼침 */}
