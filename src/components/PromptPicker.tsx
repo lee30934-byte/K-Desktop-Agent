@@ -2,7 +2,7 @@
  * PromptPicker - 슬래시 명령어로 템플릿을 선택하는 팝업
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import type { PromptTemplate } from "../types";
 import { filterPrompts, groupPromptsByCategory, CATEGORY_LABELS } from "../prompts";
 
@@ -14,7 +14,7 @@ interface PromptPickerProps {
   anchorRect?: DOMRect;   // 위치 기준점 (Composer textarea 위치)
 }
 
-export default function PromptPicker({
+function PromptPicker({
   isOpen,
   query,
   onSelect,
@@ -175,3 +175,7 @@ export default function PromptPicker({
     </div>
   );
 }
+
+// Phase 102 (v0.6.48) — PromptPicker 도 memo. Composer 의 매 render 마다 같이 재호출되는
+// 비용 차단. isOpen=false 시 self-skip 하지만 함수 자체 호출은 제거.
+export default memo(PromptPicker);

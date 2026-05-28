@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, FormEvent, KeyboardEvent, DragEvent, ChangeEvent, ClipboardEvent } from "react";
+import { useState, useRef, useEffect, memo, FormEvent, KeyboardEvent, DragEvent, ChangeEvent, ClipboardEvent } from "react";
 import type { FileAttachment, PromptTemplate } from "../types";
 import PromptPicker from "./PromptPicker";
 
@@ -43,7 +43,7 @@ function generateId(): string {
   return `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
-export default function Composer({
+function Composer({
   disabled = false,
   isStreaming,
   onSubmit,
@@ -541,3 +541,9 @@ export default function Composer({
     </div>
   );
 }
+
+// Phase 102 (v0.6.48) — Composer 를 memo 박기. 부모 (App.tsx) 가 status/isStreaming/messages
+// 등으로 자주 re-render 되어도 Composer 의 props 가 ref-stable 이면 skip. K 의 keystroke 마다
+// 자식 트리 (PromptPicker, file chips 등) 재렌더 누적 lag 차단.
+// App.tsx 의 모든 callback 은 useStableCallback 박혀있으므로 ref 안 변함 → memo 효과적.
+export default memo(Composer);
