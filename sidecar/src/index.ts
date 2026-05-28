@@ -4393,19 +4393,67 @@ function startRateLimitPolling(): void {
   }
 }
 
-function spawnNpx(args: string[], timeoutMs: number): { stdout: string; ok: boolean } {
-  // Windows 의 npx 는 npx.cmd 셸 wrapper — cmd /c 로 호출해야 PATH 해석됨.
+// Phase 101 (v0.6.47) — ccusage 의 native binary path 우선 호출.
+// pitfall_av_blocks_bundled_native_binary 의 옵션 D — npx 캐시 hash 변동 회피 +
+// 백신 신뢰 누적. K 의 V3 같은 백신은 "처음 보는 경로의 .exe" 마다 알림 → npx temp path
+// 매번 변하면 영원히 신뢰 X. 글로벌 npm 경로의 안정 .exe 를 우선 호출.
+//
+// 우선순위:
+//   1) KDA_CCUSAGE_PATH env (K 가 직접 override 가능)
+//   2) %APPDATA%/npm/node_modules/ccusage/.../@ccusage/ccusage-win32-x64/bin/ccusage.exe
+//   3) npx fallback (기존 동작)
+function resolveCcusageBin(): { cmd: string; argPrefix: string[]; isDirectBin: boolean } {
   const isWin = process.platform === "win32";
-  const cmd = isWin ? "cmd" : "npx";
-  const fullArgs = isWin ? ["/c", "npx", ...args] : args;
-  const res = spawnSync(cmd, fullArgs, {
+  if (!isWin) {
+    return { cmd: "npx", argPrefix: [], isDirectBin: false };
+  }
+  const candidates: string[] = [];
+  if (process.env.KDA_CCUSAGE_PATH) candidates.push(process.env.KDA_CCUSAGE_PATH);
+  candidates.push(
+    path.join(
+      os.homedir(),
+      "AppData",
+      "Roaming",
+      "npm",
+      "node_modules",
+      "ccusage",
+      "node_modules",
+      "@ccusage",
+      "ccusage-win32-x64",
+      "bin",
+      "ccusage.exe",
+    ),
+  );
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      return { cmd: p, argPrefix: [], isDirectBin: true };
+    }
+  }
+  // npx fallback (기존 동작)
+  return { cmd: "cmd", argPrefix: ["/c", "npx"], isDirectBin: false };
+}
+
+function spawnNpx(args: string[], timeoutMs: number): { stdout: string; ok: boolean; permDenied: boolean } {
+  const resolved = resolveCcusageBin();
+  // global path 직접 호출 시 args 의 첫 토큰 "ccusage@latest" 는 제거 (이미 그 binary 자체)
+  const cleanedArgs = resolved.isDirectBin
+    ? args.filter((a) => !a.startsWith("ccusage@") && a !== "ccusage")
+    : args;
+  const fullArgs = [...resolved.argPrefix, ...cleanedArgs];
+  const res = spawnSync(resolved.cmd, fullArgs, {
     encoding: "utf-8",
     timeout: timeoutMs,
     windowsHide: true,
   });
+  // Phase 101 — EPERM (Access denied) detect — 백신이 ccusage.exe 차단의 시그널.
+  // pitfall_av_blocks_bundled_native_binary 패턴 3 후보 (auto toggle off + UI 안내).
+  const errCode = res.error && (res.error as NodeJS.ErrnoException).code;
+  const stderr = res.stderr ?? "";
+  const permDenied = errCode === "EPERM" || /access is denied|EPERM/i.test(stderr);
   return {
     stdout: res.stdout ?? "",
     ok: res.status === 0 && !!res.stdout,
+    permDenied,
   };
 }
 
@@ -4428,10 +4476,50 @@ function ccusageWeeklyWarn(msg: string): void {
   __ccusageWeeklyLastWarnMsg = msg;
 }
 
+// Phase 101 (v0.6.47) — 백신이 ccusage.exe 차단했을 때 sidecar-config.json 의 toggle 을
+// 자동 OFF + 5분 polling 중단. K 가 5분마다 같은 EPERM warn 보는 spam 차단.
+// 다음 sidecar 재시작 시 toggle 이 OFF 라 polling 자체 안 일어남.
+function disablePollingDueToAvBlock(): void {
+  try {
+    const configPath = path.join(os.homedir(), ".kda", "sidecar-config.json");
+    let cfg: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try {
+        cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+      } catch {
+        /* corrupted — overwrite */
+      }
+    }
+    cfg.anthropicRatePollingEnabled = false;
+    cfg.av_blocked_at = new Date().toISOString();
+    cfg.av_blocked_reason = "ccusage spawn EPERM — 백신 (V3 / 알약 등) 의 native binary 차단 의심";
+    writeFileSync(configPath, JSON.stringify(cfg, null, 2), "utf-8");
+    log(
+      "warn",
+      `[AV-BLOCK] ccusage 차단 detect → sidecar-config.json 의 anthropicRatePollingEnabled = false 자동 저장. 다음 sidecar 시작 시부터 polling skip. K 의 V3 콘솔에서 ccusage.exe 차단 해제 + 예외 등록 후 toggle 재활성화 부탁.`,
+    );
+  } catch (e) {
+    log("warn", `[AV-BLOCK] config write 실패 (재발 가능): ${e}`);
+  }
+}
+
+let __ccusageAvBlocked = false; // 한 sidecar lifetime 동안 1회만 trigger (재시도 spam 방지)
 function pollCcusageOnce(): void {
+  if (__ccusageAvBlocked) return; // AV-BLOCK 이미 detect 했으면 즉시 skip
   try {
     const blocks = spawnNpx(["ccusage@latest", "blocks", "--active", "--json"], 30_000);
+    // Phase 101 — EPERM 감지 시 즉시 auto disable + polling 중단
+    if (blocks.permDenied && !__ccusageAvBlocked) {
+      __ccusageAvBlocked = true;
+      disablePollingDueToAvBlock();
+      return;
+    }
     const weekly = spawnNpx(["ccusage@latest", "weekly", "--json", "--order", "desc"], 30_000);
+    if (weekly.permDenied && !__ccusageAvBlocked) {
+      __ccusageAvBlocked = true;
+      disablePollingDueToAvBlock();
+      return;
+    }
 
     let primary: any = null;
     let secondary: any = null;

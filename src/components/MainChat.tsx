@@ -3,6 +3,7 @@ import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
 import type { ChatMessage, ConnectionStatus, FileAttachment } from "../types";
+import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFilters";
 
 interface MainChatProps {
   messages: ChatMessage[];
@@ -110,7 +111,7 @@ function MainChat({
 
   // 대화 내용 복사 함수
   const handleCopyChat = async () => {
-    const visibleMessages = messages.filter((msg) => msg.role !== "tool");
+    const visibleMessages = filterMessagesForCopy(messages);
 
     if (visibleMessages.length === 0) return;
 
@@ -309,17 +310,10 @@ function MainChat({
         <div className="messages" ref={messagesContainerRef}>
           {(() => {
             // Phase 90 — showToolCards 면 tool 메시지도 visible, OFF 면 기존 동작 (tool 빠짐).
-            // Phase 98.4 — 단 OFF 라도 이미지가 있는 tool 메시지는 본문에 표시 (Phase 98.2
-            // 의 hasImages 분기가 ToolMessageView 안에서 작동하므로 본문 list 에 박혀야 함).
-            // K 피드백 "도구 말고 채팅창에 바로 띄워줘" 의 정확한 구현 — 도구 chrome 은 숨기되
-            // 이미지만은 본문에 큰 사이즈로 띄움.
-            const visibleMessages = showToolCards
-              ? messages
-              : messages.filter((msg) => {
-                  if (msg.role !== "tool") return true;
-                  // 이미지 있는 tool 메시지는 예외적으로 본문에도 표시
-                  return Array.isArray(msg.images) && msg.images.length > 0;
-                });
+            // Phase 98.4 — 단 OFF 라도 이미지가 있는 tool 메시지는 본문에 표시.
+            // Phase 101 — filter chain 을 src/utils/messageFilters.ts 로 분리. 새 inner
+            // conditional 박을 때 여기 와서 audit (pitfall_frontend_filter_chain_bypass).
+            const visibleMessages = filterMessagesForBody(messages, showToolCards);
 
             if (visibleMessages.length === 0) {
               return <EmptyState />;
