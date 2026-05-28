@@ -649,8 +649,14 @@ function loadMemoryContext(): MemoryContext {
     let memoryBytes = 0;
 
     if (existsSync(dir)) {
+      // Phase 100 (v0.6.46) — pitfall_*.md 의 full body 는 매 turn memory_context 에서 제외.
+      // 이유: extractPitfallSummary() 가 이미 각 pitfall_*.md 의 frontmatter `description:` 한 줄을
+      // 상단 summary block 으로 추출 → LLM 의 self-check 에 충분. full body (각 5~9KB) 까지 매 turn
+      // 박으면 32KB hard cap 에서 trim 되어 후순위 pitfall + feedback_*.md 가 잘림. 함정 detail 이
+      // 필요한 시점엔 LLM 이 직접 file 로 read (path 가 summary 의 slug 로 충분 추론 가능).
+      // 결과: 매 turn memory_context ~100KB → ~12KB, K 의 feedback / lee-profile 등이 항상 박힘.
       const files = readdirSync(dir)
-        .filter((f) => f.endsWith(".md"))
+        .filter((f) => f.endsWith(".md") && !f.startsWith("pitfall_"))
         .sort();
       const sections: string[] = [];
       for (const f of files) {
