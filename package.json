@@ -10,6 +10,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "pretauri:dev": "npm run sidecar:build",
+    "pretauri:build": "npm run sidecar:build",
     "sidecar:install": "cd sidecar && npm install",
     "sidecar:build": "cd sidecar && npm run build",
     "postinstall": "npm run sidecar:install"

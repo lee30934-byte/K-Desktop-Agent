@@ -101,8 +101,39 @@ if (Test-Command "npm") {
     exit 0
 }
 
-# ─── 5. 아이콘 확인 ───
-Write-Step "5/5. 아이콘 확인"
+# ─── 5. Tauri resources 사전 빌드 ───
+# fresh clone 직후 첫 `npm run tauri:dev` 가 자주 두 가지 누락으로 막힘:
+#   (a) sidecar/dist/ — sidecar TypeScript 빌드 산출물
+#   (b) node-bundle/  — portable Node.js (KDA 설치본 안에 박힘)
+# 둘 다 tauri.conf.json 의 resources 배열에 박혀 있어 빌드 시 glob 매칭 필요.
+# 여기서 미리 빌드해두면 첫 dev 실행이 즉시 가능.
+Write-Step "5/6. Tauri resources 사전 빌드 (sidecar + node-bundle)"
+if (Test-Command "npm") {
+    Write-Host "  sidecar TypeScript 빌드 중..."
+    npm run sidecar:build
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ sidecar/dist/ 빌드 완료" -ForegroundColor Green
+    } else {
+        Write-Warning "  ⚠ sidecar 빌드 실패 — 나중에 'npm run sidecar:build' 수동 실행"
+    }
+
+    if (-not (Test-Path (Join-Path $projectRoot "node-bundle\node.exe"))) {
+        Write-Host "  portable Node.js 다운로드 + 압축 해제 중 (~30초, ~50MB)..."
+        & (Join-Path $projectRoot "scripts\bundle-node.ps1")
+        if (Test-Path (Join-Path $projectRoot "node-bundle\node.exe")) {
+            Write-Host "  ✓ node-bundle/ 준비 완료" -ForegroundColor Green
+        } else {
+            Write-Warning "  ⚠ node-bundle 생성 실패 — 나중에 '.\scripts\bundle-node.ps1' 수동 실행"
+        }
+    } else {
+        Write-Host "  ✓ node-bundle 이미 존재" -ForegroundColor Green
+    }
+} else {
+    Write-Warning "  ⚠ npm 이 없어 resources 사전 빌드 skip — 새 PowerShell 후 'npm run sidecar:build' + '.\scripts\bundle-node.ps1' 수동 실행"
+}
+
+# ─── 6. 아이콘 확인 ───
+Write-Step "6/6. 아이콘 확인"
 $iconDir = Join-Path $projectRoot "src-tauri\icons"
 if (Test-Path (Join-Path $iconDir "icon.ico")) {
     Write-Host "  ✓ 아이콘 이미 있음 (임시 K 아이콘)" -ForegroundColor Green

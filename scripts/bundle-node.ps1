@@ -6,7 +6,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+# Bug fix (2026-05-28): 종전 Split-Path -Parent 두 번 = 한 단계 너무 위로 가서
+# node-bundle 이 repo 밖 (..\..\node-bundle) 에 박히는 문제. 한 번이 정답.
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $ProjectRoot) { $ProjectRoot = (Get-Location).Path }
 
 $NodeDir = Join-Path $ProjectRoot "node-bundle"
