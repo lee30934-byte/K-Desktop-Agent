@@ -41,6 +41,11 @@ export interface ToolMessage extends BaseMessage {
   toolName: string;
   toolInput?: unknown;
   toolOutput?: string;
+  // Phase 98 — MCP 도구가 반환한 image content (base64 data URL 배열).
+  // sidecar 가 tool_result block 의 image part 를 분리해 emit. ToolMessageView 가
+  // 썸네일 그리드로 렌더링. 이전엔 normalizeToolOutput 이 JSON.stringify 로 덤프해
+  // K 화면에 거대한 base64 문자열만 보였음.
+  images?: string[];
   status: "pending" | "success" | "error";
   // Phase 85 (v0.6.28) — Connector/Tool Safety Layer 의 후속.
   // sidecar 가 tool_use emit 시 함께 박은 위험도 메타. 없으면 sidecar 가 분류 못 한 도구.
@@ -75,7 +80,7 @@ export type SidecarEvent =
         summary: string;
       };
     }
-  | { type: "tool_result"; id: string; tool_id: string; output: string }
+  | { type: "tool_result"; id: string; tool_id: string; output: string; images?: string[] }
   | { type: "done"; id: string; usage?: TokenUsage | null; computed_usage?: TokenUsage | null; maxTurnUsage?: MaxTurnUsage | null; agentId?: string | null }
   | { type: "error"; id?: string; message: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string }

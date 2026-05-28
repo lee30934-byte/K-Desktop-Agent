@@ -916,6 +916,8 @@ export default function App() {
       case "tool_result": {
         // 도구 결과를 즉시 DB 저장 — 끊겨도 "이미 받은 결과" 가 history 에 실려
         // Resume 시 모델이 같은 도구 다시 호출 안 하고 이어서 답변 생성.
+        // Phase 98 — sidecar 가 image content part 를 분리해 images 로 emit 하면
+        // ToolMessage 에 그대로 박음. Message.tsx 가 썸네일 그리드로 렌더링.
         let updatedToolMsg: ChatMessage | null = null;
         setMessages((prev) =>
           prev.map((m) => {
@@ -923,6 +925,7 @@ export default function App() {
               const next: ChatMessage = {
                 ...m,
                 toolOutput: ev.output,
+                images: ev.images && ev.images.length > 0 ? ev.images : undefined,
                 status: "success" as const,
               };
               updatedToolMsg = next;

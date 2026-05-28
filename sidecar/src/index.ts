@@ -2058,11 +2058,15 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
             if (message?.content) {
               for (const block of message.content) {
                 if (block.type === "tool_result") {
+                  // Phase 98 — image content part 를 별도 추출. 종전엔 normalizeToolOutput 이
+                  // image 를 JSON.stringify 로 dump 해 K 화면에 base64 텍스트만 보였음.
+                  const { text, images } = splitToolContent(block.content);
                   emit({
                     type: "tool_result",
                     id: msg.id,
                     tool_id: block.tool_use_id,
-                    output: normalizeToolOutput(block.content),
+                    output: text,
+                    images: images.length > 0 ? images : undefined,
                   });
                 }
               }
@@ -2268,6 +2272,44 @@ function normalizeToolOutput(content: unknown): string {
       .join("\n");
   }
   return JSON.stringify(content);
+}
+
+// Phase 98 — MCP 도구의 image content part 를 별도로 추출.
+// Anthropic Messages API 의 tool_result.content 는 string 또는
+// Array<{type:"text",text} | {type:"image",source:{type:"base64",media_type,data}}>.
+// 종전엔 image 가 JSON.stringify 로 텍스트 덤프되어 K 화면에 base64 raw 가 뿌려졌음.
+// 이제 text 는 output 으로, image 는 data URL 배열로 분리 emit → frontend 가 썸네일 렌더.
+function splitToolContent(content: unknown): { text: string; images: string[] } {
+  if (typeof content === "string") return { text: content, images: [] };
+  if (!Array.isArray(content)) {
+    return { text: JSON.stringify(content), images: [] };
+  }
+  const texts: string[] = [];
+  const images: string[] = [];
+  for (const c of content as any[]) {
+    if (!c || typeof c !== "object") continue;
+    if (c.type === "text" && typeof c.text === "string") {
+      texts.push(c.text);
+    } else if (c.type === "image" && c.source) {
+      const src = c.source;
+      // base64 형식 (Anthropic spec)
+      if (src.type === "base64" && typeof src.data === "string" && typeof src.media_type === "string") {
+        // 잘려있는 부분 방어 — 너무 짧으면 무시
+        if (src.data.length > 16) {
+          images.push(`data:${src.media_type};base64,${src.data}`);
+        }
+      } else if (src.type === "url" && typeof src.url === "string") {
+        // 일부 MCP 서버가 URL 로 반환할 수 있음 (Anthropic spec 2025 확장)
+        images.push(src.url);
+      } else {
+        // 알 수 없는 source 형식은 fallback 으로 JSON 덤프
+        texts.push(JSON.stringify(c));
+      }
+    } else {
+      texts.push(JSON.stringify(c));
+    }
+  }
+  return { text: texts.join("\n"), images };
 }
 
 // ─── Codex CLI 경로 (ChatGPT Plus/Pro OAuth — Phase 15) ──────────────────

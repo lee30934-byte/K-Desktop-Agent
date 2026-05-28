@@ -559,6 +559,51 @@ function ToolMessageView({
             <pre className="mono msg-tool-json">{message.toolOutput}</pre>
           </div>
         )}
+        {/* Phase 98 — MCP 도구가 반환한 이미지 (web_screenshot, cc_screenshot 등). */}
+        {message.images && message.images.length > 0 && (
+          <div className="msg-tool-section">
+            <span className="eyebrow">Images ({message.images.length})</span>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                gap: 8,
+                marginTop: 6,
+              }}
+            >
+              {message.images.map((src, i) => (
+                <a
+                  key={i}
+                  href={src}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`이미지 ${i + 1} — 클릭하면 새 창에서 원본 크기로`}
+                  style={{
+                    display: "block",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                    overflow: "hidden",
+                    background: "rgba(255,255,255,0.02)",
+                    lineHeight: 0,
+                  }}
+                >
+                  <img
+                    src={src}
+                    alt={`tool output ${i + 1}`}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      height: "auto",
+                      maxHeight: 400,
+                      objectFit: "contain",
+                    }}
+                    loading="lazy"
+                  />
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </details>
   );
