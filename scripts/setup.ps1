@@ -102,12 +102,13 @@ if (Test-Command "npm") {
 }
 
 # ─── 5. Tauri resources 사전 빌드 ───
-# fresh clone 직후 첫 `npm run tauri:dev` 가 자주 두 가지 누락으로 막힘:
+# fresh clone 직후 첫 `npm run tauri:dev` 가 자주 세 가지 누락으로 막힘:
 #   (a) sidecar/dist/ — sidecar TypeScript 빌드 산출물
 #   (b) node-bundle/  — portable Node.js (KDA 설치본 안에 박힘)
-# 둘 다 tauri.conf.json 의 resources 배열에 박혀 있어 빌드 시 glob 매칭 필요.
+#   (c) bundled-mcp/  — K-Personal-MCP (.gitignore 처리, release.yml 만 받음)
+# 셋 다 tauri.conf.json 의 resources 배열에 박혀 있어 빌드 시 glob 매칭 필요.
 # 여기서 미리 빌드해두면 첫 dev 실행이 즉시 가능.
-Write-Step "5/6. Tauri resources 사전 빌드 (sidecar + node-bundle)"
+Write-Step "5/6. Tauri resources 사전 빌드 (sidecar + node-bundle + bundled-mcp)"
 if (Test-Command "npm") {
     Write-Host "  sidecar TypeScript 빌드 중..."
     npm run sidecar:build
@@ -128,8 +129,34 @@ if (Test-Command "npm") {
     } else {
         Write-Host "  ✓ node-bundle 이미 존재" -ForegroundColor Green
     }
+
+    # K-Personal-MCP clone (.gitignore 처리되어 있어서 fresh clone 시 누락됨)
+    $bundledMcpServer = Join-Path $projectRoot "bundled-mcp\server.py"
+    if (-not (Test-Path $bundledMcpServer)) {
+        Write-Host "  K-Personal-MCP repo clone 중 (bundled-mcp/)..."
+        $bundledMcpDir = Join-Path $projectRoot "bundled-mcp"
+        if (Test-Path $bundledMcpDir) {
+            # 빈 폴더만 있는 경우 (이전 시도 흔적) — 삭제 후 clone
+            Remove-Item -Recurse -Force $bundledMcpDir -ErrorAction SilentlyContinue
+        }
+        & git clone --depth=1 "https://github.com/lee30934-byte/K-Personal-MCP.git" $bundledMcpDir
+        if (Test-Path $bundledMcpServer) {
+            # .git 폴더 제거 — Tauri bundle.resources 에 들어가면 안 됨 (크기/privacy)
+            Remove-Item -Recurse -Force (Join-Path $bundledMcpDir ".git") -ErrorAction SilentlyContinue
+            Write-Host "  ✓ bundled-mcp/ 준비 완료" -ForegroundColor Green
+        } else {
+            Write-Warning "  ⚠ bundled-mcp clone 실패 — 나중에 수동 실행:"
+            Write-Warning "      git clone --depth=1 https://github.com/lee30934-byte/K-Personal-MCP.git bundled-mcp"
+            Write-Warning "      Remove-Item -Recurse -Force bundled-mcp\.git"
+        }
+    } else {
+        Write-Host "  ✓ bundled-mcp 이미 존재" -ForegroundColor Green
+    }
 } else {
-    Write-Warning "  ⚠ npm 이 없어 resources 사전 빌드 skip — 새 PowerShell 후 'npm run sidecar:build' + '.\scripts\bundle-node.ps1' 수동 실행"
+    Write-Warning "  ⚠ npm 이 없어 resources 사전 빌드 skip — 새 PowerShell 후 수동 실행:"
+    Write-Warning "      npm run sidecar:build"
+    Write-Warning "      .\scripts\bundle-node.ps1"
+    Write-Warning "      git clone --depth=1 https://github.com/lee30934-byte/K-Personal-MCP.git bundled-mcp"
 }
 
 # ─── 6. 아이콘 확인 ───
