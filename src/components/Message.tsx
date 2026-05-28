@@ -447,20 +447,25 @@ function ToolMessageView({
   // Phase 85 (v0.6.28) — risk 배지. sidecar 가 분류 못 한 도구는 risk=undefined → 배지 숨김.
   const riskBadge = message.risk ? RISK_BADGES[message.risk.level] : null;
   const isHighRisk = message.risk?.level === "high" || message.risk?.level === "critical";
-  // Phase 98.1 — 이미지가 있으면 도구 카드와 별개로 본문 인라인에 큰 썸네일 표시.
-  // 이전 버전(Phase 98) 은 expanded 안에만 박혀 K 가 매번 카드를 펼쳐야 했음.
+  // Phase 98.2 — 이미지가 있는 도구 호출은 chat-like 한 본문 형태로 표시.
+  // K 피드백: "도구 말고 채팅창에 바로 띄워줘". 도구 카드 chrome (DONE pill, 도구명,
+  // RISK 배지, 시간 metadata) 가 시각적으로 무거워 이미지가 도구 결과로 묶여 보였음.
+  // 이제 image 가 있으면 카드 자체를 작은 footnote 로 축소, 이미지가 메시지가 됨.
   const hasImages = Array.isArray(message.images) && message.images.length > 0;
-  // 컴팩트 모드: 한 줄로 표시, 클릭 시 펼침
-  return (
-    <>
-      {hasImages && (
+  // 이미지 있는 케이스: 본문 이미지 + 그 아래 한 줄 footnote (펼침/접힘 X)
+  if (hasImages) {
+    return (
+      <div className="msg-tool-image-mode">
         <div
           className="msg-tool-images-inline"
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+            gridTemplateColumns:
+              message.images!.length === 1
+                ? "1fr"
+                : "repeat(auto-fill, minmax(320px, 1fr))",
             gap: 10,
-            marginBottom: 10,
+            marginBottom: 8,
           }}
         >
           {message.images!.map((src, i) => (
@@ -473,7 +478,7 @@ function ToolMessageView({
               style={{
                 display: "block",
                 border: "1px solid var(--border-subtle)",
-                borderRadius: 8,
+                borderRadius: 10,
                 overflow: "hidden",
                 background: "rgba(255,255,255,0.02)",
                 lineHeight: 0,
@@ -481,12 +486,12 @@ function ToolMessageView({
             >
               <img
                 src={src}
-                alt={`tool output ${i + 1}`}
+                alt={`screenshot ${i + 1}`}
                 style={{
                   display: "block",
                   width: "100%",
                   height: "auto",
-                  maxHeight: 600,
+                  maxHeight: 720,
                   objectFit: "contain",
                 }}
                 loading="lazy"
@@ -494,7 +499,64 @@ function ToolMessageView({
             </a>
           ))}
         </div>
-      )}
+        {/* 도구 호출이었다는 한 줄 footnote — 작은 회색 글씨, 클릭 시 details 펼침 */}
+        <details
+          className={`msg-tool-image-footnote msg-tool-${message.status}`}
+          data-risk={message.risk?.level ?? "unknown"}
+          style={{
+            fontSize: "0.72em",
+            opacity: 0.55,
+            marginTop: 2,
+          }}
+        >
+          <summary
+            style={{
+              cursor: "pointer",
+              listStyle: "none",
+              userSelect: "none",
+            }}
+          >
+            <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
+              📷 {message.toolName}
+            </span>
+            <span style={{ marginLeft: 6 }}>
+              ·{" "}
+              {new Date(message.timestamp).toLocaleTimeString("ko-KR", {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              })}
+            </span>
+            {message.images!.length > 1 && (
+              <span style={{ marginLeft: 6 }}>· {message.images!.length}장</span>
+            )}
+            <span style={{ marginLeft: 6, opacity: 0.7 }}>· 상세 펼치기</span>
+          </summary>
+          <div style={{ marginTop: 6, opacity: 0.85 }}>
+            {message.toolInput != null && (
+              <pre
+                className="mono msg-tool-json"
+                style={{ fontSize: "0.95em", padding: "4px 8px" }}
+              >
+                {JSON.stringify(message.toolInput, null, 2)}
+              </pre>
+            )}
+            {message.toolOutput && (
+              <pre
+                className="mono msg-tool-json"
+                style={{ fontSize: "0.95em", padding: "4px 8px", marginTop: 4 }}
+              >
+                {message.toolOutput}
+              </pre>
+            )}
+          </div>
+        </details>
+      </div>
+    );
+  }
+  // 이미지 없는 일반 케이스: 기존 도구 카드 (기존 동작 유지)
+  return (
+    <>
     <details
       className={`msg-tool-compact msg-tool-${message.status}`}
       data-risk={message.risk?.level ?? "unknown"}
