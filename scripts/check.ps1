@@ -555,6 +555,36 @@ Invoke-Step "Phase 72 (Settings tabs ↔ App.css selectors 정합성)" {
     }
 }
 
+# 4.14 Phase 104 - Sidecar heartbeat watchdog
+Invoke-Step "Phase 104 (sidecar heartbeat watchdog)" {
+    $libPath = "src-tauri/src/lib.rs"
+    $sidecarPath = "sidecar/src/index.ts"
+
+    foreach ($needle in @(
+        "LAST_SIDECAR_EVENT_SECS",
+        "SIDECAR_HEARTBEAT_TIMEOUT_SECS",
+        "sidecar_watchdog_timeout",
+        "heartbeat timeout"
+    )) {
+        if (-not (Select-String -Path $libPath -Pattern $needle -SimpleMatch -Quiet)) {
+            throw "lib.rs missing watchdog marker: $needle"
+        }
+    }
+    Write-Host "  OK Rust sidecar heartbeat watchdog markers present" -ForegroundColor DarkGray
+
+    foreach ($needle in @(
+        "SIDECAR_HEARTBEAT_INTERVAL_MS",
+        'type: "heartbeat"',
+        "activeTurns.size",
+        "heartbeatTimer.unref"
+    )) {
+        if (-not (Select-String -Path $sidecarPath -Pattern $needle -SimpleMatch -Quiet)) {
+            throw "sidecar/src/index.ts missing heartbeat marker: $needle"
+        }
+    }
+    Write-Host "  OK Node sidecar emits heartbeat events" -ForegroundColor DarkGray
+}
+
 # 5. 의존성 설치 상태 체크 (선언 <-> 설치 불일치 감지)
 if (-not $SkipDeps) {
     Invoke-Step "npm ls (root, depth=0)" {

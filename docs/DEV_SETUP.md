@@ -88,7 +88,7 @@ npm run tauri:dev
 ### Release 올리기
 
 ```powershell
-# 1. package.json / Cargo.toml / tauri.conf.json 의 version 을 0.6.39 같이 bump
+# 1. package.json / Cargo.toml / tauri.conf.json 의 version 을 다음 미사용 버전으로 bump
 #    (또는 scripts\bump-version.ps1 자동화 사용 — 있다면)
 
 # 2. 빌드 검증
@@ -96,12 +96,12 @@ npm run build
 
 # 3. commit
 git add .
-git commit -m "feat(v0.6.39): ..."
+git commit -m "feat(vX.Y.Z): ..."
 
 # 4. tag + push
-git tag v0.6.39
+git tag vX.Y.Z
 git push origin main
-git push origin v0.6.39
+git push origin vX.Y.Z
 
 # 5. GitHub Actions 가 자동 트리거 — ~14분 후 release publish
 #    https://github.com/lee30934-byte/K-Desktop-Agent/releases

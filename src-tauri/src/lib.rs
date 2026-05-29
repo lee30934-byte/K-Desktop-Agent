@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use notify::RecursiveMode;
@@ -30,6 +30,18 @@ static INTENTIONAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static RESTART_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 /// 재시작 최대 횟수. 초과 시 영구 실패로 UI 알림.
 const MAX_RESTART_ATTEMPTS: u32 = 3;
+/// sidecar heartbeat/stdout event watchdog. Sidecar emits heartbeat events even when idle.
+static LAST_SIDECAR_EVENT_SECS: AtomicU64 = AtomicU64::new(0);
+const SIDECAR_WATCHDOG_INTERVAL_SECS: u64 = 30;
+const SIDECAR_HEARTBEAT_TIMEOUT_SECS: u64 = 120;
+
+fn epoch_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 /// Supervisor 채널 — stdout 루프에서 "재시작 해 줘" 요청을 넣는다. 재귀 호출 회피용.
 static RESPAWN_TX: OnceLock<mpsc::UnboundedSender<RespawnRequest>> = OnceLock::new();
 
@@ -2457,6 +2469,7 @@ async fn set_sidecar_config_flag(
 async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
     // 새 spawn 이 시작되었다는 건 이전의 의도적 종료가 완료되었다는 뜻.
     INTENTIONAL_SHUTDOWN.store(false, Ordering::SeqCst);
+    LAST_SIDECAR_EVENT_SECS.store(epoch_secs(), Ordering::SeqCst);
 
     let exe_dir = std::env::current_exe()
         .ok()
@@ -2635,6 +2648,7 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
             match lines.next_line().await {
                 Ok(Some(line)) => match serde_json::from_str::<serde_json::Value>(&line) {
                     Ok(v) => {
+                        LAST_SIDECAR_EVENT_SECS.store(epoch_secs(), Ordering::SeqCst);
                         if !received_any {
                             // 첫 메시지 수신 = sidecar 정상 기동 신호. 재시작 카운터 리셋.
                             received_any = true;
@@ -3102,6 +3116,57 @@ pub fn run_with_options(start_minimized: bool) {
                                 "max_attempts": MAX_RESTART_ATTEMPTS,
                             }),
                         );
+                    }
+                }
+            });
+
+            // Heartbeat watchdog: if the Node sidecar stops emitting stdout events
+            // while the app still expects it to be alive, kill it and let the
+            // existing stdout-EOF respawn path recover. This catches hangs where
+            // the process has not exited but the LLM/sidecar stream is wedged.
+            let watchdog_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(SIDECAR_WATCHDOG_INTERVAL_SECS)).await;
+                    if INTENTIONAL_SHUTDOWN.load(Ordering::SeqCst) {
+                        continue;
+                    }
+
+                    let last = LAST_SIDECAR_EVENT_SECS.load(Ordering::SeqCst);
+                    if last == 0 {
+                        continue;
+                    }
+
+                    let now = epoch_secs();
+                    let age = now.saturating_sub(last);
+                    if age <= SIDECAR_HEARTBEAT_TIMEOUT_SECS {
+                        continue;
+                    }
+
+                    log_lifecycle(
+                        "sidecar.log",
+                        &format!(
+                            "sidecar heartbeat timeout: last_event_age={}s threshold={}s - killing child for respawn",
+                            age, SIDECAR_HEARTBEAT_TIMEOUT_SECS
+                        ),
+                    );
+                    let _ = watchdog_handle.emit(
+                        "sidecar-event",
+                        serde_json::json!({
+                            "type": "sidecar_watchdog_timeout",
+                            "last_event_age_secs": age,
+                            "threshold_secs": SIDECAR_HEARTBEAT_TIMEOUT_SECS,
+                        }),
+                    );
+                    LAST_SIDECAR_EVENT_SECS.store(now, Ordering::SeqCst);
+
+                    let child_holder = get_child_holder().clone();
+                    let mut guard = child_holder.lock().await;
+                    if let Some(child) = guard.as_mut() {
+                        let _ = child.start_kill();
+                    } else if let Some(tx) = RESPAWN_TX.get() {
+                        let attempt = RESTART_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _ = tx.send(RespawnRequest { delay_secs: 1, attempt });
                     }
                 }
             });

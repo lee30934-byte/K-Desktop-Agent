@@ -1467,6 +1467,24 @@ const activeTurns = new Map<string, ChildProcess>();
 const activeRestTurns = new Map<string, AbortController>();
 let cachedMCPHealth: MCPStatus = { configured: false, serverPathExists: false, pythonAvailable: false, claudeCliAvailable: false };
 
+const SIDECAR_HEARTBEAT_INTERVAL_MS = Number(process.env.KDA_SIDECAR_HEARTBEAT_INTERVAL_MS ?? "30000");
+if (Number.isFinite(SIDECAR_HEARTBEAT_INTERVAL_MS) && SIDECAR_HEARTBEAT_INTERVAL_MS > 0) {
+  const heartbeatTimer = setInterval(() => {
+    try {
+      emit({
+        type: "heartbeat",
+        ts: Date.now(),
+        pid: process.pid,
+        activeTurns: activeTurns.size,
+        activeRestTurns: activeRestTurns.size,
+      });
+    } catch (err) {
+      logToFile("warn", `heartbeat emit failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, SIDECAR_HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref?.();
+}
+
 // ─── Phase 68 (v0.6.12) — MCP 도구 listing 통합 emit helper ────────────────
 //
 // 호출 path 두 가지:

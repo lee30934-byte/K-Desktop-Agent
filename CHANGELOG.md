@@ -3,6 +3,16 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.6.50] - 2026-05-29
+
+### 추가
+- sidecar heartbeat 이벤트와 Rust watchdog을 추가해 stdout/LLM stream 정지 시 sidecar를 자동 kill/respawn하도록 보강.
+
+### 변경
+- 릴리즈 기준을 원격 최신 v0.6.49 다음 버전인 v0.6.50으로 고정.
+
+---
+
 ## [0.1.0] - 2025-01-XX
 
 ### 추가
