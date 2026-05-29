@@ -221,6 +221,21 @@ function normalizeRateLimit(
   return { provider, primary, secondary, receivedAt, rawPayload: payload };
 }
 
+const LS_AUTO_RESUME_LONG_TASKS = "kda_auto_resume_long_tasks";
+const LS_AUTO_RESUME_UNTIL_MANUAL_STOP = "kda_auto_resume_until_manual_stop";
+const LS_AUTO_RESUME_MANUAL_STOPPED = "kda_auto_resume_manual_stopped";
+
+function readLocalBool(key: string, defaultValue: boolean): boolean {
+  try {
+    const value = localStorage.getItem(key);
+    if (value === "1" || value === "true") return true;
+    if (value === "0" || value === "false") return false;
+  } catch {
+    // Keep the app usable even when storage is unavailable.
+  }
+  return defaultValue;
+}
+
 export default function App() {
   // ─── 상태 ───────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -351,6 +366,14 @@ export default function App() {
     convId: string;
     userMessage: ChatMessage;
   } | null>(null);
+  const [pendingLongTaskAutoResume, setPendingLongTaskAutoResume] = useState<{
+    task: DBLongTask;
+    reason: string;
+    queuedAt: number;
+  } | null>(null);
+  const autoResumeQueuedTaskIdsRef = useRef<Set<string>>(new Set());
+  const autoResumeManualStoppedRef = useRef<boolean>(readLocalBool(LS_AUTO_RESUME_MANUAL_STOPPED, false));
+  autoResumeManualStoppedRef.current = readLocalBool(LS_AUTO_RESUME_MANUAL_STOPPED, false);
 
   // 메시지 저장 디바운스용 ref
   const pendingSaveRef = useRef<Map<string, ChatMessage>>(new Map());
@@ -359,10 +382,77 @@ export default function App() {
   // state를 안정된 콜백 안에서 읽기 위한 latest-ref
   const activeConversationIdRef = useRef<string | null>(null);
   const dbReadyRef = useRef(false);
+  const isStreamingRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>([]);
   useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
   useEffect(() => { dbReadyRef.current = dbReady; }, [dbReady]);
+  useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  const buildLongTaskAutoResumePrompt = useCallback((task: DBLongTask, reason: string) => {
+    let manifestPretty = task.manifest_json ?? "(no manifest_json)";
+    try {
+      if (task.manifest_json) {
+        manifestPretty = JSON.stringify(JSON.parse(task.manifest_json), null, 2);
+      }
+    } catch {
+      // Old builds may have persisted non-JSON metadata. Keep the raw text.
+    }
+
+    const ageSec = Math.max(0, Math.round((Date.now() - task.updated_at) / 1000));
+    return [
+      "[KDA AUTO-RESUME]",
+      "",
+      "The previous Codex response stream was interrupted before response.completed.",
+      "Do not try to continue the broken websocket stream. Start from durable state.",
+      "",
+      "Recovery target:",
+      `- reason: ${reason}`,
+      `- task_id: ${task.id}`,
+      `- kind: ${task.kind}`,
+      `- title: ${task.title ?? "(none)"}`,
+      `- conversation_id: ${task.conversation_id ?? "(none)"}`,
+      `- last_evidence_age_sec: ${ageSec}`,
+      "",
+      "Stored manifest:",
+      "```json",
+      manifestPretty,
+      "```",
+      "",
+      "Required recovery behavior:",
+      "1. First read the latest local status, manifest, handoff, and output folders relevant to the task.",
+      "2. Continue from the recorded next_action or the first missing checkpoint.",
+      "3. Do not repeat completed outputs unless the latest status explicitly says retry or failed.",
+      "4. After each small unit, write output paths, QA/status, and next_action to a durable runtime file.",
+      "5. If the task is SIGILFALL or visual production, keep the existing continuity and provider rules.",
+      "6. If recovery is blocked, report the blocker and the exact file/status checked.",
+    ].join("\n");
+  }, []);
+
+  const queueLongTaskAutoResume = useStableCallback((task: DBLongTask, reason: string) => {
+    if (!readLocalBool(LS_AUTO_RESUME_LONG_TASKS, true)) {
+      logger.log(`[AutoResume] disabled by localStorage; task=${task.id}`);
+      return;
+    }
+    if (autoResumeManualStoppedRef.current || readLocalBool(LS_AUTO_RESUME_MANUAL_STOPPED, false)) {
+      logger.log(`[AutoResume] suppressed after manual Stop; task=${task.id}`);
+      return;
+    }
+    if (autoResumeQueuedTaskIdsRef.current.has(task.id)) return;
+
+    const attemptsKey = `kda_auto_resume_attempts_${task.id}`;
+    const attempts = Number(localStorage.getItem(attemptsKey) || "0");
+    const untilManualStop = readLocalBool(LS_AUTO_RESUME_UNTIL_MANUAL_STOP, true);
+    if (!untilManualStop && Number.isFinite(attempts) && attempts >= 3) {
+      logger.warn(`[AutoResume] max attempts reached; task=${task.id}`);
+      return;
+    }
+    localStorage.setItem(attemptsKey, String((Number.isFinite(attempts) ? attempts : 0) + 1));
+
+    autoResumeQueuedTaskIdsRef.current.add(task.id);
+    setPendingLongTaskAutoResume({ task, reason, queuedAt: Date.now() });
+    logger.warn(`[AutoResume] queued task=${task.id} reason=${reason}`);
+  });
 
   // 자동 갱신 임계치용 baseline — 마지막 갱신 시점의 추정 컨텍스트 크기.
   // 이 값을 빼면 "갱신 이후 새로 누적된 대화" 만 임계치 비교에 쓰인다.
@@ -754,6 +844,7 @@ export default function App() {
           if (recoverable.length > 0) {
             logger.log(`[App] 복구 가능한 long_tasks ${recoverable.length}개 발견 — 배너 표시`);
             setRecoverableTasks(recoverable);
+            queueLongTaskAutoResume(recoverable[0], "startup_stale_long_task");
           }
         } catch (e) {
           logger.warn(`[App] listRecoverableLongTasks 실패: ${e}`);
@@ -1241,12 +1332,18 @@ export default function App() {
       case "session_recovery_triggered": {
         const e = ev as any;
         logger.warn(`[Recovery] sidecar 가 session_recovery_triggered emit — reason=${e.reason} taskId=${e.taskId ?? "(없음)"}`);
-        // staleMs 를 짧게 (5초) — 방금 timeout 난 작업도 즉시 후보로 잡힘
-        listRecoverableLongTasks(5_000)
+        // Recovery event can arrive while the task is still fresh; fetch every running task and prefer taskId.
+        listRecoverableLongTasks(-1)
           .then((tasks) => {
             if (tasks.length > 0) {
               logger.log(`[Recovery] ${tasks.length}개 복구 후보 — 배너 표시`);
               setRecoverableTasks(tasks);
+              const target =
+                (e.taskId ? tasks.find((t) => t.id === String(e.taskId)) : null) ??
+                tasks[0];
+              if (target) {
+                queueLongTaskAutoResume(target, String(e.reason ?? "session_recovery_triggered"));
+              }
             }
           })
           .catch((err) => logger.warn(`[Recovery] listRecoverableLongTasks 실패: ${err}`));
@@ -1496,6 +1593,11 @@ export default function App() {
     }
 
     // 새 메시지 시작 → 미완 턴 이어받기 배너는 더 이상 의미 없음
+    autoResumeManualStoppedRef.current = false;
+    try {
+      localStorage.removeItem(LS_AUTO_RESUME_MANUAL_STOPPED);
+    } catch {}
+
     setPendingResume(null);
 
     // 활성 대화가 없으면 자동 생성
@@ -1734,6 +1836,12 @@ export default function App() {
   // Phase 46 (v0.5.34): "모두 중단" — 현재 turn 뿐 아니라 큐, 자동 세션 갱신, pending resume 까지 abort.
   // K 보고: STOP 눌러도 큐가 다음 메시지 자동 전송해서 "계속 진행" 으로 보임 → 진짜 멈추는 버튼 추가.
   const handleHardStop = useStableCallback(async () => {
+    autoResumeManualStoppedRef.current = true;
+    autoResumeQueuedTaskIdsRef.current.clear();
+    setPendingLongTaskAutoResume(null);
+    try {
+      localStorage.setItem(LS_AUTO_RESUME_MANUAL_STOPPED, "1");
+    } catch {}
     logger.log("[HardStop] 모두 중단 — turn + 큐 + 자동갱신 abort");
     // 1. 현재 turn interrupt
     if (currentTurnId) {
@@ -2115,6 +2223,57 @@ export default function App() {
     }, 0);
     return () => window.clearTimeout(t);
   }, [isStreaming, queuedSend, handleSendMessage]);
+
+  useEffect(() => {
+    if (!pendingLongTaskAutoResume || isStreaming || !dbReady) return;
+
+    const { task, reason } = pendingLongTaskAutoResume;
+    const targetConvId = task.conversation_id ?? activeConversationId;
+
+    if (targetConvId && targetConvId !== activeConversationId) {
+      void handleSelectConversation(targetConvId);
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      if (isStreamingRef.current) return;
+      const current = pendingLongTaskAutoResume;
+      if (!current || current.task.id !== task.id) return;
+      if (!readLocalBool(LS_AUTO_RESUME_LONG_TASKS, true) || readLocalBool(LS_AUTO_RESUME_MANUAL_STOPPED, false)) {
+        setPendingLongTaskAutoResume(null);
+        logger.log(`[AutoResume] pending resume cancelled by settings/manual Stop; task=${task.id}`);
+        return;
+      }
+
+      setPendingLongTaskAutoResume(null);
+      setRecoverableTasks((prev) => prev.filter((t) => t.id !== task.id));
+
+      try {
+        await finalizeLongTask(
+          task.id,
+          "failed",
+          `KDA auto-resume queued after ${reason}; replacement Codex turn will continue from durable status.`,
+        );
+      } catch (err) {
+        logger.warn(`[AutoResume] finalize old task failed id=${task.id}: ${err}`);
+      }
+
+      const prompt = buildLongTaskAutoResumePrompt(task, reason);
+      pushSystem(`KDA auto-resume: interrupted ${task.kind} task will continue from checkpoint.`, "warn");
+      logger.warn(`[AutoResume] sending resume prompt for task=${task.id}`);
+      void handleSendMessage(prompt, []);
+    }, 1500);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activeConversationId,
+    buildLongTaskAutoResumePrompt,
+    dbReady,
+    handleSelectConversation,
+    handleSendMessage,
+    isStreaming,
+    pendingLongTaskAutoResume,
+  ]);
 
   // ─── 중단된 턴 같은 질문 재시도 ─────────────────────────────────
   // pendingResume.userMessage 텍스트를 그대로 재전송. user 메시지는 이미 DB/UI 에 있으니

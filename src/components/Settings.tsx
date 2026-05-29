@@ -332,6 +332,9 @@ const EXTERNAL_USAGE_PAGES: ExternalUsagePage[] = [
 // localStorage 키 — App.tsx 와 공유
 const LS_ACTIVE_PROVIDER = "kda_active_provider";
 const LS_ACTIVE_MODEL = "kda_active_model";
+const LS_AUTO_RESUME_LONG_TASKS = "kda_auto_resume_long_tasks";
+const LS_AUTO_RESUME_UNTIL_MANUAL_STOP = "kda_auto_resume_until_manual_stop";
+const LS_AUTO_RESUME_MANUAL_STOPPED = "kda_auto_resume_manual_stopped";
 // 개별 잠금 도구 풀네임 배열 — App.tsx 가 invoke send_message 에 lockedTools 로 전달
 const LS_LOCKED_TOOLS = "kda_locked_tools";
 
@@ -900,6 +903,8 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
   // 자동 업데이트 상태
   const [autoUpdate, setAutoUpdate] = useState(true);
+  const [autoResumeLongTasks, setAutoResumeLongTasks] = useState(true);
+  const [autoResumeUntilManualStop, setAutoResumeUntilManualStop] = useState(true);
 
   // Phase 59 — Anthropic rate polling (ccusage) toggle.
   // K 의 V3 (안랩) 같은 백신이 ccusage native binary 의 실행을 차단해 매 5분마다 알림 팝업이
@@ -1412,6 +1417,8 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         if (theme) setCurrentTheme(theme);
         if (colors) setBubbleColors(colors);
         setAutoUpdate(autoUpdateEnabled);
+        setAutoResumeLongTasks(loadBoolSetting(LS_AUTO_RESUME_LONG_TASKS, true));
+        setAutoResumeUntilManualStop(loadBoolSetting(LS_AUTO_RESUME_UNTIL_MANUAL_STOP, true));
         setLockedTools(locked);
         // 활성 provider/model 로드 (저장된 게 있으면 채팅 전환에 사용)
         const savedProvider = localStorage.getItem(LS_ACTIVE_PROVIDER) || "claude";
@@ -1663,6 +1670,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       cancelled = true;
     };
   }, [open]);
+
+  function loadBoolSetting(key: string, defaultValue: boolean): boolean {
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored === "1" || stored === "true") return true;
+      if (stored === "0" || stored === "false") return false;
+    } catch (e) {
+      console.error("localStorage setting load failed:", key, e);
+    }
+    return defaultValue;
+  }
+
+  function toggleAutoResumeLongTasks() {
+    const newValue = !autoResumeLongTasks;
+    setAutoResumeLongTasks(newValue);
+    localStorage.setItem(LS_AUTO_RESUME_LONG_TASKS, String(newValue));
+    if (newValue) {
+      localStorage.removeItem(LS_AUTO_RESUME_MANUAL_STOPPED);
+    }
+  }
+
+  function toggleAutoResumeUntilManualStop() {
+    const newValue = !autoResumeUntilManualStop;
+    setAutoResumeUntilManualStop(newValue);
+    localStorage.setItem(LS_AUTO_RESUME_UNTIL_MANUAL_STOP, String(newValue));
+  }
 
   async function toggleAnthropicRatePolling() {
     if (anthropicRatePollingBusy) return;
@@ -3824,6 +3857,44 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   ))}
                 </div>
               )}
+            </div>
+          </section>
+
+          <section className="settings-section" data-tab="system">
+            <div className="eyebrow">작업 복구</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">장시간 작업 자동 재개</div>
+                <div className="settings-row-desc">
+                  Codex 응답 스트림이나 sidecar 가 끊겨도 저장된 long task 상태를 읽어 새 요청으로 이어갑니다.
+                </div>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={autoResumeLongTasks}
+                  onChange={toggleAutoResumeLongTasks}
+                  disabled={loading}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">수동 Stop 전까지 계속 재개</div>
+                <div className="settings-row-desc">
+                  켜두면 임의의 3회 제한으로 멈추지 않고, K 가 Stop 을 누른 경우에만 자동 재개를 중단합니다.
+                </div>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={autoResumeUntilManualStop}
+                  onChange={toggleAutoResumeUntilManualStop}
+                  disabled={loading || !autoResumeLongTasks}
+                />
+                <span className="toggle-slider"></span>
+              </label>
             </div>
           </section>
 

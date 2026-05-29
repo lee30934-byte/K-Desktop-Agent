@@ -13,6 +13,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,9 +58,20 @@ const EXPECTED_WEB_TOOLS = [
 ];
 
 // ─── 2. K-Personal MCP 모듈 import + get_tools() ───
-const kPersonalPath =
-  process.env.K_PERSONAL_MCP_PATH ??
-  "C:/Users/user/Documents/K-Personal-MCP/server.py";
+function resolveKPersonalPath() {
+  const candidates = [
+    process.env.K_PERSONAL_MCP_PATH,
+    path.join(homedir(), "Documents", "K-Personal-MCP", "server.py"),
+    path.join(homedir(), "OneDrive", "Documents", "K-Personal-MCP", "server.py"),
+    path.join(homedir(), "OneDrive", "문서", "K-Personal-MCP", "server.py"),
+    path.join(homedir(), "K-Personal-MCP", "server.py"),
+    path.join(projectRoot, "bundled-mcp", "server.py"),
+    path.resolve(projectRoot, "..", "K-Personal-MCP", "server.py"),
+  ].filter(Boolean);
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+
+const kPersonalPath = resolveKPersonalPath();
 
 if (!existsSync(kPersonalPath)) {
   ng("K-Personal MCP 경로 존재", `not found: ${kPersonalPath}`);
@@ -88,8 +100,17 @@ const pyScript = [
 
 // shell:false 로 spawn — Windows 에서 shell:true 면 -c "<multi-line>" 이 깨짐.
 // stdin 으로 스크립트 흘려보내는 게 더 견고.
-const pythonExe = process.env.PYTHON_EXE ?? "python";
-const proc = spawnSync(pythonExe, ["-"], {
+function resolvePythonCommand() {
+  if (process.env.PYTHON_EXE) return { command: process.env.PYTHON_EXE, args: [] };
+  const pyProbe = spawnSync("py", ["-3", "--version"], { encoding: "utf-8", timeout: 5000 });
+  if (pyProbe.status === 0) return { command: "py", args: ["-3"] };
+  const pythonProbe = spawnSync("python", ["--version"], { encoding: "utf-8", timeout: 5000 });
+  if (pythonProbe.status === 0) return { command: "python", args: [] };
+  return { command: "python", args: [] };
+}
+
+const pythonExe = resolvePythonCommand();
+const proc = spawnSync(pythonExe.command, [...pythonExe.args, "-"], {
   encoding: "utf-8",
   timeout: 15000,
   input: pyScript,

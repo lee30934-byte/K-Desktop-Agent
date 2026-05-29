@@ -3,6 +3,17 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.6.53] - 2026-05-30
+
+### Added
+- Added Settings toggles for long-task auto-resume and "continue until manual Stop".
+
+### Changed
+- Auto-resume now respects the Settings toggle and suppresses retries after the user presses hard Stop until the next user message starts a new turn.
+- The previous three-attempt auto-resume cap now applies only when "continue until manual Stop" is disabled.
+
+---
+
 ## [0.6.51] - 2026-05-29
 
 ### Fixed
