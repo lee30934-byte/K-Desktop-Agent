@@ -32,7 +32,9 @@ static RESTART_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 const MAX_RESTART_ATTEMPTS: u32 = 3;
 /// sidecar heartbeat/stdout event watchdog. Sidecar emits heartbeat events even when idle.
 static LAST_SIDECAR_EVENT_SECS: AtomicU64 = AtomicU64::new(0);
+static LAST_SIDECAR_SPAWN_SECS: AtomicU64 = AtomicU64::new(0);
 const SIDECAR_WATCHDOG_INTERVAL_SECS: u64 = 30;
+const SIDECAR_STARTUP_GRACE_SECS: u64 = 60;
 const SIDECAR_HEARTBEAT_TIMEOUT_SECS: u64 = 120;
 
 fn epoch_secs() -> u64 {
@@ -2469,7 +2471,9 @@ async fn set_sidecar_config_flag(
 async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
     // 새 spawn 이 시작되었다는 건 이전의 의도적 종료가 완료되었다는 뜻.
     INTENTIONAL_SHUTDOWN.store(false, Ordering::SeqCst);
-    LAST_SIDECAR_EVENT_SECS.store(epoch_secs(), Ordering::SeqCst);
+    let spawn_started_at = epoch_secs();
+    LAST_SIDECAR_SPAWN_SECS.store(spawn_started_at, Ordering::SeqCst);
+    LAST_SIDECAR_EVENT_SECS.store(0, Ordering::SeqCst);
 
     let exe_dir = std::env::current_exe()
         .ok()
@@ -3132,12 +3136,47 @@ pub fn run_with_options(start_minimized: bool) {
                         continue;
                     }
 
+                    let now = epoch_secs();
                     let last = LAST_SIDECAR_EVENT_SECS.load(Ordering::SeqCst);
                     if last == 0 {
+                        let spawn_started_at = LAST_SIDECAR_SPAWN_SECS.load(Ordering::SeqCst);
+                        if spawn_started_at == 0 {
+                            continue;
+                        }
+
+                        let startup_age = now.saturating_sub(spawn_started_at);
+                        if startup_age <= SIDECAR_STARTUP_GRACE_SECS {
+                            continue;
+                        }
+
+                        log_lifecycle(
+                            "sidecar.log",
+                            &format!(
+                                "sidecar startup timeout: no first stdout event for {}s threshold={}s - killing child for respawn",
+                                startup_age, SIDECAR_STARTUP_GRACE_SECS
+                            ),
+                        );
+                        let _ = watchdog_handle.emit(
+                            "sidecar-event",
+                            serde_json::json!({
+                                "type": "sidecar_startup_timeout",
+                                "startup_age_secs": startup_age,
+                                "threshold_secs": SIDECAR_STARTUP_GRACE_SECS,
+                            }),
+                        );
+                        LAST_SIDECAR_SPAWN_SECS.store(now, Ordering::SeqCst);
+
+                        let child_holder = get_child_holder().clone();
+                        let mut guard = child_holder.lock().await;
+                        if let Some(child) = guard.as_mut() {
+                            let _ = child.start_kill();
+                        } else if let Some(tx) = RESPAWN_TX.get() {
+                            let attempt = RESTART_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
+                            let _ = tx.send(RespawnRequest { delay_secs: 1, attempt });
+                        }
                         continue;
                     }
 
-                    let now = epoch_secs();
                     let age = now.saturating_sub(last);
                     if age <= SIDECAR_HEARTBEAT_TIMEOUT_SECS {
                         continue;

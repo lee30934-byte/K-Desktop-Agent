@@ -562,7 +562,10 @@ Invoke-Step "Phase 104 (sidecar heartbeat watchdog)" {
 
     foreach ($needle in @(
         "LAST_SIDECAR_EVENT_SECS",
+        "LAST_SIDECAR_SPAWN_SECS",
+        "SIDECAR_STARTUP_GRACE_SECS",
         "SIDECAR_HEARTBEAT_TIMEOUT_SECS",
+        "sidecar_startup_timeout",
         "sidecar_watchdog_timeout",
         "heartbeat timeout"
     )) {
@@ -574,6 +577,8 @@ Invoke-Step "Phase 104 (sidecar heartbeat watchdog)" {
 
     foreach ($needle in @(
         "SIDECAR_HEARTBEAT_INTERVAL_MS",
+        "isBrokenStdoutPipe",
+        "exitForBrokenStdoutPipe",
         'type: "heartbeat"',
         "activeTurns.size",
         "heartbeatTimer.unref"

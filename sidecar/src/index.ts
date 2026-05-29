@@ -140,12 +140,42 @@ function logToFile(level: string, message: string): void {
   }
 }
 
+function isBrokenStdoutPipe(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  const code = typeof e?.code === "string" ? e.code : "";
+  const message = typeof e?.message === "string" ? e.message : "";
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED" || message.includes("broken pipe");
+}
+
+let exitingForBrokenStdoutPipe = false;
+function exitForBrokenStdoutPipe(reason: string): never {
+  if (!exitingForBrokenStdoutPipe) {
+    exitingForBrokenStdoutPipe = true;
+    logToFile("fatal", `stdout pipe is broken; exiting sidecar for parent respawn (${reason})`);
+    process.exitCode = 1;
+    setImmediate(() => process.exit(1));
+  }
+  throw new Error(reason);
+}
+
+process.stdout.on("error", (err) => {
+  if (isBrokenStdoutPipe(err)) {
+    exitForBrokenStdoutPipe(err instanceof Error ? err.message : String(err));
+  }
+});
+
 // 크래시 로그: uncaught 예외/거부를 sidecar.log 에 남김 (release 에서도 원인 추적 가능)
 process.on("uncaughtException", (err) => {
   logToFile("fatal", `uncaughtException: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+  if (isBrokenStdoutPipe(err)) {
+    exitForBrokenStdoutPipe(err instanceof Error ? err.message : String(err));
+  }
 });
 process.on("unhandledRejection", (reason) => {
   logToFile("fatal", `unhandledRejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`);
+  if (isBrokenStdoutPipe(reason)) {
+    exitForBrokenStdoutPipe(reason instanceof Error ? reason.message : String(reason));
+  }
 });
 
 // ─── 설정 ─────────────────────────────────────────────
@@ -868,7 +898,14 @@ function buildMCPConfig(health: MCPStatus): Record<string, any> {
 // ─── I/O 헬퍼 ──────────────────────────────────────────
 
 function emit(obj: Record<string, unknown>): void {
-  process.stdout.write(JSON.stringify(obj) + "\n");
+  try {
+    process.stdout.write(JSON.stringify(obj) + "\n");
+  } catch (err) {
+    if (isBrokenStdoutPipe(err)) {
+      exitForBrokenStdoutPipe(err instanceof Error ? err.message : String(err));
+    }
+    throw err;
+  }
 }
 
 function log(level: "info" | "warn" | "error", message: string): void {

@@ -3,6 +3,15 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.6.51] - 2026-05-29
+
+### Fixed
+- Hardened sidecar broken stdout pipe recovery: EPIPE/ERR_STREAM_DESTROYED now exits the Node sidecar so the Tauri parent can respawn it.
+- Added startup timeout guard for cases where the sidecar never emits its first stdout event after spawn.
+- Extended preflight markers so missing EPIPE/startup-timeout guards fail before release.
+
+---
+
 ## [0.6.50] - 2026-05-29
 
 ### 추가
