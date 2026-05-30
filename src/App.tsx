@@ -844,7 +844,10 @@ export default function App() {
           if (recoverable.length > 0) {
             logger.log(`[App] 복구 가능한 long_tasks ${recoverable.length}개 발견 — 배너 표시`);
             setRecoverableTasks(recoverable);
-            queueLongTaskAutoResume(recoverable[0], "startup_stale_long_task");
+            // Startup stale rows are ambiguous: a previous turn may have
+            // completed successfully but failed to finalize the long_task row.
+            // Keep these as a recovery banner only. Live disconnect events
+            // still auto-resume through session_recovery_triggered.
           }
         } catch (e) {
           logger.warn(`[App] listRecoverableLongTasks 실패: ${e}`);
