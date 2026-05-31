@@ -2,6 +2,15 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 106 — Opus 4.8 명시 선택 + Claude CLI --model 전달 path — 2026-06-01
+
+**문제:** Anthropic 의 Claude Opus 4.8 가 출시되어 K 가 명시적으로 4.8 모델 선택해 쓰고 싶음. 그런데 진단 결과 KDA 의 Claude (Max OAuth) provider 가 **sidecar 의 Claude CLI spawn args 에 `--model` 인자를 박지 않고 있었음** — Settings 의 model picker 가 사실상 무력화 (어떤 model 골라도 CLI 의 default 만 작동).
+
+**핵심:**
+- **Settings.tsx claude provider models 확장** — `default` 외에 `claude-opus-4-8` 옵션 추가 (Max OAuth provider 에만 — K 명시).
+- **sidecar Claude CLI args 에 `--model` 전달 path 박음** — `msg.model && msg.model !== "default"` 면 `args.push("--model", msg.model)`. Claude CLI 가 alias (`opus`, `sonnet`) 또는 full ID (`claude-opus-4-8`) 둘 다 받음 (`claude --help` 로 확인). 종전 picker 무력화의 root cause fix.
+- **분모 hardcode 의도적으로 건드리지 않음** — `currentModelMaxTokensInfo` 의 `id.includes("claude") → 200K` fallback 그대로 유지. K 의 실제 한도와 안 맞으면 추후 별도 patch (pitfall_codex_model_context_window_dynamic 함정 회피 — 추측 hardcode 박지 말 것).
+
 ### ✅ Phase 0 — 스캐폴드
 - Tauri + React + TypeScript 프로젝트 생성
 - Rust-React 왕복 (`invoke("echo_message")`)

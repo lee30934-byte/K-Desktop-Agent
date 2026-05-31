@@ -208,6 +208,10 @@ const API_PROVIDERS: APIProvider[] = [
     note: "Max 구독을 Claude Code CLI 로 인증해 사용 — K-Personal MCP 도구 (스크린샷·마우스·키보드·앱 실행 등) 풀 사용 가능. API 키 불필요. 아래 [claude login] 버튼으로 터미널에서 OAuth 진행.",
     models: [
       { id: "default", label: "Max 기본 모델 (Opus 5.7 / 1M ctx)" },
+      // Phase 106 (v0.6.55) — Opus 4.8 명시 선택. Claude CLI 의 --model 로 흘림.
+      // 분모는 currentModelMaxTokensInfo 의 "Claude 200K" fallback 으로 잡힘 (안전 기본값).
+      // K 의 실제 한도와 안 맞으면 추후 hardcode 재조정 (pitfall_codex_model_context_window_dynamic 회피).
+      { id: "claude-opus-4-8", label: "Claude Opus 4.8 (명시)" },
     ],
   },
   {

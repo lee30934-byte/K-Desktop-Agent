@@ -1723,6 +1723,16 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     args.push("--disallowed-tools", toolFlags.disallowed.join(","));
   }
 
+  // Phase 106 (v0.6.55) — model 선택 전달.
+  // Settings 의 claude provider model picker 값 ("default" 가 아니면) 을 Claude CLI 의 --model 로 흘림.
+  // Claude CLI 가 alias ("opus", "sonnet") 또는 full ID ("claude-opus-4-8") 둘 다 받음 (claude --help 확인).
+  // 종전: 이 인자가 빠져있어 K 가 Settings 에서 model picker 바꿔도 CLI 의 default 만 사용됨 (picker 무력화).
+  // 분모(currentModelMaxTokensInfo) 는 hardcode 200K fallback (Claude 4.x 표준) — 실제 한도와 안 맞으면
+  // K 보고 시 별도 patch (pitfall_codex_model_context_window_dynamic 함정 회피).
+  if (msg.model && msg.model.trim() && msg.model !== "default") {
+    args.push("--model", msg.model);
+  }
+
   // 시스템 프롬프트 = 기본 + ask 안내 + manual 안내.
   // 누적 메모리(memory/) 는 길이가 누적되어 cmd.exe 의 8191자 한계를 깨므로
   // --system-prompt 인자에 박지 않는다 — 대신 stdin(prompt) 의 <memory_context> 블록으로 흘려보냄.
