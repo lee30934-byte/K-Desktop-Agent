@@ -869,9 +869,13 @@ function Sidebar({
       const f = item as Folder;
       const childCount = (tree.childFolders.get(f.id) ?? []).length;
       const convCount = (tree.convsInFolder.get(f.id) ?? []).length;
+      // Phase 113.1 (v0.6.65) — Explorer 폴더 카드에 DnD wrap. 옛 트리 모드의 옮기기
+      // 기능을 Explorer 에서 살림 (K 명시: "트리는 제거하되 옮기기 기능은 그대로").
+      // DndFolder = draggable + droppable. conv 를 폴더 위에 drop → 이동.
       return (
-        <div
+        <DndFolder
           key={`folder-${f.id}`}
+          folderId={f.id}
           className="explorer-item explorer-folder"
           style={{
             display: "flex",
@@ -899,7 +903,7 @@ function Sidebar({
           onMouseLeave={(e) => {
             (e.currentTarget as HTMLElement).style.background = "transparent";
           }}
-          title={`더블클릭=진입 · 우클릭=메뉴 · 하위 ${childCount}폴더 / ${convCount}대화`}
+          title={`더블클릭=진입 · 우클릭=메뉴 · 드래그 = 이동 · 하위 ${childCount}폴더 / ${convCount}대화`}
         >
           <span style={{ fontSize: 16 }}>{f.icon ?? "📁"}</span>
           <span style={{ flex: 1, fontSize: 13, color: f.color ?? "var(--text, #e8eaff)" }}>
@@ -911,14 +915,18 @@ function Sidebar({
               {convCount > 0 ? `💬${convCount}` : ""}
             </span>
           )}
-        </div>
+        </DndFolder>
       );
     } else {
       const c = item as Conversation;
       const active = c.id === activeConversationId;
+      // Phase 113.1 (v0.6.65) — Explorer 대화 카드에 DnD wrap.
+      // DraggableConv 로 wrap 하면 8px 이동 시 drag 시작 (PointerSensor activation),
+      // 짧은 click 은 정상 onClick 호출 → 활성화. drop 처리는 handleDndEnd 가 담당.
       return (
-        <div
+        <DraggableConv
           key={`conv-${c.id}`}
+          convId={c.id}
           className={`explorer-item explorer-conv ${active ? "active" : ""}`}
           style={{
             display: "flex",
@@ -951,7 +959,7 @@ function Sidebar({
               (e.currentTarget as HTMLElement).style.background = "transparent";
             }
           }}
-          title="클릭=열기 · 우클릭=메뉴"
+          title="클릭=열기 · 우클릭=메뉴 · 드래그=폴더로 이동"
         >
           <span style={{ fontSize: 14 }}>
             {c.isFavorite ? "★" : c.icon ?? "💬"}
@@ -983,7 +991,7 @@ function Sidebar({
               }}
             />
           )}
-        </div>
+        </DraggableConv>
       );
     }
   };
@@ -1051,48 +1059,25 @@ function Sidebar({
               whiteSpace: "nowrap",
             }}
           >
-            <button
+            <BreadcrumbDropButton
+              dropId="__root__"
               onClick={() => setCurrentFolderId(null)}
-              style={{
-                background: "transparent",
-                border: "none",
-                color:
-                  currentFolderId === null
-                    ? "var(--accent, #66ccff)"
-                    : "var(--text-dim, #8e9ab5)",
-                cursor: "pointer",
-                padding: "2px 4px",
-                fontSize: 11,
-                fontWeight: currentFolderId === null ? 600 : 400,
-              }}
-              title="루트"
-            >
-              📁 루트
-            </button>
+              isCurrent={currentFolderId === null}
+              title="루트 (대화/폴더 drop 시 루트로 이동)"
+              label="📁 루트"
+            />
             {breadcrumbPath.map((f, i) => {
               const isLast = i === breadcrumbPath.length - 1;
               return (
                 <Fragment key={f.id}>
                   <span style={{ color: "var(--text-dim, #555)", fontSize: 10 }}>/</span>
-                  <button
+                  <BreadcrumbDropButton
+                    dropId={`folder:${f.id}`}
                     onClick={() => setCurrentFolderId(f.id)}
-                    style={{
-                      background: "transparent",
-                      border: "none",
-                      color: isLast ? "var(--accent, #66ccff)" : "var(--text-dim, #8e9ab5)",
-                      cursor: "pointer",
-                      padding: "2px 4px",
-                      fontSize: 11,
-                      fontWeight: isLast ? 600 : 400,
-                      maxWidth: 120,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                    title={f.name}
-                  >
-                    {f.icon ?? "📁"} {f.name}
-                  </button>
+                    isCurrent={isLast}
+                    title={`${f.name} (drop = 이 폴더로 이동)`}
+                    label={`${f.icon ?? "📁"} ${f.name}`}
+                  />
                 </Fragment>
               );
             })}
@@ -1675,6 +1660,55 @@ function isDescendantOf(
     if (parent !== null) stack.push(parent);
   }
   return false;
+}
+
+// Phase 113.1 (v0.6.65) — Explorer breadcrumb 의 root / 폴더 chip 을 droppable 박는 컴포넌트.
+// K 가 conv (또는 폴더) 를 breadcrumb 의 "📁 루트" 또는 상위 폴더 chip 에 drop 하면
+// 그 폴더로 이동 (root 이면 폴더 빼기). 기존 handleDndEnd 가 dropId 보고 라우팅.
+// hook (useDroppable) 안전 호출 위해 별도 컴포넌트로 분리 (renderExplorer 안에 hook X).
+interface BreadcrumbDropButtonProps {
+  dropId: string;
+  onClick: () => void;
+  isCurrent: boolean;
+  title: string;
+  label: string;
+}
+function BreadcrumbDropButton({
+  dropId,
+  onClick,
+  isCurrent,
+  title,
+  label,
+}: BreadcrumbDropButtonProps) {
+  const { setNodeRef, isOver } = useDroppable({ id: dropId });
+  return (
+    <button
+      ref={setNodeRef}
+      onClick={onClick}
+      style={{
+        background: isOver
+          ? "var(--accent-dim, rgba(102,204,255,0.22))"
+          : "transparent",
+        border: "none",
+        outline: isOver ? "1px dashed var(--accent, #66ccff)" : "none",
+        outlineOffset: 1,
+        borderRadius: 4,
+        color: isCurrent ? "var(--accent, #66ccff)" : "var(--text-dim, #8e9ab5)",
+        cursor: "pointer",
+        padding: "2px 6px",
+        fontSize: 11,
+        fontWeight: isCurrent ? 600 : 400,
+        maxWidth: 160,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        transition: "background 0.1s, outline 0.1s",
+      }}
+      title={title}
+    >
+      {label}
+    </button>
+  );
 }
 
 // ctx menu / picker 가 화면 밖으로 나가지 않게 — rough viewport clamp

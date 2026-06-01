@@ -2,6 +2,30 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 113.1 — Explorer 모드에 DnD (옮기기 기능) 박음 — 2026-06-01
+
+**문제:** Phase 113 에서 트리 모드 제거 후 K 정정 — "트리는 제거하되 옮기기 기능은 탐색기에서 그대로 되게". 옛 트리 모드에만 dnd-kit 기반 DraggableConv/DndFolder 가 박혀있었음. Explorer 모드 v1 은 우클릭 메뉴 path 만.
+
+**Fix:**
+- `Sidebar.tsx::renderExplorerItem`:
+  - 폴더 카드 외부 div → **DndFolder wrap** (draggable + droppable). 폴더 위로 conv/폴더 drop 시 그 폴더로 이동.
+  - 대화 카드 외부 div → **DraggableConv wrap**. 8px 이동 시 drag 시작, 짧은 click 은 정상 onClick.
+- 신규 `BreadcrumbDropButton` 컴포넌트:
+  - breadcrumb 의 "📁 루트" 와 각 폴더 chip 을 droppable 박음
+  - root 으로 drop → 폴더 빼기 (handleDndEnd 의 `__root__` 분기)
+  - 상위 폴더 chip 으로 drop → 그 폴더로 이동
+  - hook 안전 위해 별도 컴포넌트로 분리 (renderExplorer 안에 hook X)
+  - drop hover 시 outline + 배경 강조
+
+**커버되는 시나리오 (Explorer 모드):**
+- ✅ conv 카드 → 다른 폴더 카드 drop = 이동
+- ✅ conv 카드 → breadcrumb 폴더 chip drop = 상위 폴더로 이동
+- ✅ conv 카드 → breadcrumb "📁 루트" drop = 루트로 빼기
+- ✅ 폴더 카드 → 다른 폴더 카드 drop = 폴더 안에 폴더 (cycle 방지 박혀있음)
+- ✅ 폴더 카드 → "📁 루트" drop = root 폴더로 끌어내기
+
+기존 handleDndEnd 의 dropId 라우팅 (`__root__` / `folder:<id>` / `conv:<id>`) 그대로 사용 — 트리 모드 코드와 100% 호환.
+
 ### ✅ Phase 113 — 폴더 안 새 대화 + 트리 모드 제거 + 폴더 지침 root cause — 2026-06-01
 
 **문제:** K 보고 4개 — (1) 폴더 프로젝트 지침이 제대로 동작 안 함, (2) 폴더에서 새 대화 생성이 안 됨, (3) 트리 구조 버리고 탐색기만, (4) 응답속도 개선 아이디어.
