@@ -341,14 +341,30 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
         // 로컬 파일은 file:// prefix 추가가 안전.
         // Phase 78 (v0.6.21): react-markdown URL-encoded path 도 복원해서 OS 가 받음.
         const normalizedPath = normalizeLocalPath(item.pathOrUrl);
-        await invoke("open_path", { path: normalizedPath }).catch(async () => {
-          // open_path command 가 없으면 plugin-shell 시도
-          await openShell(normalizedPath);
-        });
+        // Phase 114 (v0.6.69) — open_path 가 로컬 drive-letter 경로 전체를 신뢰하므로
+        // 거의 항상 성공. 옛 폴백이던 plugin-shell.open(normalizedPath) 은 로컬 path 에서
+        // 항상 scope regex 에 막혀 "Unexpected command argument ... but found .txt" cryptic
+        // 에러를 노출했음 (K 보고 원인) → 제거. open_path 가 없는 옛 binary 일 때만 폴백.
+        try {
+          await invoke("open_path", { path: normalizedPath });
+        } catch (rustErr) {
+          const msg = String(rustErr);
+          // 옛 binary (command 자체가 미등록) — "not found" / "not allowed" 류면 폴백 시도.
+          const isMissingCommand =
+            /not found|unknown command|not allowed|command .* not/i.test(msg);
+          if (isMissingCommand) {
+            await openShell(normalizedPath);
+          } else {
+            // Rust 가 명시적으로 거부 (네트워크 경로 등) — 그 사유를 그대로 전달.
+            throw new Error(msg);
+          }
+        }
       }
     } catch (e) {
       logger.warn(`[SidePanel] 외부 열기 실패: ${e}`);
-      alert(`외부 앱에서 열기 실패: ${e}`);
+      alert(
+        `이 파일을 OS 기본 앱으로 열 수 없습니다.\n\n경로: ${item.pathOrUrl}\n사유: ${e}`,
+      );
     }
   };
 

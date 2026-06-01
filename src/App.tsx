@@ -360,6 +360,8 @@ export default function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Phase 114 (v0.6.69) — 첫 실행 시 Settings 강제 오픈 대신 환영 모달.
+  const [showWelcome, setShowWelcome] = useState(false);
   const [mcpState, setMcpState] = useState<MCPState>({
     connected: false,
     server: "k-personal",
@@ -748,15 +750,17 @@ export default function App() {
     };
   }, []);
 
-  // ─── Phase 18/20 — First-run 자동 감지 → Settings 자동 열기 ────────
-  // ~/.kda/first-run-completed.flag 가 없으면 첫 실행으로 간주 → Settings 의
-  // 시스템 탭 ("필수 도구" 섹션) 으로 자동 이동해서 K 가 의존성 셋업할 수 있게.
+  // ─── Phase 18/20/114 — First-run 자동 감지 → 환영 모달 ────────
+  // ~/.kda/first-run-completed.flag 가 없으면 첫 실행으로 간주.
   //
-  // Phase 20 (v0.5.6) 강화:
-  //   - localStorage → sessionStorage 가드: KDA 프로세스가 살아있는 동안 한 번만,
-  //     재시작하면 다시 시도. localStorage 였을 땐 K 가 한 번 닫고 KDA 재시작해도
-  //     영구 봉인되어 마법사 다시 못 보는 함정 있었음 (K PC v0.5.3 시점 발견).
-  //   - 1초 지연 + 명시적 console 로깅 으로 useEffect timing/silent throw 진단 가능.
+  // Phase 114 (v0.6.69) — K 요청: 첫 실행 시 Settings 를 강제로 자동 오픈하지 말고
+  //   "환영합니다" 표시를 띄울 것. 옛 동작은 system 탭을 강제로 열어 K 가 당황 (왜 설정?).
+  //   새 동작: 가벼운 환영 모달 (시작 안내 + [시작하기] / [설정 열기] 선택).
+  //   설정 셋업은 K 가 원할 때 [설정 열기] 로 진입 — 강제 X.
+  //
+  // Phase 20 (v0.5.6) 의 sessionStorage 가드 유지:
+  //   KDA 프로세스가 살아있는 동안 한 번만, 재시작하면 다시 시도. localStorage 였을 땐
+  //   K 가 한 번 닫고 KDA 재시작해도 영구 봉인되어 다시 못 보는 함정 있었음.
   useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(() => {
@@ -770,11 +774,8 @@ export default function App() {
             const seenKey = "kda_firstrun_wizard_seen_v2";
             if (!sessionStorage.getItem(seenKey)) {
               sessionStorage.setItem(seenKey, "1");
-              try {
-                localStorage.setItem("kda_active_settings_tab", "system");
-              } catch {}
-              console.info("[first-run] Settings 자동 오픈 (system 탭)");
-              setSettingsOpen(true);
+              console.info("[first-run] 환영 모달 표시");
+              setShowWelcome(true);
             } else {
               console.info("[first-run] sessionStorage 가드 — 이번 세션 이미 표시함, skip");
             }
@@ -790,6 +791,23 @@ export default function App() {
       cancelled = true;
       clearTimeout(timer);
     };
+  }, []);
+
+  // Phase 114 (v0.6.69) — 환영 모달 닫기 = first-run sentinel 마킹 (다음 실행부터 안 뜸).
+  // [설정 열기] 면 추가로 Settings 도 오픈.
+  const dismissWelcome = useCallback(async (openSettings: boolean) => {
+    setShowWelcome(false);
+    try {
+      await invoke("mark_first_run_complete");
+    } catch (e) {
+      console.warn("[first-run] mark_first_run_complete 실패:", e);
+    }
+    if (openSettings) {
+      try {
+        localStorage.setItem("kda_active_settings_tab", "system");
+      } catch {}
+      setSettingsOpen(true);
+    }
   }, []);
 
   // provider/model → MetricsPanel 에 표시할 짧은 라벨.
@@ -3586,6 +3604,59 @@ export default function App() {
         onClose={closeSettings}
         mcpConnected={mcpState.connected}
       />
+
+      {/* Phase 114 (v0.6.69) — 첫 실행 환영 모달 (옛 Settings 강제 오픈 대체) */}
+      {showWelcome && (
+        <div
+          className="welcome-overlay"
+          onClick={() => dismissWelcome(false)}
+          role="presentation"
+        >
+          <div
+            className="welcome-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="welcome-title"
+          >
+            <div className="welcome-emoji">🎉</div>
+            <h2 id="welcome-title" className="welcome-title">
+              K Desktop Agent 에 오신 걸 환영합니다
+            </h2>
+            <p className="welcome-sub">
+              설치가 완료되었습니다. 바로 대화를 시작할 수 있어요.
+            </p>
+            <ul className="welcome-tips">
+              <li>
+                <strong>💬 대화 시작</strong> — 아래 입력창에 자연어로 명령하면 됩니다.
+              </li>
+              <li>
+                <strong>📁 폴더 · 라이브러리</strong> — 좌측에서 대화를 폴더로 정리하고
+                <kbd>Ctrl</kbd>+<kbd>L</kbd> 로 라이브러리를 엽니다.
+              </li>
+              <li>
+                <strong>⚙️ 설정</strong> — 필수 도구 설치 · 모델 · 권한은 설정에서 관리합니다.
+              </li>
+            </ul>
+            <div className="welcome-actions">
+              <button
+                type="button"
+                className="welcome-btn welcome-btn-primary"
+                onClick={() => dismissWelcome(false)}
+              >
+                시작하기
+              </button>
+              <button
+                type="button"
+                className="welcome-btn welcome-btn-secondary"
+                onClick={() => dismissWelcome(true)}
+              >
+                설정 열기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ElicitationDialog
         request={elicitationRequest}

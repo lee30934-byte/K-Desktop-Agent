@@ -1565,6 +1565,30 @@ fn strip_unc_prefix(s: &str) -> &str {
     s
 }
 
+/// Phase 114 (v0.6.69) — 로컬 drive-letter 경로 판별 (`c:\...`, `d:/...`).
+///
+/// K 보고: 작업 파일이 USERPROFILE/APPDATA 밖 (다른 드라이브, 다른 폴더) 에 있으면
+/// 프리뷰/외부열기가 "신뢰하지 않는 경로" 로 거부되고, 폴백 plugin-shell.open 이
+/// scope regex 에 막혀 cryptic 한 "Unexpected command argument ... but found .txt" 에러가
+/// K 에게 그대로 노출됐다.
+///
+/// 근본 원인: trusted_prefixes 가 USERPROFILE/APPDATA/LOCALAPPDATA/exe폴더 4개로만 제한.
+///
+/// 근본 대책: open_path / read_preview_file / read_qa_report 는 **K 가 KDA UI 에서 직접
+/// 클릭한 파일에만** 호출된다 (AI 모델이 임의로 부르는 command 가 아님 — frontend invoke).
+/// 따라서 로컬 drive-letter 경로 전체를 신뢰해도 "모델 경유 임의 파일 읽기" 위험이 없다.
+/// 모델의 파일 접근은 별도 레이어 (MCP 권한 토글) 에서 통제된다.
+///
+/// 네트워크 UNC 경로 (`\\server\share`) 는 drive letter 가 없어 false → 여전히 거부.
+/// (canonical_str 은 호출 측에서 lowercase + strip_unc_prefix 적용 후 전달)
+fn is_local_drive_path(canonical_str: &str) -> bool {
+    let b = canonical_str.as_bytes();
+    b.len() >= 3
+        && b[0].is_ascii_lowercase()
+        && b[1] == b':'
+        && (b[2] == b'\\' || b[2] == b'/')
+}
+
 fn percent_decode_local_path(input: &str) -> String {
     // file:// prefix 제거 (Windows path 는 file:///C:/...)
     let stripped = input
@@ -1636,14 +1660,16 @@ fn open_path(path: String) -> Result<(), String> {
     .filter(|s| !s.is_empty())
     .collect();
 
-    let trusted = trusted_prefixes
-        .iter()
-        .any(|prefix| canonical_str.starts_with(prefix));
+    // Phase 114 (v0.6.69) — 로컬 drive-letter 경로 전체 신뢰 (K 가 직접 클릭한 파일).
+    // 기존 trusted_prefixes 는 OR 안전망으로 보존. UNC 네트워크 경로만 거부됨.
+    let trusted = is_local_drive_path(&canonical_str)
+        || trusted_prefixes
+            .iter()
+            .any(|prefix| canonical_str.starts_with(prefix));
     if !trusted {
         return Err(format!(
-            "신뢰하지 않는 경로 (외부 열기 거부): {}\n허용 prefix: {:?}",
+            "신뢰하지 않는 경로 (외부 열기 거부): {}\n네트워크/UNC 경로는 보안상 지원하지 않습니다.",
             canonical.display(),
-            trusted_prefixes
         ));
     }
 
@@ -1855,14 +1881,15 @@ fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, S
     .filter(|s| !s.is_empty())
     .collect();
 
-    let trusted = trusted_prefixes
-        .iter()
-        .any(|prefix| canonical_str.starts_with(prefix));
+    // Phase 114 (v0.6.69) — 로컬 drive-letter 경로 전체 신뢰 (K 가 직접 클릭한 파일).
+    let trusted = is_local_drive_path(&canonical_str)
+        || trusted_prefixes
+            .iter()
+            .any(|prefix| canonical_str.starts_with(prefix));
     if !trusted {
         return Err(format!(
-            "신뢰하지 않는 경로 (미리보기 거부): {}\n허용 prefix: {:?}",
+            "신뢰하지 않는 경로 (미리보기 거부): {}\n네트워크/UNC 경로는 보안상 지원하지 않습니다.",
             canonical.display(),
-            trusted_prefixes
         ));
     }
 
@@ -1928,12 +1955,14 @@ fn read_qa_report(folder_path: String) -> Result<serde_json::Value, String> {
         .into_iter()
         .filter(|s| !s.is_empty())
         .collect();
-    let trusted = trusted_prefixes.iter().any(|p| canonical_str.starts_with(p));
+    // Phase 114 (v0.6.69) — read_preview_file 과 동일 정책 (로컬 drive-letter 전체 신뢰).
+    // 프리뷰가 열리는 폴더의 qa-report 검사도 같이 통과해야 gate 일관성 유지.
+    let trusted = is_local_drive_path(&canonical_str)
+        || trusted_prefixes.iter().any(|p| canonical_str.starts_with(p));
     if !trusted {
         return Err(format!(
-            "신뢰하지 않는 경로 (qa-report 거부): {}\n허용 prefix: {:?}",
+            "신뢰하지 않는 경로 (qa-report 거부): {}\n네트워크/UNC 경로는 보안상 지원하지 않습니다.",
             canonical.display(),
-            trusted_prefixes
         ));
     }
 
