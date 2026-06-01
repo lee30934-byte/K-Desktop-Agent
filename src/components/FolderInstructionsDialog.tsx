@@ -94,7 +94,22 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
   }, [prompt, attachments, onSave, onClose]);
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div
+      className="modal-overlay"
+      onClick={onClose}
+      style={{
+        // Phase 107 (v0.6.56) 잔재 fix — .modal-overlay CSS 가 KDA 어디에도 정의되어
+        // 있지 않아서 wrapper 가 static div 로 렌더되어 다이얼로그 안 보이는 사고.
+        // inline style 로 강제 박음 — z-index 매우 높게 (다른 modal/sidepanel 위).
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0, 0, 0, 0.6)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 9999,
+      }}
+    >
       <div
         className="folder-instructions-dialog"
         onClick={(e) => e.stopPropagation()}

@@ -2,6 +2,22 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 111.1 — 폴더 지침 다이얼로그 wrapper CSS 누락 hotfix — 2026-06-01
+
+**문제:** K 가 v0.6.60 받고 폴더 우클릭 → "📜 프로젝트 지침…" 클릭 시 다이얼로그가 안 뜸. 처음엔 webview2 cache stale 의심했으나 K 확인: 버전 v0.6.60 정상 + 메뉴 항목도 보임 + 클릭만 무반응.
+
+**Root cause:** Phase 107 (v0.6.56) 박을 때 `FolderInstructionsDialog` 의 wrapper `<div className="modal-overlay">` 의 CSS 가 **KDA 어디에도 정의되어 있지 않음**. 결과: wrapper 가 default `<div>` (position: static, no z-index, no flex centering) 으로 렌더되어 다이얼로그 본문이 페이지 맨 아래에 squeeze 되거나 화면 밖에 위치 → "안 뜸" 으로 보임.
+
+(`pitfall_js_arg_type_silent_throw` 와 비슷한 패턴 — error 없이 silent 하게 invisible. 단 이건 CSS 누락이라 새 함정 분류 가능.)
+
+**Fix:** `FolderInstructionsDialog.tsx` wrapper 의 inline style 추가:
+- `position: fixed; inset: 0`
+- `background: rgba(0,0,0,0.6)`
+- `display: flex; alignItems/justifyContent: center`
+- `zIndex: 9999`
+
+**검증:** npm run build (3.29s) OK. K 받은 후 폴더 우클릭 → 📜 → 화면 중앙 다이얼로그 등장.
+
 ### ✅ Phase 111 — 작업 중 다른 대화창 이동 + 백그라운드 turn 진행 — 2026-06-01
 
 **문제:** K 명시 — "작업시 다른 대화창으로 이동이 불가능한데 작업중에도 다른 대화창 이동이 가능하게 해줘 물론 작업은 그대로 진행중 상태에서". 옛 동작은 `if (isStreaming) return` 차단 5곳으로 conv 전환 / 새 대화 생성 모두 막혀있음.
