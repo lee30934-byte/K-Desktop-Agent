@@ -679,6 +679,42 @@ function ImageThumbnail({
   );
 }
 
+// Phase 115 (v0.6.70) — 채팅창 도구 이미지 표시 모드.
+// 종전엔 도구 결과에 이미지가 있으면 무조건 큰 썸네일로 inline 표시 → 모델이 작업 중
+// 자동으로 찍는 스크린샷까지 전부 떠서 K 가 "아무거나 사진 다 뜬다" 호소.
+// localStorage kda_tool_image_mode 로 제어:
+//   "collapsed"(기본)   — 모든 도구 이미지는 작은 footnote 로 접고, 클릭 시 펼침
+//   "screenshot_only"   — cc_screenshot / web_screenshot 류만 inline, 나머지는 접음
+//   "all"               — 종전 동작 (전부 inline)
+// Settings 의 ToolImageModeToggle 가 변경 + kda-tool-image-mode-changed 이벤트 dispatch.
+export type ToolImageMode = "collapsed" | "screenshot_only" | "all";
+function readToolImageMode(): ToolImageMode {
+  try {
+    const v = localStorage.getItem("kda_tool_image_mode");
+    if (v === "all" || v === "screenshot_only" || v === "collapsed") return v;
+  } catch {
+    /* localStorage 접근 불가 — 기본값 */
+  }
+  return "collapsed";
+}
+function useToolImageMode(): ToolImageMode {
+  const [mode, setMode] = useState<ToolImageMode>(readToolImageMode);
+  useEffect(() => {
+    const refresh = () => setMode(readToolImageMode());
+    window.addEventListener("kda-tool-image-mode-changed", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener("kda-tool-image-mode-changed", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
+  return mode;
+}
+// 명시적 화면/웹 캡처 도구만 inline 후보 (screenshot_only 모드).
+function isScreenshotTool(toolName: string | undefined): boolean {
+  return !!toolName && /screenshot/i.test(toolName);
+}
+
 function ToolMessageView({
   message,
   onFilterToggle,
@@ -694,7 +730,81 @@ function ToolMessageView({
   // Phase 99 — lightbox ←/→ navigation + counter + download + clipboard, 썸네일 hover scale.
   const hasImages = Array.isArray(message.images) && message.images.length > 0;
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-  // 이미지 있는 케이스: 본문 썸네일 + 클릭 시 lightbox + 그 아래 한 줄 footnote
+  // Phase 115 (v0.6.70) — 표시 모드. inline 으로 크게 띄울지, footnote 로 접을지 결정.
+  const imageMode = useToolImageMode();
+  const showInline =
+    hasImages &&
+    (imageMode === "all" ||
+      (imageMode === "screenshot_only" && isScreenshotTool(message.toolName)));
+  // 접힌 케이스: 이미지를 footnote(details) 안으로 넣어 기본 숨김 → 클릭 시 펼침.
+  // 모델이 작업 중 자동으로 찍는 스크린샷이 채팅을 도배하는 걸 막음.
+  if (hasImages && !showInline) {
+    return (
+      <div className="msg-tool-image-mode msg-tool-image-collapsed">
+        {lightboxIndex !== null && (
+          <ImageLightbox
+            images={message.images!}
+            index={lightboxIndex}
+            onClose={() => setLightboxIndex(null)}
+            onIndexChange={setLightboxIndex}
+          />
+        )}
+        <details
+          className={`msg-tool-image-footnote msg-tool-${message.status}`}
+          data-risk={message.risk?.level ?? "unknown"}
+          style={{ fontSize: "0.74em", opacity: 0.6, marginTop: 2 }}
+        >
+          <summary style={{ cursor: "pointer", listStyle: "none", userSelect: "none" }}>
+            <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
+              🖼️ {message.toolName}
+            </span>
+            <span style={{ marginLeft: 6 }}>
+              ·{" "}
+              {new Date(message.timestamp).toLocaleTimeString("ko-KR", {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              })}
+            </span>
+            <span style={{ marginLeft: 6 }}>· 이미지 {message.images!.length}장</span>
+            <span style={{ marginLeft: 6, opacity: 0.7 }}>· 클릭해서 보기</span>
+          </summary>
+          <div
+            className="msg-tool-images-inline"
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                message.images!.length === 1
+                  ? "minmax(0, 280px)"
+                  : "repeat(auto-fill, minmax(180px, 220px))",
+              gap: 8,
+              marginTop: 8,
+              marginBottom: 4,
+            }}
+          >
+            {message.images!.map((src, i) => (
+              <ImageThumbnail
+                key={i}
+                src={src}
+                index={i}
+                total={message.images!.length}
+                onClick={() => setLightboxIndex(i)}
+              />
+            ))}
+          </div>
+          {message.toolInput != null && (
+            <pre
+              className="mono msg-tool-json"
+              style={{ fontSize: "0.95em", padding: "4px 8px" }}
+            >
+              {JSON.stringify(message.toolInput, null, 2)}
+            </pre>
+          )}
+        </details>
+      </div>
+    );
+  }
+  // 이미지 있는 케이스 (inline 표시): 본문 썸네일 + 클릭 시 lightbox + 그 아래 한 줄 footnote
   if (hasImages) {
     return (
       <div className="msg-tool-image-mode">

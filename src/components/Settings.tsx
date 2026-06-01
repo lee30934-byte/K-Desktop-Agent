@@ -1059,6 +1059,92 @@ function PerformanceModeToggle() {
   );
 }
 
+// Phase 115 (v0.6.70) — 채팅창 도구 이미지 표시 모드 토글.
+// localStorage kda_tool_image_mode 변경 + kda-tool-image-mode-changed CustomEvent
+// → Message.tsx 의 useToolImageMode 가 listen 해서 즉시 적용. KDA 재시작 불필요.
+type ToolImageModeOpt = "collapsed" | "screenshot_only" | "all";
+function ToolImageModeToggle() {
+  const [mode, setMode] = useState<ToolImageModeOpt>(() => {
+    try {
+      const v = localStorage.getItem("kda_tool_image_mode");
+      if (v === "all" || v === "screenshot_only" || v === "collapsed") return v;
+    } catch {
+      /* 접근 불가 — 기본값 */
+    }
+    return "collapsed";
+  });
+  const handleSelect = useCallback((next: ToolImageModeOpt) => {
+    setMode(next);
+    try {
+      localStorage.setItem("kda_tool_image_mode", next);
+      window.dispatchEvent(new CustomEvent("kda-tool-image-mode-changed"));
+    } catch (err) {
+      console.warn("[ToolImageModeToggle] localStorage 저장 실패:", err);
+    }
+  }, []);
+
+  const opts: Array<{ id: ToolImageModeOpt; title: string; desc: string }> = [
+    {
+      id: "collapsed",
+      title: "🗂️ 접기 (기본)",
+      desc: "모든 도구 이미지를 작은 줄로 접음 — 클릭해야 펼쳐짐. 채팅 깔끔",
+    },
+    {
+      id: "screenshot_only",
+      title: "📷 스크린샷만",
+      desc: "cc/web screenshot 만 크게 표시, 나머지(이미지 파일 등)는 접음",
+    },
+    {
+      id: "all",
+      title: "🖼️ 모두 표시",
+      desc: "종전 동작 — 도구가 반환한 모든 이미지를 크게 표시",
+    },
+  ];
+
+  return (
+    <div className="settings-row settings-row-vertical">
+      <div className="settings-row-info">
+        <div className="settings-row-title">채팅창 이미지 표시</div>
+        <div className="settings-row-desc">
+          모델이 작업 중 자동으로 찍는 스크린샷까지 다 뜨는 게 번거로우면 "접기" 또는
+          "스크린샷만" 으로. 접힌 이미지도 클릭하면 그대로 볼 수 있습니다.
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        {opts.map((o) => {
+          const active = mode === o.id;
+          return (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => handleSelect(o.id)}
+              style={{
+                flex: 1,
+                padding: "10px 14px",
+                background: active
+                  ? "var(--accent-dim, rgba(79, 232, 225, 0.18))"
+                  : "var(--bg-1, #0a0e18)",
+                border: `1px solid ${active ? "var(--accent, #4fe8e1)" : "var(--border-dim, #1d2540)"}`,
+                borderRadius: 6,
+                color: active ? "var(--accent, #4fe8e1)" : "var(--text-dim, #8e9ab5)",
+                cursor: "pointer",
+                fontSize: 13,
+                fontWeight: active ? 600 : 400,
+                textAlign: "left",
+              }}
+            >
+              <div>{o.title}</div>
+              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4, fontWeight: 400 }}>
+                {o.desc}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function Settings({ open, onClose, mcpConnected }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -3039,6 +3125,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 K 가 답변 질 의심 시 "지금 trim 됐나" 즉시 확인 가능.
                 + Phase 52 의 model_context_window override 결과도 노출. */}
             <TrimStatCard />
+            {/* Phase 115 (v0.6.70) — 채팅창 도구 이미지 표시 모드.
+                모델이 작업 중 찍는 스크린샷 도배 방지 (기본 접기). */}
+            <ToolImageModeToggle />
           </section>
 
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}
