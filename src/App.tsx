@@ -61,6 +61,8 @@ import {
   type FolderAttachment,
   // Phase 109 (v0.6.58) — 폴더 첨부 invalidation
   updateConversationLastAttachedFolder,
+  // Phase 110 (v0.6.59) — 폴더 지침 저장 시 그 폴더 conv 들의 attach sentinel reset
+  resetFolderConvAttachmentSentinel,
   // Phase 79 (v0.6.22) — Task State Manager
   insertLongTask,
   updateLongTaskEvidence,
@@ -355,6 +357,26 @@ export default function App() {
       const folderId = folderInstructionsDialog.id;
       try {
         await updateFolderInstructions(folderId, systemPrompt, attachments);
+        // Phase 110 (v0.6.59) — 그 폴더 안 conv 들의 lastAttachedFolderId reset.
+        // 다음 send 에서 lastAttachedFolderId (null) !== folderId (X) 으로 mismatch →
+        // 새 첨부 자동 박힘. systemPrompt 만 바꿨어도 reset 되지만 토큰 비용 acceptable.
+        try {
+          const affected = await resetFolderConvAttachmentSentinel(folderId);
+          // 같은 in-memory state 도 동기화 — 다음 handleSendMessage 가 oldest 값 안 보게
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.folderId === folderId ? { ...c, lastAttachedFolderId: null } : c,
+            ),
+          );
+          if (affected > 0) {
+            console.log(
+              `[App] 폴더 지침 변경 — ${affected}개 conv 의 첨부 sentinel reset (다음 send 에 새 첨부 박힘)`,
+            );
+          }
+        } catch (resetErr) {
+          // reset 실패해도 save 자체는 성공. 다음 dialog open 시 다시 시도 가능.
+          console.warn("[App] 폴더 conv attach sentinel reset 실패:", resetErr);
+        }
       } catch (err) {
         console.error("[App] 폴더 지침 저장 실패:", err);
         throw err; // 다이얼로그가 잡아서 표시

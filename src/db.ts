@@ -380,6 +380,23 @@ export async function updateConversationLastAttachedFolder(
   );
 }
 
+// Phase 110 (v0.6.59) — 폴더 지침 저장 시 호출. 그 폴더 안의 모든 conv 의
+// last_attached_folder_id 를 null 로 reset → 다음 send 에 새 첨부 박힘.
+// K 의 함정 #3 회피: "지침 첨부 수정해도 옛 conv 는 옛 첨부만 기억" 문제 해결.
+// systemPrompt 만 바꿔도 reset 되지만 (시스템 프롬프트는 매 turn 박혀서 무관), 추가 토큰
+// 비용은 K 가 명시적으로 저장 누른 직후 1회만 — acceptable trade-off.
+export async function resetFolderConvAttachmentSentinel(
+  folderId: string,
+): Promise<number> {
+  const database = await initDB();
+  const result = await database.execute(
+    `UPDATE conversations SET last_attached_folder_id = NULL WHERE folder_id = ?`,
+    [folderId],
+  );
+  // rowsAffected — 로깅용. 그 폴더 안 conv 수.
+  return result.rowsAffected ?? 0;
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Phase 32 — Folders + Tree + Drag&Drop + Favorites + Color/Icon
 // ─────────────────────────────────────────────────────────────────

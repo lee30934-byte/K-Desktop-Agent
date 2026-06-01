@@ -2,6 +2,17 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 110 — 폴더 지침 수정 시 첨부 sentinel 자동 reset — 2026-06-01
+
+**문제:** Phase 109 까지 박은 후 검증 단계에서 K 와 함께 발견한 잠재 함정 #3. 폴더의 첨부 파일을 K 가 추가/제거해도 그 폴더 안 **기존** 대화는 lastAttachedFolderId 가 여전히 같은 폴더 ID → 다음 send 에서 skip → "지침 파일 바꿔도 옛 conv 는 옛 파일만 기억" 증상.
+
+**핵심:**
+- `db.ts::resetFolderConvAttachmentSentinel(folderId)` 신규 — `UPDATE conversations SET last_attached_folder_id = NULL WHERE folder_id = ?`. rowsAffected 반환 (로깅용).
+- `App.tsx::handleSaveFolderInstructions` 가 `updateFolderInstructions` 성공 후 즉시 `resetFolderConvAttachmentSentinel` 호출 + `setConversations` 로 in-memory state 도 동기화. 다음 handleSendMessage 가 옛 값 안 봄.
+- reset 실패해도 save 자체는 성공 (catch + console.warn) — 다음 dialog open 시 재시도 가능.
+
+**Trade-off (의도적):** systemPrompt 만 수정해도 reset 됨 (정확한 diff 비교 안 함). 시스템 프롬프트는 매 turn 박혀서 무관, 첨부도 K 가 명시적으로 dialog 열어 저장 누른 직후 1회 만 박혀 토큰 비용 acceptable. 단순함 우선.
+
 ### ✅ Phase 109 — 폴더 이동 후 첨부 자동 재박힘 — 2026-06-01
 
 **문제:** Phase 107 의 첨부 inject 가 `messages.length === 0` (새 대화 첫 message) 분기였음. 기존 대화를 폴더로 이동해도 그 폴더 첨부는 모델에게 안 박힘 — K 의 "그 폴더에 있는건 전부" 의도와 미스매치.
