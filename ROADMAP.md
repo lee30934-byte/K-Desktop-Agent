@@ -2,6 +2,30 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 109 — 폴더 이동 후 첨부 자동 재박힘 — 2026-06-01
+
+**문제:** Phase 107 의 첨부 inject 가 `messages.length === 0` (새 대화 첫 message) 분기였음. 기존 대화를 폴더로 이동해도 그 폴더 첨부는 모델에게 안 박힘 — K 의 "그 폴더에 있는건 전부" 의도와 미스매치.
+
+**핵심:**
+- `conversations` 테이블에 `last_attached_folder_id TEXT` 컬럼 추가 (마이그레이션).
+- `Conversation` interface 에 `lastAttachedFolderId?: string | null` 추가 + `rowToConversation` 매핑.
+- 신규 함수: `updateConversationLastAttachedFolder(convId, folderId)`.
+- `App.tsx::handleSendMessage` 의 attach 분기 교체:
+  - 옛: `isFirstMessageInConv = messages.length === 0`
+  - 새: `shouldAttach = (conv.lastAttachedFolderId ?? null) !== conv.folderId` + attachments 존재
+- attach 박은 직후 `updateConversationLastAttachedFolder` + `setConversations` 동기화.
+
+**시나리오 cover:**
+| 상태 | 동작 |
+|---|---|
+| 새 대화 첫 send (last=null, current=X) | ✅ 박음 |
+| 같은 conv 재 send (last=X, current=X) | ❌ skip (모델 history) |
+| 폴더 이동 후 첫 send (last=A, current=B) | ✅ 박음 (K 명시) |
+| 폴더 빼기 후 send (last=A, current=null) | ❌ skip (current 없음) |
+| 폴더 다시 들어가기 (last=null, current=A) | ✅ 박음 |
+
+**시스템 프롬프트는 그대로 매 turn 박힘** (변화 없음 — Phase 107 동작 보존).
+
 ### ✅ Phase 108 — Sidebar Explorer 모드 (Windows 탐색기 패러다임) — 2026-06-01
 
 **문제:** K 의 트리 모드 ("폴더 펼침/접힘, 전체 한 화면") 가 폴더 위계 시각화에 약함. K 의 명시: "폴더 안인지 밖인지 구분이 잘 안 간다 + 위로가기 기능"

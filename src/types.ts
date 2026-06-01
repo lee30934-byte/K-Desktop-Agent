@@ -339,6 +339,9 @@ export interface Conversation {
   isFavorite?: boolean;
   color?: string | null;
   icon?: string | null;
+  // Phase 109 (v0.6.58) — 마지막으로 폴더 첨부 박은 폴더 ID.
+  // send 시점에 이 값 !== 현재 folderId 면 attachments 다시 박음. 박은 직후 갱신.
+  lastAttachedFolderId?: string | null;
 }
 
 // Phase 32 — 폴더 (N단계 중첩 가능)

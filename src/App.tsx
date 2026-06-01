@@ -59,6 +59,8 @@ import {
   updateFolderInstructions,
   type FolderRecord,
   type FolderAttachment,
+  // Phase 109 (v0.6.58) — 폴더 첨부 invalidation
+  updateConversationLastAttachedFolder,
   // Phase 79 (v0.6.22) — Task State Manager
   insertLongTask,
   updateLongTaskEvidence,
@@ -1665,10 +1667,14 @@ export default function App() {
 
     const turnId = crypto.randomUUID();
 
-    // Phase 107 (v0.6.56) — 폴더 첨부 자동 inject 판정용. setMessages 호출 전이라
-    // 이 시점의 messages.length === 0 = 이 conv 의 첫 message. 첨부는 토큰 비용이 크므로
-    // 첫 message 에만 박고 그 이후 turn 은 history 로 model 이 참조 (시스템 프롬프트는 매 turn 박음).
-    const isFirstMessageInConv = messages.length === 0;
+    // Phase 107 (v0.6.56) / Phase 109 (v0.6.58) — 폴더 첨부 invalidation 판정.
+    // 옛 로직: messages.length === 0 (새 대화 첫 message 만 박음) → 폴더 이동 후 첫 send 누락.
+    // 새 로직: conv 의 lastAttachedFolderId (DB 박힘) !== 현재 folderId 면 attach 박음.
+    //   - 새 대화 (last=null, current=X)            → 박음
+    //   - 같은 conv 재 send (last=X, current=X)     → skip (모델 history)
+    //   - 폴더 이동 후 첫 send (last=A, current=B)  → 박음 (K 명시 요청)
+    //   - 폴더 빼기 (last=A, current=null)          → skip (current 없으니 무관)
+    // 박힌 후 updateConversationLastAttachedFolder + setConversations 동기화.
 
     // 첨부 파일 정보를 포함한 메시지 내용 구성
     let displayContent = text;
@@ -1838,12 +1844,13 @@ export default function App() {
         /* ignore */
       }
 
-      // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 자동 inject.
-      // 활성 conv 가 폴더에 속하고 그 폴더에 systemPrompt 또는 attachments 박혀있으면 sidecar payload 로 흘림.
-      // sidecar 가 시스템 프롬프트 build 시 폴더 systemPrompt 를 [프로젝트 지침] 블록으로 prepend +
-      // attachments 는 첫 message 에만 박음 (위 isFirstMessageInConv 분기).
+      // Phase 107 (v0.6.56) / Phase 109 (v0.6.58) — 폴더 프로젝트 지침 + 첨부 자동 inject.
+      // - systemPrompt: 매 turn 박음 (Claude CLI 가 --resume 시 system prompt 새로 박음)
+      // - attachments: lastAttachedFolderId !== folderId 일 때만 박음 → 박은 직후 DB + state 갱신.
+      //   결과: 새 대화 첫 send + 폴더 이동 후 첫 send 둘 다 cover. 같은 폴더 재 send 는 skip (토큰 절약).
       let folderSystemPrompt: string | undefined;
       let folderAttachmentPaths: string[] | undefined;
+      let didAttachFolderId: string | null = null; // 박은 직후 DB 갱신용
       if (convId) {
         try {
           const conv = conversations.find((c) => c.id === convId);
@@ -1852,15 +1859,18 @@ export default function App() {
             if (folder?.systemPrompt && folder.systemPrompt.trim()) {
               folderSystemPrompt = folder.systemPrompt;
             }
-            if (
-              isFirstMessageInConv &&
+            const shouldAttach =
+              (conv.lastAttachedFolderId ?? null) !== conv.folderId &&
               Array.isArray(folder?.attachments) &&
-              folder.attachments.length > 0
-            ) {
-              const paths = folder.attachments
+              folder.attachments.length > 0;
+            if (shouldAttach) {
+              const paths = folder!.attachments
                 .map((a) => a.path)
                 .filter((p): p is string => typeof p === "string" && p.length > 0);
-              if (paths.length > 0) folderAttachmentPaths = paths;
+              if (paths.length > 0) {
+                folderAttachmentPaths = paths;
+                didAttachFolderId = conv.folderId;
+              }
             }
           }
         } catch (err) {
@@ -1884,6 +1894,23 @@ export default function App() {
         folderSystemPrompt,
         folderAttachmentPaths,
       });
+
+      // Phase 109 (v0.6.58) — 폴더 첨부 박은 직후 DB + in-memory state 갱신.
+      // 이렇게 해야 같은 conv 의 다음 send 가 last === current 로 인식해서 skip.
+      // 폴더 이동 시엔 conv.folderId 가 새 폴더로 update 된 상태이므로 다음 send 에서 다시 mismatch → 박음.
+      if (convId && didAttachFolderId) {
+        try {
+          await updateConversationLastAttachedFolder(convId, didAttachFolderId);
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === convId ? { ...c, lastAttachedFolderId: didAttachFolderId } : c,
+            ),
+          );
+        } catch (err) {
+          // DB update 실패해도 sidecar 는 이미 받았으므로 모델은 정상 응답. 다음 send 에 첨부 재박힘 (중복) 정도가 부작용.
+          console.warn("[App] lastAttachedFolderId 갱신 실패:", err);
+        }
+      }
     } catch (err) {
       setIsStreaming(false);
       setCurrentTurnId(null);

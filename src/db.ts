@@ -97,6 +97,13 @@ export async function initDB(): Promise<Database> {
   // attachments_json = FolderAttachment[] 의 JSON. 빈 array 면 null 또는 "[]" 저장 가능.
   try { await db.execute(`ALTER TABLE folders ADD COLUMN system_prompt TEXT`); } catch {}
   try { await db.execute(`ALTER TABLE folders ADD COLUMN attachments_json TEXT`); } catch {}
+  // Phase 109 (v0.6.58) — conv 별 "마지막으로 폴더 첨부 박은 폴더 ID" 추적.
+  // send 시점에 last_attached_folder_id !== 현재 folder_id 이면 attach 다시 박음.
+  // - 새 대화 (null vs X) → attach
+  // - 폴더 이동 (A → B, last=A vs current=B) → attach
+  // - 같은 conv 재 send (last=B vs current=B) → skip (모델이 history 로 기억)
+  // - 폴더에서 빼기 (last=B vs current=null) → skip (빠진 거니까 첨부 불필요)
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN last_attached_folder_id TEXT`); } catch {}
   // Phase 92 (v0.6.34) — ToolMessage 의 risk 메타 (Phase 85 Connector/Tool Safety Layer) 영속화.
   // 종전엔 in-memory 만 박혀 KDA 재시작 또는 다른 PC 에서 history 불러올 때 위험도 배지 사라짐.
   // 컬럼 추가 후 messageToDbParams + dbRowToMessage 양방향 JSON 직렬화.
@@ -323,6 +330,8 @@ export interface DBConversation {
   is_favorite?: number;
   color?: string | null;
   icon?: string | null;
+  // Phase 109 (v0.6.58) — 폴더 첨부 invalidation 추적
+  last_attached_folder_id?: string | null;
 }
 
 /**
@@ -354,7 +363,21 @@ export async function getAllConversations(): Promise<Conversation[]> {
     isFavorite: row.is_favorite === 1,
     color: row.color ?? null,
     icon: row.icon ?? null,
+    // Phase 109 (v0.6.58)
+    lastAttachedFolderId: row.last_attached_folder_id ?? null,
   }));
+}
+
+// Phase 109 (v0.6.58) — 폴더 첨부를 박은 직후 호출. 다음 send 부터 같은 폴더면 skip.
+export async function updateConversationLastAttachedFolder(
+  convId: string,
+  folderId: string | null,
+): Promise<void> {
+  const database = await initDB();
+  await database.execute(
+    `UPDATE conversations SET last_attached_folder_id = ? WHERE id = ?`,
+    [folderId, convId],
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────
