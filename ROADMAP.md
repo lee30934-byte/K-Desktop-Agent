@@ -2,6 +2,19 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 113.2 — 응답속도 개선 옵션 E — history 자동 압축 강화 — 2026-06-01
+
+**문제:** K 보고 #4 "응답속도 개선" 의 옵션 E 선택. 매 turn input 토큰이 크면 첫 토큰 latency ↑ → K 체감 느림.
+
+**3중 fix:**
+1. **자동 갱신 임계치 0.9 → 0.7** — 90% 도달 시 갱신은 이미 늦음 (그 시점에 응답이 느림). 70% 에 미리 갱신하면 K 가 답답함 느끼기 전 압축 완료.
+2. **history slice 20 → 12** — 매 turn 보내는 옛 user/assistant 메시지 수 40% 감소. 옛 context 일부 잃지만 최근 12 turn 은 유지 — 일반 대화에선 충분.
+3. **각 메시지 본문 cap (MESSAGE_CAP = 4000)** — 4000자 초과 시 head 1800 + tail 1800 + 중간 생략 (자동 마커). 긴 마크다운 표/코드 블록 응답이 매 turn 다시 박혀 토큰 폭발하는 패턴 차단.
+
+**Trade-off:** 옛 context 일부 잃음 vs. 응답 속도. K 의 일상 사용 패턴 (짧은 turn 12개 이내) 에선 영향 미미, 긴 코드 분석 같은 patterns 에서만 trim 표시 보일 수 있음.
+
+**Claude prefix cache 호환:** trim 함수가 매 turn 결정론적 (같은 message → 같은 trim 결과) 이라 prefix cache hit 율 유지.
+
 ### ✅ Phase 113.1 — Explorer 모드에 DnD (옮기기 기능) 박음 — 2026-06-01
 
 **문제:** Phase 113 에서 트리 모드 제거 후 K 정정 — "트리는 제거하되 옮기기 기능은 탐색기에서 그대로 되게". 옛 트리 모드에만 dnd-kit 기반 DraggableConv/DndFolder 가 박혀있었음. Explorer 모드 v1 은 우클릭 메뉴 path 만.
