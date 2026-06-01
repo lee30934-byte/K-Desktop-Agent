@@ -598,13 +598,29 @@ export default function App() {
   const [activeProvider, setActiveProvider] = useState<string>(
     () => localStorage.getItem("kda_active_provider") || "claude"
   );
-  const [activeModelId, setActiveModelId] = useState<string>(
-    () => localStorage.getItem("kda_active_model") || "default"
-  );
+  const [activeModelId, setActiveModelId] = useState<string>(() => {
+    // Phase 111.2 (v0.6.62) — K 정정: 기본 모델 = Opus 4.8.
+    // 1회 마이그레이션: kda_active_model 미설정 OR "default" 이면 → "claude-opus-4-8".
+    // sentinel (kda_default_model_migrated_v1) 박아서 한 번만 실행. K 가 이후 default 로
+    // 다시 바꾸면 그 선택 유지 (sentinel 박혀있어 또 덮어쓰지 않음).
+    try {
+      const stored = localStorage.getItem("kda_active_model");
+      const sentinel = localStorage.getItem("kda_default_model_migrated_v1");
+      const provider = localStorage.getItem("kda_active_provider") || "claude";
+      if (!sentinel && provider === "claude" && (!stored || stored === "default")) {
+        localStorage.setItem("kda_active_model", "claude-opus-4-8");
+        localStorage.setItem("kda_default_model_migrated_v1", "true");
+        return "claude-opus-4-8";
+      }
+      return stored || "claude-opus-4-8";
+    } catch {
+      return "claude-opus-4-8";
+    }
+  });
   useEffect(() => {
     function refreshActive() {
       setActiveProvider(localStorage.getItem("kda_active_provider") || "claude");
-      setActiveModelId(localStorage.getItem("kda_active_model") || "default");
+      setActiveModelId(localStorage.getItem("kda_active_model") || "claude-opus-4-8");
     }
     window.addEventListener("storage", refreshActive);
     window.addEventListener("kda-active-changed", refreshActive);
@@ -659,17 +675,20 @@ export default function App() {
   }, []);
 
   // provider/model → MetricsPanel 에 표시할 짧은 라벨.
-  // claude(Max) 의 model="default" 는 OAuth 가 자동 선택하는 최신 Opus 5.7 / 1M ctx 모델.
-  // 다른 provider/model 은 ID 그대로 (mono 폰트로 가독성 OK).
+  // Phase 111.2 (v0.6.62) — K 정정: "Opus 5.7 같은건 없어". 기본 모델 = Opus 4.8.
+  // claude(Max) 의 model="default" 는 Claude CLI 가 자동 선택 (CLI 가 알아서 최신).
+  // claude-opus-4-8 명시 선택은 그대로 4.8 표시.
   const currentModelLabel = useMemo(() => {
-    if (activeProvider === "claude" && (!activeModelId || activeModelId === "default")) {
-      return "Opus 5.7 · 1M";
+    if (activeProvider === "claude") {
+      if (activeModelId === "claude-opus-4-8") return "Opus 4.8";
+      if (!activeModelId || activeModelId === "default") return "Claude CLI auto";
     }
     return activeModelId || "default";
   }, [activeProvider, activeModelId]);
 
   // 모델별 컨텍스트 윈도우 분모 — Context % 표시용.
-  // - Claude Max default(Opus 5.7) : 1M
+  // - Claude Max default (Claude CLI 자동) : 1M (CLI 가 알아서 선택, 보수적으로 1M 가정)
+  // - Claude Max claude-opus-4-8 : 1M (Opus 4.8 = K 정정 기본. 보통 1M ctx)
   // - Anthropic claude-* : 200K (Sonnet 4.5 등) — sonnet-4-5 도 1M 베타가 있으나 일반은 200K
   // - 기타 (OpenAI / Gemini / OpenRouter) : 200K 기본 (모델별 정확값은 Phase 13 이후)
   // Phase 52 (v0.5.40) — Codex 런타임이 token_count event 에 model_context_window 같이 보고함.
@@ -706,9 +725,14 @@ export default function App() {
     if (id.includes("1m")) return { tokens: 1_000_000, source: "1m 시그널" };
     if (id.includes("nano") && id.includes("gpt-5")) return { tokens: 1_000_000, source: "gpt-5-nano" };
 
-    // Claude (Max OAuth default = Claude Opus 4.7 1M context)
-    if (activeProvider === "claude" && (!activeModelId || id === "default")) {
-      return { tokens: 1_000_000, source: "Claude Max default" };
+    // Phase 111.2 (v0.6.62) — K 정정: "Opus 5.7 같은건 없어". 기본 모델 = Opus 4.8.
+    // Claude (Max OAuth) — default (CLI 자동) 또는 명시 Opus 4.8 둘 다 1M ctx 가정.
+    // Opus family 는 보통 1M context (4.x 기준). K 가 실제 한도 다르면 보고 후 정정.
+    if (activeProvider === "claude" && (!activeModelId || id === "default" || id === "claude-opus-4-8")) {
+      return {
+        tokens: 1_000_000,
+        source: id === "claude-opus-4-8" ? "Opus 4.8 (1M)" : "Claude Max default (1M)",
+      };
     }
 
     // OpenAI GPT-5 family / Codex — 공식 400K input window (2025 spec)

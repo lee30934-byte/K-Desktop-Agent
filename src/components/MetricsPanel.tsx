@@ -38,7 +38,7 @@ interface MetricsPanelProps {
 function MetricsPanel({
   metrics,
   mcpConnected,
-  currentModel = "Opus 5.7 · 1M",
+  currentModel = "Opus 4.8",
   maxContextTokens = 200000,
   maxContextSource,
   estimatedContextTokens,

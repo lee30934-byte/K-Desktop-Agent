@@ -1,6 +1,6 @@
 [package]
 name = "k-desktop-agent"
-version = "0.6.61"
+version = "0.6.62"
 description = "K Desktop Agent - personal automation chat app"
 authors = ["K"]
 edition = "2021"

@@ -206,12 +206,13 @@ const API_PROVIDERS: APIProvider[] = [
     docsUrl: "https://docs.claude.com/en/docs/claude-code/quickstart",
     noKeyRequired: true,
     note: "Max 구독을 Claude Code CLI 로 인증해 사용 — K-Personal MCP 도구 (스크린샷·마우스·키보드·앱 실행 등) 풀 사용 가능. API 키 불필요. 아래 [claude login] 버튼으로 터미널에서 OAuth 진행.",
+    // Phase 111.2 (v0.6.62) — K 정정: "Opus 5.7 같은건 없어".
+    // 옛 default label 의 "Opus 5.7 / 1M ctx" 는 잘못된 표기였음 (실재하지 않는 모델).
+    // 새 default = Opus 4.8 (첫 옵션이라 신규 K 가 보는 selected = Opus 4.8).
+    // K 가 명시적으로 "default" (Claude CLI 자동 선택) 원하면 두 번째 옵션.
     models: [
-      { id: "default", label: "Max 기본 모델 (Opus 5.7 / 1M ctx)" },
-      // Phase 106 (v0.6.55) — Opus 4.8 명시 선택. Claude CLI 의 --model 로 흘림.
-      // 분모는 currentModelMaxTokensInfo 의 "Claude 200K" fallback 으로 잡힘 (안전 기본값).
-      // K 의 실제 한도와 안 맞으면 추후 hardcode 재조정 (pitfall_codex_model_context_window_dynamic 회피).
-      { id: "claude-opus-4-8", label: "Claude Opus 4.8 (명시)" },
+      { id: "claude-opus-4-8", label: "Claude Opus 4.8 (기본)" },
+      { id: "default", label: "Claude CLI 자동 선택" },
     ],
   },
   {

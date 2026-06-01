@@ -2,6 +2,20 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 111.2 — Claude 기본 모델 = Opus 4.8 정정 + "Opus 5.7" 가짜 label 제거 — 2026-06-01
+
+**문제:** K 정정 — "OPUS 5.7 같은건 없어". KDA 의 Claude (Max OAuth) provider 의 default 옵션 label 이 옛 "Max 기본 모델 (Opus 5.7 / 1M ctx)" 로 박혀있었음 (실재하지 않는 모델 표기). K 가 "기본 모델을 Opus 4.8 로 맞춰줘" 요청.
+
+**핵심:**
+- **Settings.tsx claude provider models 재정렬:**
+  - 옛: `[{id:"default", label:"Max 기본 모델 (Opus 5.7 / 1M ctx)"}, {id:"claude-opus-4-8", label:"Claude Opus 4.8 (명시)"}]`
+  - 신: `[{id:"claude-opus-4-8", label:"Claude Opus 4.8 (기본)"}, {id:"default", label:"Claude CLI 자동 선택"}]`
+  - 신규 K: `models[0]` = Opus 4.8 자동 selected
+- **1회 마이그레이션** (`App.tsx` useState init): 기존 K 의 `kda_active_model="default"` 또는 미설정 → `"claude-opus-4-8"` 자동 전환. sentinel `kda_default_model_migrated_v1` 박아 한 번만 실행 (K 가 이후 default 로 재선택해도 안 덮어쓰기).
+- **`currentModelLabel`**: "Opus 5.7 · 1M" → "Opus 4.8" / "Claude CLI auto"
+- **`MetricsPanel` default prop**: "Opus 5.7 · 1M" → "Opus 4.8"
+- **`currentModelMaxTokensInfo` 분기**: claude provider + (default 또는 claude-opus-4-8) → 1M ctx. 분모 hardcode 의도적 (Opus family 보통 1M, K 가 다르면 보고 후 정정 — `pitfall_codex_model_context_window_dynamic` 회피 패턴 유지).
+
 ### ✅ Phase 111.1 — 폴더 지침 다이얼로그 wrapper CSS 누락 hotfix — 2026-06-01
 
 **문제:** K 가 v0.6.60 받고 폴더 우클릭 → "📜 프로젝트 지침…" 클릭 시 다이얼로그가 안 뜸. 처음엔 webview2 cache stale 의심했으나 K 확인: 버전 v0.6.60 정상 + 메뉴 항목도 보임 + 클릭만 무반응.
