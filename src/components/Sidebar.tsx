@@ -59,6 +59,9 @@ interface SidebarProps {
   onMoveFolder?: (id: string, newParentId: string | null, newPosition: number) => Promise<void> | void;
   onSetFolderColor?: (id: string, color: string | null) => Promise<void> | void;
   onSetFolderIcon?: (id: string, icon: string | null) => Promise<void> | void;
+  // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 진입. App.tsx 의
+  // FolderInstructionsDialog state 를 열어서 textarea + 파일 picker 표시.
+  onEditFolderInstructions?: (folderId: string) => void;
   onMoveConversationToFolder?: (
     convId: string,
     folderId: string | null,
@@ -88,6 +91,7 @@ function Sidebar({
   onMoveFolder,
   onSetFolderColor,
   onSetFolderIcon,
+  onEditFolderInstructions,
   onMoveConversationToFolder,
   onToggleFavorite,
   onSetConversationColor,
@@ -693,6 +697,13 @@ function Sidebar({
         label: "💠 아이콘…",
         action: () => setPickerState({ kind: "icon", type: "folder", id, x, y }),
       });
+      // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 진입
+      if (onEditFolderInstructions) {
+        items.push({
+          label: "📜 프로젝트 지침…",
+          action: () => onEditFolderInstructions(id),
+        });
+      }
       items.push({
         label: "🗑 삭제",
         danger: true,

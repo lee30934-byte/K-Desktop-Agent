@@ -24,6 +24,8 @@ import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
 import SidebarResizer from "./components/SidebarResizer";
 import SidePanel, { type SidePanelItem } from "./components/SidePanel";
+// Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
+import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
 import {
   initDB,
   getAllConversations,
@@ -52,6 +54,11 @@ import {
   setConversationColor,
   setConversationIcon,
   searchConversations,
+  // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부
+  getFolderById,
+  updateFolderInstructions,
+  type FolderRecord,
+  type FolderAttachment,
   // Phase 79 (v0.6.22) — Task State Manager
   insertLongTask,
   updateLongTaskEvidence,
@@ -319,6 +326,43 @@ export default function App() {
     awaitingFreeForm?: boolean;
   } | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그.
+  // null = 닫힘. FolderRecord 가 박혀있으면 다이얼로그 열림 (그 폴더 편집 중).
+  const [folderInstructionsDialog, setFolderInstructionsDialog] = useState<FolderRecord | null>(null);
+
+  const handleEditFolderInstructions = useStableCallback(async (folderId: string) => {
+    try {
+      const folder = await getFolderById(folderId);
+      if (!folder) {
+        console.warn("[App] 폴더 조회 실패 — id 없음:", folderId);
+        return;
+      }
+      setFolderInstructionsDialog(folder);
+    } catch (err) {
+      // pushSystem 은 함수 선언 위치 (이 callback 아래) 라 TDZ 회피 차 alert 대체.
+      // 거의 발생 안 할 path (Sidebar 우클릭 메뉴는 살아있는 folderId 만 push).
+      console.error("[App] 폴더 조회 실패:", err);
+      alert(`폴더 정보를 불러오지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  const handleSaveFolderInstructions = useStableCallback(
+    async (systemPrompt: string | null, attachments: FolderAttachment[]) => {
+      if (!folderInstructionsDialog) return;
+      const folderId = folderInstructionsDialog.id;
+      try {
+        await updateFolderInstructions(folderId, systemPrompt, attachments);
+      } catch (err) {
+        console.error("[App] 폴더 지침 저장 실패:", err);
+        throw err; // 다이얼로그가 잡아서 표시
+      }
+    },
+  );
+
+  const handleCloseFolderInstructions = useStableCallback(() => {
+    setFolderInstructionsDialog(null);
+  });
 
   // ─── Phase 15.5 — Rate Limit Info ────────────────────────
   // Anthropic / Codex 의 5h primary + 7d secondary 한도. provider 별로 별도 state.
@@ -1621,6 +1665,11 @@ export default function App() {
 
     const turnId = crypto.randomUUID();
 
+    // Phase 107 (v0.6.56) — 폴더 첨부 자동 inject 판정용. setMessages 호출 전이라
+    // 이 시점의 messages.length === 0 = 이 conv 의 첫 message. 첨부는 토큰 비용이 크므로
+    // 첫 message 에만 박고 그 이후 turn 은 history 로 model 이 참조 (시스템 프롬프트는 매 turn 박음).
+    const isFirstMessageInConv = messages.length === 0;
+
     // 첨부 파일 정보를 포함한 메시지 내용 구성
     let displayContent = text;
     if (files && files.length > 0) {
@@ -1789,6 +1838,37 @@ export default function App() {
         /* ignore */
       }
 
+      // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 자동 inject.
+      // 활성 conv 가 폴더에 속하고 그 폴더에 systemPrompt 또는 attachments 박혀있으면 sidecar payload 로 흘림.
+      // sidecar 가 시스템 프롬프트 build 시 폴더 systemPrompt 를 [프로젝트 지침] 블록으로 prepend +
+      // attachments 는 첫 message 에만 박음 (위 isFirstMessageInConv 분기).
+      let folderSystemPrompt: string | undefined;
+      let folderAttachmentPaths: string[] | undefined;
+      if (convId) {
+        try {
+          const conv = conversations.find((c) => c.id === convId);
+          if (conv?.folderId) {
+            const folder = await getFolderById(conv.folderId);
+            if (folder?.systemPrompt && folder.systemPrompt.trim()) {
+              folderSystemPrompt = folder.systemPrompt;
+            }
+            if (
+              isFirstMessageInConv &&
+              Array.isArray(folder?.attachments) &&
+              folder.attachments.length > 0
+            ) {
+              const paths = folder.attachments
+                .map((a) => a.path)
+                .filter((p): p is string => typeof p === "string" && p.length > 0);
+              if (paths.length > 0) folderAttachmentPaths = paths;
+            }
+          }
+        } catch (err) {
+          // pitfall_js_arg_type_silent_throw — silent throw 방지. 로그 + 진행 (지침 없이 send).
+          console.warn("[App] 폴더 지침 로드 실패:", err);
+        }
+      }
+
       await invoke("send_message", {
         message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
@@ -1801,6 +1881,8 @@ export default function App() {
         permissions,
         lockedTools,
         safeMode,
+        folderSystemPrompt,
+        folderAttachmentPaths,
       });
     } catch (err) {
       setIsStreaming(false);
@@ -2976,6 +3058,7 @@ export default function App() {
         onMoveFolder={handleMoveFolder}
         onSetFolderColor={handleSetFolderColor}
         onSetFolderIcon={handleSetFolderIcon}
+        onEditFolderInstructions={handleEditFolderInstructions}
         onMoveConversationToFolder={handleMoveConversationToFolder}
         onToggleFavorite={handleToggleFavorite}
         onSetConversationColor={handleSetConversationColor}
@@ -3123,6 +3206,15 @@ export default function App() {
         onOpenSettings={openSettings}
         onNewChat={handleNewConversation}
       />
+
+      {/* Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그 */}
+      {folderInstructionsDialog && (
+        <FolderInstructionsDialog
+          folder={folderInstructionsDialog}
+          onClose={handleCloseFolderInstructions}
+          onSave={handleSaveFolderInstructions}
+        />
+      )}
 
       {/* 세션 자동 갱신 토스트 */}
       {sessionRefreshToast && (

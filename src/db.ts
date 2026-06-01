@@ -92,6 +92,11 @@ export async function initDB(): Promise<Database> {
   try { await db.execute(`ALTER TABLE conversations ADD COLUMN is_favorite INTEGER DEFAULT 0`); } catch {}
   try { await db.execute(`ALTER TABLE conversations ADD COLUMN color TEXT`); } catch {}
   try { await db.execute(`ALTER TABLE conversations ADD COLUMN icon TEXT`); } catch {}
+  // Phase 107 (v0.6.56) — 폴더별 프로젝트 지침 (system prompt) + 첨부파일 reference.
+  // 새 대화 첫 message 송신 시 sidecar 가 시스템 프롬프트에 prepend + attachments 흡수.
+  // attachments_json = FolderAttachment[] 의 JSON. 빈 array 면 null 또는 "[]" 저장 가능.
+  try { await db.execute(`ALTER TABLE folders ADD COLUMN system_prompt TEXT`); } catch {}
+  try { await db.execute(`ALTER TABLE folders ADD COLUMN attachments_json TEXT`); } catch {}
   // Phase 92 (v0.6.34) — ToolMessage 의 risk 메타 (Phase 85 Connector/Tool Safety Layer) 영속화.
   // 종전엔 in-memory 만 박혀 KDA 재시작 또는 다른 PC 에서 history 불러올 때 위험도 배지 사라짐.
   // 컬럼 추가 후 messageToDbParams + dbRowToMessage 양방향 JSON 직렬화.
@@ -364,6 +369,19 @@ export interface DBFolder {
   icon: string | null;
   position: number;
   created_at: number;
+  // Phase 107 (v0.6.56) — 프로젝트 지침 + 첨부 reference
+  system_prompt: string | null;
+  attachments_json: string | null;
+}
+
+// Phase 107 — 폴더에 등록된 reference 파일 (절대 경로 + display name + meta).
+// sidecar 가 새 대화 첫 message 송신 시 자동 attach.
+export interface FolderAttachment {
+  name: string;        // display name (basename)
+  path: string;        // 절대 경로 — sidecar 가 읽음
+  size?: number;       // bytes (UI 표시용, optional)
+  mimeType?: string;   // 추정 mime (UI tooltip 용, optional)
+  addedAt: number;     // epoch ms
 }
 
 export interface FolderRecord {
@@ -374,6 +392,29 @@ export interface FolderRecord {
   icon: string | null;
   position: number;
   createdAt: number;
+  // Phase 107
+  systemPrompt: string | null;
+  attachments: FolderAttachment[];
+}
+
+function parseFolderAttachments(raw: string | null | undefined): FolderAttachment[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // 방어적 normalize — 잘못된 row 는 skip (pitfall_js_arg_type_silent_throw 회피)
+    return parsed
+      .filter((a) => a && typeof a === "object" && typeof a.path === "string")
+      .map((a) => ({
+        name: typeof a.name === "string" ? a.name : a.path,
+        path: a.path,
+        size: typeof a.size === "number" ? a.size : undefined,
+        mimeType: typeof a.mimeType === "string" ? a.mimeType : undefined,
+        addedAt: typeof a.addedAt === "number" ? a.addedAt : Date.now(),
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function rowToFolder(row: DBFolder): FolderRecord {
@@ -385,6 +426,8 @@ function rowToFolder(row: DBFolder): FolderRecord {
     icon: row.icon ?? null,
     position: row.position ?? 0,
     createdAt: row.created_at,
+    systemPrompt: row.system_prompt ?? null,
+    attachments: parseFolderAttachments(row.attachments_json),
   };
 }
 
@@ -415,7 +458,18 @@ export async function createFolder(
     `INSERT INTO folders (id, name, parent_id, color, icon, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [id, name, parentId, color, icon, nextPos, now],
   );
-  return { id, name, parentId, color, icon, position: nextPos, createdAt: now };
+  // Phase 107 (v0.6.56) — 신규 폴더는 지침/첨부 없이 시작 (K 가 우클릭 메뉴에서 박음)
+  return {
+    id,
+    name,
+    parentId,
+    color,
+    icon,
+    position: nextPos,
+    createdAt: now,
+    systemPrompt: null,
+    attachments: [],
+  };
 }
 
 export async function renameFolder(id: string, name: string): Promise<void> {
@@ -431,6 +485,33 @@ export async function setFolderColor(id: string, color: string | null): Promise<
 export async function setFolderIcon(id: string, icon: string | null): Promise<void> {
   const database = await initDB();
   await database.execute(`UPDATE folders SET icon = ? WHERE id = ?`, [icon, id]);
+}
+
+// Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 조회/갱신
+export async function getFolderById(id: string): Promise<FolderRecord | null> {
+  const database = await initDB();
+  const rows = await database.select<DBFolder[]>(
+    `SELECT * FROM folders WHERE id = ?`,
+    [id],
+  );
+  return rows.length > 0 ? rowToFolder(rows[0]) : null;
+}
+
+export async function updateFolderInstructions(
+  id: string,
+  systemPrompt: string | null,
+  attachments: FolderAttachment[],
+): Promise<void> {
+  const database = await initDB();
+  // empty 면 null 로 저장 (UI 표시 단순화 — null 이면 "지침 없음" 명확)
+  const normalizedPrompt = systemPrompt && systemPrompt.trim() ? systemPrompt : null;
+  const normalizedAttachments = Array.isArray(attachments) ? attachments : [];
+  const attachmentsJson =
+    normalizedAttachments.length > 0 ? JSON.stringify(normalizedAttachments) : null;
+  await database.execute(
+    `UPDATE folders SET system_prompt = ?, attachments_json = ? WHERE id = ?`,
+    [normalizedPrompt, attachmentsJson, id],
+  );
 }
 
 /**

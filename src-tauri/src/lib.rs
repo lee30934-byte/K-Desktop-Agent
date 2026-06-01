@@ -225,6 +225,12 @@ async fn send_message(
     // Claude CLI 의 Read 도구가 path 를 받아 이미지면 vision, 텍스트면 그대로 처리.
     // None / 빈 배열 → 첨부 없음.
     attachments: Option<serde_json::Value>,
+    // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 (활성 conv 의 folder.system_prompt).
+    // App.tsx 가 매 turn 보내고 sidecar 가 시스템 프롬프트에 prepend.
+    folder_system_prompt: Option<String>,
+    // Phase 107 — 폴더 첨부 reference (절대 경로). 새 대화 첫 message 일 때만 박힘.
+    // sidecar 는 path 를 prompt 의 "참고 파일" 블록에 안내. Claude CLI 가 Read 로 읽음.
+    folder_attachment_paths: Option<Vec<String>>,
 ) -> Result<(), String> {
     let mut payload = serde_json::json!({
         "type": "user_message",
@@ -267,6 +273,18 @@ async fn send_message(
     // 첨부 파일 (sidecar 가 임시 파일로 저장 후 prompt 에 path 안내 추가)
     if let Some(att) = attachments {
         payload["attachments"] = att;
+    }
+    // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 reference 전달.
+    if let Some(prompt) = folder_system_prompt {
+        let trimmed = prompt.trim();
+        if !trimmed.is_empty() {
+            payload["folderSystemPrompt"] = serde_json::Value::String(trimmed.to_string());
+        }
+    }
+    if let Some(paths) = folder_attachment_paths {
+        if !paths.is_empty() {
+            payload["folderAttachmentPaths"] = serde_json::json!(paths);
+        }
     }
     let line = format!("{}\n", payload);
     let tx_holder = get_tx_holder().clone();

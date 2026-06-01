@@ -978,6 +978,16 @@ type UserMessage = {
     size: number;
     base64: string;
   }>;
+  // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 자동 inject.
+  // App.tsx 가 활성 conv 의 folderId 보고 folder.systemPrompt 를 매 turn 박음.
+  // 시스템 프롬프트 build 시 SYSTEM_PROMPT 뒤에 [프로젝트 지침] 블록으로 prepend.
+  // 빈 string / undefined 면 무시.
+  folderSystemPrompt?: string;
+  // Phase 107 — 폴더 첨부파일 reference (절대 경로).
+  // 새 대화 첫 message 일 때만 박힘 (App.tsx 가 detect).
+  // sidecar 가 Claude CLI prompt 에 "참고 파일" path 안내를 추가 → Claude 가 Read 로 자동 분석.
+  // attachments (base64) 와 달리 이건 이미 K PC 의 영구 파일이라 임시 폴더 복사 없이 path 직접 안내.
+  folderAttachmentPaths?: string[];
 };
 
 // ─── 권한 카테고리 ↔ Claude CLI 도구 매핑 ─────────────────
@@ -1664,9 +1674,32 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   // 임시 폴더는 finally 에서 통째로 삭제.
   const { dir: attachmentsDir, guidance: attachmentsGuidance } =
     materializeAttachments(msg);
-  const baseContent = attachmentsGuidance
-    ? `${msg.content}${attachmentsGuidance}`
-    : msg.content;
+
+  // Phase 107 (v0.6.56) — 폴더 첨부 reference 안내 추가.
+  // App.tsx 가 새 대화 첫 message 일 때만 박음 (토큰 절약). path 가 절대 경로 → Claude CLI Read 도구가 직접 읽음.
+  // 기존 attachments (base64 임시 파일) 와 달리 영구 파일이라 임시 폴더 복사 X.
+  let folderAttachmentGuidance = "";
+  if (
+    Array.isArray(msg.folderAttachmentPaths) &&
+    msg.folderAttachmentPaths.length > 0
+  ) {
+    const validPaths = msg.folderAttachmentPaths.filter(
+      (p) => typeof p === "string" && p.trim().length > 0,
+    );
+    if (validPaths.length > 0) {
+      const lines = validPaths.map((p) => `- ${p}`);
+      folderAttachmentGuidance = [
+        "",
+        "",
+        "[프로젝트 참고 파일]",
+        "K 가 이 프로젝트 폴더에 등록한 참고 파일들입니다. Read 도구로 내용을 확인하여 답변에 반영하세요.",
+        "(이미지는 vision 분석, 텍스트는 본문이 읽힘. 한 번에 다 읽지 말고 필요한 것만 선택적으로 읽으세요.)",
+        ...lines,
+      ].join("\n");
+    }
+  }
+
+  const baseContent = `${msg.content}${attachmentsGuidance ?? ""}${folderAttachmentGuidance}`;
   // memory 는 stdin (prompt) 으로 흘려보낸다 — 명령행 길이 한계 회피.
   const memory = loadMemoryContext();
   const promptWithHistory = buildPromptWithHistory(
@@ -1739,7 +1772,14 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   // SYSTEM_PROMPT 의 "[누적 메모리]" 안내가 모델에게 그 블록을 시스템 컨텍스트로 취급하도록 함.
   const askGuidance = buildAskGuidance(toolFlags.effective);
   const manualGuidance = buildManualGuidance(toolFlags.effective);
-  const fullSystemPrompt = SYSTEM_PROMPT + askGuidance + manualGuidance;
+  // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 inject.
+  // 활성 conv 가 폴더에 속하고 그 폴더에 systemPrompt 박혀있으면 [프로젝트 지침] 블록으로 박음.
+  // SYSTEM_PROMPT 다음, ask/manual 안내 앞 위치 — K 의 의도가 가장 먼저 보이도록.
+  const folderInstructionBlock =
+    msg.folderSystemPrompt && msg.folderSystemPrompt.trim()
+      ? `\n\n[프로젝트 지침]\n이 대화는 K 가 지정한 프로젝트 폴더에 속해 있으며, 아래 지침을 항상 따라야 합니다. K 의 요청과 충돌하면 K 의 명시적 지시를 우선하되, 그 외엔 이 지침을 우선 적용하세요.\n\n${msg.folderSystemPrompt.trim()}\n`
+      : "";
+  const fullSystemPrompt = SYSTEM_PROMPT + folderInstructionBlock + askGuidance + manualGuidance;
 
   // ─── 큰 인자 자동 파일 외화 ─────────────────────────────────────────
   // 임계치(LARGE_ARG_THRESHOLD) 이상의 인자 값은 임시 파일로 빼고 path 인자로 전환.

@@ -342,6 +342,9 @@ export interface Conversation {
 }
 
 // Phase 32 — 폴더 (N단계 중첩 가능)
+// Phase 107 (v0.6.56) — 폴더별 프로젝트 지침 + 첨부 reference 추가.
+//   systemPrompt: 새 대화 첫 message 송신 시 sidecar 가 시스템 프롬프트에 prepend.
+//   attachments: 새 대화 첫 message 송신 시 자동 attach. msg.attachments 와 동일 schema.
 export interface Folder {
   id: string;
   name: string;
@@ -350,6 +353,20 @@ export interface Folder {
   icon?: string | null;
   position: number;
   createdAt: number;
+  systemPrompt?: string | null;
+  attachments?: FolderAttachment[];
+}
+
+// Phase 107 — 폴더에 등록된 참고 파일 reference.
+// path 는 K PC 의 절대 경로 — sidecar 가 첫 message 송신 시 읽어서 흡수.
+// 폴더 자체에 파일을 복사하지 않고 reference 만 보관 (K 가 옮기면 깨질 수 있다는 trade-off,
+// 다음 phase 후보: vault 폴더에 자동 사본 보관).
+export interface FolderAttachment {
+  name: string;
+  path: string;
+  size?: number;
+  mimeType?: string;
+  addedAt: number;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";

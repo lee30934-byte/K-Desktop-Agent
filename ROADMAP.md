@@ -2,6 +2,18 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 107 — 폴더 프로젝트 지침 + 첨부파일 (ChatGPT/Claude Projects 패턴) — 2026-06-01
+
+**문제:** K 가 "공문 작성 폴더" 같은 프로젝트별로 지침과 참고 파일을 한 곳에 정리하고, 그 폴더의 새 대화는 자동으로 그 지침을 읽고 작성하도록.
+
+**핵심:**
+- **DB 마이그레이션:** `folders` 테이블에 `system_prompt TEXT` + `attachments_json TEXT` 컬럼 추가. `FolderRecord` 에 `systemPrompt`/`attachments: FolderAttachment[]` 노출. 신규 `getFolderById()` + `updateFolderInstructions()` 함수.
+- **UI:** Sidebar 폴더 우클릭 메뉴에 "📜 프로젝트 지침…" 추가 → 신규 `FolderInstructionsDialog` (시스템 프롬프트 textarea + 첨부파일 picker — `tauri-plugin-dialog` 의 `open()` 으로 시스템 파일 선택).
+- **App.tsx inject path:** `handleSendMessage` 진입 시 `messages.length === 0` 캡처 (이 conv 첫 message 검사). 활성 conv 의 folderId → `getFolderById()` → `folderSystemPrompt` (매 turn 박음) + `folderAttachmentPaths` (첫 message 만 박음, 토큰 절약). `invoke("send_message", { folderSystemPrompt, folderAttachmentPaths })`.
+- **Rust IPC:** `lib.rs::send_message` 가 새 두 인자 받아 payload 의 `folderSystemPrompt`/`folderAttachmentPaths` 필드로 흘림.
+- **sidecar inject:** `handleViaClaudeCLI` 의 `fullSystemPrompt = SYSTEM_PROMPT + folderInstructionBlock + askGuidance + manualGuidance`. 폴더 첨부는 `baseContent` 끝에 `[프로젝트 참고 파일]` 블록 + path list 박힘 → Claude CLI 의 Read 도구가 직접 읽음 (영구 파일이라 임시 폴더 복사 X — base64 첨부와 다름).
+- **함정 회피:** `parseFolderAttachments` 에서 Array.isArray 양방향 방어 + filter ( `pitfall_js_arg_type_silent_throw` ).
+
 ### ✅ Phase 106 — Opus 4.8 명시 선택 + Claude CLI --model 전달 path — 2026-06-01
 
 **문제:** Anthropic 의 Claude Opus 4.8 가 출시되어 K 가 명시적으로 4.8 모델 선택해 쓰고 싶음. 그런데 진단 결과 KDA 의 Claude (Max OAuth) provider 가 **sidecar 의 Claude CLI spawn args 에 `--model` 인자를 박지 않고 있었음** — Settings 의 model picker 가 사실상 무력화 (어떤 model 골라도 CLI 의 default 만 작동).
