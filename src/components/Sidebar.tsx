@@ -48,7 +48,8 @@ interface SidebarProps {
   folders: Folder[];
   activeConversationId: string | null;
   onSelectConversation: (id: string) => void;
-  onNewConversation: () => void;
+  // Phase 113 (v0.6.64) — folderId 인자 추가 (optional). Explorer 모드에서 폴더 안일 때 자동 박힘.
+  onNewConversation: (folderId?: string | null) => void;
   onDeleteConversation?: (id: string) => void;
   onRenameConversation?: (id: string, newTitle: string) => Promise<void> | void;
   onRefreshConversations?: () => void;
@@ -118,26 +119,24 @@ function Sidebar({
   // 펼침/접힘 — 폴더 ID 셋
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
 
-  // Phase 108 (v0.6.57) — Sidebar 뷰 모드.
-  //   "tree"     : 종전 패러다임 (펼침/접힘 트리 — 한 화면에 모든 폴더+대화 표시)
-  //   "explorer" : Windows 탐색기 패러다임 (한 화면에 한 폴더만 + breadcrumb + 위로 가기)
-  // K 가 둘 다 익숙해서 토글 가능 + localStorage 영속. 기본값 = tree (K 의 선택 — 기존 동작 보존).
-  const [viewMode, setViewMode] = useState<"tree" | "explorer">(() => {
-    try {
-      const stored = localStorage.getItem("kda_sidebar_view_mode");
-      if (stored === "explorer" || stored === "tree") return stored;
-    } catch {
-      /* ignore */
-    }
-    return "tree";
-  });
+  // Phase 108 (v0.6.57) → Phase 113 (v0.6.64) — K 정정 "트리 구조 버려".
+  // viewMode 는 "explorer" 로 고정 (트리 모드 제거). setViewMode 호출되어도 explorer 유지.
+  // 옛 localStorage 의 "tree" 값은 무시 — 자동으로 explorer 로 보임.
+  // (state 자체는 유지 — 다른 분기들이 viewMode 참조하므로 type/api 호환)
+  const [viewMode, setViewMode] = useState<"tree" | "explorer">("explorer");
+  // 옛 localStorage 잔재 정리 (1회) — 다음 부팅 시 깨끗.
   useEffect(() => {
     try {
-      localStorage.setItem("kda_sidebar_view_mode", viewMode);
+      const stored = localStorage.getItem("kda_sidebar_view_mode");
+      if (stored && stored !== "explorer") {
+        localStorage.setItem("kda_sidebar_view_mode", "explorer");
+      }
     } catch {
       /* ignore */
     }
-  }, [viewMode]);
+  }, []);
+  // setViewMode 미사용 경고 회피
+  void setViewMode;
 
   // Phase 108 — Explorer 모드에서 현재 표시 중인 폴더 ID. null = 루트.
   // viewMode 가 tree 면 무시됨. explorer 모드로 토글한 직후엔 자동으로 루트부터 시작.
@@ -1261,9 +1260,22 @@ function Sidebar({
 
       {/* 새 대화 + 새 폴더 + 라이브러리 버튼 */}
       <div className="sidebar-actions">
-        <button className="new-chat-btn" onClick={onNewConversation}>
+        <button
+          className="new-chat-btn"
+          onClick={() => {
+            // Phase 113 (v0.6.64) — Explorer 모드에서 폴더 안에 있으면 그 folderId 자동 전달.
+            // 결과: 새 대화가 그 폴더에 박혀 첫 send 시 폴더 지침 + 첨부 자동 적용.
+            const targetFolderId = viewMode === "explorer" ? currentFolderId : null;
+            onNewConversation(targetFolderId);
+          }}
+          title={
+            viewMode === "explorer" && currentFolderId
+              ? "현재 폴더 안에 새 대화 (폴더 지침 자동 적용)"
+              : "새 대화 (루트)"
+          }
+        >
           <span className="plus">+</span>
-          <span>새 대화</span>
+          <span>새 대화{viewMode === "explorer" && currentFolderId ? " (📁)" : ""}</span>
         </button>
         {onCreateFolder && (
           <button
@@ -1291,54 +1303,7 @@ function Sidebar({
         )}
       </div>
 
-      {/* Phase 108 (v0.6.57) — 뷰 모드 토글 (트리 / 탐색기) */}
-      <div
-        className="sidebar-view-toggle"
-        style={{
-          display: "flex",
-          gap: 2,
-          padding: "4px 12px 0",
-          fontSize: 11,
-        }}
-      >
-        <button
-          onClick={() => setViewMode("tree")}
-          title="트리 보기 (모든 폴더 펼침/접힘)"
-          style={{
-            flex: 1,
-            padding: "4px 8px",
-            background: viewMode === "tree" ? "var(--accent-dim, rgba(102,204,255,0.18))" : "transparent",
-            border: "1px solid var(--border-dim, #1d2540)",
-            borderRight: "none",
-            borderTopLeftRadius: 4,
-            borderBottomLeftRadius: 4,
-            color: viewMode === "tree" ? "var(--accent, #66ccff)" : "var(--text-dim, #8e9ab5)",
-            cursor: "pointer",
-            fontSize: 11,
-            fontWeight: viewMode === "tree" ? 600 : 400,
-          }}
-        >
-          🌳 트리
-        </button>
-        <button
-          onClick={() => setViewMode("explorer")}
-          title="탐색기 보기 (Windows 방식, 한 폴더씩)"
-          style={{
-            flex: 1,
-            padding: "4px 8px",
-            background: viewMode === "explorer" ? "var(--accent-dim, rgba(102,204,255,0.18))" : "transparent",
-            border: "1px solid var(--border-dim, #1d2540)",
-            borderTopRightRadius: 4,
-            borderBottomRightRadius: 4,
-            color: viewMode === "explorer" ? "var(--accent, #66ccff)" : "var(--text-dim, #8e9ab5)",
-            cursor: "pointer",
-            fontSize: 11,
-            fontWeight: viewMode === "explorer" ? 600 : 400,
-          }}
-        >
-          📂 탐색기
-        </button>
-      </div>
+      {/* Phase 113 (v0.6.64) — K 정정 "트리 구조 버려". 뷰 모드 토글 제거. Explorer 만 사용. */}
 
       {/* 검색 인풋 */}
       {onSearchConversations && (

@@ -2,6 +2,24 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 113 — 폴더 안 새 대화 + 트리 모드 제거 + 폴더 지침 root cause — 2026-06-01
+
+**문제:** K 보고 4개 — (1) 폴더 프로젝트 지침이 제대로 동작 안 함, (2) 폴더에서 새 대화 생성이 안 됨, (3) 트리 구조 버리고 탐색기만, (4) 응답속도 개선 아이디어.
+
+**진단:** #1 과 #2 는 동일 root cause — `handleNewConversation` 이 folderId 인자 안 받아서 신규 conv 가 항상 root 에 박힘. → conv.folderId = null → `handleSendMessage` 의 폴더 지침 inject 분기 안 탐 → 지침 적용 안 됨.
+
+**Fix (#1 + #2 동시):**
+- `App.tsx::handleNewConversation` 시그니처 확장 → `(folderId?: string | null)`. 폴더 지정되면 `createConversation` 직후 `moveConversationToFolder` 호출 + in-memory `newConv.folderId` 도 동기 갱신.
+- `Sidebar.tsx::SidebarProps::onNewConversation` 시그니처 동일 확장.
+- `Sidebar.tsx` 의 [+ 새 대화] 버튼 onClick: Explorer 모드에서 `currentFolderId` 있으면 그것 전달, 없으면 null (root). 폴더 안일 때 버튼 label "(📁)" 표시 + tooltip "현재 폴더 안에 새 대화 (폴더 지침 자동 적용)".
+- 진단 로그: 폴더 지정 시 `console.log` 로 "신규 conv → 폴더 박음" 명시.
+
+**Fix (#3):**
+- `viewMode` toggle UI (트리/탐색기 두 버튼) 제거.
+- `viewMode` state 는 type 유지 (다른 분기 참조) — 단 항상 `"explorer"` 로 고정 + 옛 localStorage 의 "tree" 값 1회 자동 정리.
+
+**Fix (#4):** 진단 + 아이디어만. 코드 변경 0 — K 가 옵션 선택 후 진행 (응답 본문에 아이디어 list 박힘).
+
 ### ✅ Phase 112 — 대화 라이브러리 (LibraryPanel — 옵션 C, 완전 redesign) — 2026-06-01
 
 **문제:** K 보고 — "대화목록 보는게 좀 불편하고 작아서 잘 안 보이는데 효과적이고 실용적으로 볼 수 있는 아이디어 없을까?". K 가 옵션 C (완전 redesign) 선택.

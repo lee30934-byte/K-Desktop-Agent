@@ -2181,14 +2181,24 @@ export default function App() {
     pushSystem("🛑 모두 중단 — 진행 중 작업 + 예약 메시지 + 자동 갱신 전부 정지.", "info");
   });
 
-  const handleNewConversation = useStableCallback(async () => {
+  const handleNewConversation = useStableCallback(async (folderId?: string | null) => {
     // Phase 111 (v0.6.60) — 작업 중에도 새 대화 생성 가능. K 명시 요청.
-    // 옛 차단 `if (isStreaming) return` 제거. 새 conv 는 streamingConvIds 에 없어
-    // isStreaming = false 로 자연스럽게 전환. 옛 turn 은 background 로 진행.
+    // 옛 차단 `if (isStreaming) return` 제거.
+    // Phase 113 (v0.6.64) — folderId 인자 추가. K 가 폴더 안에서 [+ 새 대화] 누르면
+    // 그 폴더에 자동 박힘 → 폴더 지침 + 첨부 자동 적용. K 의 #1 + #2 root cause fix.
 
     const id = crypto.randomUUID();
     try {
       const newConv = await createConversation(id, "New Conversation");
+      // Phase 113 — 폴더 지정되어 있으면 즉시 그 폴더로 이동 + in-memory 갱신.
+      if (folderId) {
+        try {
+          await moveConversationToFolder(id, folderId, 0);
+          newConv.folderId = folderId; // returned object 도 직접 갱신
+        } catch (mvErr) {
+          console.warn("[App] 신규 conv 폴더 이동 실패 (root 에 남음):", mvErr);
+        }
+      }
       setConversations((prev) => [newConv, ...prev]);
       setActiveConversationId(id);
       activeConversationIdRef.current = id;
@@ -2210,6 +2220,10 @@ export default function App() {
       refreshBaselineRef.current = 0;
       // 새 대화 만들면 이전 대화의 이어받기 배너는 숨김
       setPendingResume(null);
+      // Phase 113 — 진단 로그 (#1 helper): 폴더에 박혔는지 명시.
+      if (folderId) {
+        console.log(`[App] 새 대화 생성 + 폴더 이동 — convId=${id} folderId=${folderId}. 첫 send 시 폴더 지침 자동 inject 됨.`);
+      }
     } catch (err) {
       console.error("[App] 대화 생성 실패:", err);
       pushSystem("대화 생성에 실패했습니다.", "error");
