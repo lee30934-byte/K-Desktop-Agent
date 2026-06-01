@@ -2,6 +2,23 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 108 — Sidebar Explorer 모드 (Windows 탐색기 패러다임) — 2026-06-01
+
+**문제:** K 의 트리 모드 ("폴더 펼침/접힘, 전체 한 화면") 가 폴더 위계 시각화에 약함. K 의 명시: "폴더 안인지 밖인지 구분이 잘 안 간다 + 위로가기 기능"
+
+**핵심:**
+- `Sidebar.tsx` 에 `viewMode: "tree" | "explorer"` state + localStorage 영속 (`kda_sidebar_view_mode`). 기본값 = `"tree"` (K 의 명시 — 기존 동작 보존, Explorer 는 토글로 선택).
+- 상단 토글 버튼: `[🌳 트리] / [📂 탐색기]` (Sidebar actions 아래).
+- **Explorer 렌더:**
+  - **breadcrumb 경로** — `📁 루트 / 폴더 / ...` (각 부분 클릭하면 그 폴더로 이동, 마지막=현재 강조)
+  - **↑ 위로 가기 버튼** — currentFolderId 의 parentId 로 이동 (root 면 disabled)
+  - **본문** — 현재 폴더의 직계 하위 폴더 + 직계 대화만 list (들여쓰기 X). 폴더는 `📁 (이름) — 📁N 💬M` 카운트 표시.
+- **상호작용:** 폴더 **더블클릭 = 진입** (K 의 명시 — Windows 탐색기 traditional). 대화 단일 클릭 = 활성화 (기존). 우클릭 메뉴는 트리/탐색기 동일 (Phase 107 의 "📜 프로젝트 지침…" 포함).
+- **단축키:** Backspace = 위로 가기 (입력 필드 안에선 trigger 안 됨).
+- **dangling reference 방지:** currentFolderId 가 가리키는 폴더가 사라지면 (삭제 etc.) useEffect 가 자동 reset → 루트.
+- **검색 호환:** 검색 active 면 현재 폴더 무관 검색 hit 만 표시. 빈 결과면 "검색 결과 없음".
+- **DnD:** Explorer v1 엔 미지원. 폴더 간 대화 이동은 우클릭 메뉴 "📁 폴더로 이동…" path. 다음 phase 후보.
+
 ### ✅ Phase 107 — 폴더 프로젝트 지침 + 첨부파일 (ChatGPT/Claude Projects 패턴) — 2026-06-01
 
 **문제:** K 가 "공문 작성 폴더" 같은 프로젝트별로 지침과 참고 파일을 한 곳에 정리하고, 그 폴더의 새 대화는 자동으로 그 지침을 읽고 작성하도록.

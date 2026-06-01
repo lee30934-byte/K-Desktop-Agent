@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { memo, useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import {
   DndContext,
@@ -110,6 +110,31 @@ function Sidebar({
 
   // 펼침/접힘 — 폴더 ID 셋
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
+
+  // Phase 108 (v0.6.57) — Sidebar 뷰 모드.
+  //   "tree"     : 종전 패러다임 (펼침/접힘 트리 — 한 화면에 모든 폴더+대화 표시)
+  //   "explorer" : Windows 탐색기 패러다임 (한 화면에 한 폴더만 + breadcrumb + 위로 가기)
+  // K 가 둘 다 익숙해서 토글 가능 + localStorage 영속. 기본값 = tree (K 의 선택 — 기존 동작 보존).
+  const [viewMode, setViewMode] = useState<"tree" | "explorer">(() => {
+    try {
+      const stored = localStorage.getItem("kda_sidebar_view_mode");
+      if (stored === "explorer" || stored === "tree") return stored;
+    } catch {
+      /* ignore */
+    }
+    return "tree";
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("kda_sidebar_view_mode", viewMode);
+    } catch {
+      /* ignore */
+    }
+  }, [viewMode]);
+
+  // Phase 108 — Explorer 모드에서 현재 표시 중인 폴더 ID. null = 루트.
+  // viewMode 가 tree 면 무시됨. explorer 모드로 토글한 직후엔 자동으로 루트부터 시작.
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
 
   // 검색
   const [searchQuery, setSearchQuery] = useState("");
@@ -276,6 +301,49 @@ function Sidebar({
 
     return { childFolders, convsInFolder };
   }, [folders, conversations]);
+
+  // Phase 108 (v0.6.57) — Explorer breadcrumb path.
+  // currentFolderId 부터 parentId 따라 root 까지 거슬러 올라간 폴더 배열 (root → ... → 현재 순).
+  // currentFolderId === null 이면 빈 배열 ([] = 루트 표시).
+  // cycle 방지를 위해 seen Set + early break.
+  const breadcrumbPath = useMemo(() => {
+    if (!currentFolderId) return [] as Folder[];
+    const path: Folder[] = [];
+    let cur: string | null | undefined = currentFolderId;
+    const seen = new Set<string>();
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      const f = folders.find((x) => x.id === cur);
+      if (!f) break;
+      path.unshift(f);
+      cur = f.parentId;
+    }
+    return path;
+  }, [currentFolderId, folders]);
+
+  // Phase 108 — currentFolderId 가 가리키는 폴더가 사라지면 (삭제, 검색 etc.) 자동으로 루트로 reset.
+  // 영구 dangling reference 방지.
+  useEffect(() => {
+    if (currentFolderId && !folders.some((f) => f.id === currentFolderId)) {
+      setCurrentFolderId(null);
+    }
+  }, [folders, currentFolderId]);
+
+  // Phase 108 — Explorer 모드 위로 가기 (Backspace 단축키).
+  // 입력 필드 안에서는 trigger 안 됨 (검색 input, 제목 편집 input 등).
+  useEffect(() => {
+    if (viewMode !== "explorer") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Backspace") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (!currentFolderId) return;
+      const cur = folders.find((f) => f.id === currentFolderId);
+      setCurrentFolderId(cur?.parentId ?? null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [viewMode, currentFolderId, folders]);
 
   // 검색 필터: 폴더는 자손 중 hit 가 있으면 표시
   const visibleConvIds = useMemo(() => {
@@ -767,6 +835,272 @@ function Sidebar({
     );
   };
 
+  // ─── Phase 108 (v0.6.57) — Explorer 모드 렌더 ────────────────────
+  // Windows 탐색기 패러다임 — 한 화면에 한 폴더만 + breadcrumb + 위로 가기.
+  // 폴더 더블클릭 = 진입, 대화 클릭 = 활성화. 우클릭 메뉴는 기존과 동일.
+  // 검색 결과가 있으면 검색 hit 만 표시 (현재 폴더 무관 — 검색은 글로벌).
+  const renderExplorerItem = (item: Folder | Conversation, kind: "folder" | "conversation") => {
+    if (kind === "folder") {
+      const f = item as Folder;
+      const childCount = (tree.childFolders.get(f.id) ?? []).length;
+      const convCount = (tree.convsInFolder.get(f.id) ?? []).length;
+      return (
+        <div
+          key={`folder-${f.id}`}
+          className="explorer-item explorer-folder"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 10px",
+            borderRadius: 6,
+            cursor: "pointer",
+            userSelect: "none",
+            background: "transparent",
+            transition: "background 0.1s",
+          }}
+          onDoubleClick={() => {
+            setCurrentFolderId(f.id);
+            setContextMenu(null);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setContextMenu({ type: "folder", id: f.id, x: e.clientX, y: e.clientY });
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLElement).style.background = "var(--bg-2, rgba(255,255,255,0.05))";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLElement).style.background = "transparent";
+          }}
+          title={`더블클릭=진입 · 우클릭=메뉴 · 하위 ${childCount}폴더 / ${convCount}대화`}
+        >
+          <span style={{ fontSize: 16 }}>{f.icon ?? "📁"}</span>
+          <span style={{ flex: 1, fontSize: 13, color: f.color ?? "var(--text, #e8eaff)" }}>
+            {f.name}
+          </span>
+          {(childCount > 0 || convCount > 0) && (
+            <span style={{ fontSize: 10, opacity: 0.45 }}>
+              {childCount > 0 ? `📁${childCount} ` : ""}
+              {convCount > 0 ? `💬${convCount}` : ""}
+            </span>
+          )}
+        </div>
+      );
+    } else {
+      const c = item as Conversation;
+      const active = c.id === activeConversationId;
+      return (
+        <div
+          key={`conv-${c.id}`}
+          className={`explorer-item explorer-conv ${active ? "active" : ""}`}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 10px",
+            borderRadius: 6,
+            cursor: "pointer",
+            userSelect: "none",
+            background: active ? "var(--accent-dim, rgba(102,204,255,0.18))" : "transparent",
+            transition: "background 0.1s",
+            borderLeft: active ? "2px solid var(--accent, #66ccff)" : "2px solid transparent",
+          }}
+          onClick={() => {
+            onSelectConversation(c.id);
+            setContextMenu(null);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setContextMenu({ type: "conversation", id: c.id, x: e.clientX, y: e.clientY });
+          }}
+          onMouseEnter={(e) => {
+            if (!active) {
+              (e.currentTarget as HTMLElement).style.background = "var(--bg-2, rgba(255,255,255,0.05))";
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!active) {
+              (e.currentTarget as HTMLElement).style.background = "transparent";
+            }
+          }}
+          title="클릭=열기 · 우클릭=메뉴"
+        >
+          <span style={{ fontSize: 14 }}>
+            {c.isFavorite ? "★" : c.icon ?? "💬"}
+          </span>
+          <span
+            style={{
+              flex: 1,
+              fontSize: 13,
+              color: c.color ?? "var(--text, #e8eaff)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {c.title}
+          </span>
+        </div>
+      );
+    }
+  };
+
+  const renderExplorer = () => {
+    const subFolders = (tree.childFolders.get(currentFolderId) ?? []).filter(
+      (f) => !visibleConvIds || folderHasHit(f.id),
+    );
+    const convs = (tree.convsInFolder.get(currentFolderId) ?? []).filter(
+      (c) => !visibleConvIds || visibleConvIds.has(c.id),
+    );
+    const currentFolder = currentFolderId
+      ? folders.find((f) => f.id === currentFolderId) ?? null
+      : null;
+    const parentId = currentFolder?.parentId ?? null;
+    const canGoUp = currentFolderId !== null;
+
+    return (
+      <div
+        className="explorer-section"
+        style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}
+      >
+        {/* breadcrumb + 위로 가기 */}
+        <div
+          className="explorer-breadcrumb"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 8px",
+            borderBottom: "1px solid var(--border-dim, #1d2540)",
+            background: "var(--bg-1, #0a0e18)",
+            flexShrink: 0,
+          }}
+        >
+          <button
+            onClick={() => {
+              if (canGoUp) setCurrentFolderId(parentId);
+            }}
+            disabled={!canGoUp}
+            title="위로 가기 (Backspace)"
+            style={{
+              background: "transparent",
+              border: "1px solid var(--border-dim, #1d2540)",
+              borderRadius: 4,
+              color: canGoUp ? "var(--accent, #66ccff)" : "var(--text-dim, #555)",
+              cursor: canGoUp ? "pointer" : "default",
+              padding: "2px 8px",
+              fontSize: 12,
+              fontWeight: 600,
+              flexShrink: 0,
+            }}
+          >
+            ↑
+          </button>
+          <div
+            className="breadcrumb-path"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 2,
+              fontSize: 11,
+              overflowX: "auto",
+              flex: 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            <button
+              onClick={() => setCurrentFolderId(null)}
+              style={{
+                background: "transparent",
+                border: "none",
+                color:
+                  currentFolderId === null
+                    ? "var(--accent, #66ccff)"
+                    : "var(--text-dim, #8e9ab5)",
+                cursor: "pointer",
+                padding: "2px 4px",
+                fontSize: 11,
+                fontWeight: currentFolderId === null ? 600 : 400,
+              }}
+              title="루트"
+            >
+              📁 루트
+            </button>
+            {breadcrumbPath.map((f, i) => {
+              const isLast = i === breadcrumbPath.length - 1;
+              return (
+                <Fragment key={f.id}>
+                  <span style={{ color: "var(--text-dim, #555)", fontSize: 10 }}>/</span>
+                  <button
+                    onClick={() => setCurrentFolderId(f.id)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: isLast ? "var(--accent, #66ccff)" : "var(--text-dim, #8e9ab5)",
+                      cursor: "pointer",
+                      padding: "2px 4px",
+                      fontSize: 11,
+                      fontWeight: isLast ? 600 : 400,
+                      maxWidth: 120,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={f.name}
+                  >
+                    {f.icon ?? "📁"} {f.name}
+                  </button>
+                </Fragment>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 본문 — 폴더 + 대화 list */}
+        <div
+          className="explorer-body"
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "6px 4px",
+          }}
+          onContextMenu={(e) => {
+            // 빈 공간 우클릭 — 메뉴 닫기
+            if (e.target === e.currentTarget) {
+              setContextMenu(null);
+            }
+          }}
+        >
+          {subFolders.length === 0 && convs.length === 0 ? (
+            <div
+              style={{
+                padding: "20px 12px",
+                textAlign: "center",
+                opacity: 0.4,
+                fontSize: 12,
+              }}
+            >
+              {visibleConvIds ? "검색 결과 없음" : "비어있음"}
+              {currentFolderId === null && !visibleConvIds && (
+                <div style={{ marginTop: 8, fontSize: 11 }}>
+                  상단의 [📁+] 또는 [+ 새 대화] 로 시작하세요
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              {subFolders.map((f) => renderExplorerItem(f, "folder"))}
+              {convs.map((c) => renderExplorerItem(c, "conversation"))}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // ─── 색상/아이콘 picker 렌더 ───────────────────────────────
   const renderPicker = () => {
     if (!pickerState) return null;
@@ -894,11 +1228,64 @@ function Sidebar({
           <button
             className="new-folder-btn"
             onClick={() => handleNewSubfolder(null)}
-            title="새 폴더 (root)"
+            title={
+              viewMode === "explorer" && currentFolderId
+                ? "현재 폴더 안에 하위폴더 생성"
+                : "새 폴더 (root)"
+            }
           >
             <span className="plus">📁+</span>
           </button>
         )}
+      </div>
+
+      {/* Phase 108 (v0.6.57) — 뷰 모드 토글 (트리 / 탐색기) */}
+      <div
+        className="sidebar-view-toggle"
+        style={{
+          display: "flex",
+          gap: 2,
+          padding: "4px 12px 0",
+          fontSize: 11,
+        }}
+      >
+        <button
+          onClick={() => setViewMode("tree")}
+          title="트리 보기 (모든 폴더 펼침/접힘)"
+          style={{
+            flex: 1,
+            padding: "4px 8px",
+            background: viewMode === "tree" ? "var(--accent-dim, rgba(102,204,255,0.18))" : "transparent",
+            border: "1px solid var(--border-dim, #1d2540)",
+            borderRight: "none",
+            borderTopLeftRadius: 4,
+            borderBottomLeftRadius: 4,
+            color: viewMode === "tree" ? "var(--accent, #66ccff)" : "var(--text-dim, #8e9ab5)",
+            cursor: "pointer",
+            fontSize: 11,
+            fontWeight: viewMode === "tree" ? 600 : 400,
+          }}
+        >
+          🌳 트리
+        </button>
+        <button
+          onClick={() => setViewMode("explorer")}
+          title="탐색기 보기 (Windows 방식, 한 폴더씩)"
+          style={{
+            flex: 1,
+            padding: "4px 8px",
+            background: viewMode === "explorer" ? "var(--accent-dim, rgba(102,204,255,0.18))" : "transparent",
+            border: "1px solid var(--border-dim, #1d2540)",
+            borderTopRightRadius: 4,
+            borderBottomRightRadius: 4,
+            color: viewMode === "explorer" ? "var(--accent, #66ccff)" : "var(--text-dim, #8e9ab5)",
+            cursor: "pointer",
+            fontSize: 11,
+            fontWeight: viewMode === "explorer" ? 600 : 400,
+          }}
+        >
+          📂 탐색기
+        </button>
       </div>
 
       {/* 검색 인풋 */}
@@ -925,9 +1312,14 @@ function Sidebar({
 
       {/* Phase 36 (v0.5.24): 즐겨찾기는 별도 섹션 X — ★ 아이콘 + 자동 정렬로 통합 */}
 
-      {/* 대화 목록 (트리) */}
+      {/* 대화 목록 (Phase 108: 트리 / 탐색기 viewMode 분기) */}
       <div className="sidebar-section sidebar-tree-section">
-        <div className="eyebrow section-label">대화 목록</div>
+        <div className="eyebrow section-label">
+          {viewMode === "explorer" ? "탐색기" : "대화 목록"}
+        </div>
+        {viewMode === "explorer" ? (
+          renderExplorer()
+        ) : (
         <DroppableRoot className="conv-list root-drop">
           {conversations.length === 0 && folders.length === 0 ? (
             <div className="conv-empty">대화 없음</div>
@@ -941,6 +1333,7 @@ function Sidebar({
             </>
           )}
         </DroppableRoot>
+        )}
       </div>
 
       {/* 백업/복구 */}
