@@ -26,6 +26,8 @@ import SidebarResizer from "./components/SidebarResizer";
 import SidePanel, { type SidePanelItem } from "./components/SidePanel";
 // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
 import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
+// Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid)
+import LibraryPanel from "./components/LibraryPanel";
 import {
   initDB,
   getAllConversations,
@@ -330,6 +332,32 @@ export default function App() {
     awaitingFreeForm?: boolean;
   } | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  // Phase 112 (v0.6.63) — 대화 라이브러리 (Ctrl+L 또는 Sidebar 버튼으로 진입).
+  const [libraryPanelOpen, setLibraryPanelOpen] = useState(false);
+  const handleOpenLibrary = useStableCallback(() => setLibraryPanelOpen(true));
+  const handleCloseLibrary = useStableCallback(() => setLibraryPanelOpen(false));
+
+  // Phase 112 — window 내부 Ctrl+L 단축키 = 라이브러리 토글.
+  // 글로벌 (tauri-plugin-global-shortcut) 안 박음 — Excel/Chrome 충돌 위험.
+  // webview2 안의 webdefault 동작 (주소창 focus) 은 preventDefault 로 차단.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") {
+        // 입력 필드 안에선 trigger 안 함 (다른 의도 가능성)
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
+          // 단, library 가 이미 열려있고 그 안 검색 input 이면 닫기 (UX)
+          if (libraryPanelOpen && t.tagName === "INPUT") return;
+          return;
+        }
+        e.preventDefault();
+        setLibraryPanelOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [libraryPanelOpen]);
 
   // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그.
   // null = 닫힘. FolderRecord 가 박혀있으면 다이얼로그 열림 (그 폴더 편집 중).
@@ -3277,6 +3305,7 @@ export default function App() {
         mcpConnected={mcpState.connected}
         onOpenSettings={openSettings}
         streamingConvIds={streamingConvIds}
+        onOpenLibrary={handleOpenLibrary}
       />
 
       {/* Phase 79 (v0.6.22) — Task State Manager: 끊긴 long_task 복구 배너.
@@ -3425,6 +3454,17 @@ export default function App() {
           onSave={handleSaveFolderInstructions}
         />
       )}
+
+      {/* Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid) */}
+      <LibraryPanel
+        open={libraryPanelOpen}
+        conversations={conversations}
+        folders={folders}
+        activeConversationId={activeConversationId}
+        streamingConvIds={streamingConvIds}
+        onSelect={handleSelectConversation}
+        onClose={handleCloseLibrary}
+      />
 
       {/* 세션 자동 갱신 토스트 */}
       {sessionRefreshToast && (

@@ -2,6 +2,44 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 112 — 대화 라이브러리 (LibraryPanel — 옵션 C, 완전 redesign) — 2026-06-01
+
+**문제:** K 보고 — "대화목록 보는게 좀 불편하고 작아서 잘 안 보이는데 효과적이고 실용적으로 볼 수 있는 아이디어 없을까?". K 가 옵션 C (완전 redesign) 선택.
+
+**핵심:**
+- 신규 컴포넌트 `src/components/LibraryPanel.tsx` (+~370줄):
+  - **풀스크린 overlay** (z-index 9998 — FolderInstructionsDialog 9999 보다 살짝 아래) + backdrop-blur
+  - **큰 패널** (min(1200px, 94vw) × min(800px, 90vh)) 화면 중앙
+  - **헤더**: 📚 + 제목 + 큰 검색 input (autofocus) + ✕ 닫기
+  - **필터 칩 행**: 전체 / ★ 즐겨찾기 / ● 작업중 + 폴더별 칩 (최대 12개, count 표시)
+  - **카드 grid**: `auto-fill, minmax(320px, 1fr)` 반응형 (창 폭 따라 1~4열 자동)
+  - **각 카드**:
+    - 좌측 4px border = 폴더 색 (있으면)
+    - 우상단 = streaming ● dot (pulse) / ★ 즐겨찾기
+    - 폴더 경로 (📁 부모 / 자식, root 면 "📂 루트")
+    - 큰 제목 (15px, 2줄 WebkitLineClamp)
+    - 메타 (msg count + lastActive relative)
+  - **상호작용**:
+    - 카드 클릭 → onSelect(convId) + 자동 close
+    - ESC = close
+    - 빈 공간 (overlay) 클릭 = close
+    - hover transform translateY(-2px)
+  - **정렬**: 활성 conv 최상위 → 즐겨찾기 → lastActive desc
+
+- App.tsx 변경:
+  - libraryPanelOpen state + handleOpenLibrary / handleCloseLibrary
+  - 단축키 **Ctrl+L** (window 내부, 글로벌 X — Excel/Chrome 충돌 회피)
+  - LibraryPanel render at root (다른 모달들 옆)
+
+- Sidebar.tsx 변경:
+  - `onOpenLibrary` prop 신설
+  - 새 대화 버튼 옆 **[📚]** 라이브러리 진입 버튼 추가
+
+**Trade-off (v1 의도적):**
+- 마지막 메시지 미리보기 없음 (제목 + 메타만). 다음 phase (v0.6.64) 에서 DB 의 messages JOIN 으로 1줄 미리보기 추가 가능 (옛 옵션 B 박을 만한 polish).
+- 카드 우클릭 메뉴 없음 (Sidebar 의 우클릭 그대로 사용). 다음 phase 후보.
+- 모든 layout = inline style (pitfall_css_class_undefined_invisible 회피 — Phase 111.1 교훈 적용).
+
 ### ✅ Phase 111.2 — Claude 기본 모델 = Opus 4.8 정정 + "Opus 5.7" 가짜 label 제거 — 2026-06-01
 
 **문제:** K 정정 — "OPUS 5.7 같은건 없어". KDA 의 Claude (Max OAuth) provider 의 default 옵션 label 이 옛 "Max 기본 모델 (Opus 5.7 / 1M ctx)" 로 박혀있었음 (실재하지 않는 모델 표기). K 가 "기본 모델을 Opus 4.8 로 맞춰줘" 요청.

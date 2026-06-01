@@ -77,6 +77,8 @@ interface SidebarProps {
   // Phase 111 (v0.6.60) — 현재 streaming 중인 conv ID 집합. 사이드바 conv 옆 ● dot 배지 표시.
   // K 가 다른 conv 로 이동했어도 옛 turn 이 진행 중이면 그 conv 옆에 표시.
   streamingConvIds?: Set<string>;
+  // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel) 진입 callback.
+  onOpenLibrary?: () => void;
 }
 
 function Sidebar({
@@ -103,6 +105,7 @@ function Sidebar({
   mcpConnected = false,
   onOpenSettings,
   streamingConvIds,
+  onOpenLibrary,
 }: SidebarProps) {
   // 제목 inline edit (대화/폴더 공용)
   const [editingState, setEditingState] = useState<
@@ -1256,7 +1259,7 @@ function Sidebar({
         </div>
       </div>
 
-      {/* 새 대화 + 새 폴더 버튼 */}
+      {/* 새 대화 + 새 폴더 + 라이브러리 버튼 */}
       <div className="sidebar-actions">
         <button className="new-chat-btn" onClick={onNewConversation}>
           <span className="plus">+</span>
@@ -1273,6 +1276,17 @@ function Sidebar({
             }
           >
             <span className="plus">📁+</span>
+          </button>
+        )}
+        {/* Phase 112 (v0.6.63) — 대화 라이브러리 진입 (Ctrl+L 단축키 동일) */}
+        {onOpenLibrary && (
+          <button
+            className="new-folder-btn"
+            onClick={onOpenLibrary}
+            title="대화 라이브러리 (Ctrl+L) — 카드 grid 로 모든 대화 큰 화면 탐색"
+            style={{ fontSize: 14 }}
+          >
+            <span>📚</span>
           </button>
         )}
       </div>
