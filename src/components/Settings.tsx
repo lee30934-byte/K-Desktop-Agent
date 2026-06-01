@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -833,6 +833,90 @@ const EXTERNAL_MCP_CATALOG: ExternalMCPCatalogEntry[] = [
     docsUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
   },
 ];
+
+// Phase 113.3 (v0.6.67) — 성능 모드 토글 (응답속도 ↔ 답변 질 trade-off).
+// OFF (default, 균형): cap 8000, slice 16, threshold 0.7 — 답변 질 거의 보존
+// ON (빠른 모드):       cap 4000, slice 12, threshold 0.6 — 응답속도 우선
+// localStorage 의 kda_fast_mode 변경 + kda-fast-mode-changed CustomEvent dispatch
+// → App.tsx 가 listen 해서 즉시 적용. KDA 재시작 불필요.
+function PerformanceModeToggle() {
+  const [fastMode, setFastMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("kda_fast_mode") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const handleToggle = useCallback((on: boolean) => {
+    setFastMode(on);
+    try {
+      localStorage.setItem("kda_fast_mode", on ? "true" : "false");
+      window.dispatchEvent(new CustomEvent("kda-fast-mode-changed"));
+    } catch (err) {
+      console.warn("[PerformanceModeToggle] localStorage 저장 실패:", err);
+    }
+  }, []);
+
+  return (
+    <div className="settings-row settings-row-vertical">
+      <div className="settings-row-info">
+        <div className="settings-row-title">응답속도 ↔ 답변 질 trade-off</div>
+        <div className="settings-row-desc">
+          빠른 모드 = 옛 대화 컨텍스트를 더 작게 압축해 첫 토큰 latency 단축.
+          긴 코드/문서 분석에선 OFF 권장 (답변 질 보존).
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button
+          type="button"
+          onClick={() => handleToggle(false)}
+          style={{
+            flex: 1,
+            padding: "10px 14px",
+            background: !fastMode
+              ? "var(--accent-dim, rgba(79, 232, 225, 0.18))"
+              : "var(--bg-1, #0a0e18)",
+            border: `1px solid ${!fastMode ? "var(--accent, #4fe8e1)" : "var(--border-dim, #1d2540)"}`,
+            borderRadius: 6,
+            color: !fastMode ? "var(--accent, #4fe8e1)" : "var(--text-dim, #8e9ab5)",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: !fastMode ? 600 : 400,
+            textAlign: "left",
+          }}
+        >
+          <div>⚖️ 균형 모드 (기본)</div>
+          <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4, fontWeight: 400 }}>
+            cap 8000자 · 옛 16 turn · 70% 자동 갱신 — 답변 질 거의 보존
+          </div>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleToggle(true)}
+          style={{
+            flex: 1,
+            padding: "10px 14px",
+            background: fastMode
+              ? "var(--accent-dim, rgba(79, 232, 225, 0.18))"
+              : "var(--bg-1, #0a0e18)",
+            border: `1px solid ${fastMode ? "var(--accent, #4fe8e1)" : "var(--border-dim, #1d2540)"}`,
+            borderRadius: 6,
+            color: fastMode ? "var(--accent, #4fe8e1)" : "var(--text-dim, #8e9ab5)",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: fastMode ? 600 : 400,
+            textAlign: "left",
+          }}
+        >
+          <div>⚡ 빠른 모드</div>
+          <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4, fontWeight: 400 }}>
+            cap 4000자 · 옛 12 turn · 60% 자동 갱신 — 응답속도 우선
+          </div>
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Settings({ open, onClose, mcpConnected }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
@@ -2800,6 +2884,16 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 ))}
               </div>
             </div>
+          </section>
+
+          {/* ─── Phase 113.3 (v0.6.67) — 성능 모드 토글 ────────────────
+              K 의 응답속도 ↔ 답변 질 trade-off 직접 조절.
+              OFF (default, 균형): cap 8000, slice 16, threshold 0.7 — 답변 질 거의 보존
+              ON (빠른 모드):        cap 4000, slice 12, threshold 0.6 — 응답속도 우선
+              localStorage key kda_fast_mode. App.tsx 가 listen 해서 즉시 적용. */}
+          <section className="settings-section" data-tab="agent">
+            <div className="eyebrow">⚡ 성능 모드</div>
+            <PerformanceModeToggle />
           </section>
 
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}

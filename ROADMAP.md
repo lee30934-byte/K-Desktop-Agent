@@ -2,6 +2,22 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 113.3 — 성능 모드 토글 (균형/빠른) + default 보수화 (B + C) — 2026-06-01
+
+**문제:** K 가 Phase 113.2 의 trim 이 답변 질에 영향 줄 수 있는지 질문. 솔직 분석 후 K 가 "B 모드로 해서 C 기능을 넣자" 선택 — default 를 보수적 (균형) 으로 + Settings 토글로 빠른 모드도 가능.
+
+**박은 것:**
+- `App.tsx` 의 CONTEXT_THRESHOLD / HISTORY_SLICE / MESSAGE_CAP 를 fastMode boolean state 기준 동적:
+  - 균형 (default): 0.7 / 16 / 8000
+  - 빠른 (toggle ON): 0.6 / 12 / 4000
+- `fastMode` state 가 localStorage `kda_fast_mode` 와 sync. `storage` event + `kda-fast-mode-changed` CustomEvent listen.
+- `Settings.tsx` 의 agent 탭에 신규 섹션 **⚡ 성능 모드**:
+  - 두 카드 (균형/빠른) 토글 — 활성 시 강조 + 각 모드 spec 표시 (cap N자 · 옛 M turn · X% 자동 갱신)
+  - 신규 sub-컴포넌트 `PerformanceModeToggle` — localStorage 갱신 + CustomEvent dispatch
+- `trimContent` 함수의 head/tail 길이도 cap/2 기반으로 자동 — cap 8000 면 head 3900 + tail 3900.
+
+**결과:** K 의 일상 사용 = 균형 모드 (답변 질 거의 보존) + 코드 작업 시 OFF 유지 / 짧은 chat 만 할 때 ON 으로 빠른 응답. 한 번 박으면 K 가 평생 자율 선택.
+
 ### ✅ Phase 113.2 — 응답속도 개선 옵션 E — history 자동 압축 강화 — 2026-06-01
 
 **문제:** K 보고 #4 "응답속도 개선" 의 옵션 E 선택. 매 turn input 토큰이 크면 첫 토큰 latency ↑ → K 체감 느림.

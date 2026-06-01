@@ -442,11 +442,34 @@ export default function App() {
 
   // ─── Auto Session Continuity ────────────────────────────
   // 분모는 모델별 동적 (currentModelMaxTokens — Claude default = 1M, 그 외 = 200K).
-  // Phase 113.2 (v0.6.66) — K 요청 옵션 E. 임계치 0.9 → 0.7 로 낮춤.
-  //   왜: 90% 도달 시 자동 갱신이지만 그 시점엔 이미 input 토큰 거대 → 응답 latency 크게 느림.
-  //   70% 도달 시 미리 갱신하면 K 가 답답함 느끼기 전 압축 완료.
-  //   trade-off: 갱신 알림이 약간 더 일찍 + 자주 나타나지만 일상 응답 속도 우선.
-  const CONTEXT_THRESHOLD = 0.7;
+  // Phase 113.3 (v0.6.67) — K 요청 B + C 동시. default = 균형 모드 (답변 질 거의 보존)
+  // + Settings 토글 ON 시 = 빠른 모드 (현재 v0.6.66 값).
+  //   균형 모드 (default): threshold 0.7, slice 16, cap 8000
+  //   빠른 모드 (kda_fast_mode="true"): threshold 0.6, slice 12, cap 4000
+  // localStorage 변경 시 자동 반응 — storage event + kda-fast-mode-changed CustomEvent.
+  const [fastMode, setFastMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("kda_fast_mode") === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    function refresh() {
+      try {
+        setFastMode(localStorage.getItem("kda_fast_mode") === "true");
+      } catch {}
+    }
+    window.addEventListener("storage", refresh);
+    window.addEventListener("kda-fast-mode-changed", refresh);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("kda-fast-mode-changed", refresh);
+    };
+  }, []);
+  const CONTEXT_THRESHOLD = fastMode ? 0.6 : 0.7;
+  const HISTORY_SLICE = fastMode ? 12 : 16;
+  const MESSAGE_CAP = fastMode ? 4000 : 8000;
   const [sessionSummary, setSessionSummary] = useState<string | null>(null);
   const [sessionRefreshToast, setSessionRefreshToast] = useState(false);
   // dev rebuild 등으로 앱이 순간 종료됐다 복구된 경우를 감지해 표시
@@ -1955,23 +1978,22 @@ export default function App() {
           "[Session] 갱신 직후 — handoff(summary)만 박음, 기존 20 messages 버림"
         );
       } else {
-        // Phase 113.2 (v0.6.66) — K 요청 옵션 E. 매 turn input 토큰 줄임 → response 빠름.
-        //   1. slice 20 → 12 (40% 감소). 옛 컨텍스트 일부 잃지만 가까운 12 turn 유지.
-        //   2. 각 message 본문 cap (4000자 초과 시 head 1800 + tail 1800 + "[중간 생략 N자]").
-        //      sidecar 가 모델에 보내는 history string 크기 직접 감소.
-        //   3. Claude prefix cache 와 호환 — 매 turn 동일 prefix (시스템 프롬프트 + 옛 history)
-        //      가 보장되므로 cache hit 율 유지.
-        const MESSAGE_CAP = 4000;
+        // Phase 113.3 (v0.6.67) — fastMode 토글에 따라 trim 강도 동적.
+        //   default (balanced): cap 8000, slice 16 — 답변 질 거의 보존
+        //   빠른 모드 (kda_fast_mode="true"): cap 4000, slice 12 — 응답속도 우선
+        // trim 함수: cap 초과 시 head + tail 각 cap/2 + 중간 생략 마커.
+        // 결정론적 (같은 message → 같은 결과) 이라 Claude prefix cache hit 유지.
+        const halfCap = Math.floor(MESSAGE_CAP / 2);
         function trimContent(s: string): string {
           if (!s || s.length <= MESSAGE_CAP) return s;
-          const head = s.slice(0, 1800);
-          const tail = s.slice(-1800);
-          const omitted = s.length - 3600;
+          const head = s.slice(0, halfCap - 100);
+          const tail = s.slice(-(halfCap - 100));
+          const omitted = s.length - 2 * (halfCap - 100);
           return `${head}\n\n[... 중간 ${omitted.toLocaleString()}자 생략 (응답속도 위해 자동 압축) ...]\n\n${tail}`;
         }
         history = messages
           .filter((m) => m.role === "user" || m.role === "assistant")
-          .slice(-12)
+          .slice(-HISTORY_SLICE)
           .map((m) => ({ role: m.role, content: trimContent(m.content) }));
       }
 
