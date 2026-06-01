@@ -834,6 +834,147 @@ const EXTERNAL_MCP_CATALOG: ExternalMCPCatalogEntry[] = [
   },
 ];
 
+// Phase 113.4 (v0.6.68) — 마지막 trim 통계 카드 (가시성).
+// K 가 "답변 질이 떨어지는 것 같다" 의심 시 즉시 "지금 trim 됐나" 확인 가능.
+// App.tsx 가 매 turn localStorage "kda_last_trim_stat" 박고 CustomEvent 발사.
+// 이 카드는 listen 해서 실시간 반영.
+//
+// + Phase 52 의 modelMax/modelMaxSource 도 같이 보여줌 — Codex 의 token_count event 가
+//   hardcode 보다 우선해서 분모를 override 한 결과가 여기서 처음 K 에게 노출됨
+//   (codex_model_context_window_dynamic pitfall 가시화).
+type LastTrimStat = {
+  ts: number;
+  mode: string;
+  cap: number;
+  slice: number;
+  threshold: number;
+  beforeTotalChars: number;
+  afterTotalChars: number;
+  trimmedMessages: number;
+  totalMessages: number;
+  modelMax: number;
+  modelMaxSource: string;
+};
+function readLastTrimStat(): LastTrimStat | null {
+  try {
+    const raw = localStorage.getItem("kda_last_trim_stat");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && "ts" in parsed) {
+      return parsed as LastTrimStat;
+    }
+  } catch {}
+  return null;
+}
+function fmtKBChars(n: number): string {
+  if (n < 1000) return `${n}자`;
+  return `${(n / 1000).toFixed(1)}K자`;
+}
+function fmtRelTime(ts: number): string {
+  const diffMs = Date.now() - ts;
+  if (diffMs < 60_000) return `${Math.max(1, Math.round(diffMs / 1000))}초 전`;
+  if (diffMs < 3_600_000) return `${Math.round(diffMs / 60_000)}분 전`;
+  if (diffMs < 86_400_000) return `${Math.round(diffMs / 3_600_000)}시간 전`;
+  return `${Math.round(diffMs / 86_400_000)}일 전`;
+}
+function TrimStatCard() {
+  const [stat, setStat] = useState<LastTrimStat | null>(() => readLastTrimStat());
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    function refresh() {
+      setStat(readLastTrimStat());
+    }
+    window.addEventListener("kda-trim-stat-changed", refresh);
+    window.addEventListener("storage", refresh);
+    // 상대 시간 자동 갱신 (1분 마다)
+    const tickId = window.setInterval(() => forceTick((n) => n + 1), 60_000);
+    return () => {
+      window.removeEventListener("kda-trim-stat-changed", refresh);
+      window.removeEventListener("storage", refresh);
+      window.clearInterval(tickId);
+    };
+  }, []);
+
+  if (!stat) {
+    return (
+      <div
+        style={{
+          marginTop: 10,
+          padding: "10px 12px",
+          background: "var(--bg-1, #0a0e18)",
+          border: "1px solid var(--border-dim, #1d2540)",
+          borderRadius: 6,
+          fontSize: 12,
+          color: "var(--text-dim, #8e9ab5)",
+        }}
+      >
+        📊 트림 통계가 아직 없습니다. 첫 메시지 후 표시됩니다.
+      </div>
+    );
+  }
+
+  const saved = stat.beforeTotalChars - stat.afterTotalChars;
+  const savedPct =
+    stat.beforeTotalChars > 0
+      ? Math.round((saved / stat.beforeTotalChars) * 100)
+      : 0;
+  const wasTrimmed = stat.trimmedMessages > 0;
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        padding: "10px 12px",
+        background: wasTrimmed
+          ? "rgba(249, 115, 22, 0.06)"
+          : "var(--bg-1, #0a0e18)",
+        border: `1px solid ${
+          wasTrimmed ? "rgba(249, 115, 22, 0.3)" : "var(--border-dim, #1d2540)"
+        }`,
+        borderRadius: 6,
+        fontSize: 12,
+        lineHeight: 1.7,
+        color: "var(--text-dim, #c0c8de)",
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text, #e4e9f5)" }}>
+        📊 마지막 트림 통계{" "}
+        <span style={{ opacity: 0.6, fontWeight: 400, fontSize: 11 }}>
+          ({fmtRelTime(stat.ts)})
+        </span>
+      </div>
+      <div>
+        모드:{" "}
+        <strong>{stat.mode === "fast" ? "⚡ 빠른" : "⚖️ 균형"}</strong>
+        {"  ·  "}cap {stat.cap.toLocaleString()}자{"  ·  "}slice {stat.slice}턴
+        {"  ·  "}threshold {Math.round(stat.threshold * 100)}%
+      </div>
+      <div>
+        메시지: {stat.totalMessages}개 중{" "}
+        <strong style={{ color: wasTrimmed ? "#f97316" : "var(--text, #e4e9f5)" }}>
+          {stat.trimmedMessages}개 trim
+        </strong>
+      </div>
+      <div>
+        컨텍스트: {fmtKBChars(stat.beforeTotalChars)} →{" "}
+        {fmtKBChars(stat.afterTotalChars)}{" "}
+        {saved > 0 && (
+          <span style={{ color: "#f97316" }}>
+            (−{fmtKBChars(saved)} / {savedPct}% 절약)
+          </span>
+        )}
+      </div>
+      <div>
+        모델 한도: <strong>{stat.modelMax.toLocaleString()}</strong>{" "}
+        <span style={{ opacity: 0.7 }}>({stat.modelMaxSource})</span>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 11, opacity: 0.55 }}>
+        상세 로그: %LOCALAPPDATA%\com.k.desktop-agent\trim.log (JSONL, 1MB rolling)
+      </div>
+    </div>
+  );
+}
+
 // Phase 113.3 (v0.6.67) — 성능 모드 토글 (응답속도 ↔ 답변 질 trade-off).
 // OFF (default, 균형): cap 8000, slice 16, threshold 0.7 — 답변 질 거의 보존
 // ON (빠른 모드):       cap 4000, slice 12, threshold 0.6 — 응답속도 우선
@@ -2894,6 +3035,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           <section className="settings-section" data-tab="agent">
             <div className="eyebrow">⚡ 성능 모드</div>
             <PerformanceModeToggle />
+            {/* Phase 113.4 (v0.6.68) — 마지막 trim 통계 + 모델 한도 가시화.
+                K 가 답변 질 의심 시 "지금 trim 됐나" 즉시 확인 가능.
+                + Phase 52 의 model_context_window override 결과도 노출. */}
+            <TrimStatCard />
           </section>
 
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}

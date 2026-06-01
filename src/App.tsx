@@ -249,6 +249,70 @@ function readLocalBool(key: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+// Phase 113.4 (v0.6.68) — trim 통계 JSONL 로그.
+// 위치: %LOCALAPPDATA%\com.k.desktop-agent\trim.log (Windows, Tauri appLocalDataDir)
+// 1MB rolling — 초과 시 옛 절반 버림 (사후 추적 + 디스크 무한 누적 방지)
+// best-effort — 실패해도 응답 흐름에 영향 주지 않게 silent.
+// 이렇게 디스크에 박아두면 K 가 답변 질 회귀 의심 시 어느 turn 에서 얼마나 trim 됐는지
+// 사후 분석 가능 (root cause 선호 부합).
+type TrimStat = {
+  ts: number;
+  mode: string;
+  cap: number;
+  slice: number;
+  threshold: number;
+  beforeTotalChars: number;
+  afterTotalChars: number;
+  trimmedMessages: number;
+  totalMessages: number;
+  modelMax: number;
+  modelMaxSource: string;
+};
+async function appendTrimLog(stat: TrimStat): Promise<void> {
+  try {
+    const [{ appLocalDataDir }, fs] = await Promise.all([
+      import("@tauri-apps/api/path"),
+      import("@tauri-apps/plugin-fs"),
+    ]);
+    const dir = await appLocalDataDir();
+    const logPath = `${dir.replace(/[\\/]+$/, "")}/trim.log`;
+    let existing = "";
+    try {
+      existing = await fs.readTextFile(logPath);
+    } catch {
+      // 파일 없음 — 처음 호출. 정상.
+    }
+    const MAX_LOG_BYTES = 1_000_000; // 1MB rolling
+    if (existing.length > MAX_LOG_BYTES) {
+      const lines = existing.split("\n");
+      existing = lines.slice(Math.floor(lines.length / 2)).join("\n");
+    }
+    const saved = stat.beforeTotalChars - stat.afterTotalChars;
+    const line =
+      JSON.stringify({
+        iso: new Date(stat.ts).toISOString(),
+        mode: stat.mode,
+        cap: stat.cap,
+        slice: stat.slice,
+        threshold: stat.threshold,
+        before: stat.beforeTotalChars,
+        after: stat.afterTotalChars,
+        saved,
+        savedPct:
+          stat.beforeTotalChars > 0
+            ? Math.round((saved / stat.beforeTotalChars) * 100)
+            : 0,
+        trimmedMsgs: stat.trimmedMessages,
+        totalMsgs: stat.totalMessages,
+        modelMax: stat.modelMax,
+        modelMaxSource: stat.modelMaxSource,
+      }) + "\n";
+    await fs.writeTextFile(logPath, existing + line);
+  } catch {
+    // silent — 로깅 실패가 응답을 막지 않게
+  }
+}
+
 export default function App() {
   // ─── 상태 ───────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1983,18 +2047,55 @@ export default function App() {
         //   빠른 모드 (kda_fast_mode="true"): cap 4000, slice 12 — 응답속도 우선
         // trim 함수: cap 초과 시 head + tail 각 cap/2 + 중간 생략 마커.
         // 결정론적 (같은 message → 같은 결과) 이라 Claude prefix cache hit 유지.
+        // Phase 113.4 (v0.6.68) — 통계 수집 + JSONL 로그 + 모델 한도 가시화.
+        //   1. trimContent 가 lexical scope 의 trimStat 누적 (before/after 글자수, 영향 msg 수)
+        //   2. history build 끝나면 localStorage "kda_last_trim_stat" 박고 CustomEvent dispatch
+        //      → Settings 의 TrimStatCard 가 listen 해서 실시간 표시 (가시성)
+        //   3. trim.log 에 JSONL append (Tauri fs, best-effort, 1MB rolling) — 사후 추적용
+        //   4. modelMax / modelMaxSource 도 같이 박음 → adaptive threshold 가시화
+        //      (Phase 52 에서 codex token_count event 로 동적 override 이미 박힘.
+        //       이 release 부터 그 결과가 UI 에 노출됨)
         const halfCap = Math.floor(MESSAGE_CAP / 2);
+        const trimStat = {
+          ts: Date.now(),
+          mode: fastMode ? "fast" : "balanced",
+          cap: MESSAGE_CAP,
+          slice: HISTORY_SLICE,
+          threshold: CONTEXT_THRESHOLD,
+          beforeTotalChars: 0,
+          afterTotalChars: 0,
+          trimmedMessages: 0,
+          totalMessages: 0,
+          modelMax: currentModelMaxTokens,
+          modelMaxSource: currentModelMaxTokensInfo.source,
+        };
         function trimContent(s: string): string {
-          if (!s || s.length <= MESSAGE_CAP) return s;
+          if (!s) return s;
+          trimStat.beforeTotalChars += s.length;
+          if (s.length <= MESSAGE_CAP) {
+            trimStat.afterTotalChars += s.length;
+            return s;
+          }
           const head = s.slice(0, halfCap - 100);
           const tail = s.slice(-(halfCap - 100));
           const omitted = s.length - 2 * (halfCap - 100);
-          return `${head}\n\n[... 중간 ${omitted.toLocaleString()}자 생략 (응답속도 위해 자동 압축) ...]\n\n${tail}`;
+          const out = `${head}\n\n[... 중간 ${omitted.toLocaleString()}자 생략 (응답속도 위해 자동 압축) ...]\n\n${tail}`;
+          trimStat.afterTotalChars += out.length;
+          trimStat.trimmedMessages++;
+          return out;
         }
         history = messages
           .filter((m) => m.role === "user" || m.role === "assistant")
           .slice(-HISTORY_SLICE)
           .map((m) => ({ role: m.role, content: trimContent(m.content) }));
+        trimStat.totalMessages = history.length;
+        // 가시성: localStorage + CustomEvent → Settings 가 즉시 표시
+        try {
+          localStorage.setItem("kda_last_trim_stat", JSON.stringify(trimStat));
+          window.dispatchEvent(new CustomEvent("kda-trim-stat-changed"));
+        } catch {}
+        // 사후 추적: trim.log JSONL append (best-effort, 실패해도 응답 흐름 무관)
+        void appendTrimLog(trimStat);
       }
 
       // 파일 첨부가 있으면 base64 데이터 포함
