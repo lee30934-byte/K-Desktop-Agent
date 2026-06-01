@@ -74,6 +74,9 @@ interface SidebarProps {
   onRefreshFolders?: () => void;
   mcpConnected?: boolean;
   onOpenSettings?: () => void;
+  // Phase 111 (v0.6.60) — 현재 streaming 중인 conv ID 집합. 사이드바 conv 옆 ● dot 배지 표시.
+  // K 가 다른 conv 로 이동했어도 옛 turn 이 진행 중이면 그 conv 옆에 표시.
+  streamingConvIds?: Set<string>;
 }
 
 function Sidebar({
@@ -99,6 +102,7 @@ function Sidebar({
   onSearchConversations,
   mcpConnected = false,
   onOpenSettings,
+  streamingConvIds,
 }: SidebarProps) {
   // 제목 inline edit (대화/폴더 공용)
   const [editingState, setEditingState] = useState<
@@ -528,7 +532,26 @@ function Sidebar({
           >
             <span className="conv-icon">{c.icon ?? "💬"}</span>
             <div className="conv-content">
-              <div className="conv-title">{c.title}</div>
+              <div className="conv-title">
+                {c.title}
+                {/* Phase 111 (v0.6.60) — streaming 중인 conv 옆 ● dot (트리 모드) */}
+                {streamingConvIds?.has(c.id) && (
+                  <span
+                    title="이 대화에서 작업 진행 중"
+                    style={{
+                      display: "inline-block",
+                      marginLeft: 6,
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      background: "var(--accent, #66ccff)",
+                      boxShadow: "0 0 6px var(--accent, #66ccff)",
+                      verticalAlign: "middle",
+                      animation: "kda-pulse 1.4s ease-in-out infinite",
+                    }}
+                  />
+                )}
+              </div>
               <div className="conv-meta mono">
                 {c.messageCount} msg · {formatRelative(c.lastActive)}
               </div>
@@ -943,6 +966,21 @@ function Sidebar({
           >
             {c.title}
           </span>
+          {/* Phase 111 (v0.6.60) — streaming 중인 conv 옆 ● dot */}
+          {streamingConvIds?.has(c.id) && (
+            <span
+              title="이 대화에서 작업 진행 중"
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: "var(--accent, #66ccff)",
+                boxShadow: "0 0 6px var(--accent, #66ccff)",
+                flexShrink: 0,
+                animation: "kda-pulse 1.4s ease-in-out infinite",
+              }}
+            />
+          )}
         </div>
       );
     }

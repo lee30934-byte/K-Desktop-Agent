@@ -2,6 +2,35 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 111 — 작업 중 다른 대화창 이동 + 백그라운드 turn 진행 — 2026-06-01
+
+**문제:** K 명시 — "작업시 다른 대화창으로 이동이 불가능한데 작업중에도 다른 대화창 이동이 가능하게 해줘 물론 작업은 그대로 진행중 상태에서". 옛 동작은 `if (isStreaming) return` 차단 5곳으로 conv 전환 / 새 대화 생성 모두 막혀있음.
+
+**핵심 (정공법, 옵션 2b 선택):**
+- **`turnToConvMap: useRef<Map<turnId, convId>>`** — send 시점에 set, done/error 시점에 delete. emit handler 들이 ev.id (turn id) 로 그 turn 의 원래 conv 를 lookup.
+- **`streamingConvIds: useState<Set<convId>>`** — 어느 conv 들이 background 진행 중인지. Sidebar spinner 배지 + handleSelectConversation 의 isStreaming 동기화 source.
+- **emit handler 4종 (assistant_delta / tool_use / tool_result / done / error) routing patch:**
+  - `convForTurn = turnToConvMap.get(ev.id) ?? activeConvId`
+  - `isActiveConv = convForTurn === activeConvId`
+  - active 면 기존 setMessages / setMetrics 그대로
+  - 다른 conv 면 setMessages skip (UI 안 오염), DB save 는 `queueMessageSave(msg, convForTurn)` 으로 그 turn 의 원래 conv 에 박음. done 시 사이드바 메타 refresh 만.
+- **`queueMessageSave(msg, convIdOverride?)` 시그니처 확장** — `pendingSaveRef` 키를 `"convId|msgId"` 로 박아 다른 conv 의 save 가 섞이지 않음.
+- **차단 5곳 제거:**
+  - `handleSelectConversation` — `if (isStreaming) return` 삭제 + 전환 시 새 conv 의 `streamingConvIds.has(id)` 로 isStreaming 동기화
+  - `handleNewConversation` — `if (isStreaming) return` 삭제 + setIsStreaming(false) + setCurrentTurnId(null) 동기화
+
+**UI — 사이드바 streaming dot 배지:**
+- `streamingConvIds` prop 신설 (Sidebar.tsx)
+- 트리 모드 conv 제목 옆 + Explorer 모드 conv 항목 우측 끝에 **● dot** (pulse animation)
+- App.css 에 `@keyframes kda-pulse` 추가
+
+**Trade-off (의도적 v1 단순화):**
+- background turn 의 partial assistant chunks 가 UI 의 in-memory cache 에 없음. K 가 그 conv 로 돌아오면 turn 완료 후 DB load 으로 봐야 함 (DB save 는 매 chunk 마다 박힘).
+- background turn 의 메트릭 갱신은 active conv 일 때만. 다른 conv 의 메트릭은 다음 phase 에서 정밀화.
+- done 시 setMessages 의 streaming=true → false 마킹이 다른 conv 에선 안 박혀 일시적 잔재 가능. K 가 새 turn 시작하면 자동 정리.
+
+**검증 — npm run build (3.16s) + test-codex-integration 41/41 + test-perm-gate 11/11**. K UI 검증 잔여.
+
 ### ✅ Phase 110 — 폴더 지침 수정 시 첨부 sentinel 자동 reset — 2026-06-01
 
 **문제:** Phase 109 까지 박은 후 검증 단계에서 K 와 함께 발견한 잠재 함정 #3. 폴더의 첨부 파일을 K 가 추가/제거해도 그 폴더 안 **기존** 대화는 lastAttachedFolderId 가 여전히 같은 폴더 ID → 다음 send 에서 skip → "지침 파일 바꿔도 옛 conv 는 옛 파일만 기억" 증상.

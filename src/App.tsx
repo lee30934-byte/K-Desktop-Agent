@@ -444,7 +444,8 @@ export default function App() {
   autoResumeManualStoppedRef.current = readLocalBool(LS_AUTO_RESUME_MANUAL_STOPPED, false);
 
   // 메시지 저장 디바운스용 ref
-  const pendingSaveRef = useRef<Map<string, ChatMessage>>(new Map());
+  // Phase 111 (v0.6.60) — convId 별 분리 위해 entry 가 { convId, msg }. 키는 "convId|msgId".
+  const pendingSaveRef = useRef<Map<string, { convId: string; msg: ChatMessage }>>(new Map());
   const saveTimerRef = useRef<number | null>(null);
 
   // state를 안정된 콜백 안에서 읽기 위한 latest-ref
@@ -455,6 +456,15 @@ export default function App() {
   useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
   useEffect(() => { dbReadyRef.current = dbReady; }, [dbReady]);
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+
+  // Phase 111 (v0.6.60) — 동시 대화창 이동 정공법.
+  // turn id → conv id 매핑. send 시점에 set, done/error 시점에 delete.
+  // K 가 다른 conv 로 이동해도 emit handler 가 이 map 으로 그 turn 의 원래 conv 를 찾아
+  // setMessages 분기 (active conv 면 UI 갱신) + DB save 는 항상 원래 conv 에 박음.
+  const turnToConvMap = useRef<Map<string, string>>(new Map());
+  // Phase 111 — 어느 conv 들이 streaming 중인지. Sidebar spinner 배지 + 같은 conv 의
+  // 중복 send 방지에 사용. send 시점에 add, done 시점에 delete.
+  const [streamingConvIds, setStreamingConvIds] = useState<Set<string>>(() => new Set());
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   const buildLongTaskAutoResumePrompt = useCallback((task: DBLongTask, reason: string) => {
@@ -1008,36 +1018,52 @@ export default function App() {
         // partial assistant 텍스트를 DB 에 incrementally 저장 — 강제 종료/재기동 시
         // 끊긴 시점까지의 응답이 휘발하지 않도록. queueMessageSave 가 300ms 디바운스라
         // 매 chunk 마다 DB write 부담은 없음 (같은 id 로 upsert).
+        // Phase 111 (v0.6.60) — turn 의 원래 conv 로 routing. K 가 다른 conv 로 이동하면
+        // setMessages skip (UI 갱신 X) + DB save 는 원래 conv 에 박음.
+        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        const isActiveConv = convForTurn === activeConversationIdRef.current;
         let savedMsg: ChatMessage | null = null;
-        setMessages((prev) => {
-          const existingIdx = prev.findIndex(
-            (m) => m.id === ev.id && m.role === "assistant"
-          );
-          if (existingIdx >= 0) {
-            const next = [...prev];
-            const msg = next[existingIdx];
-            if (msg.role === "assistant") {
-              const updated = {
-                ...msg,
-                content: ev.text,
-                streaming: true,
-              };
-              next[existingIdx] = updated;
-              savedMsg = updated;
+        if (isActiveConv) {
+          setMessages((prev) => {
+            const existingIdx = prev.findIndex(
+              (m) => m.id === ev.id && m.role === "assistant"
+            );
+            if (existingIdx >= 0) {
+              const next = [...prev];
+              const msg = next[existingIdx];
+              if (msg.role === "assistant") {
+                const updated = {
+                  ...msg,
+                  content: ev.text,
+                  streaming: true,
+                };
+                next[existingIdx] = updated;
+                savedMsg = updated;
+              }
+              return next;
             }
-            return next;
-          }
-          const created: ChatMessage = {
+            const created: ChatMessage = {
+              id: ev.id,
+              role: "assistant",
+              content: ev.text,
+              timestamp: Date.now(),
+              streaming: true,
+            };
+            savedMsg = created;
+            return [...prev, created];
+          });
+        } else {
+          // 다른 conv 의 streaming chunks — UI 갱신 안 하지만 DB save 는 진행.
+          // K 가 그 conv 로 돌아오면 DB load 으로 보임 (turn 완료 후).
+          savedMsg = {
             id: ev.id,
             role: "assistant",
             content: ev.text,
             timestamp: Date.now(),
             streaming: true,
           };
-          savedMsg = created;
-          return [...prev, created];
-        });
-        if (savedMsg) queueMessageSave(savedMsg);
+        }
+        if (savedMsg) queueMessageSave(savedMsg, convForTurn);
         break;
       }
 
@@ -1045,6 +1071,9 @@ export default function App() {
         // 도구 호출 시점에도 즉시 DB 저장 — 도중에 끊겨도 "어떤 도구를 호출했는지" 가
         // history 에 남도록 (Resume 시 재호출 방지).
         // Phase 85 (v0.6.28) — sidecar 가 박은 risk 메타를 ToolMessage 에 저장 (UI 배지용).
+        // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
+        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        const isActiveConv = convForTurn === activeConversationIdRef.current;
         const toolMsg: ChatMessage = {
           id: `${ev.id}-tool-${ev.tool_id}`,
           role: "tool",
@@ -1056,22 +1085,27 @@ export default function App() {
           timestamp: Date.now(),
           ...(ev.risk ? { risk: ev.risk } : {}),
         };
-        setMessages((prev) => [...prev, toolMsg]);
-        queueMessageSave(toolMsg);
-        setMetrics((m) => {
-          const updated = { ...m, toolCallCount: m.toolCallCount + 1 };
-          // DB에도 저장
-          const convId = activeConversationIdRef.current;
-          if (convId && dbReadyRef.current) {
-            updateConversationMetrics(convId, {
-              totalInputTokens: updated.totalInputTokens,
-              totalOutputTokens: updated.totalOutputTokens,
-              turnCount: updated.turnCount,
-              toolCallCount: updated.toolCallCount,
-            }).catch(() => {});
-          }
-          return updated;
-        });
+        if (isActiveConv) {
+          setMessages((prev) => [...prev, toolMsg]);
+        }
+        queueMessageSave(toolMsg, convForTurn);
+        // 메트릭은 active conv 일 때만 갱신 (background turn 은 그 conv 의 메트릭만 영향 — 추후 phase 에서 분리)
+        if (isActiveConv) {
+          setMetrics((m) => {
+            const updated = { ...m, toolCallCount: m.toolCallCount + 1 };
+            // DB에도 저장
+            const convId = activeConversationIdRef.current;
+            if (convId && dbReadyRef.current) {
+              updateConversationMetrics(convId, {
+                totalInputTokens: updated.totalInputTokens,
+                totalOutputTokens: updated.totalOutputTokens,
+                turnCount: updated.turnCount,
+                toolCallCount: updated.toolCallCount,
+              }).catch(() => {});
+            }
+            return updated;
+          });
+        }
         break;
       }
 
@@ -1080,27 +1114,79 @@ export default function App() {
         // Resume 시 모델이 같은 도구 다시 호출 안 하고 이어서 답변 생성.
         // Phase 98 — sidecar 가 image content part 를 분리해 images 로 emit 하면
         // ToolMessage 에 그대로 박음. Message.tsx 가 썸네일 그리드로 렌더링.
+        // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
+        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        const isActiveConv = convForTurn === activeConversationIdRef.current;
         let updatedToolMsg: ChatMessage | null = null;
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.role === "tool" && m.id === `${ev.id}-tool-${ev.tool_id}`) {
-              const next: ChatMessage = {
-                ...m,
-                toolOutput: ev.output,
-                images: ev.images && ev.images.length > 0 ? ev.images : undefined,
-                status: "success" as const,
-              };
-              updatedToolMsg = next;
-              return next;
-            }
-            return m;
-          })
-        );
-        if (updatedToolMsg) queueMessageSave(updatedToolMsg);
+        if (isActiveConv) {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.role === "tool" && m.id === `${ev.id}-tool-${ev.tool_id}`) {
+                const next: ChatMessage = {
+                  ...m,
+                  toolOutput: ev.output,
+                  images: ev.images && ev.images.length > 0 ? ev.images : undefined,
+                  status: "success" as const,
+                };
+                updatedToolMsg = next;
+                return next;
+              }
+              return m;
+            })
+          );
+        } else {
+          // 다른 conv — UI 안 갱신하지만 DB save 는 진행 (toolId 명시적 message id).
+          updatedToolMsg = {
+            id: `${ev.id}-tool-${ev.tool_id}`,
+            role: "tool",
+            toolId: ev.tool_id,
+            toolName: "",
+            content: "",
+            toolOutput: ev.output,
+            images: ev.images && ev.images.length > 0 ? ev.images : undefined,
+            status: "success" as const,
+            timestamp: Date.now(),
+          };
+        }
+        if (updatedToolMsg) queueMessageSave(updatedToolMsg, convForTurn);
         break;
       }
 
       case "done": {
+        // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
+        // Background turn (다른 conv) 면 early return + agentId/DB 만 갱신.
+        // Active conv 면 기존 로직 그대로 (isStreaming reset, setMessages, setMetrics, 세션 임계치 등).
+        // v1 엔 background turn 의 메트릭 갱신은 skip — 다음 phase 에서 정밀화.
+        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        const isActiveConv = convForTurn === activeConversationIdRef.current;
+        // turnToConvMap / streamingConvIds 정리 — 항상.
+        turnToConvMap.current.delete(ev.id);
+        if (convForTurn) {
+          setStreamingConvIds((prev) => {
+            if (!prev.has(convForTurn)) return prev;
+            const next = new Set(prev);
+            next.delete(convForTurn);
+            return next;
+          });
+        }
+        if (!isActiveConv) {
+          // Background turn 완료 — DB 의 agentId 만 갱신 + 사이드바 메타 refresh.
+          if (ev.agentId && convForTurn && dbReadyRef.current) {
+            const aid = ev.agentId;
+            updateConversationAgentId(convForTurn, aid)
+              .then(() => {
+                setConversations((prev) =>
+                  prev.map((c) => (c.id === convForTurn ? { ...c, agentId: aid } : c)),
+                );
+              })
+              .catch((err) =>
+                console.error("[App] background done — agentId 저장 실패:", err),
+              );
+          }
+          // 사이드바 메타 (메시지 카운트, lastActive) refresh — turn 완료 반영.
+          setTimeout(() => refreshConversations(), 100);
+          break;
+        }
         setIsStreaming(false);
         setCurrentTurnId(null);
 
@@ -1232,6 +1318,26 @@ export default function App() {
       }
 
       case "error": {
+        // Phase 111 (v0.6.60) — background turn 의 error 도 routing.
+        const convForErr = (ev.id && turnToConvMap.current.get(ev.id)) ?? activeConversationIdRef.current;
+        const isActiveConvErr = convForErr === activeConversationIdRef.current;
+        if (ev.id) {
+          turnToConvMap.current.delete(ev.id);
+        }
+        if (convForErr) {
+          setStreamingConvIds((prev) => {
+            if (!prev.has(convForErr)) return prev;
+            const next = new Set(prev);
+            next.delete(convForErr);
+            return next;
+          });
+        }
+        if (!isActiveConvErr) {
+          // Background turn error — 사이드바 메타 refresh 만. UI 상단 알림 X (K 가 그 conv 보고 있지 않음).
+          // 다음 phase 에서 conv 별 토스트 알림 박을 수 있음.
+          console.warn(`[App] background turn error (conv=${convForErr}): ${ev.message}`);
+          break;
+        }
         setIsStreaming(false);
         setCurrentTurnId(null);
         setStatus("error");
@@ -1524,27 +1630,31 @@ export default function App() {
   }
 
   // ─── DB 저장 헬퍼 (디바운스) ────────────────────────────
-  // 안정된 함수 — 내부에서 ref로 최신 conversationId 조회
-  const queueMessageSave = useCallback((msg: ChatMessage) => {
-    const convId = activeConversationIdRef.current;
+  // Phase 111 (v0.6.60) — convIdOverride 추가. emit handler 가 turn 의 원래 conv 를 명시.
+  // 미지정이면 activeConversationIdRef (옛 동작 — 사용자가 직접 send 한 경우).
+  // pendingSaveRef 의 키를 "convId|msgId" 로 박아 다른 conv 의 save 가 섞이지 않음.
+  const queueMessageSave = useCallback((msg: ChatMessage, convIdOverride?: string | null) => {
+    const convId = convIdOverride ?? activeConversationIdRef.current;
     if (!convId || !dbReadyRef.current) return;
 
-    pendingSaveRef.current.set(msg.id, msg);
+    pendingSaveRef.current.set(`${convId}|${msg.id}`, { convId, msg });
 
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
     }
 
     saveTimerRef.current = window.setTimeout(async () => {
-      const flushConvId = activeConversationIdRef.current;
-      if (!flushConvId) return;
-
       const toSave = Array.from(pendingSaveRef.current.values());
       pendingSaveRef.current.clear();
 
-      for (const m of toSave) {
+      for (const entry of toSave) {
+        // Phase 111 — entry 가 객체 ({convId, msg}) 인 경우 (신규) 와 ChatMessage 인 경우 (구버전 호환)
+        // 둘 다 처리. 한 release 안에 마이그레이션이라 양쪽 다 안전.
+        const convForSave = (entry as any).convId ?? activeConversationIdRef.current;
+        const msgForSave = (entry as any).msg ?? entry;
+        if (!convForSave) continue;
         try {
-          await saveMessage(flushConvId, m);
+          await saveMessage(convForSave, msgForSave);
         } catch (err) {
           console.error("[DB] 메시지 저장 실패:", err);
         }
@@ -1730,9 +1840,21 @@ export default function App() {
     setCurrentTurnId(turnId);
     setIsStreaming(true);
 
+    // Phase 111 (v0.6.60) — turn → conv 매핑 박음. emit handler 들이 이 map 으로 routing.
+    // K 가 다른 conv 로 이동해도 이 turn 의 chunks 는 원래 conv 에만 박힘.
+    if (convId) {
+      turnToConvMap.current.set(turnId, convId);
+      setStreamingConvIds((prev) => {
+        if (prev.has(convId)) return prev;
+        const next = new Set(prev);
+        next.add(convId);
+        return next;
+      });
+    }
+
     // DB에 사용자 메시지 저장
     if (convId && dbReady) {
-      queueMessageSave(userMsg);
+      queueMessageSave(userMsg, convId);
 
       // 첫 메시지면 제목 업데이트
       const conv = conversations.find((c) => c.id === convId);
@@ -2008,8 +2130,9 @@ export default function App() {
   });
 
   const handleNewConversation = useStableCallback(async () => {
-    // 스트리밍 중에는 새 대화 생성 불가
-    if (isStreaming) return;
+    // Phase 111 (v0.6.60) — 작업 중에도 새 대화 생성 가능. K 명시 요청.
+    // 옛 차단 `if (isStreaming) return` 제거. 새 conv 는 streamingConvIds 에 없어
+    // isStreaming = false 로 자연스럽게 전환. 옛 turn 은 background 로 진행.
 
     const id = crypto.randomUUID();
     try {
@@ -2018,6 +2141,10 @@ export default function App() {
       setActiveConversationId(id);
       activeConversationIdRef.current = id;
       setMessages([]);
+      // Phase 111 (v0.6.60) — 새 대화는 streaming 중 X. 옛 conv 가 background 진행 중이어도
+      // 새 conv 의 UI 상태는 false 로 시작 (그 conv 에서 send 가능).
+      setIsStreaming(false);
+      setCurrentTurnId(null);
       // 메트릭 초기화
       setMetrics({
         totalInputTokens: 0,
@@ -2038,8 +2165,17 @@ export default function App() {
   });
 
   const handleSelectConversation = useStableCallback(async (id: string) => {
-    if (isStreaming) return; // 스트리밍 중에는 전환 불가
+    // Phase 111 (v0.6.60) — 작업 중에도 다른 대화창 이동 가능. K 명시 요청.
+    // 옛 차단 `if (isStreaming) return` 제거. 옛 turn 은 turnToConvMap 으로 그 conv 에만
+    // 라우팅 + emit handler 의 isActiveConv 분기로 새 conv UI 안 오염. setIsStreaming 은
+    // background turn 이 끝나도 (다른 conv 의 done) reset 안 됨 — 활성 conv 의 streaming
+    // 상태만 반영. 활성 conv 가 streaming 중인지는 streamingConvIds.has(activeConvId).
     if (id === activeConversationId) return;
+
+    // Phase 111 — 새 conv 로 이동 시 isStreaming/currentTurnId 를 그 conv 의 실제 상태로 동기화.
+    const newConvStreaming = streamingConvIds.has(id);
+    setIsStreaming(newConvStreaming);
+    setCurrentTurnId(null); // turn id 는 turnToConvMap 으로 trace, currentTurnId 는 UI 표시용
 
     setActiveConversationId(id);
     activeConversationIdRef.current = id;
@@ -3116,6 +3252,7 @@ export default function App() {
         onRefreshFolders={refreshFolders}
         mcpConnected={mcpState.connected}
         onOpenSettings={openSettings}
+        streamingConvIds={streamingConvIds}
       />
 
       {/* Phase 79 (v0.6.22) — Task State Manager: 끊긴 long_task 복구 배너.

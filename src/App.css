@@ -910,6 +910,12 @@
   }
 }
 
+/* Phase 111 (v0.6.60) — 사이드바 conv 옆 streaming dot pulse */
+@keyframes kda-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.75); }
+}
+
 /* User */
 .msg-user {
   align-self: flex-end;
