@@ -49,7 +49,7 @@ export function getCategory(pathOrUrl: string): "image" | "video" | "audio" | "t
   if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(ext)) return "image";
   if (["mp4", "webm", "mov", "mkv"].includes(ext)) return "video";
   if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
-  if (["txt", "md", "json", "csv", "xml", "yaml", "yml", "log", "ini", "conf", "ts", "tsx", "js", "jsx", "py", "rs", "java", "c", "cpp", "h", "go", "rb", "sh", "ps1"].includes(ext)) return "text";
+  if (["txt", "md", "json", "csv", "xml", "yaml", "yml", "log", "ini", "conf", "ts", "tsx", "js", "jsx", "py", "rs", "java", "c", "cpp", "h", "go", "rb", "sh", "ps1", "html", "htm", "css", "scss", "toml", "bat", "cmd", "sql", "env"].includes(ext)) return "text";
   if (ext === "pdf") return "pdf";
   return "other";
 }
