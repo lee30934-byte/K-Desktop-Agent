@@ -585,6 +585,13 @@ export default function App() {
   // Phase 111 — 어느 conv 들이 streaming 중인지. Sidebar spinner 배지 + 같은 conv 의
   // 중복 send 방지에 사용. send 시점에 add, done 시점에 delete.
   const [streamingConvIds, setStreamingConvIds] = useState<Set<string>>(() => new Set());
+  // Phase 121 (v0.6.76) — 프론트 dead-stream 워치독.
+  // sidecar 가 죽거나 IPC 가 끊겨 done/error 이벤트 자체가 안 오면(= sidecar idle 워치독으로도
+  // 못 잡는 케이스) UI 가 무한 "진행중" 으로 남는다. 모든 sidecar 이벤트 수신 시각을 기록하고,
+  // 활성 conv 가 streaming 중인데 STREAM_STALL_MS 동안 무이벤트면 streamStalled=true 로 전환해
+  // 비파괴적 "멈춘 것 같아요 — 중단" 배너를 노출(자동 kill 아님 — K 가 직접 중단 선택).
+  const lastSidecarEventAtRef = useRef<number>(Date.now());
+  const [streamStalled, setStreamStalled] = useState(false);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   const buildLongTaskAutoResumePrompt = useCallback((task: DBLongTask, reason: string) => {
@@ -1107,6 +1114,10 @@ export default function App() {
 
     (async () => {
       unlisten = await listen<SidecarEvent>("sidecar-event", (ev) => {
+        // dead-stream 워치독: 어떤 이벤트든 오면 파이프가 살아있다는 신호 → stall 해제.
+        // setStreamStalled(false) 는 이미 false 면 React 가 re-render 를 스킵하므로 매 이벤트 호출 무해.
+        lastSidecarEventAtRef.current = Date.now();
+        setStreamStalled(false);
         handleSidecarEventRef.current(ev.payload as SidecarEvent);
       });
     })();
@@ -1115,6 +1126,24 @@ export default function App() {
       if (unlisten) unlisten();
     };
   }, []);
+
+  // Phase 121 (v0.6.76) — dead-stream 워치독 타이머.
+  // streaming 중일 때만 가동. 마지막 이벤트로부터 STREAM_STALL_MS 경과 시 stalled 배너 노출.
+  // 비파괴적: 자동 중단 안 함 — K 가 "중단" 버튼을 직접 눌러야 함(긴 작업 오인 방지).
+  useEffect(() => {
+    if (!isStreaming) {
+      setStreamStalled(false);
+      return;
+    }
+    lastSidecarEventAtRef.current = Date.now(); // streaming 시작 시 리셋
+    const STREAM_STALL_MS = 90_000;
+    const t = setInterval(() => {
+      if (Date.now() - lastSidecarEventAtRef.current > STREAM_STALL_MS) {
+        setStreamStalled(true);
+      }
+    }, 5_000);
+    return () => clearInterval(t);
+  }, [isStreaming]);
 
   // ─── 트레이에서 Settings 열기 이벤트 ──────────────────
   useEffect(() => {
@@ -3544,6 +3573,44 @@ export default function App() {
             style={{ padding: "2px 8px", fontSize: "0.85em" }}
             onClick={() => setRecoverableTasks([])}
             title="배너만 숨김 — DB 의 row 는 그대로 유지"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Phase 121 (v0.6.76) — dead-stream 워치독 배너. 비파괴적: 자동 중단 안 함. */}
+      {isStreaming && streamStalled && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 12px",
+            margin: "0 12px 8px",
+            background: "rgba(220,160,40,0.12)",
+            border: "1px solid rgba(220,160,40,0.4)",
+            borderRadius: 8,
+            fontSize: "0.88em",
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            ⏳ 응답이 90초 넘게 멈춰 있어요. 아직 긴 작업 중일 수도 있지만, 멈춘 것 같으면 중단하고 다시 시도하세요.
+          </span>
+          <button
+            className="settings-btn"
+            style={{ padding: "2px 10px", fontSize: "0.85em" }}
+            onClick={() => {
+              void handleInterrupt();
+            }}
+          >
+            🛑 중단
+          </button>
+          <button
+            className="settings-btn"
+            style={{ padding: "2px 8px", fontSize: "0.85em" }}
+            onClick={() => setStreamStalled(false)}
+            title="배너만 숨김 — 작업은 계속 진행"
           >
             ✕
           </button>

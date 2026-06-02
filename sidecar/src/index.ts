@@ -1992,6 +1992,17 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     `CLI query head50 id=${msg.id} settingsHead=${JSON.stringify(settingsHead50)} mcpHead=${JSON.stringify(mcpHead50 || "(no mcp)")}`,
   );
 
+  // ── Phase 121 (v0.6.76): per-turn idle 워치독 ──────────────────────────
+  // 진단(234 starts vs 180 ends): 멈춘 자식 프로세스가 stdout/stderr 를 한참 안 내면
+  // proc.on("close") 가 영영 안 와 turn 이 "진행중" 으로 영구 고착 → UI 무한 spinner.
+  // 모든 stdout 라인/stderr chunk 마다 lastActivity 갱신. 완전 무출력이 IDLE_TIMEOUT_MS 를
+  // 넘으면 hang 으로 판정 → tree-kill → close 경로(catch)가 error 를 emit 해 UI 를 푼다.
+  // 긴 tool 실행(예: 빌드) 오인 kill 방지를 위해 값은 보수적(기본 8분). 프론트 dead-stream
+  // 워치독(90s 비파괴 "중단" 버튼)이 빠른 수동 탈출을 주므로 sidecar 자동 kill 은 길게 둠.
+  // catch/finally 에서 접근하려면 try 밖에 선언해야 한다 (try 블록 스코프 회피).
+  const IDLE_TIMEOUT_MS = Number(process.env.KDA_TURN_IDLE_TIMEOUT_MS) || 8 * 60 * 1000;
+  let watchdogTripped = false;
+  let idleWatchdog: ReturnType<typeof setInterval> | undefined;
   try {
     // Claude CLI 실행
     // hook 스크립트(preToolUse-overwriteGuard.mjs) 가 자식 자식 프로세스로 실행되므로
@@ -2024,6 +2035,33 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     let currentText = "";
     let sessionId: string | null = null;
     let sawResult = false;
+    // idle 워치독 기준 시각 — stdout/stderr 출력이 올 때마다 갱신.
+    let lastActivity = Date.now();
+
+    // idle 워치독 가동 (선언은 try 밖 — catch/finally 가 watchdogTripped/idleWatchdog 참조).
+    // stdout/stderr 가 IDLE_TIMEOUT_MS 동안 무이벤트면 자식 완전 정지로 판정 → tree-kill →
+    // catch 에서 명시적 error emit → 프론트 streaming 해제. 15s 간격으로 점검.
+    idleWatchdog = setInterval(() => {
+      const idle = Date.now() - lastActivity;
+      if (idle <= IDLE_TIMEOUT_MS) return;
+      watchdogTripped = true;
+      if (idleWatchdog) clearInterval(idleWatchdog);
+      logToFile(
+        "error",
+        `CLI idle watchdog tripped id=${msg.id} idleMs=${idle} threshold=${IDLE_TIMEOUT_MS} — 멈춘 자식 프로세스 강제 종료`,
+      );
+      const pid = proc.pid;
+      if (pid) {
+        treeKill(pid, "SIGKILL", (err) => {
+          if (err) {
+            logToFile("warn", `idle watchdog tree-kill 실패 PID=${pid}: ${err.message} — fallback proc.kill`);
+            try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+          }
+        });
+      } else {
+        try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+      }
+    }, 15_000);
 
     // ─── Per-turn usage 추적 (Phase 12 — Context Meter v2) ───────────────────
     // 한 turn 안에서 sub-agent / iterative tool 호출 등으로 model call 이 N번 일어나면,
@@ -2054,6 +2092,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     let resumeSessionMissing = false;
     if (proc.stderr) {
       proc.stderr.on("data", (chunk: Buffer) => {
+        lastActivity = Date.now(); // idle 워치독 리셋
         const decoded = stderrDecoder
           ? stderrDecoder.decode(chunk, { stream: true })
           : chunk.toString("utf-8");
@@ -2082,6 +2121,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     });
 
     for await (const line of rl) {
+      lastActivity = Date.now(); // idle 워치독 리셋 — 자식이 살아있다는 신호
       if (!line.trim()) continue;
 
       try {
@@ -2344,11 +2384,16 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     }
 
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const rawMessage = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
-    logToFile("error", `CLI query error id=${msg.id}: ${message}${stack ? `\n${stack}` : ""}`);
+    // idle 워치독이 죽인 경우 — generic "exited with code null" 대신 원인을 명확히.
+    const message = watchdogTripped
+      ? `응답이 ${Math.round(IDLE_TIMEOUT_MS / 1000)}초간 멈춰 자동 중단했습니다. 다시 시도해 주세요. (idle watchdog)`
+      : rawMessage;
+    logToFile("error", `CLI query error id=${msg.id}: ${rawMessage}${watchdogTripped ? " [idle watchdog kill]" : ""}${stack ? `\n${stack}` : ""}`);
     emit({ type: "error", id: msg.id, message });
   } finally {
+    clearInterval(idleWatchdog); // idle 워치독 정리 — 정상/비정상 종료 모두
     logToFile("info", `CLI query end id=${msg.id}`);
     activeTurns.delete(msg.id);
     // 외화한 임시 인자 파일들 통째 정리 — system-prompt-file, settings, mcp-config 모두.
