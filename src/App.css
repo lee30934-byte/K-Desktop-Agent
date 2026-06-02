@@ -1914,6 +1914,9 @@
   gap: 4px;
   padding: 4px 8px;
   border-left: 2px solid var(--border-default);
+  /* 그리드 아이템 기본 min-width:auto 면 내용(긴 값/바)이 셀보다 커도 안 줄어
+     border-left 구분선 밖으로 삐져나감. 0 으로 풀어 .metric-value 의 ellipsis 가 작동. */
+  min-width: 0;
 }
 
 .metric-card-accent {
@@ -1949,7 +1952,10 @@
 
 .context-monitor {
   position: relative;
-  min-width: 160px;
+  /* 이전 min-width:160px 는 그리드 트랙(130px)보다 넓어 좁은 폭(프리뷰 열림)에서
+     옆 칸을 침범했음. 0 으로 풀고 안쪽 .context-bar(flex:1) 가 알아서 줄어들게 둠.
+     percent 텍스트는 .context-percent 의 min-width:42px 로 가독성 유지. */
+  min-width: 0;
   cursor: pointer;
 }
 
