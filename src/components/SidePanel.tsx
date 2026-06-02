@@ -41,7 +41,9 @@ export function isUrl(pathOrUrl: string): boolean {
   return /^(https?|file):\/\//i.test(pathOrUrl);
 }
 
-export function getCategory(pathOrUrl: string): "image" | "video" | "audio" | "text" | "pdf" | "url" | "other" {
+export type PreviewCategory = "image" | "video" | "audio" | "text" | "pdf" | "url" | "excel" | "word" | "other";
+
+export function getCategory(pathOrUrl: string): PreviewCategory {
   if (isUrl(pathOrUrl) && !/\.(png|jpg|jpeg|gif|webp|svg|mp4|webm|mp3|wav|ogg|pdf|txt|md|json|csv|xml|yaml|yml|log)$/i.test(pathOrUrl)) {
     return "url";
   }
@@ -49,9 +51,39 @@ export function getCategory(pathOrUrl: string): "image" | "video" | "audio" | "t
   if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(ext)) return "image";
   if (["mp4", "webm", "mov", "mkv"].includes(ext)) return "video";
   if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
+  // Phase 118 (v0.6.73) — Office 인라인 미리보기. SheetJS(excel)/mammoth(word) 동적 import.
+  if (["xlsx", "xls", "xlsm", "xlsb"].includes(ext)) return "excel";
+  if (ext === "docx") return "word";
   if (["txt", "md", "json", "csv", "xml", "yaml", "yml", "log", "ini", "conf", "ts", "tsx", "js", "jsx", "py", "rs", "java", "c", "cpp", "h", "go", "rb", "sh", "ps1", "html", "htm", "css", "scss", "toml", "bat", "cmd", "sql", "env"].includes(ext)) return "text";
   if (ext === "pdf") return "pdf";
   return "other";
+}
+
+/**
+ * Phase 118 (v0.6.73) — "기타" 형식의 친화적 이름 + 어떤 종류 프로그램으로 열리는지 힌트.
+ * 실제 연결 프로그램은 OS 가 open 시점에 결정 (registry 파싱 안 함 — 안정적).
+ * 인라인 미리보기는 못 해도 K 가 "이건 한글 문서구나" 하고 바로 인지 + 연동 열기.
+ */
+export function describeOtherFile(pathOrUrl: string): { typeName: string; icon: string } {
+  const ext = getExt(pathOrUrl);
+  const map: Record<string, { typeName: string; icon: string }> = {
+    hwp: { typeName: "한글 문서", icon: "🇰🇷" },
+    hwpx: { typeName: "한글 문서", icon: "🇰🇷" },
+    dwg: { typeName: "AutoCAD 도면", icon: "📐" },
+    dxf: { typeName: "CAD 도면 교환", icon: "📐" },
+    pptx: { typeName: "PowerPoint 프레젠테이션", icon: "📑" },
+    ppt: { typeName: "PowerPoint 프레젠테이션", icon: "📑" },
+    doc: { typeName: "Word 문서 (구형)", icon: "📝" },
+    zip: { typeName: "압축 파일", icon: "🗜️" },
+    "7z": { typeName: "압축 파일", icon: "🗜️" },
+    rar: { typeName: "압축 파일", icon: "🗜️" },
+    exe: { typeName: "실행 파일", icon: "⚙️" },
+    psd: { typeName: "Photoshop 문서", icon: "🎨" },
+    ai: { typeName: "Illustrator 문서", icon: "🎨" },
+    eps: { typeName: "벡터 그래픽", icon: "🎨" },
+    apk: { typeName: "안드로이드 앱", icon: "📱" },
+  };
+  return map[ext] ?? { typeName: ext ? `${ext.toUpperCase()} 파일` : "알 수 없는 형식", icon: "📄" };
 }
 
 /**
@@ -169,7 +201,7 @@ export async function checkFinalReviewGate(localPath: string): Promise<GateResul
 export async function loadPreview(
   pathOrUrl: string,
   category: ReturnType<typeof getCategory>,
-): Promise<{ dataUrl?: string; text?: string; error?: string }> {
+): Promise<{ dataUrl?: string; text?: string; html?: string; error?: string }> {
   if (isUrl(pathOrUrl)) {
     return { dataUrl: pathOrUrl };
   }
@@ -209,6 +241,33 @@ export async function loadPreview(
       const truncated = content.length > 100_000 ? content.slice(0, 100_000) + "\n\n... [잘림: 100KB 까지만]" : content;
       return { text: truncated };
     }
+    if (category === "excel" || category === "word") {
+      // Phase 118 (v0.6.73) — Office 파일을 bytes 로 읽어 브라우저에서 HTML 로 변환.
+      // 라이브러리는 동적 import → 메인 번들 비대화 방지 (Office 파일 열 때만 로드).
+      let bytes: Uint8Array | null = null;
+      const rust = await tryRustRead(false);
+      if (rust?.bytes) bytes = rust.bytes;
+      else bytes = await readFile(normalizedPath);
+      if (!bytes) return { error: "파일을 읽지 못했습니다." };
+      if (category === "excel") {
+        const XLSX = await import("xlsx");
+        const wb = XLSX.read(bytes, { type: "array" });
+        // 모든 시트를 제목 + HTML 표로 이어붙임.
+        const parts: string[] = [];
+        for (const name of wb.SheetNames) {
+          const ws = wb.Sheets[name];
+          const tableHtml = XLSX.utils.sheet_to_html(ws, { editable: false });
+          parts.push(`<div class="xls-sheet"><div class="xls-sheet-name">📄 ${name}</div>${tableHtml}</div>`);
+        }
+        return { html: parts.join("\n") || "<p>빈 통합 문서입니다.</p>" };
+      }
+      // word (docx)
+      const mammoth = await import("mammoth");
+      // mammoth 는 ArrayBuffer 를 받음. Uint8Array 의 buffer 슬라이스 전달.
+      const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const result = await mammoth.convertToHtml({ arrayBuffer: ab as ArrayBuffer });
+      return { html: result.value || "<p>빈 문서입니다.</p>" };
+    }
     if (category === "image" || category === "video" || category === "audio" || category === "pdf") {
       let bytes: Uint8Array | null = null;
       const rust = await tryRustRead(false);
@@ -245,6 +304,7 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
   const [preview, setPreview] = useState<{
     dataUrl?: string;
     text?: string;
+    html?: string;
     error?: string;
     blockedByGate?: GateResult;
   }>({});
@@ -539,6 +599,13 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
                   {category === "text" && preview.text !== undefined && (
                     <pre className="side-panel-text mono">{preview.text}</pre>
                   )}
+                  {/* Phase 118 (v0.6.73): Office 인라인 (Excel 표 / Word 본문) */}
+                  {(category === "excel" || category === "word") && preview.html !== undefined && (
+                    <div
+                      className={category === "excel" ? "side-panel-office side-panel-xls" : "side-panel-office side-panel-doc"}
+                      dangerouslySetInnerHTML={{ __html: preview.html }}
+                    />
+                  )}
                   {category === "url" && (
                     <div className="side-panel-url-card">
                       <p>웹 링크는 외부 브라우저에서 열립니다.</p>
@@ -552,22 +619,28 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
                       </button>
                     </div>
                   )}
-                  {category === "other" && (
-                    <div className="side-panel-url-card">
-                      <p>
-                        이 파일 형식은 미리보기가 지원되지 않습니다.
-                        <br />
-                        기본 앱에서 열어주세요.
-                      </p>
-                      <button
-                        type="button"
-                        className="side-panel-action-btn primary"
-                        onClick={handleOpenExternal}
-                      >
-                        🔗 기본 앱에서 열기
-                      </button>
-                    </div>
-                  )}
+                  {category === "other" && (() => {
+                    const info = describeOtherFile(item.pathOrUrl);
+                    return (
+                      <div className="side-panel-url-card">
+                        <div style={{ fontSize: "2.4em", lineHeight: 1, marginBottom: 8 }}>{info.icon}</div>
+                        <p style={{ marginBottom: 4 }}>
+                          <strong>{info.typeName}</strong>
+                        </p>
+                        <p style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 0 }}>
+                          앱 안 미리보기는 지원되지 않지만,<br />
+                          Windows에 연결된 프로그램으로 바로 열 수 있습니다.
+                        </p>
+                        <button
+                          type="button"
+                          className="side-panel-action-btn primary"
+                          onClick={handleOpenExternal}
+                        >
+                          🔗 {info.typeName}(으)로 열기
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </div>
