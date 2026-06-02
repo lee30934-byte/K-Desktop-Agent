@@ -2732,6 +2732,15 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   } | null = null;
   const STDERR_KEEP = 4096;
 
+  // ── Phase 123 (v0.6.78): Codex 경로 per-turn idle 워치독 ────────────────
+  // Claude 경로(Phase 121)와 동일 구조. Codex 자식이 stdout/stderr 를 IDLE_TIMEOUT_MS
+  // 동안 한 줄도 안 내면 hang 으로 판정 → tree-kill → proc.on("close") 가 code≠0 로
+  // reject → catch 가 error emit → UI "진행중" 고착 해제. catch/finally 가 참조하므로
+  // 선언은 try 밖. 긴 작업 오인 방지 위해 임계값 보수적(기본 8분, env 조절 가능).
+  const IDLE_TIMEOUT_MS = Number(process.env.KDA_TURN_IDLE_TIMEOUT_MS) || 8 * 60 * 1000;
+  let watchdogTripped = false;
+  let idleWatchdog: ReturnType<typeof setInterval> | undefined;
+
   try {
     const proc = spawn(CODEX_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -2740,6 +2749,31 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     });
 
     activeTurns.set(msg.id, proc);
+
+    // idle 워치독 기준 시각 — stdout 라인/stderr chunk 올 때마다 갱신.
+    let lastActivity = Date.now();
+    // 15s 간격으로 무이벤트 시간 점검. 임계 초과 시 자식 트리 강제 종료.
+    idleWatchdog = setInterval(() => {
+      const idle = Date.now() - lastActivity;
+      if (idle <= IDLE_TIMEOUT_MS) return;
+      watchdogTripped = true;
+      if (idleWatchdog) clearInterval(idleWatchdog);
+      logToFile(
+        "error",
+        `Codex idle watchdog tripped id=${msg.id} idleMs=${idle} threshold=${IDLE_TIMEOUT_MS} — 멈춘 자식 프로세스 강제 종료`,
+      );
+      const pid = proc.pid;
+      if (pid) {
+        treeKill(pid, "SIGKILL", (err) => {
+          if (err) {
+            logToFile("warn", `Codex idle watchdog tree-kill 실패 PID=${pid}: ${err.message} — fallback proc.kill`);
+            try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+          }
+        });
+      } else {
+        try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+      }
+    }, 15_000);
 
     // Phase 79 (v0.6.22) — Task State Manager: Codex 작업 시작을 DB 에 기록.
     // App.tsx 의 listener 가 long_tasks 테이블에 row insert. KDA 재시작/끊김 시 복구 가능 후보로 표시.
@@ -2766,6 +2800,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
     if (proc.stderr) {
       proc.stderr.on("data", (chunk: Buffer) => {
+        lastActivity = Date.now(); // idle 워치독 리셋
         const decoded = chunk.toString("utf-8");
         stderrTail += decoded;
         if (stderrTail.length > STDERR_KEEP) {
@@ -2814,6 +2849,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     });
 
     for await (const line of rl) {
+      lastActivity = Date.now(); // idle 워치독 리셋 — 자식이 살아있다는 신호
       if (!line.trim()) continue;
       try {
         const rawEvent = JSON.parse(line);
@@ -3387,9 +3423,13 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     // Phase 79 (v0.6.22): Codex 정상 종료 — long_tasks status 갱신.
     emit({ type: "long_task_done", taskId: msg.id, status: "completed" } as any);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const rawMessage = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
-    logToFile("error", `Codex query error id=${msg.id}: ${message}${stack ? `\n${stack}` : ""}`);
+    // idle 워치독이 죽인 경우 — generic "exited with code null" 대신 원인을 명확히.
+    const message = watchdogTripped
+      ? `응답이 ${Math.round(IDLE_TIMEOUT_MS / 1000)}초간 멈춰 자동 중단했습니다. 다시 시도해 주세요. (idle watchdog)`
+      : rawMessage;
+    logToFile("error", `Codex query error id=${msg.id}: ${rawMessage}${watchdogTripped ? " [idle watchdog kill]" : ""}${stack ? `\n${stack}` : ""}`);
     emit({ type: "error", id: msg.id, message });
     // Phase 79 (v0.6.22): Codex 실패 종료 — long_tasks status='failed' 로 mark.
     emit({
@@ -3399,6 +3439,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       handoffMd: `Codex 작업 실패: ${message}`,
     } as any);
   } finally {
+    clearInterval(idleWatchdog); // idle 워치독 정리 — 정상/비정상 종료 모두
     logToFile("info", `Codex query end id=${msg.id}`);
     activeTurns.delete(msg.id);
     if (attachmentsDir) {
