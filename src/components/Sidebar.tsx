@@ -869,6 +869,8 @@ function Sidebar({
       const f = item as Folder;
       const childCount = (tree.childFolders.get(f.id) ?? []).length;
       const convCount = (tree.convsInFolder.get(f.id) ?? []).length;
+      // Phase 124 (v0.6.79) — Explorer 모드 폴더 인라인 이름 편집 분기.
+      const isEditing = editingState?.kind === "folder" && editingState.id === f.id;
       // Phase 113.1 (v0.6.65) — Explorer 폴더 카드에 DnD wrap. 옛 트리 모드의 옮기기
       // 기능을 Explorer 에서 살림 (K 명시: "트리는 제거하되 옮기기 기능은 그대로").
       // DndFolder = draggable + droppable. conv 를 폴더 위에 drop → 이동.
@@ -889,6 +891,7 @@ function Sidebar({
             transition: "background 0.1s",
           }}
           onDoubleClick={() => {
+            if (isEditing) return;
             setCurrentFolderId(f.id);
             setContextMenu(null);
           }}
@@ -906,9 +909,25 @@ function Sidebar({
           title={`더블클릭=진입 · 우클릭=메뉴 · 드래그 = 이동 · 하위 ${childCount}폴더 / ${convCount}대화`}
         >
           <span style={{ fontSize: 16 }}>{f.icon ?? "📁"}</span>
-          <span style={{ flex: 1, fontSize: 13, color: f.color ?? "var(--text, #e8eaff)" }}>
-            {f.name}
-          </span>
+          {isEditing ? (
+            <input
+              ref={editInputRef}
+              className="conv-title-edit"
+              style={{ flex: 1, fontSize: 13 }}
+              value={editingState!.title}
+              onChange={(e) => setEditingState({ ...editingState!, title: e.target.value })}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onBlur={() => void commitEdit()}
+              onKeyDown={handleEditKeyDown}
+              maxLength={120}
+              placeholder="이름 (Enter=저장, Esc=취소)"
+            />
+          ) : (
+            <span style={{ flex: 1, fontSize: 13, color: f.color ?? "var(--text, #e8eaff)" }}>
+              {f.name}
+            </span>
+          )}
           {(childCount > 0 || convCount > 0) && (
             <span style={{ fontSize: 10, opacity: 0.45 }}>
               {childCount > 0 ? `📁${childCount} ` : ""}
@@ -920,6 +939,11 @@ function Sidebar({
     } else {
       const c = item as Conversation;
       const active = c.id === activeConversationId;
+      // Phase 124 (v0.6.79) — Explorer 모드 인라인 제목 편집. 옛 트리 모드에만 있던
+      // isEditing 분기를 Explorer 로 포팅. 이게 없으면 "제목 변경" 메뉴가
+      // editingState 만 세팅하고 그릴 곳이 없어 silent 무반응.
+      const isEditing =
+        editingState?.kind === "conversation" && editingState.id === c.id;
       // Phase 113.1 (v0.6.65) — Explorer 대화 카드에 DnD wrap.
       // DraggableConv 로 wrap 하면 8px 이동 시 drag 시작 (PointerSensor activation),
       // 짧은 click 은 정상 onClick 호출 → 활성화. drop 처리는 handleDndEnd 가 담당.
@@ -927,6 +951,7 @@ function Sidebar({
         <DraggableConv
           key={`conv-${c.id}`}
           convId={c.id}
+          disabled={isEditing}
           className={`explorer-item explorer-conv ${active ? "active" : ""}`}
           style={{
             display: "flex",
@@ -941,6 +966,7 @@ function Sidebar({
             borderLeft: active ? "2px solid var(--accent, #66ccff)" : "2px solid transparent",
           }}
           onClick={() => {
+            if (isEditing) return;
             onSelectConversation(c.id);
             setContextMenu(null);
           }}
@@ -964,18 +990,33 @@ function Sidebar({
           <span style={{ fontSize: 14 }}>
             {c.isFavorite ? "★" : c.icon ?? "💬"}
           </span>
-          <span
-            style={{
-              flex: 1,
-              fontSize: 13,
-              color: c.color ?? "var(--text, #e8eaff)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {c.title}
-          </span>
+          {isEditing ? (
+            <input
+              ref={editInputRef}
+              className="conv-title-edit"
+              style={{ flex: 1, fontSize: 13 }}
+              value={editingState!.title}
+              onChange={(e) => setEditingState({ ...editingState!, title: e.target.value })}
+              onClick={(e) => e.stopPropagation()}
+              onBlur={() => void commitEdit()}
+              onKeyDown={handleEditKeyDown}
+              maxLength={120}
+              placeholder="제목 (Enter=저장, Esc=취소)"
+            />
+          ) : (
+            <span
+              style={{
+                flex: 1,
+                fontSize: 13,
+                color: c.color ?? "var(--text, #e8eaff)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {c.title}
+            </span>
+          )}
           {/* Phase 111 (v0.6.60) — streaming 중인 conv 옆 ● dot */}
           {streamingConvIds?.has(c.id) && (
             <span
