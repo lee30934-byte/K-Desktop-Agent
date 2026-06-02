@@ -292,6 +292,20 @@ export async function loadPreview(
       };
       return { dataUrl: `data:${mimeMap[category] || "application/octet-stream"};base64,${b64}` };
     }
+    if (category === "other") {
+      // Phase 119 (v0.6.74) — 탐색기式 셸 썸네일 시도. 설치된 프로그램의 thumbnail provider 가
+      // hwp/dwg/psd 등 거의 모든 형식의 미리보기 이미지를 줌. 없으면 빈 결과 → 연동 열기 카드 폴백.
+      try {
+        const res = await invoke<{ dataUrl?: string }>("get_shell_thumbnail", {
+          path: normalizedPath,
+          size: 768,
+        });
+        if (res?.dataUrl) return { dataUrl: res.dataUrl };
+      } catch (e) {
+        logger.log(`[SidePanel] shell thumbnail 없음 (연동 열기 폴백): ${e}`);
+      }
+      return {};
+    }
     return {};
   } catch (e) {
     return { error: String(e) };
@@ -338,11 +352,12 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
     }
     const category = getCategory(item.pathOrUrl);
     logger.log(`[SidePanel] category=${category} for ${item.pathOrUrl}`);
-    if (category === "url" || category === "other") {
-      // url/other 도 preview 안 박지만 render 측에서 "외부 열기" 카드 표시. 빈 preview 가 정상.
+    if (category === "url") {
+      // url 은 preview 안 박고 render 측에서 "외부 열기" 카드 표시. 빈 preview 가 정상.
       setPreview({});
       return;
     }
+    // Phase 119 (v0.6.74): "other" 는 셸 썸네일(탐색기式) 시도 → 성공 이미지 / 실패 시 연동 카드.
     setLoading(true);
     (async () => {
       // Phase 80 (v0.6.24): Final-Review Gate — image/video/audio/pdf 만 검사 (text 는 그대로 통과)
@@ -621,6 +636,24 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
                   )}
                   {category === "other" && (() => {
                     const info = describeOtherFile(item.pathOrUrl);
+                    // Phase 119 (v0.6.74): 셸 썸네일이 잡히면 탐색기式 미리보기 이미지 + 연동 열기.
+                    if (preview.dataUrl) {
+                      return (
+                        <div className="side-panel-thumb-wrap">
+                          <img src={preview.dataUrl} alt={info.typeName} className="side-panel-image" />
+                          <div className="side-panel-thumb-caption">
+                            {info.icon} {info.typeName} · 미리보기 이미지
+                          </div>
+                          <button
+                            type="button"
+                            className="side-panel-action-btn primary"
+                            onClick={handleOpenExternal}
+                          >
+                            🔗 {info.typeName}(으)로 열기
+                          </button>
+                        </div>
+                      );
+                    }
                     return (
                       <div className="side-panel-url-card">
                         <div style={{ fontSize: "2.4em", lineHeight: 1, marginBottom: 8 }}>{info.icon}</div>
@@ -628,7 +661,7 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
                           <strong>{info.typeName}</strong>
                         </p>
                         <p style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 0 }}>
-                          앱 안 미리보기는 지원되지 않지만,<br />
+                          앱 안 미리보기 이미지가 없어,<br />
                           Windows에 연결된 프로그램으로 바로 열 수 있습니다.
                         </p>
                         <button

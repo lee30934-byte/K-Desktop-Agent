@@ -2309,8 +2309,9 @@ dependencies = [
 
 [[package]]
 name = "k-desktop-agent"
-version = "0.6.73"
+version = "0.6.74"
 dependencies = [
+ "image",
  "notify",
  "notify-debouncer-mini",
  "reqwest 0.12.28",
@@ -2331,6 +2332,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "windows",
 ]
 
 [[package]]

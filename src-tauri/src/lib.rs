@@ -1925,6 +1925,197 @@ fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, S
     }
 }
 
+/// Phase 119 (v0.6.74) — 탐색기式 "거의 모든 파일" 미리보기.
+///
+/// 원리: Windows 탐색기 썸네일은 `IShellItemImageFactory::GetImage` 로 각 파일의
+/// 미리보기 비트맵(문서 첫 페이지/영상 프레임/이미지 등)을 뽑는다. 설치된 프로그램이
+/// 등록한 thumbnail provider 가 거의 모든 형식을 커버 → hwp/dwg/psd 등도 정적 이미지로 표시.
+///
+/// 인터랙티브 IPreviewHandler 호스팅은 네이티브 HWND 를 WebView2 위에 겹쳐야 해서 취약 →
+/// 안정적인 정적 썸네일 방식 채택. 못 뽑으면 frontend 가 기존 "연동 열기" 카드로 폴백.
+///
+/// 안전성: read_preview_file 과 동일한 신뢰 prefix + UNC strip + 로컬 drive-letter 검증.
+/// COM 은 전용 스레드에서 STA 초기화 (tokio worker 의 apartment 충돌 회피).
+#[cfg(windows)]
+#[tauri::command]
+fn get_shell_thumbnail(path: String, size: Option<u32>) -> Result<serde_json::Value, String> {
+    use std::path::Path;
+    let normalized = percent_decode_local_path(&path);
+    let p = Path::new(&normalized);
+    let canonical = p
+        .canonicalize()
+        .map_err(|e| format!("path canonicalize 실패: {} (입력: {})", e, path))?;
+    let canonical_full = canonical.to_string_lossy().to_string();
+    let stripped = strip_unc_prefix(&canonical_full).to_string();
+    let canonical_str = stripped.to_lowercase();
+
+    let home = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
+    let resource_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_string_lossy().to_lowercase()));
+    let appdata = std::env::var("APPDATA").unwrap_or_default().to_lowercase();
+    let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default().to_lowercase();
+    let trusted_prefixes: Vec<String> = vec![Some(home), resource_dir, Some(appdata), Some(localappdata)]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect();
+    let trusted = is_local_drive_path(&canonical_str)
+        || trusted_prefixes.iter().any(|prefix| canonical_str.starts_with(prefix));
+    if !trusted {
+        return Err(format!(
+            "신뢰하지 않는 경로 (썸네일 거부): {}\n네트워크/UNC 경로는 지원하지 않습니다.",
+            canonical.display(),
+        ));
+    }
+
+    let px = size.unwrap_or(512).clamp(64, 2048) as i32;
+
+    // COM 은 전용 스레드에서 (apartment 격리). join 으로 결과 수령.
+    let handle = std::thread::spawn(move || -> Result<Vec<u8>, String> {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::SIZE;
+        use windows::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC,
+            BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+        };
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+        use windows::Win32::UI::Shell::{
+            SHCreateItemFromParsingName, IShellItemImageFactory, SIIGBF_BIGGERSIZEOK,
+        };
+
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let need_uninit = hr.is_ok();
+            let inner = (|| -> Result<Vec<u8>, String> {
+                let wide: Vec<u16> = OsStr::new(&stripped).encode_wide().chain(std::iter::once(0)).collect();
+                let factory: IShellItemImageFactory =
+                    SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None)
+                        .map_err(|e| format!("SHCreateItemFromParsingName 실패: {}", e))?;
+                let sz = SIZE { cx: px, cy: px };
+                let hbitmap: HBITMAP = factory
+                    .GetImage(sz, SIIGBF_BIGGERSIZEOK)
+                    .map_err(|e| format!("GetImage 실패 (썸네일 없음): {}", e))?;
+
+                let png_res = (|| -> Result<Vec<u8>, String> {
+                    let mut bmp = BITMAP::default();
+                    let got = GetObjectW(
+                        HGDIOBJ(hbitmap.0),
+                        std::mem::size_of::<BITMAP>() as i32,
+                        Some(&mut bmp as *mut _ as *mut std::ffi::c_void),
+                    );
+                    if got == 0 {
+                        return Err("GetObjectW 실패".into());
+                    }
+                    let width = bmp.bmWidth;
+                    let height = bmp.bmHeight;
+                    if width <= 0 || height <= 0 {
+                        return Err("비트맵 크기 0".into());
+                    }
+                    let screen = GetDC(None);
+                    let mem_dc: HDC = CreateCompatibleDC(Some(screen));
+                    let mut bi = BITMAPINFO {
+                        bmiHeader: BITMAPINFOHEADER {
+                            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                            biWidth: width,
+                            biHeight: -height, // top-down
+                            biPlanes: 1,
+                            biBitCount: 32,
+                            biCompression: 0, // BI_RGB
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let mut buf = vec![0u8; (width as usize) * (height as usize) * 4];
+                    let scan = GetDIBits(
+                        mem_dc,
+                        hbitmap,
+                        0,
+                        height as u32,
+                        Some(buf.as_mut_ptr() as *mut std::ffi::c_void),
+                        &mut bi,
+                        DIB_RGB_COLORS,
+                    );
+                    let _ = DeleteDC(mem_dc);
+                    ReleaseDC(None, screen);
+                    if scan == 0 {
+                        return Err("GetDIBits 실패".into());
+                    }
+                    // BGRA → RGBA + 셸 썸네일의 alpha=0 (불투명인데 투명으로 보이는) 함정 보정.
+                    let mut any_alpha = false;
+                    for px4 in buf.chunks_exact(4) {
+                        if px4[3] != 0 {
+                            any_alpha = true;
+                            break;
+                        }
+                    }
+                    for px4 in buf.chunks_exact_mut(4) {
+                        px4.swap(0, 2); // B<->R
+                        if !any_alpha {
+                            px4[3] = 255;
+                        }
+                    }
+                    let mut out: Vec<u8> = Vec::new();
+                    {
+                        use image::ImageEncoder;
+                        let encoder = image::codecs::png::PngEncoder::new(&mut out);
+                        encoder
+                            .write_image(&buf, width as u32, height as u32, image::ExtendedColorType::Rgba8)
+                            .map_err(|e| format!("PNG 인코딩 실패: {}", e))?;
+                    }
+                    Ok(out)
+                })();
+
+                let _ = DeleteObject(HGDIOBJ(hbitmap.0));
+                png_res
+            })();
+            if need_uninit {
+                CoUninitialize();
+            }
+            inner
+        }
+    });
+
+    let png = handle
+        .join()
+        .map_err(|_| "썸네일 스레드 패닉".to_string())??;
+    Ok(serde_json::json!({ "dataUrl": format!("data:image/png;base64,{}", base64_encode_std(&png)) }))
+}
+
+/// 의존성 없는 표준 base64 인코더 (썸네일 PNG → data URL).
+#[cfg(windows)]
+fn base64_encode_std(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(T[(b0 >> 2) as usize] as char);
+        out.push(T[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(T[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(T[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// non-Windows 빌드용 스텁 (generate_handler 심볼 유지). 실제 배포는 Windows 전용.
+#[cfg(not(windows))]
+#[tauri::command]
+fn get_shell_thumbnail(_path: String, _size: Option<u32>) -> Result<serde_json::Value, String> {
+    Err("shell thumbnail 은 Windows 에서만 지원됩니다.".into())
+}
+
 /// Phase 80 (v0.6.24) — Final-Review Gate.
 ///
 /// folder_path 의 같은 폴더에서 `qa-report.json` 을 찾아 parse 후 반환. SidePanel 의
@@ -3312,6 +3503,7 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 74 (v0.6.17) — SidePanel 미리보기/외부 열기 — capabilities scope 우회
             open_path,
             read_preview_file,
+            get_shell_thumbnail,
             codex_login,
             codex_login_status,
             codex_register_mcp,

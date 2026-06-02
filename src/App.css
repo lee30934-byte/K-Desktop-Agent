@@ -4743,6 +4743,22 @@
 .side-panel-xls .xls-sheet:first-child .xls-sheet-name {
   margin-top: 0;
 }
+/* Phase 119 (v0.6.74): 셸 썸네일(탐색기式) 미리보기 래퍼 */
+.side-panel-thumb-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.side-panel-thumb-wrap .side-panel-image {
+  background: #1a1a1a;
+}
+.side-panel-thumb-caption {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
 .side-panel-url-card {
   width: 100%;
   padding: 16px;
