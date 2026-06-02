@@ -1906,8 +1906,15 @@ fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, S
     if as_text {
         let s = std::fs::read_to_string(&canonical).map_err(|e| format!("text read 실패: {}", e))?;
         // 텍스트도 100KB 까지만 (frontend 의 truncate 와 일관성).
+        // Phase 116 (v0.6.71) — `&s[..100_000]` 는 byte 슬라이스라 100_000 번째 byte 가
+        // 한글 등 멀티바이트 char 중간이면 panic ("not a char boundary"). UTF-8 안전 경계로
+        // 내려서 자른다 (한글 3byte/자 → 약 2/3 확률로 panic 하던 latent crash).
         let truncated = if s.len() > 100_000 {
-            format!("{}\n\n... [잘림: 100KB 까지만]", &s[..100_000])
+            let mut end = 100_000;
+            while end > 0 && !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}\n\n... [잘림: 100KB 까지만]", &s[..end])
         } else {
             s
         };
