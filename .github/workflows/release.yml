@@ -38,10 +38,21 @@ jobs:
         run: npm ci
 
       - name: Build sidecar
+        # Phase 120 (v0.6.75) — 업데이트 다운로드 다이어트.
+        # tsc 컴파일이 끝난 뒤(dist/ 생성) devDependencies(typescript/tsx/@esbuild/@types 등 ~37MB)를
+        # prune 한다. sidecar 런타임은 `node dist/index.js` 라 빌드 도구가 불필요한데,
+        # tauri.conf.json 의 resources(`sidecar/node_modules/**/*`)가 그동안 dev 의존성까지
+        # 통째로 번들해 매 인스톨러가 불필요하게 커졌다. CI 러너는 일회용이라 로컬 개발엔 영향 0.
+        shell: pwsh
         run: |
-          cd sidecar
+          Push-Location sidecar
           npm ci
           npm run build
+          $before = (Get-ChildItem node_modules -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          npm prune --omit=dev
+          $after = (Get-ChildItem node_modules -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          Write-Host ("sidecar node_modules: {0:N1}MB -> {1:N1}MB (prune --omit=dev)" -f ($before/1MB), ($after/1MB))
+          Pop-Location
 
       - name: Fetch K-Personal-MCP source
         # Phase 26 (v0.5.13): K-Personal MCP 도구 서버 코드를 매 빌드마다 fetch.
