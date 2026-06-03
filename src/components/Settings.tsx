@@ -337,6 +337,16 @@ const EXTERNAL_USAGE_PAGES: ExternalUsagePage[] = [
 // localStorage 키 — App.tsx 와 공유
 const LS_ACTIVE_PROVIDER = "kda_active_provider";
 const LS_ACTIVE_MODEL = "kda_active_model";
+// Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort). App.tsx 의 loadReasoningEffort 와 동일 키.
+const LS_REASONING_EFFORT = "kda_reasoning_effort";
+// Codex `model_reasoning_effort` 선택지. "default" = 안 박음 (config.toml/모델 기본값).
+const REASONING_EFFORT_OPTIONS: { id: string; label: string; desc: string }[] = [
+  { id: "default", label: "기본 (모델 자동)", desc: "Codex config.toml / 모델 기본 추론 강도 사용" },
+  { id: "minimal", label: "최소 (minimal)", desc: "가장 빠름 · 추론 최소 — 단순 작업" },
+  { id: "low", label: "낮음 (low)", desc: "빠름 · 가벼운 추론" },
+  { id: "medium", label: "중간 (medium)", desc: "균형 — 일반 작업 권장" },
+  { id: "high", label: "높음 (high)", desc: "가장 깊은 추론 · 느림 — 복잡한 문제" },
+];
 const LS_AUTO_RESUME_LONG_TASKS = "kda_auto_resume_long_tasks";
 const LS_AUTO_RESUME_UNTIL_MANUAL_STOP = "kda_auto_resume_until_manual_stop";
 const LS_AUTO_RESUME_MANUAL_STOPPED = "kda_auto_resume_manual_stopped";
@@ -1175,6 +1185,8 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // 실제 채팅에 사용되는 active provider/model (sidecar 로 전달됨)
   const [chatProvider, setChatProvider] = useState<string>("claude");
   const [chatModel, setChatModel] = useState<string>("default");
+  // Phase 125 (v0.6.80) — Codex 추론 강도. "default" = 미적용.
+  const [reasoningEffort, setReasoningEffort] = useState<string>("default");
 
   // 에이전트 권한 상태
   const [permissions, setPermissions] = useState<AgentPermission[]>(DEFAULT_PERMISSIONS);
@@ -1742,6 +1754,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         setChatProvider(savedProvider);
         setChatModel(savedModel);
         setActiveProvider(savedProvider);
+        // Phase 125 (v0.6.80) — 저장된 추론 강도 로드 (없으면 default).
+        const savedReasoning = localStorage.getItem(LS_REASONING_EFFORT) || "default";
+        setReasoningEffort(savedReasoning);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -1755,6 +1770,17 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     setChatModel(modelId);
     localStorage.setItem(LS_ACTIVE_PROVIDER, providerId);
     localStorage.setItem(LS_ACTIVE_MODEL, modelId);
+    try {
+      window.dispatchEvent(new Event("kda-active-changed"));
+    } catch {
+      // ignore — 발행 실패해도 저장은 됐고 다음 새로고침이면 반영됨
+    }
+  }
+
+  // Phase 125 (v0.6.80) — Codex 추론 강도 저장. state + localStorage + 이벤트 발행.
+  function saveReasoningEffort(value: string) {
+    setReasoningEffort(value);
+    localStorage.setItem(LS_REASONING_EFFORT, value);
     try {
       window.dispatchEvent(new Event("kda-active-changed"));
     } catch {
@@ -3629,6 +3655,42 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       ))}
                     </select>
                   </div>
+
+                  {/* Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort). codex provider 만 노출 */}
+                  {currentProvider.id === "codex" && (
+                    <div style={{ marginTop: "14px" }}>
+                      <div
+                        className="settings-row-title"
+                        style={{ fontSize: "0.95em", marginBottom: "6px" }}
+                      >
+                        추론 강도 (reasoning effort)
+                      </div>
+                      <select
+                        className="api-key-input mono"
+                        value={reasoningEffort}
+                        onChange={(e) => saveReasoningEffort(e.target.value)}
+                        style={{ width: "100%", padding: "8px 10px" }}
+                      >
+                        {REASONING_EFFORT_OPTIONS.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                      <div
+                        style={{
+                          fontSize: "0.82em",
+                          opacity: 0.7,
+                          marginTop: "6px",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {REASONING_EFFORT_OPTIONS.find(
+                          (o) => o.id === reasoningEffort,
+                        )?.desc ?? ""}
+                      </div>
+                    </div>
+                  )}
 
                   {/* 활성 채팅 provider 로 설정 */}
                   <div className="api-key-actions" style={{ marginTop: "14px" }}>

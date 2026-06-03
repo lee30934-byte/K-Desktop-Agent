@@ -957,6 +957,11 @@ type UserMessage = {
   // 모델 ID. provider 별로 형식이 다름 (예: openai="gpt-4o-mini", gemini="gemini-2.0-flash").
   // 미지정이면 provider 별 기본값.
   model?: string;
+  // Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort).
+  // Codex CLI 의 config 키 `model_reasoning_effort` override 용.
+  // 허용값: "minimal" | "low" | "medium" | "high". "default"/미지정 → 안 박음 (config.toml 기본값).
+  // codex provider 에서만 의미 있음 (다른 provider 는 무시).
+  reasoningEffort?: string;
   // 에이전트 권한 (Settings UI 의 8개 토글 — id → level).
   // claude provider 에서만 의미 있음 (REST API 모드는 도구 미지원).
   permissions?: PermissionsMap;
@@ -2699,9 +2704,20 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     args.unshift("-c");
   }
 
+  // Phase 125 (v0.6.80) — 추론 강도 (reasoning effort) override.
+  // Codex CLI 의 `-c model_reasoning_effort="..."` (TOML literal). config.toml 기본값을 덮음.
+  // 화이트리스트로만 박음 (TOML/shell injection 방지 — pitfall_js_arg_type_silent_throw 계열 방어).
+  // "default"/미지정/비허용값 → 안 박음 → Codex 가 config.toml 또는 모델 기본 effort 사용.
+  const VALID_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
+  const reasoning = msg.reasoningEffort?.trim().toLowerCase();
+  if (reasoning && VALID_REASONING_EFFORTS.has(reasoning)) {
+    args.unshift(`model_reasoning_effort="${reasoning}"`);
+    args.unshift("-c");
+  }
+
   logToFile(
     "info",
-    `Codex query start id=${msg.id} model=${msg.model ?? "default"} resume=${msg.agent_id ?? "none"} promptBytes=${promptBytes} historyIn=${msg.history?.length ?? 0} historySent=${codexBootstrapHistory?.length ?? 0} memorySent=${effectiveAgentId ? 0 : memory.bytes} attachments=${msg.attachments?.length ?? 0}`,
+    `Codex query start id=${msg.id} model=${msg.model ?? "default"} reasoning=${reasoning && VALID_REASONING_EFFORTS.has(reasoning) ? reasoning : "default"} resume=${msg.agent_id ?? "none"} promptBytes=${promptBytes} historyIn=${msg.history?.length ?? 0} historySent=${codexBootstrapHistory?.length ?? 0} memorySent=${effectiveAgentId ? 0 : memory.bytes} attachments=${msg.attachments?.length ?? 0}`,
   );
 
   // Per-turn usage 집계 — Codex 는 turn.completed 에 정확한 컨텍스트 크기 한 번 옴.

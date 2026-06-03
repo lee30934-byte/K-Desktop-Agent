@@ -207,6 +207,10 @@ async fn send_message(
     api_key: Option<String>,
     provider: Option<String>,
     model: Option<String>,
+    // Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort).
+    // JS 측 `reasoningEffort` 키 → Tauri 자동 케이스 변환으로 `reasoning_effort` 수신.
+    // sidecar 는 `reasoningEffort` 키로 읽음 (handleViaCodexCLI). codex provider 에서만 의미.
+    reasoning_effort: Option<String>,
     // 권한 정책: { permission_id: "auto" | "ask" | "manual", ... }
     // claude provider 의 sidecar CLI 호출 시 --disallowed-tools 와 시스템 프롬프트 안내 생성.
     // None 이면 sidecar 의 DEFAULT_PERMISSIONS 가 적용.
@@ -254,6 +258,13 @@ async fn send_message(
     }
     if let Some(m) = model {
         payload["model"] = serde_json::Value::String(m);
+    }
+    // Phase 125 (v0.6.80) — Codex 추론 강도. 화이트리스트 값만 전달 (sidecar 도 재검증).
+    if let Some(re) = reasoning_effort {
+        let r = re.trim();
+        if r == "minimal" || r == "low" || r == "medium" || r == "high" {
+            payload["reasoningEffort"] = serde_json::Value::String(r.to_string());
+        }
     }
     // 권한 정책 (있으면 그대로 전달; 없으면 sidecar 가 기본값 사용)
     if let Some(p) = permissions {

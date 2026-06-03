@@ -249,6 +249,22 @@ function readLocalBool(key: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+// Phase 125 (v0.6.80) — Codex 추론 강도(reasoning effort) 로드.
+// Settings 의 kda_reasoning_effort localStorage 키. 화이트리스트 값만 통과시키고,
+// "default"/미설정/비허용값 → undefined (sidecar 가 config.toml 기본값 사용).
+// codex provider 에서만 sidecar 가 실제로 적용 (다른 provider 는 무시).
+function loadReasoningEffort(): string | undefined {
+  try {
+    const v = localStorage.getItem("kda_reasoning_effort");
+    if (v === "minimal" || v === "low" || v === "medium" || v === "high") {
+      return v;
+    }
+  } catch {
+    // ignore — 실패 시 기본값(undefined)
+  }
+  return undefined;
+}
+
 // Phase 113.4 (v0.6.68) — trim 통계 JSONL 로그.
 // 위치: %LOCALAPPDATA%\com.k.desktop-agent\trim.log (Windows, Tauri appLocalDataDir)
 // 1MB rolling — 초과 시 옛 절반 버림 (사후 추적 + 디스크 무한 누적 방지)
@@ -2174,6 +2190,10 @@ export default function App() {
         provider = "claude";
       }
 
+      // Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort). Settings 의 kda_reasoning_effort.
+      // codex provider 에서만 의미. "default"/미설정 → undefined → sidecar 가 config.toml 기본값.
+      const reasoningEffort = loadReasoningEffort();
+
       // 에이전트 권한 (Settings UI 의 8개 토글 — id → level)
       // Settings.tsx 가 [{id, level, ...}] 배열로 저장하므로 sidecar 의 map 형태 { id: level } 로 변환.
       // 변환 실패 시 undefined 로 두면 sidecar 가 DEFAULT_PERMISSIONS 사용.
@@ -2271,6 +2291,7 @@ export default function App() {
         apiKey,
         provider,
         model,
+        reasoningEffort,
         permissions,
         lockedTools,
         safeMode,
@@ -2873,6 +2894,9 @@ export default function App() {
         provider = "claude";
       }
 
+      // Phase 125 (v0.6.80) — Resume path 도 Codex 추론 강도 동일 적용.
+      const reasoningEffort = loadReasoningEffort();
+
       // permissions / lockedTools — handleSendMessage 와 동일
       let permissions: Record<string, string> | undefined;
       try {
@@ -2934,6 +2958,7 @@ export default function App() {
         apiKey,
         provider,
         model,
+        reasoningEffort,
         permissions,
         lockedTools,
         safeMode,
