@@ -1919,6 +1919,11 @@ export default function App() {
   const [queuedSend, setQueuedSend] = useState<QueuedSend | null>(null);
   // Phase 34: useEffect race 진단용 ref. setQueuedSend 와 항상 동기 — flush 직전 ref 도 비움.
   const queuedSendRef = useRef<QueuedSend | null>(null);
+  // Phase 128 (v0.6.83) — flush 타이머를 effect cleanup 과 분리.
+  // 종전엔 flush effect 가 setQueuedSend(null) 로 self re-render → cleanup 이 자기 flush
+  // 타이머를 clearTimeout 해서 큐 메시지가 "한번씩" 증발(드롭)했음. 타이머를 ref 로 들고
+  // 언마운트 시에만 정리 → 의존성 변경 cleanup 이 in-flight flush 를 취소 못 함.
+  const flushTimerRef = useRef<number | null>(null);
 
   const handleCancelQueuedSend = useStableCallback(() => {
     logger.log("[Phase34] 큐 취소 — K 가 ✕ 클릭");
@@ -3000,16 +3005,34 @@ export default function App() {
     // state 와 ref 둘 다 확인 — 어느 한쪽만 set 이라면 그게 진짜 큐
     const next = queuedSend ?? queuedSendRef.current;
     if (!next) return;
+    // Phase 128 (v0.6.83) — 이미 flush 타이머가 떠 있으면 재진입 무시.
+    // 아래 setQueuedSend(null) 가 일으키는 re-render 로 이 effect 가 다시 도는데,
+    // 그때 next 는 null 이라 위에서 걸러지지만, 만약을 위한 이중 방어.
+    if (flushTimerRef.current !== null) return;
     logger.log(`[Phase34] flush 시작 — text 첫50자="${next.text.slice(0, 50)}"`);
     queuedSendRef.current = null;
     setQueuedSend(null);
-    // setTimeout(0) — setState batch 끝난 후 send (race 방어)
-    const t = window.setTimeout(() => {
+    // setTimeout(0) — setState batch 끝난 후 send (race 방어).
+    // Phase 128: 타이머를 ref 로 보관 + cleanup 에서 clearTimeout 하지 않음.
+    //   종전엔 setQueuedSend(null) re-render → 의존성(queuedSend) 변경 → React 가
+    //   이 effect 의 cleanup(clearTimeout) 을 먼저 실행해 자기 flush 타이머를 죽여서
+    //   큐 메시지가 간헐적으로 증발했음. 타이머 정리는 언마운트 effect 에서만.
+    flushTimerRef.current = window.setTimeout(() => {
+      flushTimerRef.current = null;
       logger.log(`[Phase34] flush 실행 — handleSendMessage 호출`);
       void handleSendMessage(next.text, next.files);
     }, 0);
-    return () => window.clearTimeout(t);
   }, [isStreaming, queuedSend, handleSendMessage]);
+
+  // Phase 128 (v0.6.83) — flush 타이머는 언마운트 시에만 정리 (의존성 cleanup 과 분리).
+  useEffect(() => {
+    return () => {
+      if (flushTimerRef.current !== null) {
+        window.clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!pendingLongTaskAutoResume || isStreaming || !dbReady) return;
