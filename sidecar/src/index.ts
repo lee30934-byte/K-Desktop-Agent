@@ -942,6 +942,9 @@ type UserMessage = {
   id: string;
   content: string;
   agent_id?: string;  // resume 지원용 (기존 대화 이어가기)
+  // Phase 126 (v0.6.81) — Codex resume 실패 자동 회복 가드 (내부 전용, frontend 미사용).
+  // true 면 그 turn 은 이미 "새 세션 재시도" 진입 → 무한 재귀/중복 long_task 방지.
+  _codexResumeRetried?: boolean;
   // history 항목:
   //   user/assistant: { role, content } — 일반 대화 메시지
   //   tool: { role: "tool", toolName, toolInput?, toolOutput? } — 도구 호출/결과 (Resume 시 포함)
@@ -2556,6 +2559,55 @@ function findCodexSessionFileById(agentId: string): string | null {
   return null;
 }
 
+// Phase 126 (v0.6.81) — Codex resume "no rollout found" 크래시 사전 차단.
+// findCodexSessionFileById 는 성능 위해 최근 14일만 스캔하므로, 14일 넘은 정상 세션도
+// null 을 돌려준다 (그건 resume 그대로 시도 → Codex 가 자체 보유분으로 정상 resume).
+// 하지만 thread_id 가 진짜 고아(예: 옛 Codex 버전의 UUIDv4 id, 또는 끊겨 기록 안 된 세션)면
+// `codex exec resume <id>` 가 exit 1 로 크래시한다. 그래서 resume 직전 "전체 트리"를 한 번
+// 훑어 (파일명만 검사 — 파일 read 없음, 저렴) rollout 존재 여부를 신뢰성 있게 판정한다.
+// 못 찾으면 resume 안 함 → 새 세션 + prior_conversation 재주입 (크래시 자체를 회피).
+// 스캔 실패 시엔 보수적으로 true (resume 막지 않음 — 런타임 reactive 회복이 잡음).
+function codexRolloutExists(agentId: string): boolean {
+  try {
+    const rootDir = path.join(os.homedir(), ".codex", "sessions");
+    if (!existsSync(rootDir)) return false;
+    for (const yyyy of readdirSync(rootDir)) {
+      const yDir = path.join(rootDir, yyyy);
+      let mmList: string[];
+      try {
+        mmList = readdirSync(yDir);
+      } catch {
+        continue;
+      }
+      for (const mm of mmList) {
+        const mDir = path.join(yDir, mm);
+        let ddList: string[];
+        try {
+          ddList = readdirSync(mDir);
+        } catch {
+          continue;
+        }
+        for (const dd of ddList) {
+          const dDir = path.join(mDir, dd);
+          let files: string[];
+          try {
+            files = readdirSync(dDir);
+          } catch {
+            continue;
+          }
+          for (const f of files) {
+            if (f.includes(agentId) && f.endsWith(".jsonl")) return true;
+          }
+        }
+      }
+    }
+    return false;
+  } catch {
+    // 스캔 자체 실패 — resume 막지 않음 (기존 동작 유지). 실제 크래시는 reactive 가 회복.
+    return true;
+  }
+}
+
 function inspectCodexSessionFile(agentId: string): {
   isPoisoned: boolean;
   reason?: string;
@@ -2648,6 +2700,8 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // 그리고 prior_conversation 도 새 세션처럼 박아야 함 (resume 아닌 path 와 동일).
   let effectiveAgentId: string | undefined = msg.agent_id ?? undefined;
   let poisonedSkipped = false;
+  // Phase 126 (v0.6.81) — 고아 thread_id 사전 차단 플래그.
+  let orphanSkipped = false;
   if (effectiveAgentId) {
     const poison = inspectCodexSessionFile(effectiveAgentId);
     if (poison.isPoisoned) {
@@ -2657,6 +2711,17 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       );
       effectiveAgentId = undefined;
       poisonedSkipped = true;
+    } else if (!codexRolloutExists(effectiveAgentId)) {
+      // Phase 126 (v0.6.81) — 그 thread 의 rollout 파일이 로컬 어디에도 없음 (고아 id).
+      // 그대로 resume 하면 `no rollout found for thread id (-32600)` 로 Codex 가 크래시.
+      // 사전에 resume 차단 → 새 세션 + prior_conversation 재주입 → 크래시 없이 대화 이어감.
+      logToFile(
+        "warn",
+        `Codex thread ${effectiveAgentId} 의 rollout 파일 없음 (orphan — 옛 Codex 버전 id 또는 미기록 세션). resume 차단 → 새 세션 + 맥락 재주입`,
+      );
+      blockSession(effectiveAgentId, "rollout 파일 없는 고아 thread_id — resume 영구 차단");
+      effectiveAgentId = undefined;
+      orphanSkipped = true;
     }
   }
 
@@ -2686,6 +2751,13 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
         type: "log",
         level: "warn",
         message: `이전 Codex 세션이 비정상 누적 (cumulative billing 합 > model window * 5 또는 파일 > 5MB) → 새 세션으로 자동 전환. 다음 turn 부터 정상 측정됩니다.`,
+      });
+    } else if (orphanSkipped) {
+      // Phase 126 (v0.6.81) — 고아 thread_id 사전 차단 안내.
+      emit({
+        type: "log",
+        level: "warn",
+        message: `이전 Codex 세션 기록을 찾을 수 없어(앱·Codex 업데이트로 세션 형식/위치 변경 가능) 새 세션으로 자동 이어갑니다. 이전 대화 맥락은 그대로 유지됩니다.`,
       });
     }
   }
@@ -2744,6 +2816,9 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   let currentText = "";
   let sawCompletion = false;
   let stderrTail = "";
+  // Phase 126 (v0.6.81) — resume 대상 rollout 이 없어 Codex 가 크래시한 케이스 reactive 감지.
+  // 사전 codexRolloutExists 가드를 통과했더라도 (파일은 있는데 Codex 가 못 읽는 등) 안전망.
+  let resumeRolloutMissing = false;
   // Phase 63 (v0.5.51): K 다른 PC 진단 — turn.completed 와 token_count 의 race condition.
   // turn.completed 가 먼저 도착하면 그 시점엔 sawCodexLastTokenUsage=false → 가드 무력 →
   // cumulative 값 (121K) 박힘 → done emit 후 늦게 도착한 token_count 의 last_token_usage
@@ -2805,18 +2880,22 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
     // Phase 79 (v0.6.22) — Task State Manager: Codex 작업 시작을 DB 에 기록.
     // App.tsx 의 listener 가 long_tasks 테이블에 row insert. KDA 재시작/끊김 시 복구 가능 후보로 표시.
-    emit({
-      type: "long_task_started",
-      taskId: msg.id,
-      kind: "codex",
-      title: (msg.content ?? "").slice(0, 80) || "Codex 작업",
-      manifest: {
-        provider: "codex",
-        agentId: effectiveAgentId ?? null,
-        pid: proc.pid ?? null,
-        startedAt: Date.now(),
-      },
-    } as any);
+    // Phase 126 (v0.6.81) — resume 실패 자동 재시도 path 면 outer 가 이미 started 를 emit 했으므로
+    // 중복 insert 방지 위해 skip (inner 의 done 이 outer 의 row 를 닫음 — taskId 동일).
+    if (!msg._codexResumeRetried) {
+      emit({
+        type: "long_task_started",
+        taskId: msg.id,
+        kind: "codex",
+        title: (msg.content ?? "").slice(0, 80) || "Codex 작업",
+        manifest: {
+          provider: "codex",
+          agentId: effectiveAgentId ?? null,
+          pid: proc.pid ?? null,
+          startedAt: Date.now(),
+        },
+      } as any);
+    }
 
     if (proc.stdin) {
       proc.stdin.on("error", (e) => {
@@ -2835,6 +2914,24 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
           stderrTail = stderrTail.slice(-STDERR_KEEP);
         }
         logToFile("warn", `Codex stderr: ${decoded.trimEnd()}`);
+        // Phase 126 (v0.6.81) — resume 대상 rollout 없음 감지 (no rollout found / thread/resume failed).
+        // 사전 codexRolloutExists 가드를 뚫고 들어온 케이스의 안전망. 감지 시 그 thread 영구 차단 +
+        // 플래그 → close 후 "새 세션으로 1회 자동 재시도" 트리거 (그 대화가 죽지 않게).
+        if (
+          effectiveAgentId &&
+          !resumeRolloutMissing &&
+          /no rollout found for thread id|thread\/resume(?: failed)?/i.test(decoded)
+        ) {
+          resumeRolloutMissing = true;
+          blockSession(
+            effectiveAgentId,
+            `Codex resume: no rollout found (고아 thread_id) — 다음 spawn 부터 resume 차단`,
+          );
+          logToFile(
+            "warn",
+            `Codex resume 대상 rollout 없음 — agentId=${effectiveAgentId}. 새 세션으로 1회 자동 재시도 예정`,
+          );
+        }
         // Phase 61 (v0.5.49): "Reconnecting... 5/5" 또는 "websocket closed before response.completed"
         // pattern 감지 → 그 session 을 자동 blocklist. 다음 spawn 의 inspectCodexSessionFile
         // 가드가 우선 검사로 즉시 차단.
@@ -3430,9 +3527,19 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       }
     }
 
+    // Phase 126 (v0.6.81) — resume 실패(고아 thread_id) 자동 회복 여부.
+    let willRetryNewSession = false;
     await new Promise<void>((resolve, reject) => {
       proc.on("close", (code) => {
         if (code === 0 || sawCompletion) {
+          resolve();
+        } else if (
+          resumeRolloutMissing &&
+          effectiveAgentId &&
+          !msg._codexResumeRetried
+        ) {
+          // 고아 thread_id resume 실패 — reject 대신 resolve 후 새 세션으로 1회 재시도.
+          willRetryNewSession = true;
           resolve();
         } else {
           const tail = stderrTail.trim();
@@ -3444,6 +3551,29 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       });
       proc.on("error", reject);
     });
+
+    // Phase 126 (v0.6.81) — resume 실패 → agent_id 비우고 새 세션으로 자동 재시도.
+    // 새 세션 path 는 prior_conversation 을 재주입하므로 맥락 손실 없음. _codexResumeRetried 가드로
+    // 무한 재귀/중복 long_task 방지. 재시도가 done/long_task_done 을 책임 (여기서 early return).
+    if (willRetryNewSession) {
+      // outer idle 워치독 즉시 정리 — 재시도(inner) 진행 중 outer 의 stale lastActivity 로 오발동 방지.
+      clearInterval(idleWatchdog);
+      logToFile(
+        "warn",
+        `Codex resume 실패 자동 회복 — id=${msg.id} 고아 agentId=${effectiveAgentId} 비우고 새 세션 재시도`,
+      );
+      emit({
+        type: "log",
+        level: "warn",
+        message: `이전 Codex 세션을 이어가지 못해(세션 기록 없음) 새 세션으로 자동 재시도합니다. 이전 대화 맥락은 그대로 유지됩니다.`,
+      });
+      await handleViaCodexCLI({
+        ...msg,
+        agent_id: undefined,
+        _codexResumeRetried: true,
+      });
+      return;
+    }
 
     if (!sawCompletion && activeTurns.has(msg.id)) {
       emit({ type: "done", id: msg.id, agentId: sessionId });
