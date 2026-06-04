@@ -347,6 +347,11 @@ const REASONING_EFFORT_OPTIONS: { id: string; label: string; desc: string }[] = 
   { id: "medium", label: "중간 (medium)", desc: "균형 — 일반 작업 권장" },
   { id: "high", label: "높음 (high)", desc: "가장 깊은 추론 · 느림 — 복잡한 문제" },
 ];
+// Phase 127 (v0.6.82) — 텔레그램 봇 브리지. App.tsx 의 브리지 훅과 동일 키.
+const LS_TELEGRAM_ENABLED = "kda_telegram_enabled";       // "true"|"false"
+const LS_TELEGRAM_TOKEN = "kda_telegram_token";           // @BotFather 봇 토큰
+const LS_TELEGRAM_ALLOWED_CHATS = "kda_telegram_allowed_chats"; // 쉼표구분 chat_id 화이트리스트
+const LS_TELEGRAM_PC_NAME = "kda_telegram_pc_name";       // 이 PC 이름표 (예: 집PC)
 const LS_AUTO_RESUME_LONG_TASKS = "kda_auto_resume_long_tasks";
 const LS_AUTO_RESUME_UNTIL_MANUAL_STOP = "kda_auto_resume_until_manual_stop";
 const LS_AUTO_RESUME_MANUAL_STOPPED = "kda_auto_resume_manual_stopped";
@@ -1188,6 +1193,14 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // Phase 125 (v0.6.80) — Codex 추론 강도. "default" = 미적용.
   const [reasoningEffort, setReasoningEffort] = useState<string>("default");
 
+  // Phase 127 (v0.6.82) — 텔레그램 봇 브리지 (폰에서 KDA 원격 조작).
+  const [telegramEnabled, setTelegramEnabled] = useState<boolean>(false);
+  const [telegramToken, setTelegramToken] = useState<string>("");
+  const [telegramAllowedChats, setTelegramAllowedChats] = useState<string>("");
+  const [telegramPcName, setTelegramPcName] = useState<string>("");
+  const [telegramTokenVisible, setTelegramTokenVisible] = useState<boolean>(false);
+  const [telegramTestStatus, setTelegramTestStatus] = useState<string>("");
+
   // 에이전트 권한 상태
   const [permissions, setPermissions] = useState<AgentPermission[]>(DEFAULT_PERMISSIONS);
 
@@ -1757,6 +1770,11 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         // Phase 125 (v0.6.80) — 저장된 추론 강도 로드 (없으면 default).
         const savedReasoning = localStorage.getItem(LS_REASONING_EFFORT) || "default";
         setReasoningEffort(savedReasoning);
+        // Phase 127 (v0.6.82) — 텔레그램 봇 설정 로드.
+        setTelegramEnabled(localStorage.getItem(LS_TELEGRAM_ENABLED) === "true");
+        setTelegramToken(localStorage.getItem(LS_TELEGRAM_TOKEN) || "");
+        setTelegramAllowedChats(localStorage.getItem(LS_TELEGRAM_ALLOWED_CHATS) || "");
+        setTelegramPcName(localStorage.getItem(LS_TELEGRAM_PC_NAME) || "");
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -1785,6 +1803,64 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       window.dispatchEvent(new Event("kda-active-changed"));
     } catch {
       // ignore — 발행 실패해도 저장은 됐고 다음 새로고침이면 반영됨
+    }
+  }
+
+  // Phase 127 (v0.6.82) — 텔레그램 설정 저장 헬퍼들.
+  // 변경 즉시 localStorage 반영 + 'kda-telegram-changed' 이벤트 발행 → App.tsx 브리지 훅이 폴링 재구성.
+  function emitTelegramChanged() {
+    try {
+      window.dispatchEvent(new Event("kda-telegram-changed"));
+    } catch {
+      /* ignore */
+    }
+  }
+  function saveTelegramEnabled(value: boolean) {
+    setTelegramEnabled(value);
+    localStorage.setItem(LS_TELEGRAM_ENABLED, value ? "true" : "false");
+    emitTelegramChanged();
+  }
+  function saveTelegramToken(value: string) {
+    setTelegramToken(value);
+    localStorage.setItem(LS_TELEGRAM_TOKEN, value.trim());
+    emitTelegramChanged();
+  }
+  function saveTelegramAllowedChats(value: string) {
+    setTelegramAllowedChats(value);
+    localStorage.setItem(LS_TELEGRAM_ALLOWED_CHATS, value.trim());
+    emitTelegramChanged();
+  }
+  function saveTelegramPcName(value: string) {
+    setTelegramPcName(value);
+    localStorage.setItem(LS_TELEGRAM_PC_NAME, value.trim());
+    emitTelegramChanged();
+  }
+  // 테스트 메시지 전송 — 화이트리스트 첫 chat_id 로 "[PC이름] 연결 테스트" 발송.
+  async function sendTelegramTest() {
+    const token = telegramToken.trim();
+    const firstChat = telegramAllowedChats
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)[0];
+    if (!token) {
+      setTelegramTestStatus("⚠ 봇 토큰을 먼저 입력하세요");
+      return;
+    }
+    if (!firstChat) {
+      setTelegramTestStatus("⚠ 허용 chat_id 를 먼저 입력하세요");
+      return;
+    }
+    setTelegramTestStatus("전송 중...");
+    try {
+      const label = telegramPcName.trim() ? `[${telegramPcName.trim()}] ` : "";
+      await invoke("telegram_send_message", {
+        token,
+        chatId: firstChat,
+        text: `${label}KDA 텔레그램 연결 테스트 ✅ (이 메시지가 보이면 정상 연결됨)`,
+      });
+      setTelegramTestStatus("✅ 전송 성공 — 텔레그램을 확인하세요");
+    } catch (e) {
+      setTelegramTestStatus(`❌ 실패: ${String(e)}`);
     }
   }
 
@@ -4164,6 +4240,115 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   </div>
                 )}
               </div>
+            </div>
+          </section>
+
+          {/* Phase 127 (v0.6.82) — 텔레그램 봇 브리지: 폰에서 KDA 원격 조작 */}
+          <section className="settings-section" data-tab="system">
+            <div className="eyebrow">텔레그램 연동 (폰에서 원격 조작)</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">텔레그램 봇 연동</div>
+                <div className="settings-row-desc">
+                  켜면 이 PC 의 KDA 가 텔레그램 봇 메시지를 받아 응답합니다.
+                  외출 중 폰으로 KDA 에게 일을 시킬 수 있어요.
+                  <b> 이 PC 가 켜져 있어야</b> 작동합니다.
+                </div>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={telegramEnabled}
+                  onChange={(e) => saveTelegramEnabled(e.target.checked)}
+                  disabled={loading}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">봇 토큰</div>
+                <div className="settings-row-desc">
+                  텔레그램 @BotFather 에서 <code>/newbot</code> 으로 봇을 만들면 받는 토큰.
+                  <b> 2PC 운영 시 PC 마다 봇을 따로 만드세요</b>(같은 토큰을 두 PC 가 쓰면 메시지가 충돌·유실됨).
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "6px", width: "100%" }}>
+                <input
+                  className="api-key-input mono"
+                  type={telegramTokenVisible ? "text" : "password"}
+                  value={telegramToken}
+                  onChange={(e) => saveTelegramToken(e.target.value)}
+                  placeholder="123456789:ABCdef..."
+                  style={{ flex: 1, padding: "8px 10px" }}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <button
+                  className="settings-btn"
+                  onClick={() => setTelegramTokenVisible((v) => !v)}
+                  type="button"
+                >
+                  {telegramTokenVisible ? "숨김" : "표시"}
+                </button>
+              </div>
+            </div>
+
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">허용 chat_id (화이트리스트)</div>
+                <div className="settings-row-desc">
+                  여기 적힌 chat_id 에서 온 메시지만 처리합니다(보안 필수).
+                  쉼표로 여러 개. 내 chat_id 는 봇에게 아무 메시지나 보낸 뒤
+                  <code> @userinfobot </code> 또는 "표시" 후 테스트로 확인하세요.
+                </div>
+              </div>
+              <input
+                className="api-key-input mono"
+                type="text"
+                value={telegramAllowedChats}
+                onChange={(e) => saveTelegramAllowedChats(e.target.value)}
+                placeholder="예: 123456789, 987654321"
+                style={{ width: "100%", padding: "8px 10px" }}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">이 PC 이름표</div>
+                <div className="settings-row-desc">
+                  답장 앞에 <code>[이름]</code> 으로 붙어 어느 PC 가 응답했는지 구분됩니다(예: 집PC).
+                </div>
+              </div>
+              <input
+                className="api-key-input mono"
+                type="text"
+                value={telegramPcName}
+                onChange={(e) => saveTelegramPcName(e.target.value)}
+                placeholder="예: 집PC"
+                style={{ width: "100%", padding: "8px 10px" }}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">연결 테스트</div>
+                <div className="settings-row-desc">
+                  {telegramTestStatus || "허용 chat_id 첫 번째로 테스트 메시지를 보냅니다."}
+                </div>
+              </div>
+              <button
+                className="settings-btn settings-btn-primary"
+                onClick={sendTelegramTest}
+                type="button"
+              >
+                테스트 전송
+              </button>
             </div>
           </section>
 

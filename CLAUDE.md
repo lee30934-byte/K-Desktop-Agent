@@ -83,6 +83,12 @@ K-Desktop-Agent/
   5. **App.tsx first-run 자동 감지**: 앱 시작 시 `is_first_run` 호출 → true 면 한 번만 (localStorage `kda_firstrun_wizard_seen_v1` guard) Settings 모달을 system 탭으로 자동 오픈.
   - **자동화 안 하는 것**: Claude / Codex 의 OAuth 로그인 (K 계정 정보 필요 — 보안상 자동화 불가). 옛 PC 데이터 이주 (K 요청에 따라 제외).
   - 회귀 테스트: `check.ps1` Phase 18 블록 — `resolvePython` + `py.exe` fallback + init log + install-deps.ps1 함수 4종 + UTF-8 BOM + lib.rs 4 command + Settings invoke + first-run guard 7종 grep.
+- ✅ **Phase 127 (v0.6.82) — 텔레그램 봇 브리지 (폰에서 KDA 원격 제어)** (2026-06-04): K 의 "환경설정에서 텔레그램 연동 + 2PC 구분" 요구. 폰 텔레그램 → 봇 → KDA 가 평소 채팅과 동일 파이프라인으로 처리 후 폰으로 회신. **아키텍처는 프론트엔드 주도** (sidecar 가 아니라 `App.tsx`): App.tsx 가 API 키·모델·권한·히스토리·`invoke("send_message")` 등 모든 오케스트레이션을 소유하므로 브리지를 프론트에 두면 전체 파이프라인 재사용.
+  - **2PC 구분 = 봇 1개 per PC (A안)**: 텔레그램 `getUpdates` 롱폴링은 **토큰당 소비자 1명**만 가능 — 두 PC 가 같은 토큰을 폴링하면 offset 경쟁으로 업데이트가 무작위 탈취돼 양쪽 다 깨짐. 따라서 PC 마다 별도 봇(@BotFather 로 토큰 분리) 필수. 회신 앞에 `[PC이름]` 라벨 prefix 로 어느 PC 응답인지 구분. (B안 단일봇+명령라우팅 = getUpdates 충돌로 실패, C안 웹훅 라우터 = 과설계 → 둘 다 기각.)
+  - **Rust 커맨드 2종** (`lib.rs`, `codex_fetch_usage` 의 reqwest 패턴): `telegram_get_updates(token, offset)` (timeout 25/35s 롱폴링, `allowed_updates=["message"]`) + `telegram_send_message(token, chat_id, text)`. **webview fetch 가 아니라 Rust reqwest** 사용 — api.telegram.org CORS 미보장 회피. `generate_handler!` 등록.
+  - **Settings.tsx system 탭 UI**: 토글 / 봇 토큰(password 토글) / 허용 chat_id 화이트리스트 / PC 이름 / 테스트 전송 버튼. LS 키 `kda_telegram_enabled|token|allowed_chats|pc_name`. 변경 시 `window` 이벤트 `kda-telegram-changed` dispatch.
+  - **App.tsx 브리지**: `telegramTurnsRef`(turnId→{chatId,text}) + `assistant_delta`/`done`/`error` 3곳 tap 으로 누적 응답 캡처 → `deliverTelegramReply`(4000자 청크 분할 + `[PC이름]` prefix). `sendTelegramTurn` 은 전용 백그라운드 대화("📱 텔레그램", `kda_telegram_conv_id`)에서 처리 → K 활성 화면 안 건드림. 단일 turn 동시성 게이트(`telegramTurnsRef.size===0`)로 resume agentId 충돌 차단. 폴링 effect 가 offset 영속(`kda_telegram_offset`) + 화이트리스트 검사(**빈 화이트리스트 = 전체 차단**) + 에러 시 5s 재시도.
+  - **함정**: getUpdates 소비자 단일성(2PC 가 토큰 공유 불가) / 4096자 메시지 한계 / CORS 로 webview fetch 불가. `assistant_delta.text` 는 **누적 전체 텍스트**라 `done` 시점 값이 완성 응답.
 
 **남은 Phase:**
 - ⬜ **Phase 5**: 마크다운 렌더링 + MSI 인스톨러 (`docs/PHASE-5-POLISH.md`)

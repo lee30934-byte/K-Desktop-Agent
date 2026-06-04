@@ -598,6 +598,13 @@ export default function App() {
   // K 가 다른 conv 로 이동해도 emit handler 가 이 map 으로 그 turn 의 원래 conv 를 찾아
   // setMessages 분기 (active conv 면 UI 갱신) + DB save 는 항상 원래 conv 에 박음.
   const turnToConvMap = useRef<Map<string, string>>(new Map());
+  // Phase 127 (v0.6.82) — 텔레그램 봇 브리지.
+  // turnId → { chatId, text } 매핑. 텔레그램발 turn 만 등록. assistant_delta 가 text 누적,
+  // done/error 가 그 text 를 chatId 로 회신 + 엔트리 정리. 일반 turn 은 미등록이라 무영향.
+  const telegramTurnsRef = useRef<Map<string, { chatId: string; text: string }>>(new Map());
+  // 텔레그램 회신 함수 ref — handleSidecarEvent(상단 정의)가 하단 정의된 deliverTelegramReply 를
+  // 호출하기 위한 우회 (source 순서 디커플). 브리지 섹션에서 .current 할당.
+  const deliverTelegramReplyRef = useRef<(chatId: string, text: string) => void>(() => {});
   // Phase 111 — 어느 conv 들이 streaming 중인지. Sidebar spinner 배지 + 같은 conv 의
   // 중복 send 방지에 사용. send 시점에 add, done 시점에 delete.
   const [streamingConvIds, setStreamingConvIds] = useState<Set<string>>(() => new Set());
@@ -1220,6 +1227,11 @@ export default function App() {
       }
 
       case "assistant_delta": {
+        // Phase 127 (v0.6.82) — 텔레그램 turn 이면 누적 텍스트 캡처 (ev.text 는 누적 전체).
+        {
+          const tg = telegramTurnsRef.current.get(ev.id);
+          if (tg) tg.text = ev.text;
+        }
         // partial assistant 텍스트를 DB 에 incrementally 저장 — 강제 종료/재기동 시
         // 끊긴 시점까지의 응답이 휘발하지 않도록. queueMessageSave 가 300ms 디바운스라
         // 매 chunk 마다 DB write 부담은 없음 (같은 id 로 upsert).
@@ -1358,6 +1370,15 @@ export default function App() {
       }
 
       case "done": {
+        // Phase 127 (v0.6.82) — 텔레그램 turn 이면 누적 응답을 폰으로 회신 (early-return 전에 먼저).
+        // 텔레그램 turn 은 전용 background conv 라 아래 non-active early-return 을 타므로 여기서 처리.
+        {
+          const tg = telegramTurnsRef.current.get(ev.id);
+          if (tg) {
+            telegramTurnsRef.current.delete(ev.id);
+            void deliverTelegramReplyRef.current(tg.chatId, tg.text);
+          }
+        }
         // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
         // Background turn (다른 conv) 면 early return + agentId/DB 만 갱신.
         // Active conv 면 기존 로직 그대로 (isStreaming reset, setMessages, setMetrics, 세션 임계치 등).
@@ -1523,6 +1544,18 @@ export default function App() {
       }
 
       case "error": {
+        // Phase 127 (v0.6.82) — 텔레그램 turn 이 실패하면 폰으로 에러 회신 + 엔트리 정리.
+        {
+          const tgId = ev.id;
+          const tg = tgId ? telegramTurnsRef.current.get(tgId) : undefined;
+          if (tg && tgId) {
+            telegramTurnsRef.current.delete(tgId);
+            void deliverTelegramReplyRef.current(
+              tg.chatId,
+              `⚠ 처리 실패: ${(ev as any).message ?? "알 수 없는 오류"}`,
+            );
+          }
+        }
         // Phase 111 (v0.6.60) — background turn 의 error 도 routing.
         const convForErr = (ev.id && turnToConvMap.current.get(ev.id)) ?? activeConversationIdRef.current;
         const isActiveConvErr = convForErr === activeConversationIdRef.current;
@@ -2321,6 +2354,216 @@ export default function App() {
       pushSystem(`전송 실패: ${String(err)}`, "error");
     }
   });
+
+  // ─── Phase 127 (v0.6.82) — 텔레그램 봇 브리지 ──────────────────────
+  // 폰 텔레그램 → Rust reqwest 폴링 → 화이트리스트 검증 → 전용 background conv 로 turn 주입
+  // → 기존 send_message 파이프라인 그대로 처리 → done/error 시 [PC이름] 붙여 폰으로 회신.
+  // 동시 1턴만 처리(telegramTurnsRef.size 게이트) — resume agentId 충돌 회피.
+
+  // send_message 공통 설정(provider/model/key/perm…) 을 localStorage 에서 읽어 구성.
+  // handleSendMessage 와 동일 키 — 단일 source.
+  const buildSendSettings = useStableCallback(() => {
+    let provider = "claude";
+    let model: string | undefined;
+    let apiKey: string | undefined;
+    try {
+      provider = localStorage.getItem("kda_active_provider") || "claude";
+      model = localStorage.getItem("kda_active_model") || undefined;
+      if (provider !== "claude") {
+        const storedKeys = localStorage.getItem("kda_api_keys");
+        if (storedKeys) apiKey = JSON.parse(storedKeys)[provider];
+      }
+    } catch { /* ignore */ }
+    let permissions: Record<string, string> | undefined;
+    try {
+      const arr = JSON.parse(localStorage.getItem("kda_permissions") || "null");
+      if (Array.isArray(arr)) {
+        permissions = {};
+        for (const p of arr) {
+          if (p && typeof p.id === "string" && (p.level === "auto" || p.level === "ask" || p.level === "manual")) {
+            permissions[p.id] = p.level;
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    let lockedTools: string[] | undefined;
+    try {
+      const arr = JSON.parse(localStorage.getItem("kda_locked_tools") || "null");
+      if (Array.isArray(arr)) {
+        lockedTools = arr.filter((t): t is string => typeof t === "string" && t.trim().length > 0);
+        if (lockedTools.length === 0) lockedTools = undefined;
+      }
+    } catch { /* ignore */ }
+    let safeMode: "off" | "balanced" | "strict" = "off";
+    const sm = localStorage.getItem("kda_safe_mode");
+    if (sm === "balanced" || sm === "strict") safeMode = sm;
+    return { provider, model, apiKey, permissions, lockedTools, safeMode, reasoningEffort: loadReasoningEffort() };
+  });
+
+  // 텔레그램 응답 회신 — [PC이름] 라벨 + 4096자 분할. done/error 핸들러가 ref 로 호출.
+  const deliverTelegramReply = useStableCallback(async (chatId: string, text: string) => {
+    try {
+      const token = (localStorage.getItem("kda_telegram_token") || "").trim();
+      if (!token) return;
+      const pcName = (localStorage.getItem("kda_telegram_pc_name") || "").trim();
+      const label = pcName ? `[${pcName}] ` : "";
+      let body = text && text.trim().length > 0 ? text : "(빈 응답)";
+      body = label + body;
+      // 텔레그램 단일 메시지 4096자 제한 → 4000자 청크로 분할 (헤드룸).
+      const CHUNK = 4000;
+      for (let i = 0; i < body.length; i += CHUNK) {
+        const part = body.slice(i, i + CHUNK);
+        await invoke("telegram_send_message", { token, chatId, text: part });
+      }
+    } catch (e) {
+      console.error("[Telegram] 회신 전송 실패:", e);
+    }
+  });
+  // handleSidecarEvent(상단)가 호출할 수 있도록 ref 동기화 (stable identity 라 1회로 충분하지만 매 렌더 안전).
+  deliverTelegramReplyRef.current = deliverTelegramReply;
+
+  // 텔레그램발 메시지를 전용 background conv 로 주입해 turn 실행.
+  const sendTelegramTurn = useStableCallback(async (text: string, chatId: string) => {
+    if (!dbReadyRef.current) {
+      void deliverTelegramReply(chatId, "⚠ KDA 가 아직 준비 중이에요. 잠시 후 다시 보내주세요.");
+      return;
+    }
+    // 동시 1턴만 — 진행 중이면 안내 후 무시.
+    if (telegramTurnsRef.current.size > 0) {
+      void deliverTelegramReply(chatId, "⏳ 이전 작업을 처리 중이에요. 끝나면 다시 보내주세요.");
+      return;
+    }
+    try {
+      // 전용 텔레그램 conv 확보 (없으면 생성). id 는 localStorage 에 영속.
+      let convId = localStorage.getItem("kda_telegram_conv_id") || "";
+      const exists = convId && conversations.some((c) => c.id === convId);
+      if (!convId || !exists) {
+        // DB 에 실제 존재하는지 확인 (state 미반영 케이스). 없으면 새로 생성.
+        let inDb = false;
+        if (convId) {
+          try { await getMessages(convId); inDb = true; } catch { inDb = false; }
+        }
+        if (!convId || !inDb) {
+          convId = crypto.randomUUID();
+          const newConv = await createConversation(convId, "📱 텔레그램");
+          setConversations((prev) => [newConv, ...prev]);
+          localStorage.setItem("kda_telegram_conv_id", convId);
+        }
+      }
+
+      // 이전 대화 맥락 (prior 메시지만 — 방금 메시지는 send_message 의 message 로 따로 감).
+      let history: Array<{ role: "user" | "assistant"; content: string }> = [];
+      try {
+        const prior = await getMessages(convId);
+        history = prior
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .slice(-20)
+          .map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content.length > 8000 ? m.content.slice(0, 8000) + "\n[...생략...]" : m.content,
+          }));
+      } catch { /* 맥락 없이 진행 */ }
+
+      // resume 용 agentId.
+      let agentId: string | undefined;
+      try {
+        const aid = await getConversationAgentId(convId);
+        if (aid) agentId = aid;
+      } catch { /* ignore */ }
+
+      // 유저 메시지 DB 저장 (history 빌드 후 — debounce 라 위 getMessages 엔 안 잡힘).
+      const userMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: text,
+        timestamp: Date.now(),
+      };
+      queueMessageSave(userMsg, convId);
+
+      const turnId = crypto.randomUUID();
+      turnToConvMap.current.set(turnId, convId);
+      telegramTurnsRef.current.set(turnId, { chatId, text: "" });
+      setStreamingConvIds((prev) => {
+        if (prev.has(convId)) return prev;
+        const next = new Set(prev);
+        next.add(convId);
+        return next;
+      });
+
+      const s = buildSendSettings();
+      await invoke("send_message", {
+        message: text,
+        id: turnId,
+        agentId,
+        history: history.length > 0 ? history : undefined,
+        apiKey: s.apiKey,
+        provider: s.provider,
+        model: s.model,
+        reasoningEffort: s.reasoningEffort,
+        permissions: s.permissions,
+        lockedTools: s.lockedTools,
+        safeMode: s.safeMode,
+      });
+    } catch (err) {
+      console.error("[Telegram] turn 주입 실패:", err);
+      void deliverTelegramReply(chatId, `⚠ 처리 시작 실패: ${String(err)}`);
+    }
+  });
+
+  // 텔레그램 폴링 루프 — enabled 일 때만. 설정 변경 시 'kda-telegram-changed' 로 재시작.
+  const [telegramConfigVersion, setTelegramConfigVersion] = useState(0);
+  useEffect(() => {
+    const bump = () => setTelegramConfigVersion((v) => v + 1);
+    window.addEventListener("kda-telegram-changed", bump);
+    return () => window.removeEventListener("kda-telegram-changed", bump);
+  }, []);
+  useEffect(() => {
+    const enabled = localStorage.getItem("kda_telegram_enabled") === "true";
+    const token = (localStorage.getItem("kda_telegram_token") || "").trim();
+    if (!enabled || !token) return;
+
+    let cancelled = false;
+    const allowed = new Set(
+      (localStorage.getItem("kda_telegram_allowed_chats") || "")
+        .split(",").map((s) => s.trim()).filter(Boolean),
+    );
+    // offset 영속 — 재시작 시 옛 메시지 재처리 방지.
+    let offset = parseInt(localStorage.getItem("kda_telegram_offset") || "0", 10) || 0;
+
+    logger.log("[Telegram] 폴링 시작");
+    (async () => {
+      while (!cancelled) {
+        try {
+          const res: any = await invoke("telegram_get_updates", { token, offset });
+          if (cancelled) break;
+          const updates: any[] = Array.isArray(res?.result) ? res.result : [];
+          for (const u of updates) {
+            offset = (u.update_id ?? offset) + 1;
+            const msg = u.message;
+            const textMsg: string | undefined = msg?.text;
+            const fromChat = msg?.chat?.id != null ? String(msg.chat.id) : "";
+            if (!textMsg || !fromChat) continue;
+            // 화이트리스트 검증 — 미허용이면 무시 (보안). 화이트리스트 비어있으면 전부 차단.
+            if (allowed.size === 0 || !allowed.has(fromChat)) {
+              logger.log(`[Telegram] 미허용 chat_id 무시: ${fromChat}`);
+              continue;
+            }
+            await sendTelegramTurn(textMsg, fromChat);
+          }
+          if (updates.length > 0) {
+            localStorage.setItem("kda_telegram_offset", String(offset));
+          }
+        } catch (e) {
+          if (cancelled) break;
+          console.warn("[Telegram] 폴링 오류 — 5초 후 재시도:", e);
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+      }
+      logger.log("[Telegram] 폴링 종료");
+    })();
+
+    return () => { cancelled = true; };
+  }, [telegramConfigVersion]);
 
   const handleInterrupt = useStableCallback(async () => {
     if (!currentTurnId) return;

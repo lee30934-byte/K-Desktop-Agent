@@ -2496,6 +2496,77 @@ async fn codex_fetch_usage() -> Result<serde_json::Value, String> {
     Ok(json)
 }
 
+/// Phase 127 (v0.6.82) — 텔레그램 봇 브리지: getUpdates long-polling.
+/// offset 이후 새 message 업데이트만 받아옴. 응답 raw JSON 그대로 반환 (frontend 파싱).
+/// 토큰은 frontend(Settings localStorage)에서 받아 그때그때 전달 — Rust 측 영속 저장 없음.
+/// CORS 회피를 위해 webview fetch 대신 Rust reqwest 로 호출 (api.telegram.org 가 CORS 미보장).
+#[tauri::command]
+async fn telegram_get_updates(token: String, offset: i64) -> Result<serde_json::Value, String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("봇 토큰이 비어 있음".to_string());
+    }
+    // bot<token> 경로. token 은 path segment 라 그대로. 35s client timeout > 25s long-poll.
+    let url = format!("https://api.telegram.org/bot{}/getUpdates", token);
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .query(&[
+            ("offset", offset.to_string()),
+            ("timeout", "25".to_string()),
+            ("allowed_updates", "[\"message\"]".to_string()),
+        ])
+        .timeout(std::time::Duration::from_secs(35))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP 요청 실패: {}", e))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("응답 읽기 실패: {}", e))?;
+    if !status.is_success() {
+        let snippet: String = body.chars().take(200).collect();
+        return Err(format!("HTTP {} — {}", status.as_u16(), snippet));
+    }
+    serde_json::from_str(&body).map_err(|e| format!("응답 JSON 파싱 실패: {}", e))
+}
+
+/// Phase 127 (v0.6.82) — 텔레그램 sendMessage.
+/// text 4096자 초과분은 frontend 가 미리 분할해 여러 번 호출. parse_mode 없음 (plain text — 마크다운 오류 회피).
+#[tauri::command]
+async fn telegram_send_message(
+    token: String,
+    chat_id: String,
+    text: String,
+) -> Result<serde_json::Value, String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("봇 토큰이 비어 있음".to_string());
+    }
+    let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": true,
+        }))
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP 요청 실패: {}", e))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("응답 읽기 실패: {}", e))?;
+    if !status.is_success() {
+        let snippet: String = body.chars().take(300).collect();
+        return Err(format!("HTTP {} — {}", status.as_u16(), snippet));
+    }
+    serde_json::from_str(&body).map_err(|e| format!("응답 JSON 파싱 실패: {}", e))
+}
+
 /// `codex mcp add k-personal -- python <K-Personal-MCP/server.py>` 한 번 실행.
 /// 이미 등록돼있으면 에러 — 그래도 무시 (idempotent).
 #[tauri::command]
@@ -3519,6 +3590,9 @@ pub fn run_with_options(start_minimized: bool) {
             codex_login_status,
             codex_register_mcp,
             codex_fetch_usage,
+            // Phase 127 (v0.6.82) — 텔레그램 봇 브리지 (폰에서 KDA 원격)
+            telegram_get_updates,
+            telegram_send_message,
             // Phase 18 — 의존성 자동 셋업 + First-run 마법사
             is_first_run,
             mark_first_run_complete,
