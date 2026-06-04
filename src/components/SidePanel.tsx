@@ -111,6 +111,68 @@ export function normalizeLocalPath(input: string): string {
 }
 
 /**
+ * Phase 127 (v0.6.85) — WSL/VM 게스트 경로 → Windows 호스트 경로 매핑.
+ *
+ * K 시나리오: openclaw/SIGILFALL 이 **같은 PC 의 WSL2** 안에서 돌며 산출물을
+ * `/home/lee30934/.openclaw/...` (리눅스 절대경로) 로 보고한다. Windows 호스트의 KDA 는
+ * 이 경로를 그대로 읽을 수 없어 `read_preview_file` 의 `canonicalize()` 가 실패한다
+ * (Windows 에 그런 경로 없음). WSL2 게스트 FS 는 호스트에서
+ * `\\wsl.localhost\<distro>\home\lee30934\...` (Win11) 로 보이므로, prefix 치환만 하면 된다.
+ *
+ * 매핑 규칙은 Settings → "경로 매핑" 에서 `from`(리눅스 prefix) → `to`(Windows prefix) 로 등록,
+ * localStorage `kda_path_mappings` 에 `{from,to,enabled}[]` 로 저장.
+ * VM(VirtualBox/VMware) 의 경우 게스트 폴더를 drive-letter(`Z:\`)로 공유 마운트한 뒤
+ * `to` 에 `Z:\...` 를 적으면 된다 (Rust 의 is_local_drive_path 가 이미 신뢰).
+ */
+export interface PathMapping {
+  from: string;
+  to: string;
+  enabled: boolean;
+}
+
+export function getPathMappings(): PathMapping[] {
+  try {
+    const raw = localStorage.getItem("kda_path_mappings");
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter(
+      (m): m is PathMapping =>
+        m && typeof m.from === "string" && typeof m.to === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 매핑 규칙을 적용해 호스트가 실제로 읽을 수 있는 경로로 변환.
+ * - 이미 Windows 경로(드라이브문자 `C:\` 또는 UNC `\\`)면 그대로 반환.
+ * - 매칭되는 `from` prefix 가 있으면 `to` 로 치환하고, 뒤따르는 `/` 를 `\` 로 변환.
+ * - 매칭 없으면 원본 그대로 (호출 측에서 "미매핑 리눅스 경로" 친절 에러 처리).
+ */
+export function resolveHostPath(path: string): string {
+  if (/^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\")) return path;
+  for (const m of getPathMappings()) {
+    if (m.enabled === false || !m.from) continue;
+    const fromPrefix = m.from.endsWith("/") ? m.from : m.from + "/";
+    if (path === m.from || path.startsWith(fromPrefix)) {
+      const rest = path.slice(m.from.length); // "" 또는 "/sub/a.png"
+      const to = m.to.replace(/[\\/]+$/, ""); // trailing 구분자 제거
+      const joined = to + rest.replace(/\//g, "\\");
+      logger.log(`[PathMap] "${path}" → "${joined}" (from="${m.from}")`);
+      return joined;
+    }
+  }
+  return path;
+}
+
+/** 변환 후에도 리눅스 절대경로면(=매핑 미등록) true. 친절 에러 분기용. */
+export function isUnmappedPosixPath(path: string): boolean {
+  return path.startsWith("/");
+}
+
+/**
  * Phase 80 (v0.6.24) — Final-Review Gate: 미리보기 표시 전 같은 폴더의 qa-report.json 검사.
  * SIGILFALL 같은 대량 생성의 raw 컷이 사용자에게 노출 안 되도록 차단.
  *
@@ -147,10 +209,12 @@ export async function checkFinalReviewGate(localPath: string): Promise<GateResul
   if (sepIdx < 0) return { blocked: false }; // 절대경로 아님 — gate 적용 불가
   const folder = normalized.slice(0, sepIdx);
   const filename = normalized.slice(sepIdx + 1);
+  // Phase 127 (v0.6.85) — WSL/VM 폴더도 호스트 경로로 변환해 qa-report 검사 일관성 유지.
+  const hostFolder = resolveHostPath(folder);
 
   let qaResult: any;
   try {
-    qaResult = await invoke<any>("read_qa_report", { folderPath: folder });
+    qaResult = await invoke<any>("read_qa_report", { folderPath: hostFolder });
   } catch (e) {
     // 신뢰 prefix fail 등 — Gate 자체가 안 도는 폴더. 통과 (legacy / scope 밖).
     logger.warn(`[Gate] read_qa_report 호출 실패 (gate skip): ${e}`);
@@ -213,12 +277,25 @@ export async function loadPreview(
     logger.log(`[SidePanel] path normalize: "${pathOrUrl}" → "${normalizedPath}"`);
   }
 
+  // Phase 127 (v0.6.85) — WSL/VM 게스트 경로를 호스트 경로로 변환 (Settings 매핑).
+  // 변환 후에도 리눅스 절대경로면 매핑 미등록 → 친절 에러로 Settings 안내.
+  const hostPath = resolveHostPath(normalizedPath);
+  if (isUnmappedPosixPath(hostPath)) {
+    return {
+      error:
+        `이 경로는 WSL/VM 내부 경로입니다:\n${hostPath}\n\n` +
+        `호스트(Windows)에서 직접 읽을 수 없습니다. Settings → "경로 매핑" 에서\n` +
+        `예) from: /home/lee30934  →  to: \\\\wsl.localhost\\Ubuntu\\home\\lee30934\n` +
+        `규칙을 추가하면 미리보기가 가능합니다.`,
+    };
+  }
+
   // Phase 74 — Rust 측 read_preview_file 우선 시도 (capabilities scope 우회).
   // 옛 binary (~v0.6.16) 면 invoke 자체가 throw → plugin-fs 폴백.
   const tryRustRead = async (asText: boolean): Promise<{ text?: string; bytes?: Uint8Array } | null> => {
     try {
       const result = await invoke<{ text?: string; bytes?: number[] }>("read_preview_file", {
-        path: normalizedPath,
+        path: hostPath,
         asText,
       });
       if (asText) return { text: result.text };
@@ -237,7 +314,7 @@ export async function loadPreview(
         return { text: rust.text };
       }
       // 폴백 — 옛 binary 에서만. v0.6.16 이하면 capabilities scope 거부 가능성 큼.
-      const content = await readTextFile(normalizedPath);
+      const content = await readTextFile(hostPath);
       const truncated = content.length > 100_000 ? content.slice(0, 100_000) + "\n\n... [잘림: 100KB 까지만]" : content;
       return { text: truncated };
     }
@@ -247,7 +324,7 @@ export async function loadPreview(
       let bytes: Uint8Array | null = null;
       const rust = await tryRustRead(false);
       if (rust?.bytes) bytes = rust.bytes;
-      else bytes = await readFile(normalizedPath);
+      else bytes = await readFile(hostPath);
       if (!bytes) return { error: "파일을 읽지 못했습니다." };
       if (category === "excel") {
         const XLSX = await import("xlsx");
@@ -275,7 +352,7 @@ export async function loadPreview(
         bytes = rust.bytes;
       } else {
         // 폴백
-        bytes = await readFile(normalizedPath);
+        bytes = await readFile(hostPath);
       }
       // bytes (Uint8Array) → base64
       let bin = "";
@@ -285,9 +362,9 @@ export async function loadPreview(
       }
       const b64 = btoa(bin);
       const mimeMap: Record<string, string> = {
-        image: getExt(normalizedPath) === "svg" ? "image/svg+xml" : `image/${getExt(normalizedPath)}`,
-        video: `video/${getExt(normalizedPath) === "mov" ? "quicktime" : getExt(normalizedPath)}`,
-        audio: `audio/${getExt(normalizedPath) === "mp3" ? "mpeg" : getExt(normalizedPath)}`,
+        image: getExt(hostPath) === "svg" ? "image/svg+xml" : `image/${getExt(hostPath)}`,
+        video: `video/${getExt(hostPath) === "mov" ? "quicktime" : getExt(hostPath)}`,
+        audio: `audio/${getExt(hostPath) === "mp3" ? "mpeg" : getExt(hostPath)}`,
         pdf: "application/pdf",
       };
       return { dataUrl: `data:${mimeMap[category] || "application/octet-stream"};base64,${b64}` };
@@ -297,7 +374,7 @@ export async function loadPreview(
       // hwp/dwg/psd 등 거의 모든 형식의 미리보기 이미지를 줌. 없으면 빈 결과 → 연동 열기 카드 폴백.
       try {
         const res = await invoke<{ dataUrl?: string }>("get_shell_thumbnail", {
-          path: normalizedPath,
+          path: hostPath,
           size: 768,
         });
         if (res?.dataUrl) return { dataUrl: res.dataUrl };
@@ -416,19 +493,27 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
         // 로컬 파일은 file:// prefix 추가가 안전.
         // Phase 78 (v0.6.21): react-markdown URL-encoded path 도 복원해서 OS 가 받음.
         const normalizedPath = normalizeLocalPath(item.pathOrUrl);
+        // Phase 127 (v0.6.85) — WSL/VM 게스트 경로를 호스트 경로로 변환 (Settings 매핑).
+        const hostPath = resolveHostPath(normalizedPath);
+        if (isUnmappedPosixPath(hostPath)) {
+          throw new Error(
+            `WSL/VM 내부 경로라 호스트에서 열 수 없습니다: ${hostPath}\n` +
+              `Settings → "경로 매핑" 에 변환 규칙을 추가하세요.`,
+          );
+        }
         // Phase 114 (v0.6.69) — open_path 가 로컬 drive-letter 경로 전체를 신뢰하므로
-        // 거의 항상 성공. 옛 폴백이던 plugin-shell.open(normalizedPath) 은 로컬 path 에서
+        // 거의 항상 성공. 옛 폴백이던 plugin-shell.open(hostPath) 은 로컬 path 에서
         // 항상 scope regex 에 막혀 "Unexpected command argument ... but found .txt" cryptic
         // 에러를 노출했음 (K 보고 원인) → 제거. open_path 가 없는 옛 binary 일 때만 폴백.
         try {
-          await invoke("open_path", { path: normalizedPath });
+          await invoke("open_path", { path: hostPath });
         } catch (rustErr) {
           const msg = String(rustErr);
           // 옛 binary (command 자체가 미등록) — "not found" / "not allowed" 류면 폴백 시도.
           const isMissingCommand =
             /not found|unknown command|not allowed|command .* not/i.test(msg);
           if (isMissingCommand) {
-            await openShell(normalizedPath);
+            await openShell(hostPath);
           } else {
             // Rust 가 명시적으로 거부 (네트워크 경로 등) — 그 사유를 그대로 전달.
             throw new Error(msg);

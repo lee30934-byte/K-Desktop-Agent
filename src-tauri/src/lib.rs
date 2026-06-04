@@ -1637,6 +1637,31 @@ fn is_local_drive_path(canonical_str: &str) -> bool {
         && (b[2] == b'\\' || b[2] == b'/')
 }
 
+/// Phase 127 (v0.6.85) — WSL2 게스트 경로(UNC) 판별.
+///
+/// K 시나리오: openclaw/SIGILFALL 이 **같은 PC 의 WSL2 안**에서 돌며 산출물을
+/// `/home/lee30934/.openclaw/...` (리눅스 절대경로) 로 보고한다. Windows 호스트의 KDA 는
+/// 이 경로를 frontend 매핑(`kda_path_mappings`)으로 `\\wsl.localhost\<distro>\home\...` 로
+/// 변환해 넘기는데, 기존 path-trust 는 drive-letter 만 허용(`is_local_drive_path`)하고
+/// 모든 UNC 를 거부 → "신뢰하지 않는 경로". 그래서 변환해도 막혔다.
+///
+/// 근본 대책: WSL UNC 만 선별 신뢰. `\\wsl.localhost\` (Win11) / `\\wsl$\` (구버전),
+/// 그리고 `canonicalize()` 가 정규화하는 `\\?\UNC\wsl.localhost\...` 형태까지 매칭한다.
+/// **일반 원격 UNC (`\\server\share`) 는 여전히 거부** — model 이 markdown 에 박은 원격
+/// UNC 를 K 가 클릭 시 SMB 인증 leak / UNC autodisclosure 위험이 있어, 로컬 머신 내부
+/// 가상 FS 인 WSL 만 연다. VM(VirtualBox/VMware) 공유폴더는 drive-letter(`Z:\`)로 마운트하면
+/// `is_local_drive_path` 가 이미 신뢰하므로 별도 처리 불필요.
+///
+/// (canonical_str 은 호출 측에서 strip_unc_prefix + lowercase 적용 후 전달.
+///  단 strip_unc_prefix 는 `\\?\UNC\...` 를 보존하므로 그 형태도 함께 검사.)
+fn is_wsl_unc_path(canonical_str: &str) -> bool {
+    let s = canonical_str; // already lowercased by caller
+    s.starts_with(r"\\wsl.localhost\")
+        || s.starts_with(r"\\wsl$\")
+        || s.starts_with(r"\\?\unc\wsl.localhost\")
+        || s.starts_with(r"\\?\unc\wsl$\")
+}
+
 fn percent_decode_local_path(input: &str) -> String {
     // file:// prefix 제거 (Windows path 는 file:///C:/...)
     let stripped = input
@@ -1711,6 +1736,7 @@ fn open_path(path: String) -> Result<(), String> {
     // Phase 114 (v0.6.69) — 로컬 drive-letter 경로 전체 신뢰 (K 가 직접 클릭한 파일).
     // 기존 trusted_prefixes 는 OR 안전망으로 보존. UNC 네트워크 경로만 거부됨.
     let trusted = is_local_drive_path(&canonical_str)
+        || is_wsl_unc_path(&canonical_str)
         || trusted_prefixes
             .iter()
             .any(|prefix| canonical_str.starts_with(prefix));
@@ -1931,6 +1957,7 @@ fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, S
 
     // Phase 114 (v0.6.69) — 로컬 drive-letter 경로 전체 신뢰 (K 가 직접 클릭한 파일).
     let trusted = is_local_drive_path(&canonical_str)
+        || is_wsl_unc_path(&canonical_str)
         || trusted_prefixes
             .iter()
             .any(|prefix| canonical_str.starts_with(prefix));
@@ -2009,6 +2036,7 @@ fn get_shell_thumbnail(path: String, size: Option<u32>) -> Result<serde_json::Va
         .filter(|s| !s.is_empty())
         .collect();
     let trusted = is_local_drive_path(&canonical_str)
+        || is_wsl_unc_path(&canonical_str)
         || trusted_prefixes.iter().any(|prefix| canonical_str.starts_with(prefix));
     if !trusted {
         return Err(format!(
@@ -2204,6 +2232,7 @@ fn read_qa_report(folder_path: String) -> Result<serde_json::Value, String> {
     // Phase 114 (v0.6.69) — read_preview_file 과 동일 정책 (로컬 drive-letter 전체 신뢰).
     // 프리뷰가 열리는 폴더의 qa-report 검사도 같이 통과해야 gate 일관성 유지.
     let trusted = is_local_drive_path(&canonical_str)
+        || is_wsl_unc_path(&canonical_str)
         || trusted_prefixes.iter().any(|p| canonical_str.starts_with(p));
     if !trusted {
         return Err(format!(

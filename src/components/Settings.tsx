@@ -9,6 +9,8 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import CornerBrackets from "./CornerBrackets";
 import type { WatchedFolder } from "../types";
+// Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기용)
+import { getPathMappings, type PathMapping } from "./SidePanel";
 // Phase 84 (v0.6.27) — Connector/Tool Safety Layer (Lee #6)
 import {
   RISK_BADGES,
@@ -1261,6 +1263,16 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // Phase 80 (v0.6.24) — Final-Review Gate toggle (default true). 같은 sidecar-config 파일.
   const [finalReviewGate, setFinalReviewGate] = useState(true);
   const [finalReviewGateBusy, setFinalReviewGateBusy] = useState(false);
+  // Phase 127 (v0.6.85) — WSL/VM 경로 매핑 테이블 (localStorage kda_path_mappings).
+  const [pathMappings, setPathMappings] = useState<PathMapping[]>(() => getPathMappings());
+  const savePathMappings = useCallback((next: PathMapping[]) => {
+    setPathMappings(next);
+    try {
+      localStorage.setItem("kda_path_mappings", JSON.stringify(next));
+    } catch (e) {
+      console.error("save kda_path_mappings failed:", e);
+    }
+  }, []);
   // Phase 81 (v0.6.25) — Lee Profile 정보 (예시 template 자동 생성 + path 표시)
   const [leeProfile, setLeeProfile] = useState<{ path: string; bytes: number; justCreated: boolean } | null>(null);
   const [leeProfileBusy, setLeeProfileBusy] = useState(false);
@@ -6026,6 +6038,113 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 <div className="shortcut-item">
                   <span className="shortcut-key mono">Ctrl+Shift+P</span>
                   <span className="shortcut-desc">빠른 명령 팔레트</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기) */}
+          <section className="settings-section" data-tab="system">
+            <div className="eyebrow">🗂️ 경로 매핑 (WSL / VM)</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">게스트 경로 → 호스트 경로 변환</div>
+                <div className="settings-row-desc">
+                  같은 PC 의 WSL2/VM 안에서 도는 도구(openclaw 등)가 보고하는 리눅스 경로(
+                  <code>/home/lee30934/...</code>)를 Windows 호스트가 읽을 수 있는 경로로 변환해
+                  미리보기/외부열기를 가능하게 합니다.<br />
+                  <b>WSL2 예)</b> from <code>/home/lee30934</code> → to{" "}
+                  <code>{"\\\\wsl.localhost\\Ubuntu\\home\\lee30934"}</code><br />
+                  <b>VM</b> 은 게스트 폴더를 드라이브(<code>Z:\</code>)로 공유 마운트한 뒤 to 에 그 경로를 적으세요.
+                  보안상 <b>WSL UNC 와 로컬 드라이브 경로만</b> 신뢰하고, 일반 원격 UNC(<code>\\server\share</code>)는
+                  거부합니다.
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", width: "100%" }}>
+                {pathMappings.length === 0 && (
+                  <div className="settings-row-desc" style={{ opacity: 0.7 }}>
+                    등록된 매핑이 없습니다. 아래 버튼으로 규칙을 추가하세요.
+                  </div>
+                )}
+                {pathMappings.map((m, i) => (
+                  <div
+                    key={i}
+                    style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}
+                  >
+                    <input
+                      className="api-key-input mono"
+                      type="text"
+                      value={m.from}
+                      onChange={(e) => {
+                        const next = [...pathMappings];
+                        next[i] = { ...m, from: e.target.value };
+                        savePathMappings(next);
+                      }}
+                      placeholder="/home/lee30934"
+                      style={{ flex: "1 1 180px", padding: "8px 10px" }}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <span aria-hidden style={{ opacity: 0.6 }}>→</span>
+                    <input
+                      className="api-key-input mono"
+                      type="text"
+                      value={m.to}
+                      onChange={(e) => {
+                        const next = [...pathMappings];
+                        next[i] = { ...m, to: e.target.value };
+                        savePathMappings(next);
+                      }}
+                      placeholder={"\\\\wsl.localhost\\Ubuntu\\home\\lee30934"}
+                      style={{ flex: "1 1 240px", padding: "8px 10px" }}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <label className="toggle" title="이 규칙 사용">
+                      <input
+                        type="checkbox"
+                        checked={m.enabled !== false}
+                        onChange={(e) => {
+                          const next = [...pathMappings];
+                          next[i] = { ...m, enabled: e.target.checked };
+                          savePathMappings(next);
+                        }}
+                      />
+                      <span className="toggle-slider"></span>
+                    </label>
+                    <button
+                      className="settings-btn settings-btn-danger"
+                      type="button"
+                      onClick={() => savePathMappings(pathMappings.filter((_, j) => j !== i))}
+                      title="이 규칙 삭제"
+                    >
+                      삭제
+                    </button>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.4rem", flexWrap: "wrap" }}>
+                  <button
+                    className="settings-btn"
+                    type="button"
+                    onClick={() => savePathMappings([...pathMappings, { from: "", to: "", enabled: true }])}
+                  >
+                    + 규칙 추가
+                  </button>
+                  <button
+                    className="settings-btn"
+                    type="button"
+                    onClick={() => {
+                      const from = "/home/lee30934";
+                      if (pathMappings.some((m) => m.from === from)) return;
+                      savePathMappings([
+                        ...pathMappings,
+                        { from, to: "\\\\wsl.localhost\\Ubuntu\\home\\lee30934", enabled: true },
+                      ]);
+                    }}
+                    title="openclaw 기본 WSL2 매핑(/home/lee30934 → \\wsl.localhost\Ubuntu\home\lee30934) 추가"
+                  >
+                    openclaw 기본값 채우기
+                  </button>
                 </div>
               </div>
             </div>

@@ -26,6 +26,10 @@ param(
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
+# Set-Location 은 PowerShell provider 위치만 바꿀 뿐, .NET 의 프로세스 CWD
+# ([Environment]::CurrentDirectory) 는 그대로다. [System.IO.File]::ReadAllBytes 같은
+# .NET 상대경로 호출이 엉뚱한 cwd(예: 리셋된 작업폴더)를 보고 실패하는 함정 차단.
+[Environment]::CurrentDirectory = $projectRoot
 
 $failures = @()
 
