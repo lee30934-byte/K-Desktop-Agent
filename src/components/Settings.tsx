@@ -1201,6 +1201,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [telegramTokenVisible, setTelegramTokenVisible] = useState<boolean>(false);
   const [telegramTestStatus, setTelegramTestStatus] = useState<string>("");
 
+  // Phase 129 (v0.6.84) — VM/원격 호환 모드 (WebView2 GPU 가속 OFF). per-PC flag 파일 기반.
+  const [webviewGpuOff, setWebviewGpuOff] = useState<boolean>(false);
+  const [webviewGpuOffSaving, setWebviewGpuOffSaving] = useState<boolean>(false);
+
   // 에이전트 권한 상태
   const [permissions, setPermissions] = useState<AgentPermission[]>(DEFAULT_PERMISSIONS);
 
@@ -1775,6 +1779,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         setTelegramToken(localStorage.getItem(LS_TELEGRAM_TOKEN) || "");
         setTelegramAllowedChats(localStorage.getItem(LS_TELEGRAM_ALLOWED_CHATS) || "");
         setTelegramPcName(localStorage.getItem(LS_TELEGRAM_PC_NAME) || "");
+        // Phase 129 (v0.6.84) — VM 호환 모드(GPU 가속 OFF) 플래그는 Rust 가 보유. 비동기 로드.
+        invoke<boolean>("get_webview_gpu_off")
+          .then((v) => setWebviewGpuOff(!!v))
+          .catch(() => {});
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -1819,6 +1827,19 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     setTelegramEnabled(value);
     localStorage.setItem(LS_TELEGRAM_ENABLED, value ? "true" : "false");
     emitTelegramChanged();
+  }
+
+  // Phase 129 (v0.6.84) — VM/원격 호환 모드 토글. Rust flag 파일에 영속 → 재시작 후 적용.
+  async function toggleWebviewGpuOff(value: boolean) {
+    setWebviewGpuOffSaving(true);
+    try {
+      await invoke("set_webview_gpu_off", { enabled: value });
+      setWebviewGpuOff(value);
+    } catch (e) {
+      alert(`VM 호환 모드 설정 실패: ${e}`);
+    } finally {
+      setWebviewGpuOffSaving(false);
+    }
   }
   function saveTelegramToken(value: string) {
     setTelegramToken(value);
@@ -4349,6 +4370,33 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               >
                 테스트 전송
               </button>
+            </div>
+          </section>
+
+          {/* Phase 129 (v0.6.84) — VM/원격 호환 모드: WebView2 GPU 가속 끄기 */}
+          <section className="settings-section" data-tab="system">
+            <div className="eyebrow">화면 호환 (VM · 원격 데스크톱)</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">VM/원격 호환 모드 (GPU 가속 끄기)</div>
+                <div className="settings-row-desc">
+                  가상머신(VM)·원격 데스크톱처럼 <b>가상 GPU</b> 환경에서 이미지·영상
+                  <b> 미리보기가 빈칸으로 안 보이는</b> 경우 켜세요. WebView2 의 GPU 합성을
+                  끄고 software 렌더로 전환해 미리보기를 정상화합니다.
+                  <br />
+                  <b>⚠ 변경 후 앱을 완전히 종료(트레이 포함) 후 재시작해야 적용됩니다.</b>
+                  {" "}이 설정은 이 PC 에만 저장돼요 (메인 PC 는 GPU 가속 유지 가능).
+                </div>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={webviewGpuOff}
+                  onChange={(e) => toggleWebviewGpuOff(e.target.checked)}
+                  disabled={loading || webviewGpuOffSaving}
+                />
+                <span className="toggle-slider"></span>
+              </label>
             </div>
           </section>
 

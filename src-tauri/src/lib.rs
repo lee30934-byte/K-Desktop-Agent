@@ -984,6 +984,43 @@ fn mark_first_run_complete() -> Result<(), String> {
     Ok(())
 }
 
+// ────────── Phase 129 (v0.6.84) — VM/원격 호환 모드 (WebView2 GPU 가속 OFF) ──────────
+//
+// VM / 원격 데스크톱처럼 가상 GPU 환경에서는 WebView2(Chromium) 의 GPU 합성이 깨져
+// 이미지/영상 미리보기가 "로드는 됐지만 화면에 안 그려지는" (빈칸) 증상이 난다.
+// flag 파일이 있으면 시작 시 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 에 --disable-gpu 를
+// 주입해 software 렌더로 강제 → 미리보기 정상화. env 는 webview 생성 전에 읽혀야 하므로
+// run_with_options() 최상단에서 set (Builder 이전).
+//
+// flag 는 per-PC (data_root 안) 라 K 의 2PC 운영에서 VM PC 에서만 켜고 메인 PC 는 GPU 가속
+// 유지 가능. 토글 변경은 앱 재시작 후 적용.
+
+fn webview_gpu_off_flag_path() -> PathBuf {
+    data_root().join("webview-gpu-off.flag")
+}
+
+#[tauri::command]
+fn get_webview_gpu_off() -> bool {
+    webview_gpu_off_flag_path().exists()
+}
+
+#[tauri::command]
+fn set_webview_gpu_off(enabled: bool) -> Result<(), String> {
+    let path = webview_gpu_off_flag_path();
+    if enabled {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("data root 폴더 생성 실패: {}", e))?;
+        }
+        std::fs::write(&path, b"1")
+            .map_err(|e| format!("GPU-off 플래그 작성 실패: {}", e))?;
+    } else if path.exists() {
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("GPU-off 플래그 삭제 실패: {}", e))?;
+    }
+    Ok(())
+}
+
 // ────────── Phase 25 (v0.5.11) — Portable data dir ──────────
 //
 // data-pointer.txt 를 통해 K 가 데이터 폴더를 자유롭게 선택하게 한다.
@@ -3329,6 +3366,18 @@ pub fn run() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run_with_options(start_minimized: bool) {
+    // Phase 129 (v0.6.84) — VM/원격 호환 모드. flag 파일이 있으면 WebView2 GPU 가속 끄기.
+    // env 는 Tauri 가 webview 환경을 만들기 전에 읽혀야 하므로 Builder 보다 먼저 set.
+    // --disable-gpu + --disable-gpu-compositing 로 software 렌더 강제 → VM 에서 이미지/영상
+    // 미리보기가 빈칸으로 안 그려지던 문제 해소.
+    if webview_gpu_off_flag_path().exists() {
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--disable-gpu --disable-gpu-compositing",
+        );
+        log_lifecycle("shutdown.log", "WebView2 GPU 가속 OFF (VM/원격 호환 모드)");
+    }
+
     // 패닉 → logs/crash.log 에 기록. 기존 hook 도 유지해서 stderr 로도 계속 출력되게.
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -3593,6 +3642,9 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 127 (v0.6.82) — 텔레그램 봇 브리지 (폰에서 KDA 원격)
             telegram_get_updates,
             telegram_send_message,
+            // Phase 129 (v0.6.84) — VM/원격 호환 모드 (WebView2 GPU 가속 OFF)
+            get_webview_gpu_off,
+            set_webview_gpu_off,
             // Phase 18 — 의존성 자동 셋업 + First-run 마법사
             is_first_run,
             mark_first_run_complete,
