@@ -594,6 +594,176 @@ function loadLeeProfile(): { content: string; bytes: number; exists: boolean; pa
   }
 }
 
+/**
+ * Phase X-2 (v0.7.00) — Soul (에이전트 정체성) loader.
+ *
+ * `~/.kda/soul.md` 의 내용을 read. 없으면 빈 string. lee-profile.md 가 "K(사용자)의 규칙"
+ * 이라면, soul.md 는 "에이전트 자신의 정체성/가치관/페르소나" — Hermes Agent 의 soul 개념.
+ * 파일 존재만으로 게이트 (flag 불필요). 없으면 종전과 100% 동일 동작.
+ * system prompt 최상단(SYSTEM_PROMPT 바로 뒤)에 박혀 매 turn 정체성을 일관되게 유지.
+ */
+function loadSoul(): { content: string; bytes: number; exists: boolean; path: string } {
+  const soulPath = path.join(os.homedir(), ".kda", "soul.md");
+  if (!existsSync(soulPath)) {
+    return { content: "", bytes: 0, exists: false, path: soulPath };
+  }
+  try {
+    const raw = readFileSync(soulPath, "utf-8");
+    const cleaned = raw.replace(/^﻿/, "").trim();
+    return { content: cleaned, bytes: cleaned.length, exists: true, path: soulPath };
+  } catch (e) {
+    logToFile(
+      "warn",
+      `soul.md read 실패: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return { content: "", bytes: 0, exists: false, path: soulPath };
+  }
+}
+
+/**
+ * Phase 109 / X-4 / X-6 / X-7 / X-9 (v0.7.00) — Agent Flags loader.
+ *
+ * `~/.kda/agent-flags.json` 의 boolean 토글들. 모든 기능 기본 OFF → 파일이 없거나
+ * 키가 빠지면 종전과 100% 동일 동작 (zero-regression, pitfall_av: 자동행동은 토글·기본off).
+ *   - nudge:          Phase 109 턴경계 self-nudge (다음 행동 제안)
+ *   - failureCapture: X-7 실패 자동 포착 (Reflexion — 실패를 메모리에 기록 권유)
+ *   - memoryWrite:    X-6 자기수정 메모리 (db_memory_write 도구 노출)
+ *   - schedule:       X-4 자연어 Cron-lite (db_schedule_* 도구 노출)
+ *   - skillRegistry:  X-9 스킬 레지스트리 import (db_skill_* 도구 노출)
+ * mtime 캐시로 매 turn 디스크 재파싱 회피.
+ */
+interface AgentFlags {
+  nudge: boolean;
+  failureCapture: boolean;
+  memoryWrite: boolean;
+  schedule: boolean;
+  skillRegistry: boolean;
+}
+const AGENT_FLAGS_DEFAULT: AgentFlags = {
+  nudge: false,
+  failureCapture: false,
+  memoryWrite: false,
+  schedule: false,
+  skillRegistry: false,
+};
+let _agentFlagsCache: { mtimeMs: number; flags: AgentFlags } | null = null;
+function loadAgentFlags(): AgentFlags {
+  const flagsPath = path.join(os.homedir(), ".kda", "agent-flags.json");
+  try {
+    if (!existsSync(flagsPath)) {
+      _agentFlagsCache = null;
+      return { ...AGENT_FLAGS_DEFAULT };
+    }
+    const mtimeMs = statSync(flagsPath).mtimeMs;
+    if (_agentFlagsCache && _agentFlagsCache.mtimeMs === mtimeMs) {
+      return _agentFlagsCache.flags;
+    }
+    const raw = readFileSync(flagsPath, "utf-8").replace(/^﻿/, "");
+    const parsed = JSON.parse(raw) as Partial<Record<keyof AgentFlags, unknown>>;
+    const flags: AgentFlags = { ...AGENT_FLAGS_DEFAULT };
+    for (const k of Object.keys(AGENT_FLAGS_DEFAULT) as (keyof AgentFlags)[]) {
+      if (typeof parsed[k] === "boolean") flags[k] = parsed[k] as boolean;
+    }
+    _agentFlagsCache = { mtimeMs, flags };
+    return flags;
+  } catch (e) {
+    logToFile(
+      "warn",
+      `agent-flags.json read/parse 실패 (기본 OFF 적용): ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return { ...AGENT_FLAGS_DEFAULT };
+  }
+}
+
+// 플래그 OFF 시 --disallowed-tools 에 박을 MCP 도구 풀네임. flag ON 이면 노출.
+// PERM_TOOL_MAP 의 어느 카테고리에도 안 들어가므로 default-allow 상태 → flag 로만 제어.
+const FLAG_GATED_TOOLS: Record<keyof AgentFlags, string[]> = {
+  nudge: [],
+  failureCapture: [],
+  memoryWrite: ["mcp__k-personal__db_memory_write"],
+  schedule: [
+    "mcp__k-personal__db_schedule_add",
+    "mcp__k-personal__db_schedule_list",
+    "mcp__k-personal__db_schedule_due",
+    "mcp__k-personal__db_schedule_done",
+    "mcp__k-personal__db_schedule_delete",
+  ],
+  skillRegistry: [
+    "mcp__k-personal__db_skill_scan",
+    "mcp__k-personal__db_skill_import",
+  ],
+};
+
+/** flag OFF 인 기능들의 MCP 도구 풀네임을 모아 반환 (disallowed 에 추가용). */
+function flagGatedDisallowed(flags: AgentFlags): string[] {
+  const out: string[] = [];
+  for (const k of Object.keys(FLAG_GATED_TOOLS) as (keyof AgentFlags)[]) {
+    if (!flags[k]) out.push(...FLAG_GATED_TOOLS[k]);
+  }
+  return out;
+}
+
+/**
+ * Phase 109 / X-4 / X-6 / X-7 / X-9 — 활성 플래그에 대한 시스템 프롬프트 가이던스.
+ * flag OFF 인 기능은 한 줄도 안 박힘 → 모델이 존재조차 모름 (zero-regression).
+ */
+function buildAgentFeatureGuidance(flags: AgentFlags): string {
+  const blocks: string[] = [];
+  if (flags.nudge) {
+    blocks.push(
+      [
+        "",
+        "[턴경계 self-nudge (실험 기능 ON)]",
+        "응답 마지막에, 작업이 끝나지 않았다면 다음에 할 일을 한 줄로 스스로 제안하세요.",
+        "K 의 명시적 지시 없이 다음 행동을 자동 실행하지는 말고, 제안만 합니다.",
+      ].join("\n"),
+    );
+  }
+  if (flags.failureCapture) {
+    blocks.push(
+      [
+        "",
+        "[실패 자동 포착 (실험 기능 ON)]",
+        "도구 호출이 실패하거나 K 가 같은 실수를 지적하면, 원인과 회피책을 한 줄로 정리해",
+        "K 에게 'memory/pitfall_*.md 로 기록할까요?' 라고 제안하세요 (자동 기록 금지, 승인 후에만).",
+      ].join("\n"),
+    );
+  }
+  if (flags.memoryWrite) {
+    blocks.push(
+      [
+        "",
+        "[자기수정 메모리 (실험 기능 ON)]",
+        "db_memory_write 도구로 ~/.kda/memory/*.md 를 직접 쓰거나 덧붙일 수 있습니다.",
+        "덮어쓰기 전 반드시 K 의 확인을 받고, append 를 우선 고려하세요 (.bak 자동 백업됨).",
+      ].join("\n"),
+    );
+  }
+  if (flags.schedule) {
+    blocks.push(
+      [
+        "",
+        "[일정/리마인더 (실험 기능 ON)]",
+        "db_schedule_add/list/due/done/delete 로 일정을 저장할 수 있습니다.",
+        "자연어 시각('매일 9시')은 ISO(next_run)와 recur(daily/weekly/monthly)로 변환해 등록하세요.",
+        "백그라운드 자동 실행은 없습니다 — 도래한 일정은 db_schedule_due 로 확인해 K 에게 알립니다.",
+      ].join("\n"),
+    );
+  }
+  if (flags.skillRegistry) {
+    blocks.push(
+      [
+        "",
+        "[스킬 레지스트리 import (실험 기능 ON)]",
+        "외부 SKILL.md 설치 절차: ① web_*/WebFetch 로 본문 fetch → ② db_skill_scan 으로 정적 검사",
+        "→ ③ 본문을 직접 읽고 의미 검토 → ④ 검사 결과를 K 에게 번호 텍스트로 보고하고 승인 요청",
+        "→ ⑤ 승인 후에만 db_skill_import(approved=true) 호출. BLOCK 판정은 승인해도 설치 거부됩니다.",
+      ].join("\n"),
+    );
+  }
+  return blocks.join("\n");
+}
+
 // Phase 81 (v0.6.25) — system prompt 폭발 방지: lee-profile + memory 합쳐 32KB 초과 시 trim.
 // K 의 다른 PC 진단 (pitfall_codex_model_context_window_dynamic) 에서 memory_context 18.6KB →
 // 매 turn 마다 stdin 으로 박혀 context 자연 증가. cap 으로 단일 turn 폭발 차단.
@@ -2098,8 +2268,15 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     "--permission-mode", "bypassPermissions",
   ];
 
-  if (toolFlags.disallowed.length > 0) {
-    args.push("--disallowed-tools", toolFlags.disallowed.join(","));
+  // Phase 109 / X-4 / X-6 / X-9 — agent-flags.json 의 실험 기능 게이트.
+  // flag OFF 인 기능의 MCP 도구는 disallowed 에 추가 → 모델이 못 부름 (기본 OFF = 종전 동작).
+  const agentFlags = loadAgentFlags();
+  const gatedDisallowed = flagGatedDisallowed(agentFlags);
+  const effectiveDisallowed = Array.from(
+    new Set([...toolFlags.disallowed, ...gatedDisallowed]),
+  );
+  if (effectiveDisallowed.length > 0) {
+    args.push("--disallowed-tools", effectiveDisallowed.join(","));
   }
 
   // Phase 106 (v0.6.55) — model 선택 전달.
@@ -2125,7 +2302,15 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     msg.folderSystemPrompt && msg.folderSystemPrompt.trim()
       ? `\n\n[프로젝트 지침]\n이 대화는 K 가 지정한 프로젝트 폴더에 속해 있으며, 아래 지침을 항상 따라야 합니다. K 의 요청과 충돌하면 K 의 명시적 지시를 우선하되, 그 외엔 이 지침을 우선 적용하세요.\n\n${msg.folderSystemPrompt.trim()}\n`
       : "";
-  const fullSystemPrompt = SYSTEM_PROMPT + folderInstructionBlock + askGuidance + manualGuidance;
+  // Phase X-2 — soul.md (에이전트 정체성) 가 있으면 SYSTEM_PROMPT 바로 뒤에 박음.
+  const soul = loadSoul();
+  const soulBlock = soul.exists && soul.content
+    ? `\n\n[에이전트 정체성 (soul.md)]\n다음은 당신(에이전트) 자신의 정체성·가치관입니다. 매 응답에서 일관되게 유지하세요.\n\n${soul.content}\n`
+    : "";
+  // Phase 109 / X-4 / X-6 / X-7 / X-9 — 활성 실험 기능 가이던스 (flag OFF 면 빈 문자열).
+  const featureGuidance = buildAgentFeatureGuidance(agentFlags);
+  const fullSystemPrompt =
+    SYSTEM_PROMPT + soulBlock + folderInstructionBlock + askGuidance + manualGuidance + featureGuidance;
 
   // ─── 큰 인자 자동 파일 외화 ─────────────────────────────────────────
   // 임계치(LARGE_ARG_THRESHOLD) 이상의 인자 값은 임시 파일로 빼고 path 인자로 전환.
@@ -4121,7 +4306,12 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
 
   // Phase 106 — 현재 메시지를 넘겨 조건부 메모리(triggers) 선택 로딩.
   const memory = loadMemoryContext(msg.content);
-  const restSystemPrompt = SYSTEM_PROMPT_REST + memory.content;
+  // Phase X-2 — soul.md 정체성을 REST(외부 API) 경로에도 동일하게 박음.
+  const restSoul = loadSoul();
+  const restSoulBlock = restSoul.exists && restSoul.content
+    ? `\n\n[에이전트 정체성 (soul.md)]\n${restSoul.content}`
+    : "";
+  const restSystemPrompt = SYSTEM_PROMPT_REST + restSoulBlock + memory.content;
 
   // ─── Resolve permission policy & MCP tool catalog ──────────────────────
   // Phase 84 — REST path 도 동일하게 SafeMode 적용. provider=anthropic-rest 는 tool 없으니 미영향이지만,

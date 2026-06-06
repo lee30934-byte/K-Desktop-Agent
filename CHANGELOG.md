@@ -12,12 +12,20 @@ Hermes 에이전트 연구 성과를 KDA 에 이식한 대형 패치 — 3계층
 - **Phase 107 — 스킬 메모리**: `skill_*.md`(agentskills.io 호환 frontmatter: name/description/triggers/allowed-tools/success_count 등) 를 트리거 매칭으로 선택 로딩. 90일 미사용 후보를 Curator 가 정리 후보로 표시.
 - **Phase 108 — 에피소드 검색**: `db_convo_search` MCP 도구 추가. 과거 대화를 FTS5(external-content + trigram, 한글 부분검색 지원)로 검색하고, FTS5 미가용/짧은 질의 시 LIKE 폴백. bm25 + 최근성 정렬, 멱등 재인덱싱(rebuild 시그니처 게이트).
 - **X-1 — 함정 가드 데이터화**: `preToolUse-pitfallGuard.mjs` 가 `pitfall_*.md` frontmatter 의 `guard_pattern`/`guard_tool`/`guard_field`/`guard_flags`/`guard_remedy` 를 자동 로드. 코드 수정 없이 .md 추가만으로 위험 명령을 차단 가능. 핵심 2개(powershell-secret-bom, tauri-key-rotation)는 하드코딩 fallback 으로 항상 보장.
+- **X-2 — soul.md 외부화**: `~/.kda/soul.md`(에이전트 자신의 정체성/가치관, K 의 lee-profile.md 와 별개)가 있으면 시스템 프롬프트 최상단에 주입. 파일 존재만으로 게이트(플래그 불필요), 없으면 종전과 동일. Claude/외부 API 경로 모두 적용.
+- **X-6 — 자기수정 메모리**: `db_memory_write` MCP 도구. `~/.kda/memory/*.md` 를 append/overwrite. 경로 traversal 차단(정규식 + parent-dir 검사), overwrite 시 `.bak` 자동 백업.
+- **X-4 — 자연어 Cron-lite**: `db_schedule_add/list/due/done/delete` MCP 도구. 일정을 DB 에 저장하고 도래분을 `db_schedule_due` 로 조회(백그라운드 자동 실행 없음 — 재귀/AV 위험 회피). daily/weekly/monthly recur 시 완료 시 next_run 자동 전진.
+- **X-7 — 실패 자동 포착(Reflexion)**: 도구 실패/K 지적 시 원인·회피책을 정리해 pitfall 기록을 제안하는 가이던스(자동 기록 금지, 승인 후에만).
+- **X-9 — 스킬 레지스트리 import + 5겹 검증**: `db_skill_scan`/`db_skill_import` MCP 도구. ①소스 신뢰 ②정적 스캔(frontmatter 화이트리스트 + 위험 패턴 + allowed-tools 거부목록) ③에이전트 의미 검토 ④K 승인(번호 텍스트) ⑤provenance(sha256/source/date/verdict) + 재import 시 해시 diff. BLOCK 판정은 승인해도 설치 거부, 위험 권한은 설치 시 자동 제거. 네트워크 fetch 는 에이전트 web 도구가 담당(MCP 는 네트워크-free 유지).
+- **Phase 109 — 턴경계 self-nudge**: 작업 미완 시 다음 행동을 한 줄로 스스로 제안(자동 실행 X, 제안만).
 
 ### Changed
 - 모든 자동화 신규 동작은 기존 권한/토글 모델을 그대로 따르며 기본 안전값 유지. SYSTEM_PROMPT 에 `db_convo_search` 사용 안내 추가.
+- **실험 기능 토글**: Phase 109/X-4/X-6/X-7/X-9 는 `~/.kda/agent-flags.json`(nudge/failureCapture/memoryWrite/schedule/skillRegistry, 전부 기본 false)로 게이트. 플래그 OFF 면 해당 MCP 도구가 `--disallowed-tools` 에 박히고 가이던스도 미주입 → 종전 동작과 100% 동일(zero-regression).
 
 ### Tests
 - `sidecar/test-hook-pitfallGuard.mjs` 추가(8 케이스: fallback/동적 로드/비활성/잘못된 정규식 무시), check.ps1 게이트에 편입.
+- K-Personal-MCP `test_phase_x.py` 추가(21 케이스: X-6 생성/append/.bak/traversal 차단, X-4 등록/거부/도래/전진/삭제, X-9 PASS/BLOCK/WARN/승인게이트/provenance/위험권한제거).
 
 ---
 
