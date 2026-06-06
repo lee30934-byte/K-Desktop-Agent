@@ -3,6 +3,21 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.1] - 2026-06-06
+
+v0.7.0 의 실험 기능 토글(`~/.kda/agent-flags.json`)을 환경설정 UI 에서 직접 켜고 끌 수 있게 한 패치. JSON 수동 편집이 더 이상 필요 없습니다.
+
+### Added
+- **실험 기능 토글 UI**: 환경설정 → 🛡️ 에이전트 탭에 "🧪 실험 기능 (에이전트)" 섹션 신설. 5개 기능(턴경계 nudge / 실패 자동포착 / 자기수정 메모리 / 일정·리마인더 / 스킬 import)을 토글로 on/off. 각 토글에 설명·위험도 표시, 효과는 다음 turn 부터 적용(시스템 프롬프트/도구 게이트가 turn 시작 시 고정되는 기존 설계 그대로).
+- **안전 상태 요약 칩**: 🆘 안전장치 탭 상단 요약 카드에 "🧪 실험 기능 (n/5 ON)"·"🪪 soul.md (존재/크기)" 상태 칩 추가.
+- **Tauri 명령 3종** (`get_sidecar_config`/`set_sidecar_config_flag` 패턴 미러링): `get_agent_flags`(기본 전부 false), `set_agent_flag`(키 화이트리스트 검증 + merge-write, BOM 없는 UTF-8), `agent_soul_status`(soul.md 존재/크기/경로).
+
+### Changed
+- 토글은 optimistic update + 실패 시 자동 롤백. agent-flags.json 은 기존 키를 보존(merge)하며 허용된 5개 키만 수정.
+- 프론트엔드 변경이 포함되지만 `index.html` 의 cache-busting meta(Phase 98.3)가 이미 있어 webview2 캐시 stale 함정은 자동 회피됩니다.
+
+---
+
 ## [0.7.0] - 2026-06-06
 
 Hermes 에이전트 연구 성과를 KDA 에 이식한 대형 패치 — 3계층 메모리(프롬프트 선택 로딩 / 에피소드 검색 / 스킬 메모리) + 함정 가드 데이터화. 백엔드/사이드카 전용이며 프론트엔드 UI 변경은 없습니다.

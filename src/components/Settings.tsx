@@ -1263,6 +1263,17 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // Phase 80 (v0.6.24) — Final-Review Gate toggle (default true). 같은 sidecar-config 파일.
   const [finalReviewGate, setFinalReviewGate] = useState(true);
   const [finalReviewGateBusy, setFinalReviewGateBusy] = useState(false);
+  // v0.7.1 — 실험 기능 (에이전트) 토글. ~/.kda/agent-flags.json (전부 기본 false).
+  // 효과는 다음 turn 부터 (sidecar 가 turn spawn 시 mtime 캐시로 재로드). soul.md 상태도 함께 표시.
+  const [agentFlags, setAgentFlags] = useState<Record<string, boolean>>({
+    nudge: false,
+    failureCapture: false,
+    memoryWrite: false,
+    schedule: false,
+    skillRegistry: false,
+  });
+  const [agentFlagBusy, setAgentFlagBusy] = useState<string | null>(null);
+  const [soulStatus, setSoulStatus] = useState<{ exists: boolean; bytes: number } | null>(null);
   // Phase 127 (v0.6.85) — WSL/VM 경로 매핑 테이블 (localStorage kda_path_mappings).
   const [pathMappings, setPathMappings] = useState<PathMapping[]>(() => getPathMappings());
   const savePathMappings = useCallback((next: PathMapping[]) => {
@@ -2122,6 +2133,33 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     };
   }, [open]);
 
+  // v0.7.1 — 실험 기능 flag + soul.md 상태 로드 (open 시 1회).
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    invoke<Record<string, boolean>>("get_agent_flags")
+      .then((f) => {
+        if (cancelled) return;
+        setAgentFlags({
+          nudge: !!f?.nudge,
+          failureCapture: !!f?.failureCapture,
+          memoryWrite: !!f?.memoryWrite,
+          schedule: !!f?.schedule,
+          skillRegistry: !!f?.skillRegistry,
+        });
+      })
+      .catch((err) => console.error("get_agent_flags failed:", err));
+    invoke<{ exists?: boolean; bytes?: number }>("agent_soul_status")
+      .then((s) => {
+        if (cancelled) return;
+        setSoulStatus({ exists: !!s?.exists, bytes: Number(s?.bytes) || 0 });
+      })
+      .catch((err) => console.error("agent_soul_status failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   function loadBoolSetting(key: string, defaultValue: boolean): boolean {
     try {
       const stored = localStorage.getItem(key);
@@ -2192,6 +2230,22 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       setSidecarReloadHint(false);
     } catch (err) {
       console.error("reload_sidecar failed:", err);
+    }
+  }
+
+  // v0.7.1 — 실험 기능 토글. optimistic + 실패 시 롤백. 효과는 다음 turn 부터.
+  async function toggleAgentFlag(key: string) {
+    if (agentFlagBusy) return;
+    const newValue = !agentFlags[key];
+    setAgentFlagBusy(key);
+    setAgentFlags((prev) => ({ ...prev, [key]: newValue })); // optimistic
+    try {
+      await invoke("set_agent_flag", { key, value: newValue });
+    } catch (err) {
+      console.error("set_agent_flag failed:", key, err);
+      setAgentFlags((prev) => ({ ...prev, [key]: !newValue })); // 롤백
+    } finally {
+      setAgentFlagBusy(null);
     }
   }
 
@@ -3263,6 +3317,102 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             {/* Phase 115 (v0.6.70) — 채팅창 도구 이미지 표시 모드.
                 모델이 작업 중 찍는 스크린샷 도배 방지 (기본 접기). */}
             <ToolImageModeToggle />
+          </section>
+
+          {/* v0.7.1 — 실험 기능 (에이전트) 토글. ~/.kda/agent-flags.json. 전부 기본 OFF.
+              효과는 다음 turn 부터 (시스템 프롬프트/도구 게이트가 turn 시작 시 고정). */}
+          <section className="settings-section" data-tab="agent">
+            <div className="eyebrow">🧪 실험 기능 (에이전트)</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">
+                  Hermes 연구 기능 — 토글 (전부 기본 OFF)
+                </div>
+                <div className="settings-row-desc">
+                  켜면 다음 메시지(turn)부터 적용됩니다. OFF 면 해당 MCP 도구가 차단되고 가이던스도
+                  미주입 → 기존 동작과 100% 동일. 자동 행동(기록·실행)은 하지 않고 제안만 합니다.
+                </div>
+              </div>
+              <div style={{ marginTop: 4 }}>
+                {[
+                  {
+                    key: "nudge",
+                    title: "턴경계 self-nudge",
+                    desc: "작업이 안 끝났으면 다음 할 일을 한 줄로 스스로 제안 (자동 실행 X).",
+                    risk: "낮음",
+                  },
+                  {
+                    key: "failureCapture",
+                    title: "실패 자동포착",
+                    desc: "도구 실패/지적 시 원인·회피책을 pitfall 로 기록할지 제안 (자동 기록 X, 승인 후만).",
+                    risk: "낮음",
+                  },
+                  {
+                    key: "memoryWrite",
+                    title: "자기수정 메모리",
+                    desc: "db_memory_write 도구 활성 — ~/.kda/memory/*.md 기록 (덮어쓰기 전 확인 + .bak 백업).",
+                    risk: "중간",
+                  },
+                  {
+                    key: "schedule",
+                    title: "일정 / 리마인더",
+                    desc: "db_schedule_* 도구 활성 — 일정 저장·도래 알림. 백그라운드 자동 실행 없음.",
+                    risk: "낮음",
+                  },
+                  {
+                    key: "skillRegistry",
+                    title: "스킬 import",
+                    desc: "db_skill_scan/import 도구 활성 — 외부 SKILL.md 5겹 검증 후 K 승인 시에만 설치.",
+                    risk: "중간",
+                  },
+                ].map((feat) => (
+                  <div
+                    key={feat.key}
+                    className="settings-row"
+                    style={{ alignItems: "flex-start" }}
+                  >
+                    <div className="settings-row-info">
+                      <div className="settings-row-title">
+                        {feat.title}{" "}
+                        <span
+                          style={{
+                            fontSize: "0.72em",
+                            opacity: 0.6,
+                            fontWeight: 400,
+                          }}
+                        >
+                          위험도 {feat.risk}
+                        </span>
+                      </div>
+                      <div className="settings-row-desc">{feat.desc}</div>
+                    </div>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={!!agentFlags[feat.key]}
+                        onChange={() => toggleAgentFlag(feat.key)}
+                        disabled={agentFlagBusy === feat.key}
+                      />
+                      <span className="toggle-slider"></span>
+                    </label>
+                  </div>
+                ))}
+              </div>
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: "0.78em",
+                  opacity: 0.65,
+                }}
+              >
+                soul.md (에이전트 정체성):{" "}
+                {soulStatus
+                  ? soulStatus.exists
+                    ? `✓ 로드됨 (${soulStatus.bytes}B)`
+                    : "없음 (~/.kda/soul.md 생성 시 시스템 프롬프트에 주입)"
+                  : "확인 중…"}
+              </div>
+            </div>
           </section>
 
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}
@@ -4654,6 +4804,40 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       ? leeProfile.bytes > 0
                         ? `✓ ${leeProfile.bytes}B`
                         : "— 빈 파일"
+                      : "— 미로딩"}
+                  </div>
+                </div>
+                {/* v0.7.1 — 실험 기능 ON 개수 + soul.md 상태 칩 */}
+                <div
+                  style={{
+                    padding: "8px 10px",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                  }}
+                >
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🧪 실험 기능</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {(() => {
+                      const n = Object.values(agentFlags).filter(Boolean).length;
+                      return n > 0 ? `✓ ${n}/5 ON` : "— 전부 OFF";
+                    })()}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    padding: "8px 10px",
+                    background: "var(--bg-1)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                  }}
+                >
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🪪 soul.md</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {soulStatus
+                      ? soulStatus.exists
+                        ? `✓ ${soulStatus.bytes}B`
+                        : "— 없음"
                       : "— 미로딩"}
                   </div>
                 </div>

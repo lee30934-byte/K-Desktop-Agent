@@ -2859,6 +2859,109 @@ async fn set_sidecar_config_flag(
     Ok(())
 }
 
+// ────────── Agent feature flags (v0.7.1 — 실험 기능 토글 UI) ──────────
+//
+// sidecar 가 turn spawn 시 읽는 ~/.kda/agent-flags.json 의 한 키만 partial-update.
+// 5개 키: nudge / failureCapture / memoryWrite / schedule / skillRegistry (전부 기본 false).
+// 효과는 다음 turn 부터 — sidecar 의 loadAgentFlags() 가 메시지마다 mtime 캐시로 재로드.
+// BOM 없는 UTF-8 write (Rust std::fs::write 는 raw bytes — pitfall_powershell_secret_bom 무관).
+
+const AGENT_FLAG_KEYS: [&str; 5] = [
+    "nudge",
+    "failureCapture",
+    "memoryWrite",
+    "schedule",
+    "skillRegistry",
+];
+
+fn agent_flags_path() -> Result<PathBuf, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "HOME/USERPROFILE 환경변수 없음".to_string())?;
+    Ok(PathBuf::from(home).join(".kda").join("agent-flags.json"))
+}
+
+#[tauri::command]
+async fn get_agent_flags() -> Result<serde_json::Value, String> {
+    let path = agent_flags_path()?;
+    // 기본값 — sidecar 의 AGENT_FLAGS_DEFAULT 와 동기화 (전부 false).
+    let mut out = serde_json::Map::new();
+    for k in AGENT_FLAG_KEYS.iter() {
+        out.insert((*k).to_string(), serde_json::Value::Bool(false));
+    }
+    if path.exists() {
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            let stripped = strip_bom(&raw);
+            if let Ok(serde_json::Value::Object(m)) =
+                serde_json::from_str::<serde_json::Value>(stripped)
+            {
+                for k in AGENT_FLAG_KEYS.iter() {
+                    if let Some(serde_json::Value::Bool(b)) = m.get(*k) {
+                        out.insert((*k).to_string(), serde_json::Value::Bool(*b));
+                    }
+                }
+            }
+        }
+    }
+    Ok(serde_json::Value::Object(out))
+}
+
+#[tauri::command]
+async fn set_agent_flag(key: String, value: bool) -> Result<(), String> {
+    if !AGENT_FLAG_KEYS.contains(&key.as_str()) {
+        return Err(format!("허용되지 않은 agent flag 키: {}", key));
+    }
+    let path = agent_flags_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!("agent-flags 부모 폴더 생성 실패 ({}): {}", parent.display(), e)
+        })?;
+    }
+
+    // 기존 파일 로드 (없거나 깨진 경우 빈 객체로 시작 — merge 가 의미 있음)
+    let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => {
+                let stripped = strip_bom(&raw);
+                match serde_json::from_str::<serde_json::Value>(stripped) {
+                    Ok(serde_json::Value::Object(m)) => m,
+                    _ => serde_json::Map::new(),
+                }
+            }
+            Err(_) => serde_json::Map::new(),
+        }
+    } else {
+        serde_json::Map::new()
+    };
+    obj.insert(key, serde_json::Value::Bool(value));
+
+    let json = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
+        .map_err(|e| format!("agent-flags 직렬화 실패: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("agent-flags 쓰기 실패: {}", e))?;
+    log_lifecycle(
+        "runtime.log",
+        &format!("[config] agent-flags.json updated: {}", path.display()),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn agent_soul_status() -> Result<serde_json::Value, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "HOME/USERPROFILE 환경변수 없음".to_string())?;
+    let path = PathBuf::from(home).join(".kda").join("soul.md");
+    let (exists, bytes) = match std::fs::metadata(&path) {
+        Ok(m) => (true, m.len()),
+        Err(_) => (false, 0u64),
+    };
+    Ok(serde_json::json!({
+        "exists": exists,
+        "bytes": bytes,
+        "path": path.display().to_string(),
+    }))
+}
+
 // ────────── Sidecar spawning ──────────
 
 async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
@@ -3698,6 +3801,10 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 59 — Sidecar config (Anthropic rate polling toggle)
             get_sidecar_config,
             set_sidecar_config_flag,
+            // v0.7.1 — Agent feature flags (실험 기능 토글 UI)
+            get_agent_flags,
+            set_agent_flag,
+            agent_soul_status,
             // Phase 75 (v0.6.18) — Codex 좀비 process detect + 안전 정리
             list_stale_codex_processes,
             kill_process_tree,
