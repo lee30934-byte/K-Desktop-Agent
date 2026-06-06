@@ -9,7 +9,7 @@
   1. Rust   : cargo check --manifest-path src-tauri/Cargo.toml --all-targets
   2. Front  : tsc --noEmit (tsconfig.json)
   3. Sidecar: tsc --noEmit (sidecar/tsconfig.json)
-  4. Tests  : sidecar/test-perm-gate.mjs, test-hook-overwriteGuard.mjs, test-cmdline-limit.mjs,
+  4. Tests  : sidecar/test-perm-gate.mjs, test-hook-overwriteGuard.mjs, test-hook-pitfallGuard.mjs, test-cmdline-limit.mjs,
               test-context-meter.mjs, test-headless-mcp.mjs (Phase 13),
               test-codex-integration.mjs (Phase 15)
   5. Deps   : package.json 과 실제 설치 상태 일치 여부 (npm ls)
@@ -171,6 +171,7 @@ Invoke-Step "Sidecar tests (perm-gate + hook + cmdline-limit + context-meter + h
     $testFiles = @(
         "sidecar/test-perm-gate.mjs",
         "sidecar/test-hook-overwriteGuard.mjs",
+        "sidecar/test-hook-pitfallGuard.mjs",
         "sidecar/test-cmdline-limit.mjs",
         "sidecar/test-context-meter.mjs",
         "sidecar/test-headless-mcp.mjs",
@@ -267,7 +268,9 @@ Invoke-Step "Phase 18 (python detect + install-deps + first-run wizard)" {
     Write-Host "  OK install-deps.ps1 has all required functions" -ForegroundColor DarkGray
 
     # (d) install-deps.ps1 has UTF-8 BOM (PowerShell 5.1 reads .ps1 with Hangul correctly only with BOM)
-    $bytes = [System.IO.File]::ReadAllBytes("scripts/install-deps.ps1")
+    # NOTE: .NET API 는 PowerShell $PWD 가 아닌 프로세스 CWD 로 상대경로를 해석하므로 절대경로 사용
+    # (일부 실행 환경에서 프로세스 CWD ≠ projectRoot → "Could not find file" 오진). $projectRoot 기준.
+    $bytes = [System.IO.File]::ReadAllBytes((Join-Path $projectRoot "scripts/install-deps.ps1"))
     $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
     if (-not $hasBom) { throw "scripts/install-deps.ps1 missing UTF-8 BOM (Hangul will mojibake on PS 5.1)" }
     Write-Host "  OK install-deps.ps1 has UTF-8 BOM" -ForegroundColor DarkGray

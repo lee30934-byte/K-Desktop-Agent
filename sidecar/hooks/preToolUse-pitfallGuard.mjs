@@ -8,9 +8,20 @@
  *   memory/pitfall_*.md 에 등록된 "K 와 합의했거나 직접 겪은 함정" 패턴을 도구 호출 직전에 감지해
  *   동일 실수를 반복하지 않도록 차단한다. 회피책을 stderr 로 모델에 피드백.
  *
- * 패턴 (코드로 하드코딩 — 추후 pitfall_*.md frontmatter 에서 자동 로드 가능)
- *   - powershell-secret-bom : `Get-Content -Raw ... | gh secret set` (BOM 주입)
- *   - tauri-key-rotation    : `tauri signer generate` (인앱 updater 끊김 사고)
+ * 패턴 (2단계)
+ *   1) memory/pitfall_*.md frontmatter 의 `guard_pattern` 을 자동 로드 (Phase X-1)
+ *      → 새 함정을 코드 수정 없이 .md 파일만 추가/수정해 차단 가능.
+ *      frontmatter 키:
+ *        guard_pattern : 차단할 정규식 (필수, 이게 있어야 가드 대상)
+ *        guard_tool    : 적용할 도구 이름 (기본 "Bash")
+ *        guard_field   : tool_input 의 검사 필드 (기본 "command")
+ *        guard_flags   : 정규식 플래그 (기본 "i")
+ *        guard_remedy  : 회피책 (선택, 없으면 파일 경로 안내)
+ *      reason 은 frontmatter `description` 을 사용.
+ *   2) 파일 로드 실패/누락 시를 대비한 하드코딩 fallback (아래 FALLBACK_PITFALLS)
+ *      - powershell-secret-bom : `Get-Content -Raw ... | gh secret set` (BOM 주입)
+ *      - tauri-key-rotation    : `tauri signer generate` (인앱 updater 끊김 사고)
+ *      같은 id 가 .md 에서 로드되면 .md 가 우선 (fallback 은 덮어쓰기됨).
  *
  * 입력 (stdin, JSON 한 덩어리)
  *   { tool_name: "Bash", tool_input: { command: "...", ... }, ... }
@@ -27,14 +38,26 @@
  *   "확실히 막아야 할 때만 막는다" 원칙. false positive 보다 false negative 우선.
  */
 
+import { readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 const GUARD_ENABLED = (process.env.KDA_PITFALL_GUARD ?? "1") !== "0";
 
-// ─── 패턴 정의 ─────────────────────────────────────────────────
-// id              : pitfall 메모 파일명 매칭용
+// memory 디렉터리 (frontmatter guard_pattern 자동 로드 대상)
+const MEMORY_DIR =
+  process.env.KDA_MEMORY_DIR && process.env.KDA_MEMORY_DIR.trim()
+    ? process.env.KDA_MEMORY_DIR.trim()
+    : join(homedir(), ".kda", "memory");
+
+// ─── 하드코딩 fallback 패턴 ────────────────────────────────────
+// memory/pitfall_*.md 의 guard_pattern 로드가 실패하거나 해당 id 가 누락된
+// 경우에도 핵심 2개 함정은 항상 막히도록 보장한다.
+// id              : pitfall 메모 파일명 매칭용 (.md guard 와 dedupe 키)
 // match(toolName, input) : 적중 시 true
 // reason          : stderr 로 모델에 전달할 차단 사유
 // remedy          : 회피책 (반드시 명시 — "왜 막혔는지" 와 "어떻게 우회하는지" 둘 다 제공)
-const PITFALLS = [
+const FALLBACK_PITFALLS = [
   {
     id: "powershell-secret-bom",
     match: (toolName, input) => {
@@ -79,6 +102,97 @@ const PITFALLS = [
     ].join("\n"),
   },
 ];
+
+// ─── frontmatter 파서 (최소 구현) ──────────────────────────────
+// `---` 로 감싼 블록을 key: value 로 파싱. value 의 양끝 따옴표는 제거.
+// YAML single-quoted scalar 에서는 backslash 가 리터럴이라 정규식 그대로 보존됨.
+function parseFrontmatter(rawText) {
+  // CRLF 정규화: 마지막 블록 라인에 남는 \r 이 정규식 `$` 앵커를 깨뜨림
+  const text = rawText.replace(/\r\n/g, "\n");
+  if (!text.startsWith("---")) return null;
+  const end = text.indexOf("\n---", 3);
+  if (end < 0) return null;
+  const block = text.slice(3, end);
+  const out = {};
+  for (const line of block.split("\n")) {
+    const m = /^([A-Za-z0-9_]+)\s*:\s*(.*)$/.exec(line);
+    if (!m) continue;
+    let val = m[2].trim();
+    if (val.startsWith("'") && val.endsWith("'") && val.length >= 2) {
+      // YAML single-quoted scalar: '' → ' (그 외 backslash 등은 리터럴)
+      val = val.slice(1, -1).replace(/''/g, "'");
+    } else if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
+      val = val.slice(1, -1);
+    }
+    out[m[1]] = val;
+  }
+  return out;
+}
+
+// ─── memory/pitfall_*.md 에서 guard_pattern 동적 로드 ──────────
+// 반환: [{ id, match, reason, remedy }]  — FALLBACK 과 동일 형태.
+function loadPitfallsFromMemory() {
+  let files;
+  try {
+    files = readdirSync(MEMORY_DIR).filter(
+      (f) => f.startsWith("pitfall_") && f.endsWith(".md"),
+    );
+  } catch {
+    return [];
+  }
+  const loaded = [];
+  for (const file of files) {
+    let fm;
+    try {
+      const text = readFileSync(join(MEMORY_DIR, file), "utf-8");
+      fm = parseFrontmatter(text);
+    } catch {
+      continue;
+    }
+    if (!fm || !fm.guard_pattern) continue;
+
+    const tool = fm.guard_tool || "Bash";
+    const field = fm.guard_field || "command";
+    const flags = fm.guard_flags || "i";
+    let re;
+    try {
+      re = new RegExp(fm.guard_pattern, flags);
+    } catch {
+      // 잘못된 정규식 → 이 항목만 건너뜀 (가드 전체는 계속)
+      continue;
+    }
+    // id: 파일명에서 pitfall_ 접두/.md 제거 후 _ → -  (fallback id 와 dedupe)
+    const id =
+      (fm.guard_id && fm.guard_id.trim()) ||
+      file.replace(/^pitfall_/, "").replace(/\.md$/, "").replace(/_/g, "-");
+
+    loaded.push({
+      id,
+      match: (toolName, input) => {
+        if (toolName !== tool) return false;
+        return re.test(String(input?.[field] ?? ""));
+      },
+      reason:
+        (fm.description && fm.description.trim()) ||
+        `memory/${file} 에 등록된 함정 패턴이 감지되었습니다.`,
+      // guard_remedy 는 단일 라인 YAML 에 \n 리터럴로 줄바꿈을 표현 → 실제 개행으로 복원
+      remedy: fm.guard_remedy
+        ? fm.guard_remedy.trim().replace(/\\n/g, "\n")
+        : `회피책은 memory/${file} 를 참고하세요. (override: KDA_PITFALL_GUARD=0)`,
+    });
+  }
+  return loaded;
+}
+
+// ─── 최종 PITFALLS = fallback + 동적 (동일 id 는 동적이 우선) ──
+function buildPitfalls() {
+  const byId = new Map();
+  for (const p of FALLBACK_PITFALLS) byId.set(p.id, p);
+  for (const p of loadPitfallsFromMemory()) byId.set(p.id, p); // .md 우선
+  return [...byId.values()];
+}
+
+const PITFALLS = buildPitfalls();
 
 // ─── stdin 처리 ─────────────────────────────────────────────────
 let raw = "";
