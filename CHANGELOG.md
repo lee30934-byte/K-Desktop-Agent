@@ -3,6 +3,18 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.2] - 2026-06-06
+
+환경설정 안전장치 탭의 상태 표시 배선 버그를 잡은 패치. 기능 자체는 정상 동작했고 표시만 어긋났던 문제입니다.
+
+### Fixed
+- **Memory Sync 칩이 항상 "비활성"으로 표시되던 버그**: `Settings.tsx` 의 sidecar 이벤트 listener 가 `sidecar_event`(언더스코어)로 구독하고 있었으나 Rust(`lib.rs:3158`)·`App.tsx` 는 `sidecar-event`(하이픈)으로 emit/listen — 한 글자 오타로 `git_sync_status`/`safety_stats_response`/`git_sync_log_response` 3개 이벤트가 Settings 에 전혀 도달하지 못했다. 실제 Git Memory Sync 는 정상 동작(주기적 자동 커밋 확인)했고 **상태 표시만** 초기값에 멈춰 있던 것. 이벤트 이름을 `sidecar-event` 로 교정 → Memory Sync 상태·안전 통계·커밋 히스토리 뷰어가 함께 정상화. 회귀 방지 주석 추가.
+
+### Verified (no change needed)
+- v0.7.1 신규 기능 전수 점검: 전체 listen↔emit 이벤트 이름 매칭(어긋난 건 위 1건뿐), 새 Tauri 명령 3종(get_agent_flags/set_agent_flag/agent_soul_status) 구현·등록·인자 매핑, 실험기능 토글 round-trip(optimistic+롤백), 상태 칩 직접 invoke 로딩 — 모두 정상 확인.
+
+---
+
 ## [0.7.1] - 2026-06-06
 
 v0.7.0 의 실험 기능 토글(`~/.kda/agent-flags.json`)을 환경설정 UI 에서 직접 켜고 끌 수 있게 한 패치. JSON 수동 편집이 더 이상 필요 없습니다.

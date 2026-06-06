@@ -1671,7 +1671,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     let unlistenStatus: UnlistenFn | null = null;
     (async () => {
       // status 응답 listener (sidecar 가 emit)
-      unlistenStatus = await listen<any>("sidecar_event", (e) => {
+      // ⚠ Rust 는 "sidecar-event"(하이픈)로 emit (lib.rs:3158, App.tsx:1139 와 동일).
+      // 과거 "sidecar_event"(언더스코어) 오타로 git_sync_status/safety_stats_response/
+      // git_sync_log_response 3개 이벤트가 전부 누락 → Memory Sync 칩이 영원히 "비활성"으로 표시됨.
+      unlistenStatus = await listen<any>("sidecar-event", (e) => {
         const ev = e.payload;
         if (!ev || typeof ev !== "object") return;
         if (ev.type === "git_sync_status") {
