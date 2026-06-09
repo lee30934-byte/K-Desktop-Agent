@@ -37,6 +37,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Verify release version
+        shell: pwsh
+        run: npm run release:guard -- ${{ github.ref_name }}
+
       - name: Build sidecar
         # Phase 120 (v0.6.75) — 업데이트 다운로드 다이어트.
         # tsc 컴파일이 끝난 뒤(dist/ 생성) devDependencies(typescript/tsx/@esbuild/@types 등 ~37MB)를

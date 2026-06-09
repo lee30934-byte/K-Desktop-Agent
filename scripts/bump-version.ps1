@@ -15,6 +15,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+[Environment]::CurrentDirectory = $ProjectRoot
 
 # ─── 버전 파일 경로들 ───────────────────────────────────────────
 $FILES = @{
@@ -76,6 +77,19 @@ function Update-PackageJson([string]$newVersion) {
     $content = $content -replace '"version":\s*"[^"]+"', "`"version`": `"$newVersion`""
     Set-Content $path $content -NoNewline
     Write-Host "  ✓ package.json" -ForegroundColor Green
+}
+
+# ─── package-lock.json 업데이트 ─────────────────────────────────
+function Update-PackageLock([string]$newVersion) {
+    $path = "$ProjectRoot\package-lock.json"
+    $content = Get-Content $path -Raw | ConvertFrom-Json
+    $content.version = $newVersion
+    if ($content.packages -and $content.packages."" -and $content.packages."".version) {
+        $content.packages."".version = $newVersion
+    }
+    $json = $content | ConvertTo-Json -Depth 100
+    Set-Content $path $json -NoNewline
+    Write-Host "  ✓ package-lock.json" -ForegroundColor Green
 }
 
 # ─── Cargo.toml 업데이트 ────────────────────────────────────────
@@ -146,8 +160,12 @@ $newEntry
 # 메인 실행
 # ═══════════════════════════════════════════════════════════════
 
+Write-Host "원격 main/tag 기준으로 다음 버전 계산 중..." -ForegroundColor Cyan
+$newVersion = (& node "$ProjectRoot\scripts\release-version-guard.mjs" next $VersionArg)
+if ($LASTEXITCODE -ne 0) {
+    throw "release-version-guard failed"
+}
 $currentVersion = Get-CurrentVersion
-$newVersion = Get-NewVersion $currentVersion $VersionArg
 
 Write-Host ""
 Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Cyan
@@ -171,6 +189,7 @@ Write-Host ""
 Write-Host "파일 업데이트 중..." -ForegroundColor Cyan
 
 Update-PackageJson $newVersion
+Update-PackageLock $newVersion
 Update-CargoToml $newVersion
 Update-TauriConf $newVersion
 Update-Changelog $currentVersion $newVersion

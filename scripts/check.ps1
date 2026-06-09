@@ -62,6 +62,11 @@ function Invoke-Step($name, $scriptBlock) {
 Write-Section "K Desktop Agent — Preflight Check"
 Write-Host "프로젝트: $projectRoot" -ForegroundColor Gray
 
+Invoke-Step "Release version guard (버전 파일 정합성)" {
+    node "scripts/release-version-guard.mjs" check
+    if ($LASTEXITCODE -ne 0) { throw "release version guard failed" }
+}
+
 # 1. Rust 컴파일 체크
 # Phase 66.5 (v0.6.6) — scripts/*.ps1 의 한글 + BOM 부재 조합 사전 차단.
 #

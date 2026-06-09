@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "version:check": "node scripts/release-version-guard.mjs check",
+    "release:guard": "node scripts/release-version-guard.mjs release",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
