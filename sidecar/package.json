@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
+    "pdf2json": "^4.0.3",
     "tree-kill": "^1.2.2"
   },
   "devDependencies": {

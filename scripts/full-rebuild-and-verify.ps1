@@ -9,7 +9,8 @@
     1. rebuild-release.ps1     — recompile + sync sidecar to install dir
     2. smoke-sidecar.ps1       — verify Phase 9 step 1 (memory) + step 4 (pitfall guard)
     3. smoke-attachment.ps1    — verify attachment plumbing (decode, write, cleanup)
-    4. smoke-rest-tools.ps1    — verify Phase 11 G1 (REST tool-call loops + MCP dispatch)
+    4. smoke-pdf-extraction.ps1 — verify PDF attachment text extraction
+    5. smoke-rest-tools.ps1    — verify Phase 11 G1 (REST tool-call loops + MCP dispatch)
 
   Designed so K can say "빌드해줘" and the assistant runs this in the background, then
   reports a single PASS / FAIL with all numbers.
@@ -63,7 +64,7 @@ function Add-Summary($name, $passed, $elapsed) {
 
 # ─── 1. Rebuild ───────────────────────────────────────────────
 if (-not $SkipBuild) {
-    Write-Phase "Step 1/3 — Rebuild release binary"
+    Write-Phase "Step 1/5 — Rebuild release binary"
     $start = Get-Date
     $rebuildArgs = @()
     if ($SkipPreflight) { $rebuildArgs += '-SkipPreflight' }
@@ -82,7 +83,7 @@ if (-not $SkipBuild) {
     }
     Add-Summary 'rebuild-release' $true $elapsed
 } else {
-    Write-Phase "Step 1/3 — Rebuild release binary  [SKIPPED -SkipBuild]"
+    Write-Phase "Step 1/5 — Rebuild release binary  [SKIPPED -SkipBuild]"
     # Build the sidecar at minimum so smokes have a fresh dist/index.js — without this
     # SkipBuild can mask a TS regression.
     $start = Get-Date
@@ -101,23 +102,30 @@ if (-not $SkipBuild) {
 }
 
 # ─── 2. Smoke 1: sidecar diagnostic ───────────────────────────
-Write-Phase "Step 2/4 — smoke-sidecar (Phase 9 step 1 + step 4)"
+Write-Phase "Step 2/5 — smoke-sidecar (Phase 9 step 1 + step 4)"
 $start = Get-Date
 & "$PSScriptRoot\smoke-sidecar.ps1"
 $smoke1 = $LASTEXITCODE -eq 0
 Add-Summary 'smoke-sidecar' $smoke1 ([int]((Get-Date) - $start).TotalSeconds)
 
 # ─── 3. Smoke 2: attachment plumbing ──────────────────────────
-Write-Phase "Step 3/4 — smoke-attachment (attachment plumbing)"
+Write-Phase "Step 3/5 — smoke-attachment (attachment plumbing)"
 $start = Get-Date
 & "$PSScriptRoot\smoke-attachment.ps1"
 $smoke2 = $LASTEXITCODE -eq 0
 Add-Summary 'smoke-attachment' $smoke2 ([int]((Get-Date) - $start).TotalSeconds)
 
-# ─── 4. Smoke 3: REST tool-call loops + live MCP dispatch ──────
+# ─── 4. Smoke 3: PDF attachment text extraction ───────────────
+Write-Phase "Step 4/5 — smoke-pdf-extraction (PDF attachment text extraction)"
+$start = Get-Date
+& "$PSScriptRoot\smoke-pdf-extraction.ps1"
+$smokePdf = $LASTEXITCODE -eq 0
+Add-Summary 'smoke-pdf-extraction' $smokePdf ([int]((Get-Date) - $start).TotalSeconds)
+
+# ─── 5. Smoke 4: REST tool-call loops + live MCP dispatch ──────
 # (Layer 2 of this smoke auto-skips when K-Personal-MCP isn't installed; Layer 1
 #  always runs. This is what gives non-Claude providers parity coverage.)
-Write-Phase "Step 4/4 — smoke-rest-tools (Phase 11 G1: REST tool loops + MCP dispatch)"
+Write-Phase "Step 5/5 — smoke-rest-tools (Phase 11 G1: REST tool loops + MCP dispatch)"
 $start = Get-Date
 & "$PSScriptRoot\smoke-rest-tools.ps1"
 $smoke3 = $LASTEXITCODE -eq 0
@@ -140,7 +148,7 @@ $allPassed = ($summary | Where-Object { -not $_.Passed }).Count -eq 0
 
 Write-Host ""
 if ($allPassed) {
-    Write-Host "[OK] all green - Phase 9 markers verified, attachment round-trips, cleanup runs" -ForegroundColor Green
+    Write-Host "[OK] all green - Phase 9 markers verified, attachment/PDF round-trips, cleanup runs" -ForegroundColor Green
     exit 0
 } else {
     Write-Host "[FAIL] regression detected - see failures above" -ForegroundColor Red

@@ -3,6 +3,12 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [Unreleased]
+
+### Added
+- PDF attachments are now text-extracted in the sidecar before Claude/Codex launch. Extracted text is appended to the prompt while the original file path remains available for manual Read checks.
+- Added `scripts/smoke-pdf-extraction.ps1`, covering two different PDF layouts and verifying extracted prompt text plus temp attachment cleanup. The release confidence pipeline now runs this smoke.
+
 ## [0.7.4] - 2026-06-09
 
 사이드바 헤더의 버전 표기가 실제 앱 버전을 따라가도록 고친 패치 + 누적된 사이드카/UI 수정 묶음. KDA 자체 스케줄러 하트비트(실험)도 함께 포함.
