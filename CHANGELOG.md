@@ -5,9 +5,17 @@
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-06-10
+
 ### Added
+- Claude Fable 5 (`claude-fable-5`) is now available in both Claude Code (Max OAuth) and Anthropic API provider model pickers.
+- Existing Claude Max default/Opus 4.8 selections are migrated once to Fable 5 so the new release uses the latest model immediately; Opus 4.8 and Claude CLI auto remain selectable.
+- Context meter handling now treats Fable 5 as a 1M-token model, matching Anthropic's current model documentation.
 - PDF attachments are now text-extracted in the sidecar before Claude/Codex launch. Extracted text is appended to the prompt while the original file path remains available for manual Read checks.
+- Added `scripts/extract-pdf-text.ps1` and `sidecar/src/pdf-extract-cli.ts` for standalone PDF text extraction.
 - Added `scripts/smoke-pdf-extraction.ps1`, covering two different PDF layouts and verifying extracted prompt text plus temp attachment cleanup. The release confidence pipeline now runs this smoke.
+
+---
 
 ## [0.7.4] - 2026-06-09
 

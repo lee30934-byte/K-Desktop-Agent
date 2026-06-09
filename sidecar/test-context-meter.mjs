@@ -70,6 +70,7 @@ function denominatorFor(provider, modelId) {
   if (provider === "claude" && (!modelId || modelId === "default")) return 1_000_000;
   const id = (modelId || "").toLowerCase();
   if (id.includes("1m")) return 1_000_000;
+  if (id === "claude-fable-5") return 1_000_000;
   return 200_000;
 }
 
@@ -187,6 +188,8 @@ const cases = [
       if (d2 !== 1_000_000) errors.push(`claude/(empty) → ${d2}, 기대 1M`);
       const d3 = denominatorFor("claude", null);
       if (d3 !== 1_000_000) errors.push(`claude/null → ${d3}, 기대 1M`);
+      const d4 = denominatorFor("claude", "claude-fable-5");
+      if (d4 !== 1_000_000) errors.push(`claude/fable-5 → ${d4}, 기대 1M`);
       return errors;
     },
   },

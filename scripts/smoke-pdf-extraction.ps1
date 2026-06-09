@@ -71,10 +71,15 @@ function New-TextOp([int]$x, [int]$y, [string]$text) {
 
 $sidecarDir = Join-Path $projectRoot 'sidecar'
 $entryPath  = Join-Path $sidecarDir 'dist\index.js'
+$cliPath    = Join-Path $sidecarDir 'dist\pdf-extract-cli.js'
 $logPath    = Join-Path $projectRoot 'logs\sidecar.log'
 
 if (-not (Test-Path $entryPath)) {
     Write-SmokeErr "sidecar dist not built: $entryPath"
+    exit 1
+}
+if (-not (Test-Path $cliPath)) {
+    Write-SmokeErr "PDF extractor CLI not built: $cliPath"
     exit 1
 }
 
@@ -122,6 +127,21 @@ $pdfBOps = @(
 [System.IO.File]::WriteAllBytes($pdfBPath, (New-PdfBytes $pdfBOps))
 Write-SmokeStep "pdf A = $pdfAPath"
 Write-SmokeStep "pdf B = $pdfBPath"
+
+$cliOutput = & $nodeExe $cliPath --json $pdfAPath $pdfBPath
+if ($LASTEXITCODE -ne 0) {
+    Write-SmokeErr "PDF extractor CLI exited with code $LASTEXITCODE"
+    Write-Host ($cliOutput -join "`n") -ForegroundColor DarkYellow
+    exit 1
+}
+$cliText = $cliOutput -join "`n"
+foreach ($marker in @('LEFTCOLUMNALPHA', 'RIGHTCOLUMNOMEGA', 'INVOICETOTAL9900')) {
+    if (-not $cliText.Contains($marker)) {
+        Write-SmokeErr "PDF extractor CLI missing marker: $marker"
+        exit 1
+    }
+}
+Write-SmokeOK "PDF extractor CLI markers verified"
 
 $logSizeBefore = if (Test-Path $logPath) { (Get-Item $logPath).Length } else { 0 }
 

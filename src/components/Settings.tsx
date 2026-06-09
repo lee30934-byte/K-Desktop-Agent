@@ -213,6 +213,7 @@ const API_PROVIDERS: APIProvider[] = [
     // 새 default = Opus 4.8 (첫 옵션이라 신규 K 가 보는 selected = Opus 4.8).
     // K 가 명시적으로 "default" (Claude CLI 자동 선택) 원하면 두 번째 옵션.
     models: [
+      { id: "claude-fable-5", label: "Claude Fable 5 (최신/최강)" },
       { id: "claude-opus-4-8", label: "Claude Opus 4.8 (기본)" },
       { id: "default", label: "Claude CLI 자동 선택" },
     ],
@@ -226,6 +227,7 @@ const API_PROVIDERS: APIProvider[] = [
     docsUrl: "https://console.anthropic.com/",
     note: "Anthropic 콘솔에서 발급받은 API 키로 REST 직접 호출. Max 구독과는 별도 결제. 텍스트 전용 — MCP 도구 미지원.",
     models: [
+      { id: "claude-fable-5", label: "Claude Fable 5 (최신/최강)" },
       { id: "claude-opus-4-5", label: "Claude Opus 4.5" },
       { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5 (권장)" },
       { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 (저렴/빠름)" },

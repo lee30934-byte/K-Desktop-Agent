@@ -58,6 +58,12 @@ jobs:
           Write-Host ("sidecar node_modules: {0:N1}MB -> {1:N1}MB (prune --omit=dev)" -f ($before/1MB), ($after/1MB))
           Pop-Location
 
+      - name: Smoke PDF extraction
+        shell: pwsh
+        env:
+          KDA_MEMORY_DIR: ${{ github.workspace }}\tests\fixtures\memory
+        run: .\scripts\smoke-pdf-extraction.ps1
+
       - name: Fetch K-Personal-MCP source
         # Phase 26 (v0.5.13): K-Personal MCP 도구 서버 코드를 매 빌드마다 fetch.
         # data/, __pycache__/ 는 source repo 의 .gitignore 로 이미 제외됨 — code 만 옴.

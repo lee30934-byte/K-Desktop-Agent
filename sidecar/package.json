@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "pdf:extract": "node dist/pdf-extract-cli.js",
     "start": "node dist/index.js"
   },
   "dependencies": {

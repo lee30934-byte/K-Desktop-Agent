@@ -756,28 +756,28 @@ export default function App() {
     () => localStorage.getItem("kda_active_provider") || "claude"
   );
   const [activeModelId, setActiveModelId] = useState<string>(() => {
-    // Phase 111.2 (v0.6.62) — K 정정: 기본 모델 = Opus 4.8.
-    // 1회 마이그레이션: kda_active_model 미설정 OR "default" 이면 → "claude-opus-4-8".
+    // Phase 133 (v0.7.5): Claude Fable 5 출시 대응. 기존 Opus 4.8 기본값을 Fable 5로 1회 승격.
+    // 이전 마이그레이션으로 저장된 "claude-opus-4-8" 까지는 새 기본값으로 옮긴다.
     // sentinel (kda_default_model_migrated_v1) 박아서 한 번만 실행. K 가 이후 default 로
     // 다시 바꾸면 그 선택 유지 (sentinel 박혀있어 또 덮어쓰지 않음).
     try {
       const stored = localStorage.getItem("kda_active_model");
-      const sentinel = localStorage.getItem("kda_default_model_migrated_v1");
+      const sentinel = localStorage.getItem("kda_default_model_migrated_v2_fable5");
       const provider = localStorage.getItem("kda_active_provider") || "claude";
-      if (!sentinel && provider === "claude" && (!stored || stored === "default")) {
-        localStorage.setItem("kda_active_model", "claude-opus-4-8");
-        localStorage.setItem("kda_default_model_migrated_v1", "true");
-        return "claude-opus-4-8";
+      if (!sentinel && provider === "claude" && (!stored || stored === "default" || stored === "claude-opus-4-8")) {
+        localStorage.setItem("kda_active_model", "claude-fable-5");
+        localStorage.setItem("kda_default_model_migrated_v2_fable5", "true");
+        return "claude-fable-5";
       }
-      return stored || "claude-opus-4-8";
+      return stored || "claude-fable-5";
     } catch {
-      return "claude-opus-4-8";
+      return "claude-fable-5";
     }
   });
   useEffect(() => {
     function refreshActive() {
       setActiveProvider(localStorage.getItem("kda_active_provider") || "claude");
-      setActiveModelId(localStorage.getItem("kda_active_model") || "claude-opus-4-8");
+      setActiveModelId(localStorage.getItem("kda_active_model") || "claude-fable-5");
     }
     window.addEventListener("storage", refreshActive);
     window.addEventListener("kda-active-changed", refreshActive);
@@ -853,6 +853,7 @@ export default function App() {
   // claude-opus-4-8 명시 선택은 그대로 4.8 표시.
   const currentModelLabel = useMemo(() => {
     if (activeProvider === "claude") {
+      if (activeModelId === "claude-fable-5") return "Fable 5";
       if (activeModelId === "claude-opus-4-8") return "Opus 4.8";
       if (!activeModelId || activeModelId === "default") return "Claude CLI auto";
     }
@@ -899,14 +900,19 @@ export default function App() {
     if (id.includes("nano") && id.includes("gpt-5")) return { tokens: 1_000_000, source: "gpt-5-nano" };
 
     // Phase 111.2 (v0.6.62) — K 정정: "Opus 5.7 같은건 없어". 기본 모델 = Opus 4.8.
-    // Claude (Max OAuth) — default (CLI 자동) 또는 명시 Opus 4.8 둘 다 1M ctx 가정.
-    // Opus family 는 보통 1M context (4.x 기준). K 가 실제 한도 다르면 보고 후 정정.
-    if (activeProvider === "claude" && (!activeModelId || id === "default" || id === "claude-opus-4-8")) {
+    // Claude (Max OAuth) — default, Fable 5, Opus 4.8 모두 1M ctx.
+    if (activeProvider === "claude" && (!activeModelId || id === "default" || id === "claude-fable-5" || id === "claude-opus-4-8")) {
       return {
         tokens: 1_000_000,
-        source: id === "claude-opus-4-8" ? "Opus 4.8 (1M)" : "Claude Max default (1M)",
+        source: id === "claude-fable-5"
+          ? "Fable 5 (1M)"
+          : id === "claude-opus-4-8"
+            ? "Opus 4.8 (1M)"
+            : "Claude Max default (1M)",
       };
     }
+
+    if (id === "claude-fable-5") return { tokens: 1_000_000, source: "Fable 5 (1M)" };
 
     // OpenAI GPT-5 family / Codex — 공식 400K input window (2025 spec)
     if (

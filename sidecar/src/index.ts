@@ -27,10 +27,14 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 // node 의 child.kill 은 Windows 에서 손자 process 안 죽임 — Anthropic SDK / MCP 서버 spawn 한
 // 자손이 STOP 후에도 살아있어 K 가 "안 멈춤" 으로 인식.
 import treeKill from "tree-kill";
-import PDFParser, { type Output as PdfJsonOutput } from "pdf2json";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
+import {
+  extractPdfText,
+  formatPdfTextBlock,
+  isPdfAttachment,
+} from "./pdfText.js";
 
 // Phase 11 G1 — MCP-via-REST: lets non-Claude providers reach K-Personal MCP tools.
 import {
@@ -2153,97 +2157,6 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
 //   dir: 정리 대상 임시 폴더 경로 (없으면 null)
 //   guidance: prompt 끝에 붙일 안내 텍스트 (없으면 빈 문자열)
 // Claude CLI 의 Read 도구가 path 를 받아 이미지는 vision, 텍스트는 본문으로 처리.
-const PDF_TEXT_CHAR_LIMIT = Number(process.env.KDA_PDF_TEXT_CHAR_LIMIT ?? "60000");
-
-function isPdfAttachment(name: string, type: string | undefined): boolean {
-  return /\.pdf$/i.test(name) || (type ?? "").toLowerCase().includes("pdf");
-}
-
-function decodePdfToken(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function textFromPdfJson(pdfData: PdfJsonOutput): string {
-  const pages = Array.isArray(pdfData.Pages) ? pdfData.Pages : [];
-  return pages
-    .map((page, idx) => {
-      const text = (page.Texts ?? [])
-        .slice()
-        .sort((a, b) => (a.y - b.y) || (a.x - b.x))
-        .map((item) => (item.R ?? []).map((run) => decodePdfToken(run.T ?? "")).join(""))
-        .filter(Boolean)
-        .join(" ");
-      return `--- page ${idx + 1} ---\n${text}`;
-    })
-    .join("\n\n")
-    .trim();
-}
-
-async function extractPdfText(filePath: string): Promise<{
-  ok: boolean;
-  text?: string;
-  pages?: number;
-  chars?: number;
-  truncated?: boolean;
-  error?: string;
-}> {
-  return await new Promise((resolve) => {
-    const parser = new PDFParser(null, true);
-    let settled = false;
-    const done = (result: {
-      ok: boolean;
-      text?: string;
-      pages?: number;
-      chars?: number;
-      truncated?: boolean;
-      error?: string;
-    }) => {
-      if (settled) return;
-      settled = true;
-      try { parser.destroy(); } catch {}
-      resolve(result);
-    };
-
-    parser.on("pdfParser_dataError", (errData) => {
-      const err = errData instanceof Error ? errData : errData?.parserError;
-      done({ ok: false, error: err instanceof Error ? err.message : String(errData) });
-    });
-    parser.on("pdfParser_dataReady", (pdfData) => {
-      try {
-        const raw = parser.getRawTextContent().trim();
-        const extracted = raw || textFromPdfJson(pdfData);
-        const normalized = extracted.replace(/\r\n/g, "\n").trim();
-        const pages = Array.isArray(pdfData.Pages) ? pdfData.Pages.length : undefined;
-        if (!normalized) {
-          done({ ok: false, pages, error: "no extractable text (possibly scanned/image-only PDF)" });
-          return;
-        }
-        const limit = Number.isFinite(PDF_TEXT_CHAR_LIMIT) && PDF_TEXT_CHAR_LIMIT > 0
-          ? PDF_TEXT_CHAR_LIMIT
-          : 60000;
-        const truncated = normalized.length > limit;
-        done({
-          ok: true,
-          text: truncated ? normalized.slice(0, limit) : normalized,
-          pages,
-          chars: normalized.length,
-          truncated,
-        });
-      } catch (e) {
-        done({ ok: false, error: e instanceof Error ? e.message : String(e) });
-      }
-    });
-
-    parser.loadPDF(filePath, 0).catch((e) => {
-      done({ ok: false, error: e instanceof Error ? e.message : String(e) });
-    });
-  });
-}
-
 async function materializeAttachments(
   msg: UserMessage,
 ): Promise<{ dir: string | null; guidance: string }> {
@@ -2282,21 +2195,14 @@ async function materializeAttachments(
       if (isPdfAttachment(safeName, att.type)) {
         const extracted = await extractPdfText(target);
         if (extracted.ok && extracted.text) {
-          const pageInfo = extracted.pages ? `${extracted.pages}p, ` : "";
-          const truncInfo = extracted.truncated ? `, truncated to ${PDF_TEXT_CHAR_LIMIT} chars` : "";
-          pdfTextBlocks.push(
-            [
-              `### ${safeName} (${pageInfo}${extracted.chars ?? extracted.text.length} chars${truncInfo})`,
-              extracted.text,
-            ].join("\n"),
-          );
+          pdfTextBlocks.push(formatPdfTextBlock(safeName, extracted));
           logToFile(
             "info",
             `PDF attachment text extracted name=${safeName} pages=${extracted.pages ?? "?"} chars=${extracted.chars ?? extracted.text.length} truncated=${extracted.truncated ? "yes" : "no"}`,
           );
         } else {
           const reason = extracted.error ?? "unknown error";
-          pdfTextBlocks.push(`### ${safeName}\n[PDF text extraction failed: ${reason}]`);
+          pdfTextBlocks.push(formatPdfTextBlock(safeName, extracted));
           logToFile("warn", `PDF attachment text extraction failed name=${safeName}: ${reason}`);
         }
       }

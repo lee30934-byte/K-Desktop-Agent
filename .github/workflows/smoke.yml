@@ -115,6 +115,12 @@ jobs:
           KDA_MEMORY_DIR: ${{ github.workspace }}\tests\fixtures\memory
         run: .\scripts\smoke-attachment.ps1
 
+      - name: Run smoke-pdf-extraction (PDF text prompt injection + cleanup)
+        shell: pwsh
+        env:
+          KDA_MEMORY_DIR: ${{ github.workspace }}\tests\fixtures\memory
+        run: .\scripts\smoke-pdf-extraction.ps1
+
       # Phase 11 G1 — REST tool-call loop coverage.
       # Layer 1 (mock HTTP runner accumulator + builders + namespacing): always runs,
       # zero external deps. Layer 2 (live MCP dispatch) auto-skips on hosted runners
