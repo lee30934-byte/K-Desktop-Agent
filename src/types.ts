@@ -84,6 +84,15 @@ export type SidecarEvent =
   | { type: "done"; id: string; usage?: TokenUsage | null; computed_usage?: TokenUsage | null; maxTurnUsage?: MaxTurnUsage | null; agentId?: string | null }
   | { type: "error"; id?: string; message: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string }
+  | {
+      type: "turn_heartbeat";
+      id: string;
+      provider: "claude" | "codex" | string;
+      idleMs: number;
+      activeWorkMs?: number | null;
+      pid?: number | null;
+      ts: number;
+    }
   | { type: "pong" }
   | {
       type: "mcp_status";

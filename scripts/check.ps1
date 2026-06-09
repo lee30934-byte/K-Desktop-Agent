@@ -587,6 +587,9 @@ Invoke-Step "Phase 104 (sidecar heartbeat watchdog)" {
         "isBrokenStdoutPipe",
         "exitForBrokenStdoutPipe",
         'type: "heartbeat"',
+        'type: "turn_heartbeat"',
+        "ACTIVE_TOOL_TIMEOUT_MS",
+        "markActiveToolStart",
         "activeTurns.size",
         "heartbeatTimer.unref"
     )) {

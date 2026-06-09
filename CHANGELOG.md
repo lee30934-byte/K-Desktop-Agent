@@ -3,6 +3,18 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.3] - 2026-06-09
+
+Long-running Claude/Codex turns can now keep producing sidecar heartbeat evidence while tools are active, preventing the 480s idle watchdog from aborting legitimate work such as builds, smoke tests, or long MCP calls.
+
+### Fixed
+- Raised the default per-turn idle watchdog from 8 minutes to 1 hour, while keeping env overrides available.
+- Added active tool tracking for Claude `tool_use/tool_result` and Codex `item.started/item.completed` events.
+- Added `turn_heartbeat` and `long_task_evidence` events so the frontend and logs can distinguish active work from a stalled child process.
+- Extended release preflight checks to require the new heartbeat/watchdog markers.
+
+---
+
 ## [0.7.2] - 2026-06-06
 
 환경설정 안전장치 탭의 상태 표시 배선 버그를 잡은 패치. 기능 자체는 정상 동작했고 표시만 어긋났던 문제입니다.

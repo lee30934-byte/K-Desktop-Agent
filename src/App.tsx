@@ -1615,6 +1615,13 @@ export default function App() {
         break;
       }
 
+      case "turn_heartbeat": {
+        logger.log(
+          `[sidecar] turn heartbeat provider=${ev.provider} activeWorkMs=${ev.activeWorkMs ?? 0}`,
+        );
+        break;
+      }
+
       case "pong":
         break;
 

@@ -1407,6 +1407,31 @@ function log(level: "info" | "warn" | "error", message: string): void {
   logToFile(level, message);
 }
 
+const TURN_KEEPALIVE_INTERVAL_MS =
+  Number(process.env.KDA_TURN_KEEPALIVE_INTERVAL_MS) || 60_000;
+const DEFAULT_TURN_IDLE_TIMEOUT_MS =
+  60 * 60 * 1000;
+const ACTIVE_TOOL_TIMEOUT_MS =
+  Number(process.env.KDA_ACTIVE_TOOL_TIMEOUT_MS) || 60 * 60 * 1000;
+
+function emitTurnHeartbeat(
+  id: string,
+  provider: "claude" | "codex",
+  idleMs: number,
+  activeWorkMs: number | null,
+  pid: number | null,
+): void {
+  emit({
+    type: "turn_heartbeat",
+    id,
+    provider,
+    idleMs,
+    activeWorkMs,
+    pid,
+    ts: Date.now(),
+  });
+}
+
 // ─── 턴 관리 ───────────────────────────────────────────
 
 type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter" | "codex";
@@ -2531,9 +2556,10 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   // 긴 tool 실행(예: 빌드) 오인 kill 방지를 위해 값은 보수적(기본 8분). 프론트 dead-stream
   // 워치독(90s 비파괴 "중단" 버튼)이 빠른 수동 탈출을 주므로 sidecar 자동 kill 은 길게 둠.
   // catch/finally 에서 접근하려면 try 밖에 선언해야 한다 (try 블록 스코프 회피).
-  const IDLE_TIMEOUT_MS = Number(process.env.KDA_TURN_IDLE_TIMEOUT_MS) || 8 * 60 * 1000;
+  const IDLE_TIMEOUT_MS = Number(process.env.KDA_TURN_IDLE_TIMEOUT_MS) || DEFAULT_TURN_IDLE_TIMEOUT_MS;
   let watchdogTripped = false;
   let idleWatchdog: ReturnType<typeof setInterval> | undefined;
+  let turnKeepalive: ReturnType<typeof setInterval> | undefined;
   try {
     // Claude CLI 실행
     // hook 스크립트(preToolUse-overwriteGuard.mjs) 가 자식 자식 프로세스로 실행되므로
@@ -2568,13 +2594,31 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     let sawResult = false;
     // idle 워치독 기준 시각 — stdout/stderr 출력이 올 때마다 갱신.
     let lastActivity = Date.now();
-
+    const activeToolCalls = new Set<string>();
+    let activeToolStartedAt: number | null = null;
+    const markActiveToolStart = (toolId: string | undefined | null) => {
+      if (!toolId) return;
+      activeToolCalls.add(toolId);
+      activeToolStartedAt = activeToolStartedAt ?? Date.now();
+      lastActivity = Date.now();
+    };
+    const markActiveToolDone = (toolId: string | undefined | null) => {
+      if (toolId) activeToolCalls.delete(toolId);
+      if (activeToolCalls.size === 0) activeToolStartedAt = null;
+      lastActivity = Date.now();
+    };
     // idle 워치독 가동 (선언은 try 밖 — catch/finally 가 watchdogTripped/idleWatchdog 참조).
     // stdout/stderr 가 IDLE_TIMEOUT_MS 동안 무이벤트면 자식 완전 정지로 판정 → tree-kill →
     // catch 에서 명시적 error emit → 프론트 streaming 해제. 15s 간격으로 점검.
     idleWatchdog = setInterval(() => {
-      const idle = Date.now() - lastActivity;
-      if (idle <= IDLE_TIMEOUT_MS) return;
+      const now = Date.now();
+      const idle = now - lastActivity;
+      const activeWorkMs = activeToolStartedAt === null ? null : now - activeToolStartedAt;
+      if (activeToolCalls.size > 0) {
+        if ((activeWorkMs ?? 0) <= ACTIVE_TOOL_TIMEOUT_MS) return;
+      } else if (idle <= IDLE_TIMEOUT_MS) {
+        return;
+      }
       watchdogTripped = true;
       if (idleWatchdog) clearInterval(idleWatchdog);
       logToFile(
@@ -2593,6 +2637,27 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
         try { proc.kill("SIGKILL"); } catch { /* ignore */ }
       }
     }, 15_000);
+
+    turnKeepalive = setInterval(() => {
+      const now = Date.now();
+      const idleMs = now - lastActivity;
+      const activeWorkMs = activeToolStartedAt === null ? null : now - activeToolStartedAt;
+      if (activeToolCalls.size > 0) lastActivity = now;
+      emitTurnHeartbeat(msg.id, "claude", activeToolCalls.size > 0 ? 0 : idleMs, activeWorkMs, proc.pid ?? null);
+      emit({
+        type: "long_task_evidence",
+        taskId: msg.id,
+        manifest: {
+          provider: "claude",
+          activeToolCalls: activeToolCalls.size,
+          idleMs,
+          activeWorkMs,
+          pid: proc.pid ?? null,
+          heartbeatAt: now,
+        },
+      } as any);
+    }, TURN_KEEPALIVE_INTERVAL_MS);
+    turnKeepalive.unref?.();
 
     // ─── Per-turn usage 추적 (Phase 12 — Context Meter v2) ───────────────────
     // 한 turn 안에서 sub-agent / iterative tool 호출 등으로 model call 이 N번 일어나면,
@@ -2689,6 +2754,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
                     currentText = newText;
                   }
                 } else if (block.type === "tool_use") {
+                  markActiveToolStart(block.id);
                   // Phase 50 — 모델이 AskUserQuestion (Claude 의 user-question tool) 호출 시
                   // sidecar 가 KDA UI 로 라우팅. 기존 path 에선 그냥 tool_use 메시지로만 보였고
                   // 답할 방법이 없어 K 가 옵션을 직접 선택할 수 없었음. 이걸 ask_user_question
@@ -2740,6 +2806,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
             if (message?.content) {
               for (const block of message.content) {
                 if (block.type === "tool_result") {
+                  markActiveToolDone(block.tool_use_id);
                   // Phase 98 — image content part 를 별도 추출. 종전엔 normalizeToolOutput 이
                   // image 를 JSON.stringify 로 dump 해 K 화면에 base64 텍스트만 보였음.
                   const { text, images } = splitToolContent(block.content);
@@ -2925,6 +2992,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     emit({ type: "error", id: msg.id, message });
   } finally {
     clearInterval(idleWatchdog); // idle 워치독 정리 — 정상/비정상 종료 모두
+    clearInterval(turnKeepalive);
     logToFile("info", `CLI query end id=${msg.id}`);
     activeTurns.delete(msg.id);
     // 외화한 임시 인자 파일들 통째 정리 — system-prompt-file, settings, mcp-config 모두.
@@ -3394,9 +3462,10 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // 동안 한 줄도 안 내면 hang 으로 판정 → tree-kill → proc.on("close") 가 code≠0 로
   // reject → catch 가 error emit → UI "진행중" 고착 해제. catch/finally 가 참조하므로
   // 선언은 try 밖. 긴 작업 오인 방지 위해 임계값 보수적(기본 8분, env 조절 가능).
-  const IDLE_TIMEOUT_MS = Number(process.env.KDA_TURN_IDLE_TIMEOUT_MS) || 8 * 60 * 1000;
+  const IDLE_TIMEOUT_MS = Number(process.env.KDA_TURN_IDLE_TIMEOUT_MS) || DEFAULT_TURN_IDLE_TIMEOUT_MS;
   let watchdogTripped = false;
   let idleWatchdog: ReturnType<typeof setInterval> | undefined;
+  let turnKeepalive: ReturnType<typeof setInterval> | undefined;
 
   try {
     const proc = spawn(CODEX_CLI, args, {
@@ -3410,9 +3479,28 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     // idle 워치독 기준 시각 — stdout 라인/stderr chunk 올 때마다 갱신.
     let lastActivity = Date.now();
     // 15s 간격으로 무이벤트 시간 점검. 임계 초과 시 자식 트리 강제 종료.
+    const activeToolCalls = new Set<string>();
+    let activeToolStartedAt: number | null = null;
+    const markActiveToolStart = (toolId: string | undefined | null) => {
+      if (!toolId) return;
+      activeToolCalls.add(toolId);
+      activeToolStartedAt = activeToolStartedAt ?? Date.now();
+      lastActivity = Date.now();
+    };
+    const markActiveToolDone = (toolId: string | undefined | null) => {
+      if (toolId) activeToolCalls.delete(toolId);
+      if (activeToolCalls.size === 0) activeToolStartedAt = null;
+      lastActivity = Date.now();
+    };
     idleWatchdog = setInterval(() => {
-      const idle = Date.now() - lastActivity;
-      if (idle <= IDLE_TIMEOUT_MS) return;
+      const now = Date.now();
+      const idle = now - lastActivity;
+      const activeWorkMs = activeToolStartedAt === null ? null : now - activeToolStartedAt;
+      if (activeToolCalls.size > 0) {
+        if ((activeWorkMs ?? 0) <= ACTIVE_TOOL_TIMEOUT_MS) return;
+      } else if (idle <= IDLE_TIMEOUT_MS) {
+        return;
+      }
       watchdogTripped = true;
       if (idleWatchdog) clearInterval(idleWatchdog);
       logToFile(
@@ -3436,6 +3524,27 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     // App.tsx 의 listener 가 long_tasks 테이블에 row insert. KDA 재시작/끊김 시 복구 가능 후보로 표시.
     // Phase 126 (v0.6.81) — resume 실패 자동 재시도 path 면 outer 가 이미 started 를 emit 했으므로
     // 중복 insert 방지 위해 skip (inner 의 done 이 outer 의 row 를 닫음 — taskId 동일).
+    turnKeepalive = setInterval(() => {
+      const now = Date.now();
+      const idleMs = now - lastActivity;
+      const activeWorkMs = activeToolStartedAt === null ? null : now - activeToolStartedAt;
+      if (activeToolCalls.size > 0) lastActivity = now;
+      emitTurnHeartbeat(msg.id, "codex", activeToolCalls.size > 0 ? 0 : idleMs, activeWorkMs, proc.pid ?? null);
+      emit({
+        type: "long_task_evidence",
+        taskId: msg.id,
+        manifest: {
+          provider: "codex",
+          activeToolCalls: activeToolCalls.size,
+          idleMs,
+          activeWorkMs,
+          pid: proc.pid ?? null,
+          heartbeatAt: now,
+        },
+      } as any);
+    }, TURN_KEEPALIVE_INTERVAL_MS);
+    turnKeepalive.unref?.();
+
     if (!msg._codexResumeRetried) {
       emit({
         type: "long_task_started",
@@ -3650,9 +3759,19 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             }
             break;
           }
+          case "item.started": {
+            const it = event.item;
+            if (it?.type === "command_exec" || it?.type === "mcp_tool_call") {
+              markActiveToolStart(it.id ?? it.type);
+            }
+            break;
+          }
           case "item.completed": {
             const it = event.item;
             if (!it) break;
+            if (it.type === "command_exec" || it.type === "mcp_tool_call") {
+              markActiveToolDone(it.id ?? it.type);
+            }
             if (it.type === "agent_message" && typeof it.text === "string") {
               // 일부 호출은 delta 없이 한 번에 옴 — 최종 텍스트 replace.
               if (it.text !== currentText) {
@@ -4152,6 +4271,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     } as any);
   } finally {
     clearInterval(idleWatchdog); // idle 워치독 정리 — 정상/비정상 종료 모두
+    clearInterval(turnKeepalive);
     logToFile("info", `Codex query end id=${msg.id}`);
     activeTurns.delete(msg.id);
     if (attachmentsDir) {
