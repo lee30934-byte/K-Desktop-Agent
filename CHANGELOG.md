@@ -3,6 +3,20 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.4] - 2026-06-09
+
+사이드바 헤더의 버전 표기가 실제 앱 버전을 따라가도록 고친 패치 + 누적된 사이드카/UI 수정 묶음. KDA 자체 스케줄러 하트비트(실험)도 함께 포함.
+
+### Fixed
+- **사이드바 헤더 버전이 릴리스해도 안 바뀌던 버그**: `Sidebar.tsx` 의 `PERSONAL CONSOLE // V0.1.0` 이 하드코딩이라 업데이트해도 그대로였다. `@tauri-apps/api/app` 의 `getVersion()` 으로 런타임 주입하도록 변경 → 이제 `tauri.conf.json` 버전을 자동으로 따라간다(Settings 의 "현재 버전" 표기와 동일 소스).
+- **턴마다 CMD 콘솔 창이 깜빡이던 문제**: 사이드카의 `spawn(..., { shell: true })` 5곳(CLAUDE_CLI 턴 실행, CODEX_CLI 턴 실행, python/claude/codex `--version` 탐지)에 `windowsHide: true` 누락 → `cmd.exe /c` 콘솔이 매번 노출. 전부 `windowsHide: true` 추가로 해소.
+- **WSL 경로 매핑 기본값 버그**: 환경설정 "openclaw 기본값 채우기" 가 distro 를 `Ubuntu` 로 넣어 접근 불가였던 것을 `Ubuntu-22.04` 로 교정.
+
+### Added
+- **X-4 — KDA 자체 스케줄러 하트비트(실험)**: harness 의 ScheduleWakeup 을 대체해, `personal.db` 의 schedules 테이블을 60s 주기로 직접 폴링 → 도래분을 ⏰ 예약 conv 로 turn 주입. 영속화(personal.db) + 시작 직후 catch-up + `schedule-heartbeat.log` 로깅 + busy gate/쿨다운으로 폭주 방지. Tauri 명령 `get_personal_db_path`/`append_schedule_log` 추가.
+
+---
+
 ## [0.7.3] - 2026-06-09
 
 Long-running Claude/Codex turns can now keep producing sidecar heartbeat evidence while tools are active, preventing the 480s idle watchdog from aborting legitimate work such as builds, smoke tests, or long MCP calls.

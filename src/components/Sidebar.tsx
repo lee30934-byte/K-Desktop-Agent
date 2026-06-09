@@ -1,5 +1,6 @@
 import { memo, useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { save, open } from "@tauri-apps/plugin-dialog";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   DndContext,
   PointerSensor,
@@ -141,6 +142,17 @@ function Sidebar({
   // Phase 108 — Explorer 모드에서 현재 표시 중인 폴더 ID. null = 루트.
   // viewMode 가 tree 면 무시됨. explorer 모드로 토글한 직후엔 자동으로 루트부터 시작.
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+
+  // 브랜드 헤더 버전 — Tauri 앱 버전(tauri.conf.json/Cargo)을 따라감.
+  // 하드코딩 "V0.1.0" 금지 (릴리스해도 안 바뀌던 버그). getVersion 으로 런타임 주입.
+  const [appVersion, setAppVersion] = useState<string>("");
+  useEffect(() => {
+    getVersion()
+      .then((v) => setAppVersion(v))
+      .catch(() => {
+        /* 브라우저/비-Tauri 환경 — 버전 미표시 */
+      });
+  }, []);
 
   // 검색
   const [searchQuery, setSearchQuery] = useState("");
@@ -1280,7 +1292,9 @@ function Sidebar({
         </div>
         <div className="brand-text">
           <div className="brand-name">K.AGENT</div>
-          <div className="brand-sub">PERSONAL CONSOLE // V0.1.0</div>
+          <div className="brand-sub">
+            PERSONAL CONSOLE // {appVersion ? `V${appVersion}` : "…"}
+          </div>
         </div>
       </div>
 

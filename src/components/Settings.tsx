@@ -6325,10 +6325,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       if (pathMappings.some((m) => m.from === from)) return;
                       savePathMappings([
                         ...pathMappings,
-                        { from, to: "\\\\wsl.localhost\\Ubuntu\\home\\lee30934", enabled: true },
+                        { from, to: "\\\\wsl.localhost\\Ubuntu-22.04\\home\\lee30934", enabled: true },
                       ]);
                     }}
-                    title="openclaw 기본 WSL2 매핑(/home/lee30934 → \\wsl.localhost\Ubuntu\home\lee30934) 추가"
+                    title="openclaw 기본 WSL2 매핑(/home/lee30934 → \\wsl.localhost\Ubuntu-22.04\home\lee30934) 추가"
                   >
                     openclaw 기본값 채우기
                   </button>

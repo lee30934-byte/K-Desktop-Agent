@@ -1068,6 +1068,36 @@ fn get_data_dir_info() -> Result<DataDirInfo, String> {
     })
 }
 
+/// X-4 스케줄러 하트비트용 — K-Personal MCP 의 personal.db 절대 경로 반환.
+/// schedules 테이블이 사는 곳. resolve_kpersonal_mcp_server() 와 동일 우선순위로
+/// server.py 를 찾아 그 부모/data/personal.db 를 가리킨다 (personal_db.py 의 DB_PATH 와 일치).
+/// 파일이 아직 없어도 경로는 반환 (첫 db_schedule_* 호출 시 MCP 가 자동 생성).
+#[tauri::command]
+fn get_personal_db_path() -> Result<String, String> {
+    let server = resolve_kpersonal_mcp_server()?;
+    let mcp_root = server
+        .parent()
+        .ok_or_else(|| "server.py 부모 폴더 해석 실패".to_string())?;
+    let db = mcp_root.join("data").join("personal.db");
+    Ok(db.display().to_string())
+}
+
+/// X-4 스케줄러 하트비트 로그 — `<data_root>/schedule-heartbeat.log` 에 한 줄 append.
+/// 프론트가 가독성 있는 로컬시각 포함 라인을 만들어 넘긴다. 실패해도 앱 안 죽임.
+#[tauri::command]
+fn append_schedule_log(line: String) -> Result<(), String> {
+    let root = data_root();
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("schedule-heartbeat.log");
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("schedule-heartbeat.log 열기 실패: {}", e))?;
+    writeln!(f, "{}", line).map_err(|e| format!("로그 작성 실패: {}", e))?;
+    Ok(())
+}
+
 /// 데이터 폴더 변경. 옵션으로 기존 데이터 마이그레이션.
 ///
 /// 흐름:
@@ -3794,6 +3824,9 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 25 — Portable data dir
             get_data_dir_info,
             change_data_dir,
+            // X-4 스케줄러 하트비트 — personal.db (schedules 테이블) 경로
+            get_personal_db_path,
+            append_schedule_log,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,

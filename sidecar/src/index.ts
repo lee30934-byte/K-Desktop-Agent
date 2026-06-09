@@ -273,6 +273,7 @@ function probePython(exe: string): boolean {
       encoding: "utf-8",
       timeout: 5000,
       shell: true,
+      windowsHide: true,
     });
     return result.status === 0;
   } catch {
@@ -326,6 +327,7 @@ function probeClaudeCli(exe: string): boolean {
       encoding: "utf-8",
       timeout: 5000,
       shell: true,
+      windowsHide: true,
     });
     return result.status === 0;
   } catch {
@@ -377,6 +379,7 @@ function probeCodexCli(exe: string): boolean {
       encoding: "utf-8",
       timeout: 5000,
       shell: true,
+      windowsHide: true,
     });
     return result.status === 0;
   } catch {
@@ -2567,6 +2570,8 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     const proc = spawn(CLAUDE_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
+      // Windows: shell:true 면 cmd.exe 경유 → windowsHide 없으면 턴마다 콘솔 창 깜빡임.
+      windowsHide: true,
       env: {
         ...process.env,
         // 터미널 깜빡임 방지
@@ -3471,6 +3476,8 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     const proc = spawn(CODEX_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
+      // Windows: cmd.exe 콘솔 창 깜빡임 방지 (shell:true 동반 필수)
+      windowsHide: true,
       env: { ...process.env },
     });
 

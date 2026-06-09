@@ -602,6 +602,13 @@ export default function App() {
   // turnId → { chatId, text } 매핑. 텔레그램발 turn 만 등록. assistant_delta 가 text 누적,
   // done/error 가 그 text 를 chatId 로 회신 + 엔트리 정리. 일반 turn 은 미등록이라 무영향.
   const telegramTurnsRef = useRef<Map<string, { chatId: string; text: string }>>(new Map());
+  // X-4 (v0.7.x) — KDA 자체 스케줄러 하트비트.
+  // ScheduleWakeup(harness 소유, KDA 가 못 깨움) 대체. personal.db 의 schedules 테이블을
+  // 60s 마다 직접 폴링해 도래분을 ⏰ 예약 conv 로 turn 주입. turnId → {scheduleId,title} 매핑.
+  // done 시 정리 + 로그. 동시 1턴(busy gate) + scheduleId 쿨다운으로 폭주 방지.
+  const scheduleTurnsRef = useRef<Map<string, { scheduleId: number; title: string }>>(new Map());
+  // scheduleId → 마지막 발화 epoch(ms). db_schedule_done 누락 시 매 틱 재발화 폭주 방지(쿨다운).
+  const scheduleFiredAtRef = useRef<Map<number, number>>(new Map());
   // 텔레그램 회신 함수 ref — handleSidecarEvent(상단 정의)가 하단 정의된 deliverTelegramReply 를
   // 호출하기 위한 우회 (source 순서 디커플). 브리지 섹션에서 .current 할당.
   const deliverTelegramReplyRef = useRef<(chatId: string, text: string) => void>(() => {});
@@ -1379,6 +1386,15 @@ export default function App() {
             void deliverTelegramReplyRef.current(tg.chatId, tg.text);
           }
         }
+        // X-4 — 스케줄 turn 이면 busy gate 해제 + 완료 로그.
+        {
+          const sch = scheduleTurnsRef.current.get(ev.id);
+          if (sch) {
+            scheduleTurnsRef.current.delete(ev.id);
+            const line = `[${new Date().toLocaleString("sv-SE")}] DONE schedule#${sch.scheduleId} "${sch.title}" turn=${ev.id}`;
+            void invoke("append_schedule_log", { line }).catch(() => {});
+          }
+        }
         // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
         // Background turn (다른 conv) 면 early return + agentId/DB 만 갱신.
         // Active conv 면 기존 로직 그대로 (isStreaming reset, setMessages, setMetrics, 세션 임계치 등).
@@ -1554,6 +1570,16 @@ export default function App() {
               tg.chatId,
               `⚠ 처리 실패: ${(ev as any).message ?? "알 수 없는 오류"}`,
             );
+          }
+        }
+        // X-4 — 스케줄 turn 실패면 busy gate 해제 + 실패 로그 (쿨다운 유지 → 즉시 재폭주 방지).
+        {
+          const schId = ev.id;
+          const sch = schId ? scheduleTurnsRef.current.get(schId) : undefined;
+          if (sch && schId) {
+            scheduleTurnsRef.current.delete(schId);
+            const line = `[${new Date().toLocaleString("sv-SE")}] ERROR schedule#${sch.scheduleId} "${sch.title}" turn=${schId} msg=${(ev as any).message ?? "?"}`;
+            void invoke("append_schedule_log", { line }).catch(() => {});
           }
         }
         // Phase 111 (v0.6.60) — background turn 의 error 도 routing.
@@ -2576,6 +2602,164 @@ export default function App() {
 
     return () => { cancelled = true; };
   }, [telegramConfigVersion]);
+
+  // ─────────────────────────────────────────────────────────────
+  // X-4 — KDA 자체 스케줄러 하트비트 (ScheduleWakeup 대체).
+  // harness 의 ScheduleWakeup 은 KDA 가 못 깨움(앱닫힘/절전/재시작/드리프트) → personal.db 의
+  // schedules 테이블을 60s 마다 직접 폴링해 도래분을 ⏰ 예약 conv 로 turn 주입한다.
+  // 영속화=personal.db, catch-up=시작 직후 첫 틱이 과거분 포착, 로깅=schedule-heartbeat.log,
+  // 못깨움 알림=텔레그램. db_schedule_done 은 깨어난 에이전트가 호출.
+  // ─────────────────────────────────────────────────────────────
+  const SCHED_OVERDUE_ALERT_MS = 10 * 60 * 1000; // 정시 대비 10분 넘게 지나 잡히면 "못 깨움" 알림
+  const SCHED_FIRE_COOLDOWN_MS = 5 * 60 * 1000;  // 같은 schedule 재발화 최소 간격(done 누락 폭주 방지)
+
+  const fmtSqlLocal = useCallback((d: Date) => {
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }, []);
+
+  const schedLog = useCallback((line: string) => {
+    void invoke("append_schedule_log", { line: `[${new Date().toLocaleString("sv-SE")}] ${line}` }).catch(() => {});
+  }, []);
+
+  const sendScheduleTurn = useStableCallback(
+    async (row: { id: number; title: string; action: string; next_run: string; recur: string }, overdueMin: number) => {
+      if (!dbReadyRef.current) return;
+      // busy gate — 동시 1 스케줄 turn (resume agentId 충돌·자원 폭주 회피).
+      if (scheduleTurnsRef.current.size > 0) return;
+      try {
+        // 전용 ⏰ 예약 conv 확보 (없으면 생성). id 는 localStorage 영속.
+        let convId = localStorage.getItem("kda_schedule_conv_id") || "";
+        const exists = convId && conversations.some((c) => c.id === convId);
+        if (!convId || !exists) {
+          let inDb = false;
+          if (convId) { try { await getMessages(convId); inDb = true; } catch { inDb = false; } }
+          if (!convId || !inDb) {
+            convId = crypto.randomUUID();
+            const newConv = await createConversation(convId, "⏰ 예약");
+            setConversations((prev) => [newConv, ...prev]);
+            localStorage.setItem("kda_schedule_conv_id", convId);
+          }
+        }
+
+        // 이전 맥락 (최근 20턴).
+        let history: Array<{ role: "user" | "assistant"; content: string }> = [];
+        try {
+          const prior = await getMessages(convId);
+          history = prior
+            .filter((m) => m.role === "user" || m.role === "assistant")
+            .slice(-20)
+            .map((m) => ({
+              role: m.role as "user" | "assistant",
+              content: m.content.length > 8000 ? m.content.slice(0, 8000) + "\n[...생략...]" : m.content,
+            }));
+        } catch { /* 맥락 없이 진행 */ }
+
+        let agentId: string | undefined;
+        try { const aid = await getConversationAgentId(convId); if (aid) agentId = aid; } catch { /* ignore */ }
+
+        const delayNote = overdueMin >= 1 ? ` (예정 ${row.next_run}, ${overdueMin}분 지연)` : ` (예정 ${row.next_run})`;
+        const actionNote = row.action ? `\n할 일: ${row.action}` : "";
+        const text =
+          `⏰ 예약 #${row.id} "${row.title}" 도래${delayNote}.${actionNote}\n` +
+          `이 예약 작업을 지금 수행하세요. 완료하면 반드시 db_schedule_done(id=${row.id}) 를 호출해 ` +
+          `처리 완료로 표시하세요(미호출 시 다음 틱에 재발화됩니다).`;
+
+        const userMsg: ChatMessage = {
+          id: crypto.randomUUID(), role: "user", content: text, timestamp: Date.now(),
+        };
+        queueMessageSave(userMsg, convId);
+
+        const turnId = crypto.randomUUID();
+        turnToConvMap.current.set(turnId, convId);
+        scheduleTurnsRef.current.set(turnId, { scheduleId: row.id, title: row.title });
+        scheduleFiredAtRef.current.set(row.id, Date.now());
+        setStreamingConvIds((prev) => {
+          if (prev.has(convId)) return prev;
+          const next = new Set(prev); next.add(convId); return next;
+        });
+
+        const s = buildSendSettings();
+        await invoke("send_message", {
+          message: text, id: turnId, agentId,
+          history: history.length > 0 ? history : undefined,
+          apiKey: s.apiKey, provider: s.provider, model: s.model,
+          reasoningEffort: s.reasoningEffort, permissions: s.permissions,
+          lockedTools: s.lockedTools, safeMode: s.safeMode,
+        });
+        schedLog(`FIRE schedule#${row.id} "${row.title}" overdue=${overdueMin}m turn=${turnId}`);
+
+        // 못 깨움 알림 — 정시 대비 임계 초과로 뒤늦게 잡힌 경우(앱닫힘/절전).
+        if (overdueMin * 60 * 1000 >= SCHED_OVERDUE_ALERT_MS) {
+          const token = (localStorage.getItem("kda_telegram_token") || "").trim();
+          const chats = (localStorage.getItem("kda_telegram_allowed_chats") || "")
+            .split(",").map((x) => x.trim()).filter(Boolean);
+          if (token && chats.length > 0) {
+            const alert = `⏰ 예약 #${row.id} "${row.title}" 를 정시에 못 깨웠어요 (${overdueMin}분 지연). 지금 실행합니다.`;
+            for (const chatId of chats) {
+              void invoke("telegram_send_message", { token, chatId, text: alert }).catch(() => {});
+            }
+          }
+          schedLog(`OVERDUE-ALERT schedule#${row.id} delay=${overdueMin}m`);
+        }
+      } catch (err) {
+        schedLog(`FIRE-FAIL schedule#${row.id} err=${String(err)}`);
+        console.error("[Schedule] turn 주입 실패:", err);
+      }
+    },
+  );
+
+  // 하트비트 루프 — personal.db 폴링.
+  useEffect(() => {
+    let cancelled = false;
+    let db: any = null;
+    schedLog("HEARTBEAT 시작");
+
+    const tick = async () => {
+      if (cancelled || !dbReadyRef.current) return;
+      try {
+        if (!db) {
+          const dbPath = await invoke<string>("get_personal_db_path");
+          const { default: Database } = await import("@tauri-apps/plugin-sql");
+          db = await Database.load(`sqlite:${dbPath}`);
+          schedLog(`DB open ${dbPath}`);
+        }
+        const nowStr = fmtSqlLocal(new Date());
+        const rows: Array<{ id: number; title: string; action: string; next_run: string; recur: string }> =
+          await db.select(
+            "SELECT id, title, action, next_run, recur FROM schedules WHERE enabled=1 AND next_run<=? ORDER BY next_run",
+            [nowStr],
+          );
+        if (!Array.isArray(rows) || rows.length === 0) return;
+        // 동시 1턴 — 가장 오래 밀린 것 1건만 처리. 나머지는 다음 틱(또는 done 후).
+        for (const row of rows) {
+          // 쿨다운 — done 누락 시 매 틱 재발화 폭주 방지.
+          const last = scheduleFiredAtRef.current.get(row.id) ?? 0;
+          if (Date.now() - last < SCHED_FIRE_COOLDOWN_MS) continue;
+          if (scheduleTurnsRef.current.size > 0) break; // busy
+          const overdueMs = Date.now() - new Date(row.next_run).getTime();
+          const overdueMin = Math.max(0, Math.round(overdueMs / 60000));
+          await sendScheduleTurn(row, overdueMin);
+          break; // 한 틱에 1건
+        }
+      } catch (e) {
+        // SQLITE_BUSY 등 일시 오류 — 다음 틱 재시도. DB 핸들이 깨졌으면 재오픈.
+        schedLog(`TICK-ERR ${String(e)}`);
+        db = null;
+      }
+    };
+
+    // catch-up — 시작 직후 첫 틱(약간 지연: dbReady·conv 로딩 대기).
+    const startTimer = setTimeout(() => { void tick(); }, 8000);
+    const interval = setInterval(() => { void tick(); }, 60_000);
+    return () => {
+      cancelled = true;
+      clearTimeout(startTimer);
+      clearInterval(interval);
+      if (db) { try { db.close(); } catch { /* ignore */ } }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleInterrupt = useStableCallback(async () => {
     if (!currentTurnId) return;
