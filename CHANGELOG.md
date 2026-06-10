@@ -5,7 +5,7 @@
 
 ## [Unreleased]
 
-## [0.7.6] - 2026-06-10
+## [0.7.7] - 2026-06-10
 
 ### Added
 - Claude Fable 5 (`claude-fable-5`) is now available in both Claude Code (Max OAuth) and Anthropic API provider model pickers.
@@ -16,7 +16,7 @@
 - Added `scripts/smoke-pdf-extraction.ps1`, covering two different PDF layouts and verifying extracted prompt text plus temp attachment cleanup. The release confidence pipeline now runs this smoke.
 
 ### Fixed
-- **PDF smoke가 CI(pwsh7+Node20)에서만 멈추던 릴리스 차단 버그**: PowerShell 7의 `StreamWriter.WriteLine`+`Flush()`가 stdin 라인을 `Close()` 시점까지 버퍼링 → 사이드카가 라인+EOF를 동시에 받아 `rl.on("close")` → `process.exit(0)`가 진행 중인 비동기 턴을 죽였다. 스모크 하니스가 BOM 없는 raw UTF-8 바이트+`\n`을 `StandardInput.BaseStream`에 직접 써서 즉시 전달하도록 수정(PowerShell 에디션 무관). v0.7.5 릴리스 빌드 실패의 근본 원인이었다.
+- **PDF smoke가 CI에서만(특히 release.yml) 멈춰 릴리스를 차단하던 근본 버그**: 스모크 하니스가 사이드카 stdout/stderr를 redirect만 해두고 턴이 끝날 때까지 읽지 않았다. Windows에서 redirect된 자식 stdout 파이프는 **동기(synchronous)** 라, 부모가 비워주지 않으면 OS 파이프 버퍼가 차는 순간 사이드카의 `process.stdout.write`가 이벤트 루프를 통째로 블록한다. 그러면 stdin에 이미 도착한 라인의 `rl.on("line")`조차 못 돌려 PDF 처리가 멈췄다(진단 라인·프롬프트 마커 0, 20초 타임아웃). 시작 시점에 나가는 stdout 양(MCP 리스팅·rate-limit polling·statusline)이 타이밍에 따라 버퍼를 채우기 전후로 갈려 CI-only flaky로 보였다. 하니스가 `BeginOutputReadLine`/`BeginErrorReadLine`으로 stdout/stderr를 시작 즉시 백그라운드에서 계속 drain하도록 수정 → 파이프가 절대 차지 않아 사이드카가 블록되지 않는다. v0.7.5/v0.7.6 릴리스 빌드 실패의 진짜 근본 원인이었다.
 
 ---
 

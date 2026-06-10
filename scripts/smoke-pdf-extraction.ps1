@@ -163,6 +163,24 @@ $psi.EnvironmentVariables['KDA_STDIN_TRACE'] = '1'
 $proc = [System.Diagnostics.Process]::Start($psi)
 Write-SmokeStep "sidecar PID $($proc.Id)"
 
+# ── stdout/stderr 즉시 drain (CI-only hang 의 진짜 근본 원인 차단) ──
+# Windows 에서 redirect 된 자식 stdout 은 동기(synchronous) 파이프다. 부모가 빼가지 않으면
+# OS 파이프 버퍼(수 KB)가 차는 순간 sidecar 의 process.stdout.write 가 이벤트 루프를 통째로
+# 블록한다. 그러면 stdin 버퍼에 이미 도착한 라인의 rl.on("line") 조차 못 돌려 처리가 멈춘다
+# (진단라인/마커 0, 20s 타임아웃). 출력량/타이밍 의존이라 flaky(=CI-only). BeginOutputReadLine 이
+# 백그라운드 스레드에서 파이프를 즉시 비우므로 sidecar 가 절대 블록되지 않는다. 텍스트는
+# ConcurrentQueue 로 모아 실패 시 tail 로 보여준다.
+$stdoutBuf = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+$stderrBuf = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+$outSub = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -MessageData $stdoutBuf -Action {
+    if ($null -ne $EventArgs.Data) { $Event.MessageData.Enqueue($EventArgs.Data) }
+}
+$errSub = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -MessageData $stderrBuf -Action {
+    if ($null -ne $EventArgs.Data) { $Event.MessageData.Enqueue($EventArgs.Data) }
+}
+$proc.BeginOutputReadLine()
+$proc.BeginErrorReadLine()
+
 $smokeId = "smoke-pdf-{0:yyyyMMdd-HHmmss}-{1}" -f (Get-Date), [guid]::NewGuid().ToString('N').Substring(0,6)
 $pdfABytes = [System.IO.File]::ReadAllBytes($pdfAPath)
 $pdfBBytes = [System.IO.File]::ReadAllBytes($pdfBPath)
@@ -261,9 +279,17 @@ try {
             [void]$proc.WaitForExit(2000)
         }
     }
-    try { $stdoutTail = $proc.StandardOutput.ReadToEnd() } catch {}
-    try { $stderrTail = $proc.StandardError.ReadToEnd() } catch {}
 } catch {}
+
+# drain 구독 정리 + 버퍼 → 문자열 (stdout 은 BeginOutputReadLine 으로 이미 비워졌으므로
+# ReadToEnd 를 호출하면 "async/sync 혼용" 예외가 난다. 큐에서 모은 텍스트를 사용한다.)
+Start-Sleep -Milliseconds 150
+try { $proc.CancelOutputRead() } catch {}
+try { $proc.CancelErrorRead() } catch {}
+if ($outSub) { Unregister-Event -SubscriptionId $outSub.Id -ErrorAction SilentlyContinue; Remove-Job -Job $outSub -Force -ErrorAction SilentlyContinue }
+if ($errSub) { Unregister-Event -SubscriptionId $errSub.Id -ErrorAction SilentlyContinue; Remove-Job -Job $errSub -Force -ErrorAction SilentlyContinue }
+$stdoutTail = ($stdoutBuf.ToArray() -join "`n")
+$stderrTail = ($stderrBuf.ToArray() -join "`n")
 
 $attDirAfterCleanup = $false
 if ($attDir) {
