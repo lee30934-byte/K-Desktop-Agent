@@ -83,6 +83,18 @@ export type SidecarEvent =
   | { type: "tool_result"; id: string; tool_id: string; output: string; images?: string[] }
   | { type: "done"; id: string; usage?: TokenUsage | null; computed_usage?: TokenUsage | null; maxTurnUsage?: MaxTurnUsage | null; agentId?: string | null }
   | { type: "error"; id?: string; message: string }
+  // Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션.
+  // orchestrate_delta: sub-turn 의 누적 텍스트 (엔진별 카드 스트리밍). id = 메인 turn id.
+  // orchestrate_status: fan-out / 엔진 시작·완료·실패 / 종합 시작 알림.
+  | { type: "orchestrate_delta"; id: string; engine: string; text: string }
+  | {
+      type: "orchestrate_status";
+      id: string;
+      engine: string;
+      phase: "fanout" | "started" | "done" | "error" | "synthesis";
+      engines?: string[];
+      error?: string;
+    }
   | { type: "log"; level: "info" | "warn" | "error"; message: string }
   | {
       type: "turn_heartbeat";
@@ -426,7 +438,8 @@ export interface RateLimitInfo {
 //   - "gemini"     : Google Gemini API
 //   - "openrouter" : OpenRouter (멀티 모델 라우팅)
 //   - "codex"      : OpenAI Codex CLI (ChatGPT Plus/Pro OAuth) — `codex exec --json` spawn
-export type ProviderId = "claude" | "anthropic" | "openai" | "gemini" | "openrouter" | "codex";
+//   - "gemini-cli" : Google Gemini CLI — `gemini -o stream-json` spawn (Phase 134)
+export type ProviderId = "claude" | "anthropic" | "openai" | "gemini" | "openrouter" | "codex" | "gemini-cli";
 
 export interface MCPState {
   connected: boolean;

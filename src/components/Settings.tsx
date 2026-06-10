@@ -256,12 +256,13 @@ const API_PROVIDERS: APIProvider[] = [
     keyName: "GOOGLE_API_KEY",
     placeholder: "AIza...",
     docsUrl: "https://aistudio.google.com/apikey",
-    note: "Gemini Advanced 구독으로는 API 사용 불가 — AI Studio (aistudio.google.com) 에서 별도 API 키 발급 필요. 텍스트 전용 (MCP 도구 미지원).",
+    note: "Gemini Advanced 구독으로는 API 사용 불가 — AI Studio (aistudio.google.com) 에서 별도 API 키 발급 필요 (무료 티어 있음). K-Personal MCP 도구 사용 가능 (function-calling).",
     models: [
-      { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (권장)" },
-      { id: "gemini-2.0-flash-thinking-exp", label: "Gemini 2.0 Flash Thinking" },
-      { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
-      { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
+      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (권장)" },
+      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+      { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite (저렴/빠름)" },
+      { id: "gemini-3-pro-preview", label: "Gemini 3 Pro (preview)" },
+      { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (preview)" },
     ],
   },
   {
@@ -297,6 +298,24 @@ const API_PROVIDERS: APIProvider[] = [
       { id: "gpt-5-codex", label: "GPT-5 Codex" },
       { id: "gpt-4.1", label: "GPT-4.1" },
       { id: "o3", label: "o3 (추론)" },
+    ],
+  },
+  {
+    id: "gemini-cli",
+    name: "Gemini CLI",
+    icon: "✨",
+    keyName: "(none)",
+    placeholder: "Gemini REST 키 재사용 또는 gemini OAuth",
+    docsUrl: "https://github.com/google-gemini/gemini-cli",
+    noKeyRequired: true,
+    note: "Google Gemini CLI 를 세 번째 엔진으로 사용 (npm install -g @google/gemini-cli 필요). 인증: ① 아래 [Google 계정으로 로그인] 버튼 — 구독 OAuth, API 키 불필요 (Gemini Advanced 구독 포함 무료 한도), 또는 ② 위 Google Gemini 카드의 API 키 자동 재사용. K-Personal MCP 도구 자동 등록.",
+    models: [
+      { id: "default", label: "Gemini CLI 기본 모델 (자동 최신)" },
+      { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (preview)" },
+      { id: "gemini-3-pro-preview", label: "Gemini 3 Pro (preview)" },
+      { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (preview)" },
+      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (빠름)" },
     ],
   },
 ];
@@ -1247,6 +1266,14 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   } | null>(null);
   const [codexMcpRegistering, setCodexMcpRegistering] = useState(false);
   const [codexMcpResult, setCodexMcpResult] = useState<string | null>(null);
+  // Phase 135 — Gemini CLI 구독 OAuth 로그인 / 인증 상태
+  const [geminiLoginStatus, setGeminiLoginStatus] = useState<"idle" | "running" | "error">("idle");
+  const [geminiLoginError, setGeminiLoginError] = useState<string | null>(null);
+  const [geminiAuth, setGeminiAuth] = useState<{
+    authenticated: boolean;
+    cli_available: boolean;
+    auth_path: string;
+  } | null>(null);
   // 외부 webview (사용량 페이지 등) 진입 상태
   const [webviewOpening, setWebviewOpening] = useState<string | null>(null);
 
@@ -1276,6 +1303,32 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   });
   const [agentFlagBusy, setAgentFlagBusy] = useState<string | null>(null);
   const [soulStatus, setSoulStatus] = useState<{ exists: boolean; bytes: number } | null>(null);
+  // Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 opt-in (localStorage only).
+  // ON + 엔진 2개 이상 선택 시 App.tsx 가 매 send 를 orchestrate_message 로 전환.
+  const [orchEnabled, setOrchEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem("kda_orch_enabled") === "1"; } catch { return false; }
+  });
+  const [orchEngines, setOrchEngines] = useState<string[]>(() => {
+    try {
+      const arr = JSON.parse(localStorage.getItem("kda_orch_engines") || "null");
+      if (Array.isArray(arr)) {
+        return arr.filter((e): e is string => e === "claude" || e === "codex" || e === "gemini-cli");
+      }
+    } catch { /* ignore */ }
+    return ["claude", "codex"];
+  });
+  const toggleOrchEnabled = () => {
+    const next = !orchEnabled;
+    setOrchEnabled(next);
+    try { localStorage.setItem("kda_orch_enabled", next ? "1" : "0"); } catch { /* ignore */ }
+  };
+  const toggleOrchEngine = (engine: string) => {
+    setOrchEngines((prev) => {
+      const next = prev.includes(engine) ? prev.filter((e) => e !== engine) : [...prev, engine];
+      try { localStorage.setItem("kda_orch_engines", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
   // Phase 127 (v0.6.85) — WSL/VM 경로 매핑 테이블 (localStorage kda_path_mappings).
   const [pathMappings, setPathMappings] = useState<PathMapping[]>(() => getPathMappings());
   const savePathMappings = useCallback((next: PathMapping[]) => {
@@ -2422,6 +2475,58 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     }
   }
 
+  // Phase 135 — Gemini CLI 구독 OAuth 인증 상태 조회 (codex 패턴 미러)
+  async function refreshGeminiAuth(): Promise<boolean> {
+    try {
+      const status = await invoke<{
+        authenticated: boolean;
+        cli_available: boolean;
+        auth_path: string;
+      }>("gemini_login_status");
+      setGeminiAuth(status);
+      return status.authenticated;
+    } catch (e) {
+      setGeminiAuth({
+        authenticated: false,
+        cli_available: false,
+        auth_path: typeof e === "string" ? e : "",
+      });
+      return false;
+    }
+  }
+
+  // Settings 열릴 때 gemini 인증 상태 로드 + login 진행 중이면 짧은 주기 poll.
+  // 로그인 완료 (creds 캐시 생성) 가 감지되면 running → idle 자동 전환.
+  useEffect(() => {
+    if (!open) return;
+    refreshGeminiAuth();
+    if (geminiLoginStatus !== "running") return;
+    const handle = setInterval(async () => {
+      const ok = await refreshGeminiAuth();
+      if (ok) setGeminiLoginStatus("idle");
+    }, 3000);
+    return () => clearInterval(handle);
+  }, [open, geminiLoginStatus]);
+
+  // Gemini 구독 OAuth — sidecar 가 loopback 콜백 서버 + 시스템 브라우저 + 토큰 캐시 수행.
+  // (gemini CLI 엔 login 서브커맨드가 없어 codex 처럼 CLI spawn 으론 못 풀고 KDA 가 직접 수행)
+  async function handleGeminiLogin() {
+    setGeminiLoginStatus("running");
+    setGeminiLoginError(null);
+    try {
+      await invoke("gemini_login");
+      // sidecar 의 OAuth 타임아웃 (5분) 과 동일하게 5분 후 자동 idle 복귀.
+      // 그 사이 완료되면 위 poll effect 가 authenticated=true 감지 후 즉시 idle.
+      setTimeout(() => {
+        setGeminiLoginStatus((prev) => (prev === "running" ? "idle" : prev));
+        refreshGeminiAuth();
+      }, 5 * 60_000);
+    } catch (e) {
+      setGeminiLoginStatus("error");
+      setGeminiLoginError(typeof e === "string" ? e : (e as Error)?.message || "알 수 없는 오류");
+    }
+  }
+
   // 외부 URL 을 새 webview 창으로 — Tauri command open_external_webview
   async function openExternalUsage(page: ExternalUsagePage) {
     setWebviewOpening(page.id);
@@ -3106,8 +3211,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   <code> NotebookEdit</code> 같은 우회 통로는 항상 차단.<br />
                   • 더 세밀한 제어가 필요하면 아래 <strong>"정밀 잠금"</strong> 섹션에서
                   도구 단위로 잠그세요.<br />
-                  • 외부 API (OpenAI/Gemini/OpenRouter/Anthropic) 모드는 도구 미지원이라
-                  이 설정과 무관합니다.
+                  • 이 토글은 Claude CLI 경로 전용입니다. Codex / Gemini CLI 는 자체
+                  승인 체계로 작동하고, REST 모드 (OpenAI/Gemini/OpenRouter) 의 도구
+                  호출은 sidecar 가 직접 중계해 이 설정과 무관합니다.
                 </div>
               </div>
 
@@ -3420,6 +3526,59 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
+          {/* Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 opt-in.
+              ON + 엔진 2개 이상이면 매 메시지가 fan-out (병렬 질의) → 메인 엔진(Claude 우선) 종합.
+              비용/시간이 엔진 수만큼 늘어나므로 기본 OFF + 명시적 선택. */}
+          <section className="settings-section" data-tab="agent">
+            <div className="eyebrow">🤝 멀티 엔진 오케스트레이션 (실험)</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row" style={{ alignItems: "flex-start" }}>
+                <div className="settings-row-info">
+                  <div className="settings-row-title">병렬 질의 + 종합 답변</div>
+                  <div className="settings-row-desc">
+                    켜면 매 메시지를 선택한 엔진들에 동시에 보내고, 메인 엔진(Claude 우선)이
+                    답변들을 비교·종합해 최종 답변을 만듭니다. 엔진별 의견 카드가 먼저 표시되고
+                    종합이 마지막에 나옵니다. 서브턴은 도구 호출 없이 텍스트만 (충돌 방지).
+                    ⚠ 사용량·응답시간이 엔진 수만큼 증가합니다.
+                  </div>
+                </div>
+                <label className="toggle">
+                  <input type="checkbox" checked={orchEnabled} onChange={toggleOrchEnabled} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+              {orchEnabled && (
+                <div style={{ marginTop: 4 }}>
+                  {[
+                    { id: "claude", label: "Claude (Max 구독)", note: "메인 엔진 — 종합 담당" },
+                    { id: "codex", label: "GPT (Codex — ChatGPT 구독)", note: "Codex 로그인 필요" },
+                    { id: "gemini-cli", label: "Gemini (CLI — 구독 OAuth/API 키)", note: "Google 로그인 또는 Gemini 키 필요" },
+                  ].map((eng) => (
+                    <div key={eng.id} className="settings-row" style={{ alignItems: "flex-start" }}>
+                      <div className="settings-row-info">
+                        <div className="settings-row-title">{eng.label}</div>
+                        <div className="settings-row-desc">{eng.note}</div>
+                      </div>
+                      <label className="toggle">
+                        <input
+                          type="checkbox"
+                          checked={orchEngines.includes(eng.id)}
+                          onChange={() => toggleOrchEngine(eng.id)}
+                        />
+                        <span className="toggle-slider"></span>
+                      </label>
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 8, fontSize: "0.78em", opacity: 0.65 }}>
+                    {orchEngines.length >= 2
+                      ? `✓ ${orchEngines.length}개 엔진 선택됨 — 다음 메시지부터 병렬 질의`
+                      : "⚠ 엔진을 2개 이상 선택해야 작동합니다 (1개 이하면 일반 단일 엔진 모드)"}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}
           <section className="settings-section" data-tab="agent">
             <div className="eyebrow">정밀 잠금</div>
@@ -3606,7 +3765,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               <div className="settings-row-info">
                 <div className="settings-row-title">제공자 / 모델</div>
                 <div className="settings-row-desc">
-                  Claude (Max 구독) 또는 외부 API (OpenAI, Gemini, OpenRouter, Anthropic) 중에서 선택합니다.
+                  Claude (Max 구독) / Codex (ChatGPT 구독) / Gemini CLI / 외부 API (OpenAI, Gemini, OpenRouter, Anthropic) 중에서 선택합니다.
                 </div>
               </div>
 
@@ -3783,6 +3942,99 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                           className="mono"
                         >
                           {codexMcpResult}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Phase 135 — Gemini CLI (Google 구독 OAuth) 전용 — 내장 로그인 + 인증 상태 */}
+                  {currentProvider.noKeyRequired && currentProvider.id === "gemini-cli" && (
+                    <div
+                      style={{
+                        marginBottom: "12px",
+                        padding: "10px 12px",
+                        background: "rgba(66, 133, 244, 0.05)",
+                        border: "1px solid rgba(66, 133, 244, 0.25)",
+                        borderRadius: "4px",
+                      }}
+                    >
+                      <div style={{ fontSize: "0.85em", marginBottom: "10px" }}>
+                        <div style={{ marginBottom: "4px" }}>
+                          <span style={{ opacity: 0.7 }}>Gemini CLI: </span>
+                          <span
+                            className="mono"
+                            style={{
+                              color: geminiAuth?.cli_available
+                                ? "var(--accent)"
+                                : "var(--warn, #ff9800)",
+                            }}
+                          >
+                            {geminiAuth?.cli_available
+                              ? "✓ 사용 가능"
+                              : "✗ 미설치 (npm i -g @google/gemini-cli)"}
+                          </span>
+                        </div>
+                        <div>
+                          <span style={{ opacity: 0.7 }}>구독 인증: </span>
+                          <span
+                            className="mono"
+                            style={{
+                              color: geminiAuth?.authenticated
+                                ? "var(--accent)"
+                                : "var(--warn, #ff9800)",
+                            }}
+                          >
+                            {geminiAuth?.authenticated
+                              ? "✓ 로그인됨 (~/.gemini/oauth_creds.json)"
+                              : "✗ 미로그인 (또는 Gemini REST API 키로 대체 가능)"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: "0.85em",
+                          marginBottom: "8px",
+                          opacity: 0.85,
+                        }}
+                      >
+                        아래 [Google 계정으로 로그인] 버튼을 누르면 시스템 브라우저가 열려
+                        Google OAuth 동의 화면으로 이동합니다. 로그인 완료 후 이 화면의 인증
+                        상태가 자동 갱신되며, API 키 없이 구독(Code Assist) 한도로 Gemini CLI
+                        가 구동됩니다. (K-Personal MCP 는 첫 turn 에 자동 등록)
+                      </div>
+
+                      <div className="api-key-actions" style={{ flexWrap: "wrap", gap: 8 }}>
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={handleGeminiLogin}
+                          disabled={geminiLoginStatus === "running"}
+                          title="시스템 브라우저로 Google OAuth — 완료 시 ~/.gemini/oauth_creds.json 캐시"
+                        >
+                          {geminiLoginStatus === "running"
+                            ? "브라우저에서 로그인 진행 중…"
+                            : geminiAuth?.authenticated
+                            ? "🔄 Google 계정 다시 로그인"
+                            : "🔑 Google 계정으로 로그인"}
+                        </button>
+                        <button
+                          className="settings-btn"
+                          onClick={refreshGeminiAuth}
+                          title="인증 상태 다시 조회"
+                        >
+                          ↻ 새로고침
+                        </button>
+                      </div>
+
+                      {geminiLoginStatus === "error" && geminiLoginError && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontSize: "0.85em",
+                            color: "var(--warn, #ff9800)",
+                          }}
+                        >
+                          ⚠ {geminiLoginError}
                         </div>
                       )}
                     </div>
@@ -4002,7 +4254,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   모델: <span className="mono">{chatModel}</span>
                   {chatProvider === "claude" && " · Max 구독 OAuth · MCP 도구 사용 가능"}
                   {chatProvider === "codex" && " · ChatGPT Plus/Pro OAuth · MCP 도구 통합 가능"}
-                  {chatProvider !== "claude" && chatProvider !== "codex" && " · REST API 직접 호출 · 텍스트 전용"}
+                  {chatProvider === "gemini-cli" && " · Gemini CLI (구독 OAuth 또는 API 키) · MCP 도구 통합 가능"}
+                  {(chatProvider === "openai" || chatProvider === "openrouter" || chatProvider === "gemini") && " · REST API 직접 호출 · MCP 도구 사용 가능"}
+                  {chatProvider === "anthropic" && " · REST API 직접 호출 · 텍스트 전용"}
                 </div>
               </div>
               <div className="model-status">

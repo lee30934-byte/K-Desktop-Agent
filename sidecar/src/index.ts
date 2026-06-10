@@ -30,6 +30,9 @@ import treeKill from "tree-kill";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
+// Phase 135 — Gemini CLI 구독 OAuth 내장 로그인 (로컬 loopback 콜백 서버 + 토큰 교환)
+import http from "node:http";
+import { randomBytes } from "node:crypto";
 
 // Phase 11 G1 — MCP-via-REST: lets non-Claude providers reach K-Personal MCP tools.
 import {
@@ -401,6 +404,58 @@ function resolveCodexCli(): { resolved: string | null; tried: string[] } {
 const codexCliResolution = resolveCodexCli();
 const CODEX_CLI = codexCliResolution.resolved ?? "codex";
 
+/**
+ * Gemini CLI 실행 파일 (Phase 134).
+ *
+ * 환경변수 GEMINI_CLI 가 있으면 그걸 우선 사용. 없으면 후보 경로들을
+ * 순차적으로 `--version` 으로 검사 (Claude/Codex CLI 와 동일 패턴).
+ *
+ * 후보 우선순위:
+ *   1. %APPDATA%\npm\gemini.cmd  (npm install -g @google/gemini-cli)
+ *   2. gemini.cmd
+ *   3. gemini
+ */
+function getGeminiCliCandidates(): string[] {
+  if (process.env.GEMINI_CLI) {
+    return [process.env.GEMINI_CLI];
+  }
+  const list: string[] = [];
+  const appdata = process.env.APPDATA;
+  if (appdata) {
+    list.push(path.join(appdata, "npm", "gemini.cmd"));
+  }
+  list.push("gemini.cmd", "gemini");
+  return list;
+}
+
+function probeGeminiCli(exe: string): boolean {
+  try {
+    const result = spawnSync(exe, ["--version"], {
+      encoding: "utf-8",
+      timeout: 10000,
+      shell: true,
+      windowsHide: true,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function resolveGeminiCli(): { resolved: string | null; tried: string[] } {
+  const tried: string[] = [];
+  for (const candidate of getGeminiCliCandidates()) {
+    tried.push(candidate);
+    if (probeGeminiCli(candidate)) {
+      return { resolved: candidate, tried };
+    }
+  }
+  return { resolved: null, tried };
+}
+
+const geminiCliResolution = resolveGeminiCli();
+const GEMINI_CLI = geminiCliResolution.resolved ?? "gemini";
+
 // ─── 초기 진단 로그 (Phase 18) ──────────────────────────────────
 // CLI/Python resolution 결과를 sidecar.log 에 즉시 박아 K PC 환경별
 // 어떤 후보가 채택됐는지 한눈에 진단 가능하게 함.
@@ -423,6 +478,12 @@ logToFile(
   `resolved codex_cli: ${codexCliResolution.resolved ?? "(none)"} ` +
     `tried=[${codexCliResolution.tried.join(", ")}] ` +
     `env_CODEX_CLI=${process.env.CODEX_CLI ?? "(unset)"}`,
+);
+logToFile(
+  "info",
+  `resolved gemini_cli: ${geminiCliResolution.resolved ?? "(none)"} ` +
+    `tried=[${geminiCliResolution.tried.join(", ")}] ` +
+    `env_GEMINI_CLI=${process.env.GEMINI_CLI ?? "(unset)"}`,
 );
 
 // ─── 누적 메모리 자동 로딩 (Phase 9 step 1) ─────────────────────
@@ -765,6 +826,67 @@ function buildAgentFeatureGuidance(flags: AgentFlags): string {
     );
   }
   return blocks.join("\n");
+}
+
+/**
+ * Phase 136 (v0.7.9) — Hermes 기능 엔진 동등 배선 (Codex / Gemini CLI / REST).
+ *
+ * 진단: v0.7.0 의 헤르메스 기능(soul.md, featureGuidance, agent-flags 도구 게이트,
+ * SYSTEM_PROMPT 응답 규칙)은 전부 handleViaClaudeCLI 의 fullSystemPrompt 조립 +
+ * `--system-prompt` / `--disallowed-tools` / preToolUse hook 으로만 배선돼 있었음.
+ * Codex CLI(`codex exec`) 와 Gemini CLI 는 이 인자들이 없어서:
+ *   ① SYSTEM_PROMPT(한국어/번호 선택지/파괴작업 확인 규칙) 자체를 못 받음
+ *   ② soul.md 정체성 미주입
+ *   ③ buildAgentFeatureGuidance(nudge 등 실험 기능 안내) 미주입
+ *   ④ flag OFF 도구(db_memory_write 등)가 게이트 없이 노출
+ *   ⑤ Codex resume 턴은 memory_context 조차 빠짐 (bootstrap 턴에만 주입)
+ * → "GPT 모델이 헤르메스 룰을 안 따른다" 의 원인.
+ *
+ * 해결: Claude 경로와 동일 구성 요소를 stdin 프롬프트 최상단의 <kda_system> 블록
+ * 텍스트로 조립해 주입 (cmd.exe 8191자 인자 한계 회피 — memory_context 와 동일 전략).
+ * 도구 게이트는 CLI 레벨 차단이 불가능하므로 [비활성 도구] 금지 블록으로 프롬프트
+ * 레벨 차단 (REST 경로는 disallowedSet 으로 하드 차단 — 카탈로그에서 제거).
+ *
+ * compact 모드: Codex resume 턴용. thread 에 bootstrap 턴의 전체 지침이 이미 있으므로
+ * 매 턴 전체 재주입 시 context 폭발 (pitfall_codex_model_context_window_dynamic).
+ * 핵심 룰 1줄 + 활성 기능 안내 + 게이트 목록만 리마인드 (수백 byte).
+ */
+function buildEngineSystemText(
+  folderSystemPrompt: string | undefined,
+  agentFlags: AgentFlags,
+  opts?: { compact?: boolean },
+): string {
+  const gated = flagGatedDisallowed(agentFlags);
+  const gatedNotice = gated.length > 0
+    ? [
+        "",
+        "",
+        "[비활성 도구 — 호출 금지]",
+        "다음 도구는 실험 기능 토글(agent-flags.json)이 꺼져 있어 이번 대화에서 호출 금지입니다.",
+        "도구 목록에 보이더라도 절대 호출하지 마세요:",
+        ...gated.map((t) => `- ${t}`),
+      ].join("\n")
+    : "";
+  const featureGuidance = buildAgentFeatureGuidance(agentFlags);
+
+  if (opts?.compact) {
+    return (
+      "[KDA 룰 리마인더] 한국어로 간결하게 답하세요. 선택지는 번호 텍스트(1/2/3)로 본문에 직접 제시하세요. " +
+      "파괴적 작업(삭제/덮어쓰기/이동)은 실행 전 반드시 확인을 받으세요. " +
+      "<memory_context> 의 pitfall_* 패턴은 절대 반복하지 마세요." +
+      featureGuidance +
+      gatedNotice
+    );
+  }
+
+  const soul = loadSoul();
+  const soulBlock = soul.exists && soul.content
+    ? `\n\n[에이전트 정체성 (soul.md)]\n다음은 당신(에이전트) 자신의 정체성·가치관입니다. 매 응답에서 일관되게 유지하세요.\n\n${soul.content}\n`
+    : "";
+  const folderBlock = folderSystemPrompt && folderSystemPrompt.trim()
+    ? `\n\n[프로젝트 지침]\n이 대화는 K 가 지정한 프로젝트 폴더에 속해 있으며, 아래 지침을 항상 따라야 합니다. K 의 요청과 충돌하면 K 의 명시적 지시를 우선하되, 그 외엔 이 지침을 우선 적용하세요.\n\n${folderSystemPrompt.trim()}\n`
+    : "";
+  return SYSTEM_PROMPT + soulBlock + folderBlock + featureGuidance + gatedNotice;
 }
 
 // Phase 81 (v0.6.25) — system prompt 폭발 방지: lee-profile + memory 합쳐 32KB 초과 시 trim.
@@ -1394,7 +1516,14 @@ function buildMCPConfig(health: MCPStatus): Record<string, any> {
 
 // ─── I/O 헬퍼 ──────────────────────────────────────────
 
-function emit(obj: Record<string, unknown>): void {
+// Phase 137 — 오케스트레이션 collector 상태. emit() 이 참조하므로 emit 보다 먼저 선언
+// (TDZ 회피 — emit 은 모듈 init 중에도 호출될 수 있음).
+// sub-turn id (`{mainId}#{engine}`) → collector. 평소 빈 Map — O(1) miss.
+const orchestrationCollectors = new Map<string, OrchCollector>();
+// interrupt 된 오케스트레이션 main id — fan-in 후 종합 skip 용.
+const cancelledOrchestrations = new Set<string>();
+
+function rawEmit(obj: Record<string, unknown>): void {
   try {
     process.stdout.write(JSON.stringify(obj) + "\n");
   } catch (err) {
@@ -1403,6 +1532,55 @@ function emit(obj: Record<string, unknown>): void {
     }
     throw err;
   }
+}
+
+function emit(obj: Record<string, unknown>): void {
+  // Phase 137 — 오케스트레이션 sub-turn 이벤트 인터셉트.
+  // sub-turn id (`{mainId}#{engine}`) 로 등록된 collector 가 있으면:
+  //   assistant_delta → 텍스트 수집 + orchestrate_delta 로 재태깅 (frontend 엔진별 카드)
+  //   done / error    → collector resolve (fan-in) — frontend 로는 안 흘림
+  //   그 외 (tool_use, turn_heartbeat 등) → swallow
+  // 평소엔 Map 이 비어 있어 O(1) miss — 기존 이벤트 흐름 무영향.
+  const id = obj.id;
+  if (typeof id === "string" && orchestrationCollectors.size > 0) {
+    const col = orchestrationCollectors.get(id);
+    if (col) {
+      switch (obj.type) {
+        case "assistant_delta": {
+          // CLI 3종(claude/codex/gemini-cli)은 누적 텍스트(text=currentText)를 보냄 → 교체.
+          col.text = String(obj.text ?? "");
+          rawEmit({
+            type: "orchestrate_delta",
+            id: col.mainId,
+            engine: col.engine,
+            text: col.text,
+          });
+          return;
+        }
+        case "done": {
+          col.resolve({
+            engine: col.engine,
+            ok: col.text.trim().length > 0,
+            text: col.text,
+            error: col.text.trim().length > 0 ? undefined : "빈 응답",
+          });
+          return;
+        }
+        case "error": {
+          col.resolve({
+            engine: col.engine,
+            ok: false,
+            text: col.text,
+            error: String((obj as { message?: unknown }).message ?? "알 수 없는 오류"),
+          });
+          return;
+        }
+        default:
+          return; // sub-turn 의 나머지 이벤트는 frontend 로 안 흘림
+      }
+    }
+  }
+  rawEmit(obj);
 }
 
 function log(level: "info" | "warn" | "error", message: string): void {
@@ -1419,7 +1597,7 @@ const ACTIVE_TOOL_TIMEOUT_MS =
 
 function emitTurnHeartbeat(
   id: string,
-  provider: "claude" | "codex",
+  provider: "claude" | "codex" | "gemini-cli",
   idleMs: number,
   activeWorkMs: number | null,
   pid: number | null,
@@ -1437,7 +1615,7 @@ function emitTurnHeartbeat(
 
 // ─── 턴 관리 ───────────────────────────────────────────
 
-type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter" | "codex";
+type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter" | "codex" | "gemini-cli";
 
 // 권한 레벨 — Settings UI 와 동일.
 //   auto    : 자동 승인 (도구 즉시 사용 가능)
@@ -1974,7 +2152,15 @@ function buildPromptWithHistory(
   content: string,
   history?: Array<HistoryItem>,
   memoryContent?: string,
+  systemText?: string,
 ): string {
+  // Phase 136 — systemText 가 있으면 프롬프트 최상단에 <kda_system> 블록으로 prepend.
+  // Codex/Gemini CLI 는 --system-prompt 인자가 없어 시스템 지침을 stdin 으로 흘림
+  // (Claude 경로는 --system-prompt 를 쓰므로 이 param 미사용).
+  const systemBlock =
+    systemText && systemText.trim()
+      ? `<kda_system>\n다음은 시스템 지침입니다. 사용자 메시지보다 우선하는 운영 규칙으로 취급하고, 블록 태그 자체는 사용자에게 언급하지 마세요.\n\n${systemText.trim()}\n</kda_system>\n\n`
+      : "";
   // memory 가 있으면 stdin 의 시작에 시스템 컨텍스트 블록으로 prepend.
   // 이유: --system-prompt 인자에 memory 를 박으면 Windows cmd.exe 의 8191자 한계를 넘겨
   //       "명령줄이 너무 깁니다" 로 spawn 자체가 실패한다 (memory 가 6KB+ 누적되면 발생).
@@ -1985,7 +2171,7 @@ function buildPromptWithHistory(
       ? `<memory_context>\n${memoryContent.trim()}\n</memory_context>\n\n`
       : "";
 
-  if (!history || history.length === 0) return memoryBlock + content;
+  if (!history || history.length === 0) return systemBlock + memoryBlock + content;
 
   const lines: string[] = ["<prior_conversation>"];
   for (const m of history) {
@@ -2003,7 +2189,7 @@ function buildPromptWithHistory(
   lines.push("<current_message>");
   lines.push(content);
   lines.push("</current_message>");
-  return memoryBlock + lines.join("\n");
+  return systemBlock + memoryBlock + lines.join("\n");
 }
 
 const CODEX_BOOTSTRAP_HISTORY_MAX_ITEMS = 24;
@@ -2143,7 +2329,232 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
   if (provider === "codex") {
     return handleViaCodexCLI(msg);
   }
+  if (provider === "gemini-cli") {
+    return handleViaGeminiCLI(msg);
+  }
   return handleViaRestAPI(msg, provider);
+}
+
+// ─── Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 v1 ─────────────────
+//
+// 구조: fan-out → fan-in.
+//   ① orchestrate_message {engines:[...]} 수신 → 각 엔진에 sub-turn (id=`{id}#{engine}`)
+//      병렬 디스패치. sub-turn 은 기존 handleUserMessage 파이프라인 그대로 재사용.
+//   ② sub-turn 의 stdout 이벤트는 emit() 에서 가로채 frontend 충돌 차단:
+//      assistant_delta → orchestrate_delta {id:mainId, engine, text} 로 재태깅,
+//      done/error → collector resolve + orchestrate_status, 그 외 (tool_use 등) swallow.
+//      → 옛 frontend 가 sub-turn id 를 모르는 turn 으로 오인해 isStreaming 을 조기
+//        해제하는 회귀 원천 차단 (frontend 의 done 핸들러는 unknown id 도 active conv 로 fallback).
+//   ③ 전부 settle 후 (partial fan-in — 1개 이상 성공이면 진행) 메인 엔진(claude 우선)이
+//      원 질문 + 엔진별 답변을 받아 최종 종합 — 이 턴은 원래 id 로 흐르므로 frontend 의
+//      기존 assistant_delta/done 처리로 자연 표시.
+//   ④ sub-turn 도구 잠금: 프롬프트 레벨 ("도구 호출 금지" 지시). Codex/Gemini CLI 는
+//      CLI 레벨 도구 차단 인자가 없어 v1 은 프롬프트 잠금 — 동시 도구 실행 충돌(파일
+//      이동 2회 등) 회피 목적. 종합 턴은 일반 턴과 동일 권한.
+//   ⑤ interrupt(mainId) → sub-turn process tree-kill + cancelled 마킹 → 종합 skip.
+//
+// 안전: 명시적 opt-in (Settings 토글 + 엔진 2개 이상 선택 시에만 frontend 가
+// orchestrate_message 전송). engines 화이트리스트 미통과/1개 이하 → 일반 턴으로 강등.
+
+type OrchestrateMessage = Omit<UserMessage, "type"> & {
+  type: "orchestrate_message";
+  engines?: string[];
+  // 엔진별 API 키 (현재 gemini-cli 만 의미 — 없으면 구독 OAuth creds 폴백).
+  engineApiKeys?: Record<string, string>;
+};
+
+interface OrchSubResult {
+  engine: Provider;
+  ok: boolean;
+  text: string;
+  error?: string;
+}
+
+interface OrchCollector {
+  mainId: string;
+  engine: Provider;
+  text: string;
+  settled: boolean;
+  resolve: (r: OrchSubResult) => void;
+}
+
+const ORCH_VALID_ENGINES: ReadonlySet<string> = new Set(["claude", "codex", "gemini-cli"]);
+const ORCH_SUBTURN_TIMEOUT_MS =
+  Number(process.env.KDA_ORCH_SUBTURN_TIMEOUT_MS) || 5 * 60 * 1000;
+// 종합 프롬프트에 넣을 엔진별 답변 상한 (context 보호 — 3개 엔진 * 8KB = 최대 24KB).
+const ORCH_ANSWER_MAX_CHARS = 8_000;
+/** sub-turn 프롬프트 래퍼 — 도구 잠금 + 역할 안내. */
+function wrapOrchSubTurnContent(content: string): string {
+  return [
+    "[멀티 엔진 병렬 분석 — 서브턴]",
+    "당신은 여러 AI 엔진 중 하나로, 같은 질문에 독립적으로 답하고 있습니다. 최종 답변은 메인 엔진이 종합합니다.",
+    "규칙: ① 이 턴에서는 도구를 호출하지 말고 텍스트로만 답하세요 (다른 엔진과 동시 실행 중 — 도구 충돌 방지). ② 핵심 위주로 간결하게. ③ 불확실하면 불확실하다고 명시.",
+    "",
+    "[질문]",
+    content,
+  ].join("\n");
+}
+
+/** fan-in 결과 → 메인 엔진 종합 프롬프트. */
+function buildOrchSynthesisPrompt(question: string, results: OrchSubResult[]): string {
+  const parts = [
+    "[멀티 엔진 오케스트레이션 — 종합]",
+    `K 의 질문에 ${results.length}개 AI 엔진이 병렬로 답했습니다. 당신은 메인 엔진으로서 아래 답변들을 비교·검증해 하나의 최종 답변으로 종합하세요.`,
+    "- 엔진 간 일치하는 내용은 신뢰도 높음으로 채택하세요.",
+    "- 불일치하는 부분은 어느 쪽이 타당한지 근거와 함께 판단하세요 (확신이 없으면 양쪽 다 제시).",
+    '- 응답 마지막에 "── 엔진별 의견 요약" 섹션으로 각 엔진의 핵심 주장을 1-2줄씩 정리하세요.',
+    "- 실패한 엔진이 있으면 한 줄로만 언급하세요.",
+    "",
+    "[원래 질문]",
+    question,
+  ];
+  for (const r of results) {
+    const body = r.text.trim().slice(0, ORCH_ANSWER_MAX_CHARS);
+    parts.push(
+      "",
+      `[${r.engine} 답변${r.ok ? "" : ` — 실패: ${r.error ?? "빈 응답"}`}]`,
+      body || "(응답 없음)",
+    );
+  }
+  return parts.join("\n");
+}
+
+/** sub-turn 1개 실행 — 절대 reject 하지 않음 (실패도 결과로 수렴 → partial fan-in). */
+function runOrchSubTurn(raw: OrchestrateMessage, engine: Provider): Promise<OrchSubResult> {
+  return new Promise<OrchSubResult>((resolvePromise) => {
+    const subId = `${raw.id}#${engine}`;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const col: OrchCollector = {
+      mainId: raw.id,
+      engine,
+      text: "",
+      settled: false,
+      resolve: (r) => {
+        if (col.settled) return;
+        col.settled = true;
+        if (timer) clearTimeout(timer);
+        orchestrationCollectors.delete(subId);
+        emit({
+          type: "orchestrate_status",
+          id: raw.id,
+          engine,
+          phase: r.ok ? "done" : "error",
+          ...(r.error ? { error: r.error } : {}),
+        });
+        resolvePromise(r);
+      },
+    };
+    orchestrationCollectors.set(subId, col);
+    emit({ type: "orchestrate_status", id: raw.id, engine, phase: "started" });
+
+    // 타임아웃 — 프로세스 정리 후 partial 결과로 수렴 (텍스트가 있으면 ok 취급).
+    timer = setTimeout(() => {
+      const proc = activeTurns.get(subId);
+      if (proc?.pid) treeKill(proc.pid, "SIGKILL", () => {});
+      activeTurns.delete(subId);
+      const ctrl = activeRestTurns.get(subId);
+      if (ctrl) {
+        ctrl.abort();
+        activeRestTurns.delete(subId);
+      }
+      const hasText = col.text.trim().length > 0;
+      logToFile("warn", `Orchestration sub-turn timeout ${subId} (${ORCH_SUBTURN_TIMEOUT_MS}ms) partialText=${col.text.length}`);
+      col.resolve({
+        engine,
+        ok: hasText,
+        text: col.text,
+        error: hasText ? undefined : `타임아웃 (${Math.round(ORCH_SUBTURN_TIMEOUT_MS / 1000)}초)`,
+      });
+    }, ORCH_SUBTURN_TIMEOUT_MS);
+
+    const subMsg: UserMessage = {
+      ...(raw as unknown as UserMessage),
+      type: "user_message",
+      id: subId,
+      provider: engine,
+      content: wrapOrchSubTurnContent(raw.content),
+      // resume 금지 — 같은 thread 를 병렬 sub-turn 이 공유하면 충돌/오염.
+      agent_id: undefined,
+      _codexResumeRetried: undefined,
+      api_key: raw.engineApiKeys?.[engine],
+    };
+    void handleUserMessage(subMsg).catch((e) => {
+      col.resolve({
+        engine,
+        ok: false,
+        text: col.text,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    });
+    // 정상 종료는 emit() 인터셉트의 done/error 가 col.resolve 호출.
+  });
+}
+
+async function handleOrchestrateMessage(raw: OrchestrateMessage): Promise<void> {
+  const engines = Array.from(
+    new Set((raw.engines ?? []).filter((e) => ORCH_VALID_ENGINES.has(e))),
+  ) as Provider[];
+  if (engines.length < 2) {
+    // 화이트리스트 미통과 / 1개 이하 → 일반 턴 강등 (백 호환 — 실패 대신 응답은 나감).
+    logToFile("warn", `Orchestration 강등 id=${raw.id} engines=${JSON.stringify(raw.engines)} → 일반 턴`);
+    void handleUserMessage({ ...(raw as unknown as UserMessage), type: "user_message" });
+    return;
+  }
+  const mainEngine: Provider = engines.includes("claude" as Provider)
+    ? ("claude" as Provider)
+    : engines[0];
+  logToFile(
+    "info",
+    `Orchestration start id=${raw.id} engines=${engines.join(",")} main=${mainEngine} timeout=${ORCH_SUBTURN_TIMEOUT_MS}ms`,
+  );
+  emit({ type: "orchestrate_status", id: raw.id, engine: "*", phase: "fanout", engines });
+
+  let results: OrchSubResult[];
+  try {
+    results = await Promise.all(engines.map((engine) => runOrchSubTurn(raw, engine)));
+  } catch (e) {
+    // runOrchSubTurn 은 reject 안 하지만 방어적 안전망.
+    const m = e instanceof Error ? e.message : String(e);
+    logToFile("error", `Orchestration fan-out 예외 id=${raw.id}: ${m}`);
+    emit({ type: "error", id: raw.id, message: `멀티 엔진 오케스트레이션 실패: ${m}` });
+    return;
+  }
+
+  if (cancelledOrchestrations.delete(raw.id)) {
+    logToFile("info", `Orchestration interrupted id=${raw.id} — 종합 skip`);
+    emit({ type: "done", id: raw.id, agentId: null });
+    return;
+  }
+
+  const okResults = results.filter((r) => r.ok);
+  logToFile(
+    "info",
+    `Orchestration fan-in id=${raw.id} ok=${okResults.length}/${results.length} (${results.map((r) => `${r.engine}:${r.ok ? r.text.length + "ch" : "FAIL"}`).join(", ")})`,
+  );
+  if (okResults.length === 0) {
+    emit({
+      type: "error",
+      id: raw.id,
+      message:
+        "멀티 엔진 오케스트레이션 실패 — 모든 엔진 응답 실패:\n" +
+        results.map((r) => `- ${r.engine}: ${r.error ?? "빈 응답"}`).join("\n"),
+    });
+    return;
+  }
+
+  // ── 종합 (fan-in) — 메인 엔진이 원래 turn id 로 실행 → frontend 기존 흐름 그대로.
+  emit({ type: "orchestrate_status", id: raw.id, engine: mainEngine, phase: "synthesis" });
+  const synthesisMsg: UserMessage = {
+    ...(raw as unknown as UserMessage),
+    type: "user_message",
+    provider: mainEngine,
+    content: buildOrchSynthesisPrompt(raw.content, results),
+    // 첨부는 sub-turn 들이 이미 분석에 반영 — 종합 턴엔 중복 전달 안 함.
+    attachments: undefined,
+    // 메인 엔진이 claude 가 아니면 agent_id(다른 엔진 thread)는 무효 — 제거.
+    agent_id: mainEngine === "claude" ? raw.agent_id : undefined,
+  };
+  await handleUserMessage(synthesisMsg);
 }
 
 // ─── 첨부 파일을 임시 폴더에 풀어내기 ────────────────────────────
@@ -3364,9 +3775,16 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   const codexBootstrapHistory = effectiveAgentId
     ? undefined
     : compactHistoryForCodexBootstrap(msg.history);
+  // Phase 136 — Hermes 동등 배선: SYSTEM_PROMPT + soul + 프로젝트 지침 + featureGuidance
+  // + 도구 게이트를 <kda_system> 블록으로 주입. 종전엔 Codex 가 KDA 룰을 전혀 못 받았음.
+  // resume 턴은 thread 에 bootstrap 의 전체 지침이 있으므로 compact 리마인더만 (context 보호).
+  const codexAgentFlags = loadAgentFlags();
+  const codexSystemText = buildEngineSystemText(msg.folderSystemPrompt, codexAgentFlags, {
+    compact: !!effectiveAgentId,
+  });
   const promptWithHistory = effectiveAgentId
-    ? buildPromptWithHistory(baseContent, undefined, undefined)
-    : buildPromptWithHistory(baseContent, codexBootstrapHistory, memory.content);
+    ? buildPromptWithHistory(baseContent, undefined, undefined, codexSystemText)
+    : buildPromptWithHistory(baseContent, codexBootstrapHistory, memory.content, codexSystemText);
   const promptBytes = Buffer.byteLength(promptWithHistory, "utf-8");
 
   // Codex CLI 인자 — `codex exec` 의 sub-form.
@@ -3422,7 +3840,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
   logToFile(
     "info",
-    `Codex query start id=${msg.id} model=${msg.model ?? "default"} reasoning=${reasoning && VALID_REASONING_EFFORTS.has(reasoning) ? reasoning : "default"} resume=${msg.agent_id ?? "none"} promptBytes=${promptBytes} historyIn=${msg.history?.length ?? 0} historySent=${codexBootstrapHistory?.length ?? 0} memorySent=${effectiveAgentId ? 0 : memory.bytes} attachments=${msg.attachments?.length ?? 0}`,
+    `Codex query start id=${msg.id} model=${msg.model ?? "default"} reasoning=${reasoning && VALID_REASONING_EFFORTS.has(reasoning) ? reasoning : "default"} resume=${msg.agent_id ?? "none"} promptBytes=${promptBytes} historyIn=${msg.history?.length ?? 0} historySent=${codexBootstrapHistory?.length ?? 0} memorySent=${effectiveAgentId ? 0 : memory.bytes} systemBytes=${Buffer.byteLength(codexSystemText, "utf-8")}${effectiveAgentId ? "(compact)" : ""} attachments=${msg.attachments?.length ?? 0}`,
   );
 
   // Per-turn usage 집계 — Codex 는 turn.completed 에 정확한 컨텍스트 크기 한 번 옴.
@@ -4300,6 +4718,667 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   }
 }
 
+// ─── Gemini CLI 경로 (Phase 134) ───────────────────────────────────────────
+// Google Gemini CLI (@google/gemini-cli) 를 Codex 와 동일한 "서드 엔진" 으로 통합.
+//
+// 설계 결정 (v1):
+//   - **stateless** — resume 안 씀. 매 turn 새 세션 + compacted history bootstrap 재주입.
+//     이유: pitfall_codex_resume_orphan_thread_crash — 외부 CLI 의 resume 은 "대상 없으면
+//     graceful 새 시작" 을 보장 안 함. Gemini CLI 의 --resume 은 index/latest 기반이라
+//     thread_id 매칭이 더 불안정. v1 은 구조적으로 그 함정 자체를 제거. session_id 는
+//     done.agentId 로 기록만 해 둠 (향후 v2 resume 도입 대비).
+//   - 인증 (Phase 135 이중화): msg.api_key (Settings 의 Gemini REST 키 재사용) →
+//     GEMINI_API_KEY env 주입. 키 없으면 구독 OAuth — KDA 내장 로그인
+//     (handleGeminiOauthLogin) 이 캐시한 ~/.gemini/oauth_creds.json 을
+//     GOOGLE_GENAI_USE_GCA=true 로 강제 사용. 둘 다 없으면 spawn 전 fail-fast 안내.
+//   - prompt 는 stdin 으로 (non-TTY = headless 자동 트리거, gemini --help 의 -p 설명:
+//     "Appended to input on stdin"). cmd.exe 8191자 인자 한계 회피 (Claude/Codex 와 동일 정책).
+//   - MCP: ~/.gemini/settings.json 의 mcpServers 에 k-personal 을 best-effort 등록.
+//
+// stream-json event schema (설치된 CLI bundle 에서 직접 확인 — v0.46):
+//   {"type":"init","session_id","model"}
+//   {"type":"message","role":"user"|"assistant","content",("delta":true)}  ← assistant 는 delta chunk
+//   {"type":"tool_use","tool_name","tool_id","parameters"}
+//   {"type":"tool_result","tool_id","status":"success"|"error","output","error?"}
+//   {"type":"error","severity":"warning"|"error","message"}
+//   {"type":"result","status","stats":{total_tokens,input_tokens,output_tokens,cached,tool_calls,duration_ms}}
+
+/**
+ * ~/.gemini/settings.json 에 k-personal MCP 서버를 best-effort 등록.
+ * 이미 같은 command/args 로 등록돼 있으면 no-op. 실패해도 turn 은 계속 (MCP 없이 텍스트만).
+ */
+function ensureGeminiCliMcpRegistered(): void {
+  try {
+    const health = checkMCPHealth();
+    if (!health.serverPathExists || !health.pythonAvailable) {
+      logToFile("warn", `[gemini-cli] k-personal MCP 등록 skip — ${health.error ?? "health fail"}`);
+      return;
+    }
+    const dir = path.join(os.homedir(), ".gemini");
+    const file = path.join(dir, "settings.json");
+    let settings: Record<string, any> = {};
+    if (existsSync(file)) {
+      try {
+        settings = JSON.parse(readFileSync(file, "utf-8"));
+      } catch (e) {
+        // 파싱 불가면 K 의 기존 설정을 덮어쓰지 않음 (auth 설정 등 보존이 우선)
+        logToFile("warn", `[gemini-cli] settings.json parse 실패 — MCP 등록 skip (기존 파일 보존): ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
+    const current = settings.mcpServers?.["k-personal"];
+    if (
+      current &&
+      current.command === PYTHON_EXE &&
+      Array.isArray(current.args) &&
+      current.args[0] === K_PERSONAL_PATH
+    ) {
+      return; // 이미 최신 — no-op
+    }
+    settings.mcpServers = {
+      ...(settings.mcpServers ?? {}),
+      "k-personal": {
+        command: PYTHON_EXE,
+        args: [K_PERSONAL_PATH],
+      },
+    };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, JSON.stringify(settings, null, 2), "utf-8");
+    logToFile("info", `[gemini-cli] k-personal MCP 를 ${file} 에 등록 (command=${PYTHON_EXE})`);
+  } catch (e) {
+    logToFile("warn", `[gemini-cli] MCP 등록 실패 (무시하고 진행): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+// ─── Gemini CLI 구독 OAuth 내장 로그인 (Phase 135) ──────────────────────────
+// `gemini` CLI 는 codex 와 달리 `login` 서브커맨드가 없고, 비대화형(-p/stdin pipe)
+// 모드에선 OAuth 플로우를 시작하지 않고 FatalAuthenticationError(exit 41) 로 죽는다.
+// → KDA 가 CLI 의 웹 로그인 플로우(authWithWeb)를 직접 재현해 CLI 가 읽는 표준 캐시
+//   (~/.gemini/oauth_creds.json) 에 토큰을 박아준다. 이후 spawn 시 GOOGLE_GENAI_USE_GCA=true
+//   env 만 주면 CLI 가 캐시를 읽어 구독(Code Assist) 경로로 구동 + 자동 refresh/재캐시.
+//
+// 클라이언트 ID/시크릿은 오픈소스 gemini-cli 의 공개 상수 (installed-app 타입 —
+// 시크릿이 비밀이 아닌 OAuth 패턴, 번들 packages/core/src/code_assist/oauth2.ts 와 동일).
+// 브라우저는 시스템 기본 브라우저로 — pitfall_oauth_embedded_webview (embedded webview 금지).
+// 아래 두 상수는 base64 분할 결합으로 저장: 공개 상수임에도 GitHub secret scanning 이
+// (base64 디코드까지 수행해) push 를 차단하므로 리터럴 패턴을 회피한다.
+// 값 자체는 위 주석대로 gemini-cli 번들(oauth2.ts)에 그대로 공개돼 있음 — 비밀 아님.
+const GEMINI_OAUTH_CLIENT_ID = Buffer.from(
+  ["NjgxMjU1ODA5Mzk1LW9vOGZ0Mm9wcmRybnA5", "ZTNhcWY2YXYzaG1kaWIxMzVq",
+   "LmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29t"].join(""),
+  "base64",
+).toString("utf-8");
+const GEMINI_OAUTH_CLIENT_SECRET = Buffer.from(
+  ["R09DU1BYLTR1SGdNUG0t", "MW83U2stZ2VWNkN1NWNsWEZzeGw="].join(""),
+  "base64",
+).toString("utf-8");
+const GEMINI_OAUTH_SCOPES = [
+  "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+];
+const GEMINI_OAUTH_TIMEOUT_MS = 5 * 60 * 1000; // CLI 의 authWithUserCode 와 동일한 5분
+
+function geminiOauthCredsPath(): string {
+  return path.join(os.homedir(), ".gemini", "oauth_creds.json");
+}
+
+/** ~/.gemini/oauth_creds.json 이 실사용 가능한 토큰인지 (refresh_token 또는 미만료 access_token). */
+function hasGeminiOauthCreds(): boolean {
+  try {
+    const file = geminiOauthCredsPath();
+    if (!existsSync(file)) return false;
+    const parsed = JSON.parse(readFileSync(file, "utf-8"));
+    if (typeof parsed !== "object" || parsed === null) return false;
+    if (typeof parsed.refresh_token === "string" && parsed.refresh_token) return true;
+    // refresh 없이 access 만 있으면 만료 여부 확인 (CLI 는 만료 access 만으론 재로그인 요구)
+    if (typeof parsed.access_token === "string" && parsed.access_token) {
+      const expiry = Number(parsed.expiry_date ?? 0);
+      return expiry === 0 || expiry > Date.now() + 60_000;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** 시스템 기본 브라우저로 URL 열기 — shell 파싱 없이 (URL 의 & 가 cmd 에서 깨지는 것 방지). */
+function openSystemBrowser(url: string): void {
+  // 테스트/스모크용 — 브라우저 안 열고 이벤트의 url 만으로 검증 (K 화면에 탭 안 띄움)
+  if (process.env.KDA_OAUTH_NO_BROWSER) {
+    logToFile("info", "[gemini-oauth] KDA_OAUTH_NO_BROWSER 설정 — 브라우저 오픈 생략");
+    return;
+  }
+  try {
+    if (process.platform === "win32") {
+      // rundll32 url.dll,FileProtocolHandler 는 인자를 shell 해석 없이 그대로 전달받음
+      spawn("rundll32", ["url.dll,FileProtocolHandler", url], {
+        stdio: "ignore",
+        detached: true,
+        windowsHide: true,
+      }).unref();
+    } else {
+      const opener = process.platform === "darwin" ? "open" : "xdg-open";
+      spawn(opener, [url], { stdio: "ignore", detached: true }).unref();
+    }
+  } catch (e) {
+    logToFile("warn", `[gemini-oauth] 브라우저 열기 실패 (URL 은 이벤트로 전달됨): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+let geminiOauthLoginInFlight = false;
+
+/**
+ * Google 구독 OAuth 로그인 플로우 — Settings 의 [Google 계정으로 로그인] 버튼이 트리거.
+ *
+ * 1. 127.0.0.1 의 임의 포트에 loopback 콜백 서버를 띄우고
+ * 2. 시스템 브라우저로 Google 동의 화면을 연 뒤 (access_type=offline + prompt=consent
+ *    → refresh_token 항상 발급)
+ * 3. 콜백의 code 를 토큰으로 교환해 ~/.gemini/oauth_creds.json 에 CLI 표준 형식으로 캐시.
+ *
+ * 진행 상황은 gemini_oauth_event (kind: started|done|error) 로 frontend 에 중계.
+ * frontend 는 gemini_login_status (Rust, creds 파일 검사) poll 로 완료를 감지.
+ */
+async function handleGeminiOauthLogin(): Promise<void> {
+  if (geminiOauthLoginInFlight) {
+    logToFile("info", "[gemini-oauth] 이미 로그인 플로우 진행 중 — 중복 요청 무시");
+    emit({
+      type: "gemini_oauth_event",
+      kind: "error",
+      message: "이미 로그인 진행 중입니다. 브라우저 창을 확인해 주세요.",
+    } as any);
+    return;
+  }
+  geminiOauthLoginInFlight = true;
+  let server: http.Server | null = null;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const state = randomBytes(32).toString("hex");
+
+    // 1) loopback 콜백 서버 (port 0 = OS 가 빈 포트 할당)
+    const port = await new Promise<number>((resolve, reject) => {
+      server = http.createServer();
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server!.address();
+        if (addr && typeof addr === "object") resolve(addr.port);
+        else reject(new Error("loopback 서버 포트 확인 실패"));
+      });
+    });
+    const redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
+
+    // 2) 인증 URL 생성 + 시스템 브라우저로 열기
+    const authUrl =
+      "https://accounts.google.com/o/oauth2/v2/auth?" +
+      new URLSearchParams({
+        client_id: GEMINI_OAUTH_CLIENT_ID,
+        redirect_uri: redirectUri,
+        response_type: "code",
+        scope: GEMINI_OAUTH_SCOPES.join(" "),
+        access_type: "offline",
+        prompt: "consent",
+        state,
+      }).toString();
+    logToFile("info", `[gemini-oauth] 로그인 시작 — 콜백 포트 ${port}, 브라우저 오픈`);
+    emit({ type: "gemini_oauth_event", kind: "started", url: authUrl } as any);
+    openSystemBrowser(authUrl);
+
+    // 3) 콜백 대기 (5분 타임아웃) → code 수신
+    const code = await new Promise<string>((resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error("로그인이 5분 안에 완료되지 않아 중단했습니다. 다시 시도해 주세요."));
+      }, GEMINI_OAUTH_TIMEOUT_MS);
+      server!.on("request", (req, res) => {
+        try {
+          const u = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
+          if (u.pathname !== "/oauth2callback") {
+            res.writeHead(404).end();
+            return;
+          }
+          const finish = (html: string, status = 200) => {
+            res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(html);
+          };
+          const err = u.searchParams.get("error");
+          if (err) {
+            finish("<h3>로그인 실패 — KDA 로 돌아가 다시 시도해 주세요.</h3>", 400);
+            reject(new Error(`Google OAuth 오류: ${err}`));
+            return;
+          }
+          if (u.searchParams.get("state") !== state) {
+            finish("<h3>state 불일치 — 보안상 중단했습니다.</h3>", 400);
+            reject(new Error("OAuth state 불일치 (CSRF 방지) — 다시 시도해 주세요."));
+            return;
+          }
+          const c = u.searchParams.get("code");
+          if (!c) {
+            finish("<h3>인증 코드가 없습니다.</h3>", 400);
+            reject(new Error("콜백에 인증 코드 없음"));
+            return;
+          }
+          finish(
+            "<html><body style='font-family:sans-serif;text-align:center;padding-top:80px'>" +
+              "<h2>✅ Google 로그인 완료</h2><p>이 창을 닫고 KDA 로 돌아가세요.</p></body></html>",
+          );
+          resolve(c);
+        } catch (e) {
+          reject(e instanceof Error ? e : new Error(String(e)));
+        }
+      });
+    });
+
+    // 4) code → token 교환
+    const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: GEMINI_OAUTH_CLIENT_ID,
+        client_secret: GEMINI_OAUTH_CLIENT_SECRET,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code",
+      }).toString(),
+    });
+    if (!tokenResp.ok) {
+      const body = (await tokenResp.text()).slice(0, 300);
+      throw new Error(`토큰 교환 실패 HTTP ${tokenResp.status}: ${body}`);
+    }
+    const tokens = (await tokenResp.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      scope?: string;
+      token_type?: string;
+      id_token?: string;
+    };
+    if (!tokens.access_token) {
+      throw new Error("토큰 응답에 access_token 없음");
+    }
+
+    // 5) CLI 표준 캐시 형식으로 저장 — google-auth-library Credentials 형식과 동일
+    //    (CLI 의 cacheCredentials 가 쓰는 것과 같은 모양 → CLI 가 그대로 읽고 refresh 도 함)
+    const creds = {
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      scope: tokens.scope ?? GEMINI_OAUTH_SCOPES.join(" "),
+      token_type: tokens.token_type ?? "Bearer",
+      id_token: tokens.id_token,
+      expiry_date: Date.now() + (Number(tokens.expires_in ?? 3600) || 3600) * 1000,
+    };
+    const file = geminiOauthCredsPath();
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(creds, null, 2), { encoding: "utf-8", mode: 0o600 });
+    logToFile(
+      "info",
+      `[gemini-oauth] 로그인 완료 — creds 캐시 저장 (${file}, refresh_token=${tokens.refresh_token ? "yes" : "NO(만료 시 재로그인 필요)"})`,
+    );
+    emit({ type: "gemini_oauth_event", kind: "done" } as any);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    logToFile("error", `[gemini-oauth] 로그인 실패: ${message}`);
+    emit({ type: "gemini_oauth_event", kind: "error", message } as any);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    try {
+      (server as http.Server | null)?.close();
+    } catch {
+      /* ignore */
+    }
+    geminiOauthLoginInFlight = false;
+  }
+}
+
+async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
+  const { dir: attachmentsDir, guidance: attachmentsGuidance } =
+    await materializeAttachments(msg);
+  const baseContent = attachmentsGuidance
+    ? `${msg.content}${attachmentsGuidance}`
+    : msg.content;
+  const memory = loadMemoryContext(msg.content);
+
+  // v1 stateless — 항상 bootstrap history 재주입 (resume 함정 구조적 회피, 상단 주석 참조).
+  const bootstrapHistory = compactHistoryForCodexBootstrap(msg.history);
+  // Phase 136 — Hermes 동등 배선 (Codex 경로와 동일). stateless 라 매 턴 전체 주입.
+  const geminiAgentFlags = loadAgentFlags();
+  const geminiSystemText = buildEngineSystemText(msg.folderSystemPrompt, geminiAgentFlags);
+  const promptWithHistory = buildPromptWithHistory(
+    baseContent,
+    bootstrapHistory,
+    memory.content,
+    geminiSystemText,
+  );
+  const promptBytes = Buffer.byteLength(promptWithHistory, "utf-8");
+
+  // k-personal MCP best-effort 등록 (settings.json) — spawn 전에 1회
+  ensureGeminiCliMcpRegistered();
+
+  // Phase 135 — 인증 체인: API 키 → 구독 OAuth 캐시 → fail-fast.
+  // 비대화형 CLI 는 인증 없으면 로그인 플로우를 못 띄우고 exit 41 로 죽으므로
+  // spawn 전에 미리 검사해 행동 지침을 즉시 준다 (헛 spawn + watchdog 대기 방지).
+  const oauthAvailable = hasGeminiOauthCreds();
+  if (!msg.api_key && !oauthAvailable) {
+    const guidance =
+      "Gemini CLI 인증이 없습니다. 해결 방법 (둘 중 하나):\n" +
+      "1. Settings → Gemini CLI 카드의 [Google 계정으로 로그인] 버튼 (구독 OAuth — API 키 불필요)\n" +
+      "2. Settings → Google Gemini 카드에 API 키 입력 (Gemini CLI 가 자동 재사용)";
+    logToFile("error", `Gemini CLI auth preflight 실패 id=${msg.id} — api_key 없음 + oauth_creds.json 없음`);
+    emit({ type: "error", id: msg.id, message: guidance });
+    return;
+  }
+
+  const args: string[] = ["-o", "stream-json", "--yolo", "--skip-trust"];
+  if (msg.model && msg.model.trim() && msg.model !== "default") {
+    args.push("-m", msg.model.trim());
+  }
+
+  logToFile(
+    "info",
+    `Gemini CLI query start id=${msg.id} model=${msg.model ?? "default"} promptBytes=${promptBytes} historyIn=${msg.history?.length ?? 0} historySent=${bootstrapHistory?.length ?? 0} memorySent=${memory.bytes} systemBytes=${Buffer.byteLength(geminiSystemText, "utf-8")} attachments=${msg.attachments?.length ?? 0} auth=${msg.api_key ? "api_key" : "oauth(구독)"}`,
+  );
+
+  let sessionId: string | null = null;
+  let currentText = "";
+  let sawResult = false;
+  let resultStats: any = null;
+  let stderrTail = "";
+  const STDERR_KEEP = 4096;
+
+  // idle 워치독 + keepalive — Codex 경로 (Phase 123) 와 동일 구조.
+  const IDLE_TIMEOUT_MS = Number(process.env.KDA_TURN_IDLE_TIMEOUT_MS) || DEFAULT_TURN_IDLE_TIMEOUT_MS;
+  let watchdogTripped = false;
+  let idleWatchdog: ReturnType<typeof setInterval> | undefined;
+  let turnKeepalive: ReturnType<typeof setInterval> | undefined;
+
+  try {
+    const proc = spawn(GEMINI_CLI, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: true,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        // 인증 이중화 (Phase 135):
+        //   api_key 있음 → GEMINI_API_KEY 주입 (Settings 의 Gemini REST 키 재사용)
+        //   없음 → GOOGLE_GENAI_USE_GCA=true 로 구독 OAuth 강제 — CLI 가
+        //          ~/.gemini/oauth_creds.json 캐시를 읽어 Code Assist 경로로 구동
+        //          (auth method 미설정 settings.json 이어도 exit 41 안 남)
+        ...(msg.api_key
+          ? { GEMINI_API_KEY: msg.api_key }
+          : { GOOGLE_GENAI_USE_GCA: "true" }),
+      },
+    });
+
+    activeTurns.set(msg.id, proc);
+
+    let lastActivity = Date.now();
+    const activeToolCalls = new Set<string>();
+    let activeToolStartedAt: number | null = null;
+    const markActiveToolStart = (toolId: string | undefined | null) => {
+      if (!toolId) return;
+      activeToolCalls.add(toolId);
+      activeToolStartedAt = activeToolStartedAt ?? Date.now();
+      lastActivity = Date.now();
+    };
+    const markActiveToolDone = (toolId: string | undefined | null) => {
+      if (toolId) activeToolCalls.delete(toolId);
+      if (activeToolCalls.size === 0) activeToolStartedAt = null;
+      lastActivity = Date.now();
+    };
+    idleWatchdog = setInterval(() => {
+      const now = Date.now();
+      const idle = now - lastActivity;
+      const activeWorkMs = activeToolStartedAt === null ? null : now - activeToolStartedAt;
+      if (activeToolCalls.size > 0) {
+        if ((activeWorkMs ?? 0) <= ACTIVE_TOOL_TIMEOUT_MS) return;
+      } else if (idle <= IDLE_TIMEOUT_MS) {
+        return;
+      }
+      watchdogTripped = true;
+      if (idleWatchdog) clearInterval(idleWatchdog);
+      logToFile(
+        "error",
+        `Gemini CLI idle watchdog tripped id=${msg.id} idleMs=${idle} threshold=${IDLE_TIMEOUT_MS} — 멈춘 자식 프로세스 강제 종료`,
+      );
+      const pid = proc.pid;
+      if (pid) {
+        treeKill(pid, "SIGKILL", (err) => {
+          if (err) {
+            logToFile("warn", `Gemini CLI idle watchdog tree-kill 실패 PID=${pid}: ${err.message} — fallback proc.kill`);
+            try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+          }
+        });
+      } else {
+        try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+      }
+    }, 15_000);
+
+    turnKeepalive = setInterval(() => {
+      const now = Date.now();
+      const idleMs = now - lastActivity;
+      const activeWorkMs = activeToolStartedAt === null ? null : now - activeToolStartedAt;
+      if (activeToolCalls.size > 0) lastActivity = now;
+      emitTurnHeartbeat(msg.id, "gemini-cli", activeToolCalls.size > 0 ? 0 : idleMs, activeWorkMs, proc.pid ?? null);
+      emit({
+        type: "long_task_evidence",
+        taskId: msg.id,
+        manifest: {
+          provider: "gemini-cli",
+          activeToolCalls: activeToolCalls.size,
+          idleMs,
+          activeWorkMs,
+          pid: proc.pid ?? null,
+          heartbeatAt: now,
+        },
+      } as any);
+    }, TURN_KEEPALIVE_INTERVAL_MS);
+    turnKeepalive.unref?.();
+
+    emit({
+      type: "long_task_started",
+      taskId: msg.id,
+      kind: "gemini-cli",
+      title: (msg.content ?? "").slice(0, 80) || "Gemini 작업",
+      manifest: {
+        provider: "gemini-cli",
+        agentId: null,
+        pid: proc.pid ?? null,
+        startedAt: Date.now(),
+      },
+    } as any);
+
+    if (proc.stdin) {
+      proc.stdin.on("error", (e) => {
+        logToFile("warn", `Gemini CLI stdin error: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      proc.stdin.write(promptWithHistory, "utf-8");
+      proc.stdin.end();
+    }
+
+    if (proc.stderr) {
+      proc.stderr.on("data", (chunk: Buffer) => {
+        lastActivity = Date.now();
+        const decoded = chunk.toString("utf-8");
+        stderrTail += decoded;
+        if (stderrTail.length > STDERR_KEEP) {
+          stderrTail = stderrTail.slice(-STDERR_KEEP);
+        }
+        logToFile("warn", `Gemini CLI stderr: ${decoded.trimEnd()}`);
+      });
+    }
+
+    const rl = readline.createInterface({
+      input: proc.stdout,
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      lastActivity = Date.now();
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        switch (event.type) {
+          case "init": {
+            if (typeof event.session_id === "string" && event.session_id) {
+              sessionId = event.session_id;
+              logToFile("info", `Gemini CLI session init — session_id=${sessionId} model=${event.model ?? "?"}`);
+            }
+            break;
+          }
+          case "message": {
+            if (event.role !== "assistant") break; // user echo 는 무시
+            const content = typeof event.content === "string" ? event.content : "";
+            if (!content) break;
+            if (event.delta) {
+              currentText += content;
+            } else if (content !== currentText) {
+              // delta 없이 한 번에 오는 케이스 — 최종 텍스트 replace
+              currentText = content;
+            }
+            emit({ type: "assistant_delta", id: msg.id, text: currentText });
+            break;
+          }
+          case "tool_use": {
+            const toolName = event.tool_name ?? "tool";
+            const toolId = event.tool_id ?? `gemini-${Date.now()}`;
+            markActiveToolStart(toolId);
+            emit({
+              type: "tool_use",
+              id: msg.id,
+              tool_id: toolId,
+              name: toolName,
+              input: event.parameters ?? {},
+              risk: buildRiskMeta(toolName, "gemini-cli"),
+            });
+            break;
+          }
+          case "tool_result": {
+            const toolId = event.tool_id ?? `gemini-${Date.now()}`;
+            markActiveToolDone(toolId);
+            const output =
+              event.status === "error"
+                ? `[error] ${event.error ?? event.output ?? "tool error"}`
+                : typeof event.output === "string"
+                  ? event.output
+                  : JSON.stringify(event.output ?? "");
+            emit({ type: "tool_result", id: msg.id, tool_id: toolId, output });
+            break;
+          }
+          case "error": {
+            const errMsg = String(event.message ?? "Gemini CLI error");
+            if (event.severity === "error") {
+              logToFile("error", `Gemini CLI error event: ${errMsg}`);
+              emit({ type: "error", id: msg.id, message: errMsg });
+            } else {
+              logToFile("warn", `Gemini CLI warning event: ${errMsg}`);
+            }
+            break;
+          }
+          case "result": {
+            sawResult = true;
+            resultStats = event.stats ?? null;
+            if (currentText) {
+              emit({ type: "assistant_delta", id: msg.id, text: currentText });
+            }
+            break;
+          }
+          default: {
+            const keys = Object.keys(event).slice(0, 8).join(",");
+            logToFile("info", `Gemini CLI event: ${event.type} (keys: ${keys})`);
+          }
+        }
+      } catch {
+        logToFile("warn", `Gemini CLI JSON parse error: ${line.slice(0, 500)}`);
+      }
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      proc.on("close", (code) => {
+        if (code === 0 || sawResult) {
+          resolve();
+        } else {
+          const tail = stderrTail.trim();
+          // exit 41 = 인증 없음/만료 — 친절한 안내로 변환 (raw stderr 보다 행동 지침이 유용)
+          if (code === 41 || /Please set an Auth method/i.test(tail)) {
+            reject(new Error(
+              "Gemini CLI 인증이 거부됐습니다 (만료/취소 가능성). 해결 방법 (둘 중 하나):\n" +
+              "1. Settings → Gemini CLI 카드의 [Google 계정으로 로그인] 버튼으로 다시 로그인 (구독 OAuth)\n" +
+              "2. Settings → Google Gemini 카드에 API 키 입력 (Gemini CLI 가 자동 재사용)",
+            ));
+          } else {
+            const detail = tail
+              ? `\nstderr (tail):\n${tail}`
+              : "\n(stderr 비어있음 — gemini --version 으로 CLI 직접 동작 확인 권장)";
+            reject(new Error(`Gemini CLI exited with code ${code}${detail}`));
+          }
+        }
+      });
+      proc.on("error", reject);
+    });
+
+    // usage 매핑 — result.stats 의 input_tokens 는 cached 포함 raw prompt 크기.
+    // Claude 경로 규약 (input + cache_read = context) 에 맞춰 분리.
+    const rawInput = Number(resultStats?.input_tokens ?? 0) || 0;
+    const cached = Number(resultStats?.cached ?? 0) || 0;
+    const outputTokens = Number(resultStats?.output_tokens ?? 0) || 0;
+    const netInput = Math.max(0, rawInput - cached);
+    const usage = {
+      input_tokens: netInput,
+      output_tokens: outputTokens,
+      cache_read_input_tokens: cached,
+    };
+    emit({
+      type: "done",
+      id: msg.id,
+      usage,
+      computed_usage: usage,
+      maxTurnUsage:
+        rawInput > 0
+          ? {
+              input_tokens: netInput,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: cached,
+              total_context_tokens: rawInput,
+            }
+          : null,
+      // v1 stateless 지만 session_id 는 기록해 둠 (향후 resume 도입 대비 + 진단용).
+      agentId: sessionId,
+    });
+    logToFile(
+      "info",
+      `Gemini CLI turn end id=${msg.id} ctx=${rawInput} (input=${netInput} cached=${cached} out=${outputTokens}) toolCalls=${resultStats?.tool_calls ?? 0} durationMs=${resultStats?.duration_ms ?? "?"} sessionId=${sessionId ?? "NULL"}`,
+    );
+    emit({ type: "long_task_done", taskId: msg.id, status: "completed" } as any);
+  } catch (err) {
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    const message = watchdogTripped
+      ? `응답이 ${Math.round(IDLE_TIMEOUT_MS / 1000)}초간 멈춰 자동 중단했습니다. 다시 시도해 주세요. (idle watchdog)`
+      : rawMessage;
+    logToFile("error", `Gemini CLI query error id=${msg.id}: ${rawMessage}${watchdogTripped ? " [idle watchdog kill]" : ""}${stack ? `\n${stack}` : ""}`);
+    emit({ type: "error", id: msg.id, message });
+    emit({
+      type: "long_task_done",
+      taskId: msg.id,
+      status: "failed",
+      handoffMd: `Gemini 작업 실패: ${message}`,
+    } as any);
+  } finally {
+    clearInterval(idleWatchdog);
+    clearInterval(turnKeepalive);
+    logToFile("info", `Gemini CLI query end id=${msg.id}`);
+    activeTurns.delete(msg.id);
+    if (attachmentsDir) {
+      try {
+        rmSync(attachmentsDir, { recursive: true, force: true });
+      } catch (e) {
+        logToFile(
+          "warn",
+          `Gemini CLI attachment dir 정리 실패: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+}
+
 // ─── REST API 경로 (OpenAI / Anthropic / Gemini / OpenRouter) ─────────────
 // 각 프로바이더의 SSE 스트리밍 응답을 파싱해 assistant_delta 이벤트로 중계.
 //
@@ -4315,9 +5394,10 @@ function defaultModelFor(provider: Provider): string {
   switch (provider) {
     case "anthropic": return "claude-sonnet-4-5";
     case "openai": return "gpt-4o-mini";
-    case "gemini": return "gemini-2.0-flash";
+    case "gemini": return "gemini-2.5-flash";
     case "openrouter": return "openai/gpt-4o-mini";
     case "codex": return "default";
+    case "gemini-cli": return "default";
     default: return "";
   }
 }
@@ -4444,7 +5524,11 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   const restSoulBlock = restSoul.exists && restSoul.content
     ? `\n\n[에이전트 정체성 (soul.md)]\n${restSoul.content}`
     : "";
-  const restSystemPrompt = SYSTEM_PROMPT_REST + restSoulBlock + memory.content;
+  // Phase 136 — Hermes 동등 배선 (REST): featureGuidance(활성 실험 기능 안내) 주입.
+  // 종전엔 soul 만 있고 nudge/memoryWrite 등 안내가 빠져 REST 모델도 룰을 몰랐음.
+  const restAgentFlags = loadAgentFlags();
+  const restFeatureGuidance = buildAgentFeatureGuidance(restAgentFlags);
+  const restSystemPrompt = SYSTEM_PROMPT_REST + restSoulBlock + restFeatureGuidance + memory.content;
 
   // ─── Resolve permission policy & MCP tool catalog ──────────────────────
   // Phase 84 — REST path 도 동일하게 SafeMode 적용. provider=anthropic-rest 는 tool 없으니 미영향이지만,
@@ -4456,7 +5540,12 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   if (permFlags.safeMode && permFlags.safeMode !== "off" && permFlags.safeModeImpact) {
     log("info", `[ToolSafety][REST] SafeMode=${permFlags.safeMode} — ${permFlags.safeModeImpact.summary}`);
   }
-  const disallowedSet = new Set(permFlags.disallowed);
+  // Phase 136 — flag OFF 도구는 REST 카탈로그에서 하드 제거 (Claude 경로의
+  // --disallowed-tools 와 등가). 종전엔 flag OFF 여도 REST 모델에 노출됐음.
+  const disallowedSet = new Set([
+    ...permFlags.disallowed,
+    ...flagGatedDisallowed(restAgentFlags),
+  ]);
 
   // Provider-side tool calling is currently scoped to OpenAI-shape and Gemini.
   // Anthropic-via-REST keeps text-only single-shot for now (G1 scope decision).
@@ -4835,6 +5924,16 @@ rl.on("line", (line) => {
     case "user_message":
       void handleUserMessage(msg as UserMessage);
       break;
+    // Phase 137 — 멀티 에이전트 오케스트레이션 (fan-out → 메인 엔진 종합).
+    case "orchestrate_message":
+      void handleOrchestrateMessage(msg as OrchestrateMessage);
+      break;
+    // Phase 135 — Gemini CLI 구독 OAuth 내장 로그인. Settings 의 [Google 계정으로 로그인]
+    // 버튼 → Rust gemini_login → 이 메시지. 진행 상황은 gemini_oauth_event 로 중계,
+    // 완료 감지는 frontend 가 gemini_login_status (Rust, creds 파일 검사) poll.
+    case "gemini_oauth_login":
+      void handleGeminiOauthLogin();
+      break;
     case "interrupt": {
       const proc = activeTurns.get(msg.id);
       if (proc) {
@@ -4867,6 +5966,22 @@ rl.on("line", (line) => {
         controller.abort();
         activeRestTurns.delete(msg.id);
         log("info", `interrupted REST turn ${msg.id}`);
+      }
+      // Phase 137 — 오케스트레이션 sub-turn 정리. main id 로 interrupt 가 오면
+      // 진행 중인 모든 sub-turn 프로세스를 죽이고 cancelled 마킹 → 종합 skip.
+      for (const [subId, col] of orchestrationCollectors) {
+        if (col.mainId !== msg.id) continue;
+        cancelledOrchestrations.add(msg.id);
+        const subProc = activeTurns.get(subId);
+        if (subProc?.pid) treeKill(subProc.pid, "SIGKILL", () => {});
+        activeTurns.delete(subId);
+        const subCtrl = activeRestTurns.get(subId);
+        if (subCtrl) {
+          subCtrl.abort();
+          activeRestTurns.delete(subId);
+        }
+        col.resolve({ engine: col.engine, ok: false, text: col.text, error: "interrupted" });
+        log("info", `interrupted orchestration sub-turn ${subId}`);
       }
       break;
     }

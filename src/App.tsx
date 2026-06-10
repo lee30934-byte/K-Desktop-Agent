@@ -933,6 +933,9 @@ export default function App() {
     // Gemini — 1M+ 지만 모델별 다름. 기본 1M
     if (id.includes("gemini")) return { tokens: 1_000_000, source: "Gemini 1M" };
 
+    // Gemini CLI 의 default 모델 (Phase 134) — 모델 ID 가 "default" 라 위 gemini 매칭을 못 탐
+    if (activeProvider === "gemini-cli") return { tokens: 1_000_000, source: "Gemini CLI default (1M)" };
+
     // 안전 fallback ⚠ — K 의 다른 PC 가 여기 떨어지면 비정상 부풀음
     return { tokens: 200_000, source: `⚠ 매칭 실패 (model="${activeModelId || "unset"}") → 200K fallback` };
   }, [activeProvider, activeModelId, runtimeModelMaxTokens]);
@@ -1294,6 +1297,105 @@ export default function App() {
           };
         }
         if (savedMsg) queueMessageSave(savedMsg, convForTurn);
+        break;
+      }
+
+      // Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션: 엔진별 카드 스트리밍.
+      // sub-turn 의 누적 텍스트를 별도 assistant 버블 (`{turnId}-orch-{engine}`) 로 표시.
+      // 종합 답변은 메인 turn id 의 일반 assistant_delta/done 으로 따로 흐름.
+      case "orchestrate_delta": {
+        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        const isActiveConv = convForTurn === activeConversationIdRef.current;
+        const cardId = `${ev.id}-orch-${ev.engine}`;
+        const label =
+          ev.engine === "claude" ? "Claude" :
+          ev.engine === "codex" ? "GPT (Codex)" :
+          ev.engine === "gemini-cli" ? "Gemini" : ev.engine;
+        const content = `**🤝 [${label} 의견]**\n\n${ev.text}`;
+        let savedOrch: ChatMessage | null = null;
+        if (isActiveConv) {
+          setMessages((prev) => {
+            const idx = prev.findIndex((m) => m.id === cardId && m.role === "assistant");
+            if (idx >= 0) {
+              const next = [...prev];
+              const msg = next[idx];
+              if (msg.role === "assistant") {
+                const updated = { ...msg, content, streaming: true };
+                next[idx] = updated;
+                savedOrch = updated;
+              }
+              return next;
+            }
+            const created: ChatMessage = {
+              id: cardId,
+              role: "assistant",
+              content,
+              timestamp: Date.now(),
+              streaming: true,
+            };
+            savedOrch = created;
+            return [...prev, created];
+          });
+        } else {
+          savedOrch = { id: cardId, role: "assistant", content, timestamp: Date.now(), streaming: true };
+        }
+        if (savedOrch) queueMessageSave(savedOrch, convForTurn);
+        break;
+      }
+
+      case "orchestrate_status": {
+        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        const isActiveConv = convForTurn === activeConversationIdRef.current;
+        if (ev.phase === "fanout") {
+          if (isActiveConv) {
+            pushSystem(`🤝 멀티 엔진 오케스트레이션 시작 — ${(ev.engines ?? []).join(" / ")} 병렬 질의 중…`, "info");
+          }
+          break;
+        }
+        if (ev.phase === "synthesis") {
+          if (isActiveConv) {
+            pushSystem(`🤝 ${ev.engine} 가 엔진별 답변을 종합하는 중…`, "info");
+          }
+          break;
+        }
+        if (ev.phase === "done" || ev.phase === "error") {
+          // 해당 엔진 카드 streaming 종료 (+실패 사유 표기)
+          const cardId = `${ev.id}-orch-${ev.engine}`;
+          if (isActiveConv) {
+            setMessages((prev) => {
+              const idx = prev.findIndex((m) => m.id === cardId && m.role === "assistant");
+              if (idx < 0) {
+                // 카드 없이 실패한 엔진 (한 글자도 못 받음) — 실패 카드 생성
+                if (ev.phase === "error") {
+                  const failed: ChatMessage = {
+                    id: cardId,
+                    role: "assistant",
+                    content: `**🤝 [${ev.engine} 의견]**\n\n⚠ 실패: ${ev.error ?? "알 수 없는 오류"}`,
+                    timestamp: Date.now(),
+                    streaming: false,
+                  };
+                  queueMessageSave(failed, convForTurn);
+                  return [...prev, failed];
+                }
+                return prev;
+              }
+              const next = [...prev];
+              const msg = next[idx];
+              if (msg.role === "assistant") {
+                const updated = {
+                  ...msg,
+                  streaming: false,
+                  content: ev.phase === "error"
+                    ? `${msg.content}\n\n⚠ 중단됨: ${ev.error ?? "알 수 없는 오류"}`
+                    : msg.content,
+                };
+                next[idx] = updated;
+                queueMessageSave(updated, convForTurn);
+              }
+              return next;
+            });
+          }
+        }
         break;
       }
 
@@ -2260,6 +2362,8 @@ export default function App() {
           if (storedKeys) {
             const keys = JSON.parse(storedKeys);
             apiKey = keys[provider];
+            // Gemini CLI 는 별도 키 입력란이 없음 — Gemini REST 키를 재사용 (GEMINI_API_KEY env 주입)
+            if (provider === "gemini-cli" && !apiKey) apiKey = keys["gemini"];
           }
         }
       } catch (e) {
@@ -2359,6 +2463,36 @@ export default function App() {
         }
       }
 
+      // Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 opt-in.
+      // Settings 의 "멀티 엔진" 토글 ON + 엔진 2개 이상 선택 시에만 orchestrateEngines 전달
+      // → Rust 가 orchestrate_message 로 전환 → sidecar fan-out/fan-in.
+      let orchestrateEngines: string[] | undefined;
+      let engineApiKeys: Record<string, string> | undefined;
+      try {
+        if (localStorage.getItem("kda_orch_enabled") === "1") {
+          const arr = JSON.parse(localStorage.getItem("kda_orch_engines") || "null");
+          if (Array.isArray(arr)) {
+            const valid = arr.filter(
+              (e): e is string => e === "claude" || e === "codex" || e === "gemini-cli",
+            );
+            if (valid.length >= 2) {
+              orchestrateEngines = valid;
+              // gemini-cli sub-turn 용 API 키 (없으면 sidecar 가 구독 OAuth creds 폴백)
+              const storedKeys = localStorage.getItem("kda_api_keys");
+              if (storedKeys && valid.includes("gemini-cli")) {
+                const keys = JSON.parse(storedKeys);
+                const gk = keys["gemini-cli"] || keys["gemini"];
+                if (typeof gk === "string" && gk.trim()) {
+                  engineApiKeys = { "gemini-cli": gk };
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[App] 오케스트레이션 설정 로드 실패:", e);
+      }
+
       await invoke("send_message", {
         message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
@@ -2374,6 +2508,8 @@ export default function App() {
         safeMode,
         folderSystemPrompt,
         folderAttachmentPaths,
+        orchestrateEngines,
+        engineApiKeys,
       });
 
       // Phase 109 (v0.6.58) — 폴더 첨부 박은 직후 DB + in-memory state 갱신.
@@ -2415,7 +2551,12 @@ export default function App() {
       model = localStorage.getItem("kda_active_model") || undefined;
       if (provider !== "claude") {
         const storedKeys = localStorage.getItem("kda_api_keys");
-        if (storedKeys) apiKey = JSON.parse(storedKeys)[provider];
+        if (storedKeys) {
+          const keys = JSON.parse(storedKeys);
+          apiKey = keys[provider];
+          // Gemini CLI 는 별도 키 입력란이 없음 — Gemini REST 키를 재사용
+          if (provider === "gemini-cli" && !apiKey) apiKey = keys["gemini"];
+        }
       }
     } catch { /* ignore */ }
     let permissions: Record<string, string> | undefined;
@@ -3350,6 +3491,8 @@ export default function App() {
           if (storedKeys) {
             const keys = JSON.parse(storedKeys);
             apiKey = keys[provider];
+            // Gemini CLI 는 별도 키 입력란이 없음 — Gemini REST 키를 재사용
+            if (provider === "gemini-cli" && !apiKey) apiKey = keys["gemini"];
           }
         }
       } catch (e) {

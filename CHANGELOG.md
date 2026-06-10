@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-06-10
+
+### Added
+- **Gemini CLI 서드 엔진 + 구독 OAuth 내장 로그인 (Phase 134+135)**: provider `gemini-cli` 추가 (v1 stateless — 매 턴 bootstrap history 재주입). Settings → Gemini CLI 카드의 [🔑 Google 계정으로 로그인] 버튼으로 API 키 없이 구독 OAuth 인증 — 사이드카가 Google installed-app OAuth 플로우(loopback 서버 + 시스템 브라우저 + state CSRF 검증)를 직접 수행해 `~/.gemini/oauth_creds.json` 캐시를 생성한다 (Gemini CLI 에 `login` 서브커맨드가 없어 자체 구현). 인증 체인: API 키 → OAuth 캐시 → spawn 전 fail-fast 안내. Gemini REST provider 도 현행 모델로 갱신.
+- **멀티 에이전트 오케스트레이션 v1 (Phase 137)**: Settings → "🤝 멀티 엔진 오케스트레이션" 토글 ON + 엔진 2개 이상(Claude/GPT(Codex)/Gemini) 선택 시, 매 메시지를 모든 엔진에 병렬 질의(fan-out)하고 메인 엔진(Claude 우선)이 답변들을 비교·종합(fan-in)해 최종 답변을 만든다. 엔진별 의견이 별도 카드로 스트리밍되고 종합이 마지막에 표시. sub-turn 은 `{turnId}#{engine}` id 로 격리 + 도구 호출 금지(동시 도구 충돌 방지) + 5분 타임아웃 + partial fan-in (일부 실패해도 성공한 답변만으로 종합). interrupt 시 모든 sub-turn process tree-kill. 기본 OFF — 명시적 opt-in.
+
+### Fixed
+- **GPT(Codex)/Gemini 모델이 KDA·헤르메스 룰을 안 따르던 근본 원인 (Phase 136)**: v0.7.0 헤르메스 기능(soul.md 정체성, 실험 기능 가이던스, agent-flags 도구 게이트)과 KDA 기본 응답 규칙(SYSTEM_PROMPT — 한국어/번호 선택지/파괴작업 확인)이 전부 Claude 경로의 `--system-prompt`/`--disallowed-tools`/hook 에만 배선돼 있었다. Codex CLI / Gemini CLI 는 해당 인자가 없어 시스템 지침을 한 글자도 못 받았고(메모리 블록만 수신, Codex resume 턴은 그조차 누락), flag OFF 도구도 게이트 없이 노출됐다. 수정: `buildEngineSystemText()` 가 동일 구성 요소를 stdin 프롬프트 최상단 `<kda_system>` 블록으로 주입 (Codex resume 턴은 context 보호를 위해 compact 리마인더만). REST 경로는 featureGuidance 주입 + flag OFF 도구를 카탈로그에서 하드 제거.
+
 ## [0.7.8] - 2026-06-10
 
 ### Removed

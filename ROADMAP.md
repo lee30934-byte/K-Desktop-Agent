@@ -2,6 +2,68 @@
 
 ## 완료된 Phase
 
+### ✅ Phase 137 — 멀티 에이전트 오케스트레이션 v1 (fan-out/fan-in) — 2026-06-10
+
+**문제:** "하네스 멀티 에이전트 2.0" 보강 3단계 — 같은 질문을 Claude/GPT(Codex)/Gemini 에 동시에 묻고 교차 검증된 종합 답변을 받고 싶음.
+
+**박은 것:**
+- `sidecar/src/index.ts` — `orchestrate_message {engines:[...]}` 핸들러:
+  - **fan-out**: 엔진별 sub-turn (`{id}#{engine}`) 을 기존 handleUserMessage 파이프라인으로 병렬 디스패치. resume 금지(agent_id 제거 — thread 공유 충돌 방지), 도구 호출 금지 프롬프트 잠금(동시 도구 실행 충돌 방지), 5분 타임아웃(env `KDA_ORCH_SUBTURN_TIMEOUT_MS`) + tree-kill.
+  - **emit 인터셉트**: sub-turn 이벤트를 emit() 에서 가로채 assistant_delta → `orchestrate_delta`(엔진별 카드), done/error → collector resolve + `orchestrate_status`, 그 외 swallow — frontend 의 done 핸들러가 unknown id 를 active conv 로 fallback 해 isStreaming 을 조기 해제하는 회귀를 원천 차단. collector Map 은 emit 보다 먼저 선언 (TDZ 회피).
+  - **fan-in**: partial — 1개 이상 성공이면 진행. 메인 엔진(claude 우선)이 원 질문 + 엔진별 답변(8KB 캡)을 받아 종합 — 원래 turn id 로 흐르므로 frontend 기존 흐름 그대로. 전부 실패 시 엔진별 사유와 함께 error. interrupt(mainId) → sub-turn 전부 kill + cancelled 마킹 → 종합 skip.
+  - 화이트리스트(claude/codex/gemini-cli) 미통과·2개 미만 → 일반 턴 강등 (응답은 항상 나감).
+- `lib.rs` — send_message 에 `orchestrate_engines`/`engine_api_keys` 옵션 추가, 검증 후 type 전환 (Rust 도 화이트리스트 재검증).
+- `App.tsx` — opt-in 읽기(localStorage kda_orch_enabled/kda_orch_engines) + orchestrate_delta(엔진별 의견 카드 스트리밍, `{id}-orch-{engine}`)/orchestrate_status(시작·종합 시스템 라인, 실패 카드) 핸들러. `types.ts` 이벤트 2종 추가.
+- `Settings.tsx` — "🤝 멀티 엔진 오케스트레이션 (실험)" 섹션: 토글(기본 OFF) + 엔진 3종 선택 + 2개 미만 경고.
+
+**검증:** `test-orchestration.mjs` 31항목 ✅ / sidecar tsc+build ✅ / cargo check ✅ / frontend tsc+vite ✅ / 기존 회귀 (hermes 24 + gemini 48 + codex 41) ✅.
+
+### ✅ Phase 136 — GPT(Codex)/Gemini 가 헤르메스 룰 안 따르던 근본 수정 (엔진 동등 배선) — 2026-06-10
+
+**문제:** K 보고 — v0.7.0 헤르메스 기능들을 GPT 모델이 안 따름. 진단 결과 헤르메스 기능 전부 + KDA 기본 룰이 **Claude 경로 전용 배선**: SYSTEM_PROMPT·soul.md·featureGuidance 는 `--system-prompt`, 도구 게이트는 `--disallowed-tools`, pitfall 가드는 preToolUse hook — 셋 다 Codex/Gemini CLI 에 없는 메커니즘. Codex/Gemini 는 시스템 지침을 한 글자도 못 받았고(memory_context 블록만, Codex resume 턴은 그것도 누락), flag OFF 도구(db_memory_write 등)도 노출돼 있었음.
+
+**박은 것:**
+- `buildEngineSystemText(folderSystemPrompt, agentFlags, {compact?})` — Claude 의 fullSystemPrompt 와 동일 구성(SYSTEM_PROMPT + soul + 프로젝트 지침 + featureGuidance)을 stdin 텍스트로 조립 + flag OFF 도구는 "[비활성 도구 — 호출 금지]" 블록으로 프롬프트 레벨 차단.
+- `buildPromptWithHistory` 4번째 param `systemText` → 프롬프트 최상단 `<kda_system>` 블록 (cmd.exe 8191자 인자 한계 회피 — memory 와 동일 전략).
+- Codex: bootstrap 턴 전체 주입, resume 턴은 compact 리마인더만 (thread 에 이미 있음 — pitfall_codex_model_context_window_dynamic 보호). Gemini CLI: stateless 라 매 턴 전체 주입. REST: featureGuidance 주입 + flag OFF 도구 disallowedSet 하드 제거. Claude 경로 무변경 (이중 주입 없음).
+
+**검증:** `test-hermes-parity.mjs` 24항목 (경로별 배선 + Claude 무회귀) ✅ / sidecar tsc ✅ / 기존 회귀 전부 ✅.
+
+### ✅ Phase 135 — Gemini CLI 구독 OAuth 내장 로그인 — 2026-06-10
+
+**문제:** Phase 134 의 Gemini CLI 는 API 키 없으면 "터미널에서 `gemini` 1회 수동 실행" 에 의존. K 가 "api 말고 구독 oauth 로도 구동 가능하게 해서 구현해줘" 지시. 그런데 gemini CLI 는 codex 와 달리 `login` 서브커맨드가 없고, 비대화형(-p/stdin) 모드에선 OAuth 플로우를 시작하지 못하고 FatalAuthenticationError(exit 41) 로 죽음 (번들 역분석으로 확인).
+
+**박은 것:**
+- `sidecar/src/index.ts` — `handleGeminiOauthLogin` (메시지 타입 `gemini_oauth_login`):
+  - CLI 의 `authWithWeb` 플로우를 KDA 가 직접 재현 — 127.0.0.1 임의 포트 loopback 콜백 서버 + 시스템 기본 브라우저 (rundll32, shell 파싱 없음 — URL 의 & 깨짐 방지 + pitfall_oauth_embedded_webview 준수) + state CSRF 검증 + 토큰 교환 (oauth2.googleapis.com/token).
+  - 클라이언트 ID/시크릿은 오픈소스 gemini-cli 의 공개 상수 (installed-app 타입) 재사용 → 토큰을 CLI 표준 캐시 `~/.gemini/oauth_creds.json` 에 google-auth-library Credentials 형식으로 저장 — **CLI 가 그대로 읽고 만료 시 자동 refresh + 재캐시**.
+  - `access_type=offline + prompt=consent` 로 refresh_token 항상 발급 (없으면 1시간 후 재로그인 강제). 5분 타임아웃, in-flight 가드, 진행 상황 `gemini_oauth_event` (started/done/error) emit.
+  - `handleViaGeminiCLI` 인증 체인 이중화: api_key → `GEMINI_API_KEY` / 없으면 `GOOGLE_GENAI_USE_GCA=true` 주입 (settings.json 에 auth method 미설정이어도 구독 경로 강제). 둘 다 없으면 **spawn 전 fail-fast** — Settings 의 [Google 계정으로 로그인] 버튼 안내 (헛 spawn + 워치독 대기 제거). exit 41 안내문도 버튼 기준으로 갱신.
+  - `KDA_OAUTH_NO_BROWSER` env — 스모크가 K 화면에 브라우저 탭 안 띄우고 검증 가능.
+- `src-tauri/src/lib.rs` — `gemini_login` (sidecar 트리거 thin wrapper) + `gemini_login_status` (creds 파싱 + refresh_token/미만료 access 검증 + CLI 설치 여부 — codex_login_status 의 false-positive 방지 교훈 동일 적용). generate_handler 등록.
+- `Settings.tsx` — Gemini CLI 카드에 [Google 계정으로 로그인] 버튼 + CLI/인증 상태 표시 + 3초 poll (완료 시 자동 idle 전환) — codex 블록 패턴 미러. note 문구도 내장 로그인 기준으로 갱신.
+
+**검증:** sidecar tsc ✅ / frontend tsc+vite ✅ / cargo check ✅ / 회귀 `test-gemini-integration.mjs` 48항목 (OAuth 17항목 추가) ✅ / codex 회귀 41 ✅ / **라이브 스모크 9항목** — 실제 sidecar 로 auth URL 생성·loopback 서버·state 불일치 거부·가드 해제·실제 Google endpoint 토큰 교환 시도(가짜 code 400 거부)·실패 시 creds 미생성 전부 실증 ✅.
+
+### ✅ Phase 134 — Gemini CLI 서드 엔진 통합 + Gemini REST 현행화 — 2026-06-10
+
+**문제:** K 가 "하네스 멀티 에이전트 2.0" 영상 (클로드·코덱스·제미나이 동시 제어) 보고 KDA 보강점 + Gemini CLI 사용 가능 여부 질문 → "전부 진행" 선택. 종전 KDA 는 Claude + Codex 2엔진. Gemini 는 REST 만 있고 그마저 모델 목록이 2.0/1.5 구세대 + "MCP 도구 미지원" 모순 문구 (코드는 Phase 11 G1 부터 지원).
+
+**박은 것:**
+- `sidecar/src/index.ts` — 신규 provider `"gemini-cli"`:
+  - `GEMINI_CLI` 해석 헬퍼 (env GEMINI_CLI → %APPDATA%\npm\gemini.cmd → gemini.cmd → gemini, `--version` probe — Claude/Codex 동일 패턴)
+  - `handleViaGeminiCLI` — `gemini -o stream-json --yolo --skip-trust` spawn, prompt 는 stdin (non-TTY = headless 자동, cmd.exe 8191자 한계 회피), stream-json 이벤트 (init/message delta/tool_use/tool_result/error/result) 파싱 → KDA emit 규약으로 중계. idle 워치독 + turn keepalive + long_task 이벤트 Codex 와 동일 구조.
+  - **v1 stateless 설계** — resume 안 씀, 매 turn `compactHistoryForCodexBootstrap` 재주입. pitfall_codex_resume_orphan_thread_crash 를 구조적으로 회피. session_id 는 done.agentId 로 기록만 (v2 resume 대비).
+  - 인증: `msg.api_key` (Settings 의 Gemini REST 키 재사용) → `GEMINI_API_KEY` env 주입. 없으면 ~/.gemini OAuth 캐시. 둘 다 없으면 exit 41 → "Settings 에 키 입력 또는 gemini 1회 OAuth" 친절 안내로 변환 (라이브 스모크로 검증).
+  - `ensureGeminiCliMcpRegistered` — ~/.gemini/settings.json 의 mcpServers 에 k-personal best-effort 등록 (parse 불가 시 기존 파일 보존 + skip).
+  - `defaultModelFor`: gemini REST → `gemini-2.5-flash` 로 현행화, gemini-cli → `"default"`.
+- `Settings.tsx` — Gemini REST 카드 현행화 (2.5 세대 + 3 preview, 모순 문구 → "MCP 도구 사용 가능") + 신규 Gemini CLI 카드 (noKeyRequired, 인증 2경로 안내). 활성 모델 푸터의 "REST = 텍스트 전용" 거짓 문구도 정정.
+- `App.tsx` — 키 폴백 3 site (send/buildSendSettings/Resume): `gemini-cli` 인데 키 없으면 `keys["gemini"]` 재사용. 컨텍스트 분모에 gemini-cli default = 1M 분기 (200K fallback 오인 방지).
+- `types.ts` ProviderId + sidecar Provider + emitTurnHeartbeat 에 `"gemini-cli"` 추가.
+- `sidecar/test-gemini-integration.mjs` — 회귀 32항목 (분기/인자/키폴백 3site/stateless 정책/stats 매핑 sanity). 전부 통과 + 기존 codex 회귀 41항목도 통과.
+
+**검증:** sidecar tsc ✅ / frontend tsc+vite ✅ / 회귀 32+41 ✅ / 라이브 스모크 (sidecar spawn → gemini-cli turn → 인증 안내 error 경로) ✅ / ~/.gemini/settings.json 에 k-personal 자동 등록 확인 ✅.
+
 ### ✅ Phase 113.3 — 성능 모드 토글 (균형/빠른) + default 보수화 (B + C) — 2026-06-01
 
 **문제:** K 가 Phase 113.2 의 trim 이 답변 질에 영향 줄 수 있는지 질문. 솔직 분석 후 K 가 "B 모드로 해서 C 기능을 넣자" 선택 — default 를 보수적 (균형) 으로 + Settings 토글로 빠른 모드도 가능.

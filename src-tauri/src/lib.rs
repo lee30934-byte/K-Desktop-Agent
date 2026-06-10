@@ -235,12 +235,31 @@ async fn send_message(
     // Phase 107 — 폴더 첨부 reference (절대 경로). 새 대화 첫 message 일 때만 박힘.
     // sidecar 는 path 를 prompt 의 "참고 파일" 블록에 안내. Claude CLI 가 Read 로 읽음.
     folder_attachment_paths: Option<Vec<String>>,
+    // Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션. 엔진 2개 이상이면
+    // type=orchestrate_message 로 전환 → sidecar 가 fan-out/fan-in. 화이트리스트만 통과.
+    // (JS 측 `orchestrateEngines` → Tauri 케이스 변환으로 수신)
+    orchestrate_engines: Option<Vec<String>>,
+    // Phase 137 — 엔진별 API 키 (현재 gemini-cli 만 의미). JS `engineApiKeys`.
+    engine_api_keys: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    // Phase 137 — 오케스트레이션 엔진 화이트리스트 검증. 2개 이상이면 orchestrate_message.
+    let orch: Vec<String> = orchestrate_engines
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e == "claude" || e == "codex" || e == "gemini-cli")
+        .collect();
+    let msg_type = if orch.len() >= 2 { "orchestrate_message" } else { "user_message" };
     let mut payload = serde_json::json!({
-        "type": "user_message",
+        "type": msg_type,
         "id": id,
         "content": message,
     });
+    if orch.len() >= 2 {
+        payload["engines"] = serde_json::json!(orch);
+        if let Some(keys) = engine_api_keys {
+            payload["engineApiKeys"] = keys;
+        }
+    }
     // agent_id가 있으면 resume 지원을 위해 추가
     if let Some(aid) = agent_id {
         payload["agent_id"] = serde_json::Value::String(aid);
@@ -2502,6 +2521,84 @@ async fn codex_login_status() -> Result<CodexLoginStatus, String> {
     })
 }
 
+// ────────── Phase 135 — Gemini CLI 구독 OAuth 내장 로그인 ──────────
+//
+// gemini CLI 는 codex 와 달리 `login` 서브커맨드가 없어 백그라운드 spawn 으론 못 푼다.
+// 실제 OAuth 플로우 (loopback 콜백 서버 + 토큰 교환 + ~/.gemini/oauth_creds.json 캐시) 는
+// sidecar (Node) 가 수행 — 여기는 sidecar stdin 으로 트리거를 흘리는 thin wrapper 와
+// 상태 조회 (creds 파일 검사) 만 담당. 브라우저는 sidecar 가 시스템 기본 브라우저로 연다
+// (pitfall_oauth_embedded_webview — embedded webview 금지).
+
+/// Gemini CLI 가 PATH 에 있는지 (codex_cli_path 와 동일 패턴).
+fn gemini_cli_path() -> Option<String> {
+    let appdata = std::env::var("APPDATA").ok()?;
+    let candidates = [
+        format!("{}/npm/gemini.cmd", appdata),
+        format!("{}/npm/gemini.ps1", appdata),
+    ];
+    candidates
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+}
+
+/// 구독 OAuth 로그인 시작 — sidecar 가 loopback 서버 + 시스템 브라우저 + 토큰 캐시 수행.
+/// 즉시 반환. 진행 상황은 gemini_login_status 로 poll.
+#[tauri::command]
+async fn gemini_login() -> Result<(), String> {
+    log_lifecycle("runtime.log", "gemini_login → sidecar gemini_oauth_login");
+    send_to_sidecar(serde_json::json!({ "type": "gemini_oauth_login" })).await
+}
+
+#[derive(Clone, serde::Serialize)]
+struct GeminiLoginStatus {
+    authenticated: bool,
+    cli_available: bool,
+    auth_path: String,
+}
+
+/// Gemini 인증 상태 — Settings UI 가 poll 해서 표시.
+/// authenticated = CLI 설치됨 + oauth_creds.json 파싱 가능 + refresh_token 또는
+/// 미만료 access_token 존재 (codex_login_status 의 false-positive 방지 교훈 동일 적용).
+#[tauri::command]
+async fn gemini_login_status() -> Result<GeminiLoginStatus, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    let creds = std::path::Path::new(&home).join(".gemini").join("oauth_creds.json");
+    let cli_available = gemini_cli_path().is_some();
+    let creds_valid = std::fs::read_to_string(&creds)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .map(|v| {
+            let has_refresh = v
+                .get("refresh_token")
+                .and_then(|t| t.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            if has_refresh {
+                return true;
+            }
+            // refresh 없으면 access_token 미만료 여부로 판정
+            let has_access = v
+                .get("access_token")
+                .and_then(|t| t.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            let expiry = v.get("expiry_date").and_then(|e| e.as_f64()).unwrap_or(0.0);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as f64)
+                .unwrap_or(f64::MAX);
+            has_access && (expiry == 0.0 || expiry > now_ms + 60_000.0)
+        })
+        .unwrap_or(false);
+    Ok(GeminiLoginStatus {
+        authenticated: cli_available && creds_valid,
+        cli_available,
+        auth_path: creds.to_string_lossy().to_string(),
+    })
+}
+
 // ────────── Phase 15.5 — Codex Usage API ──────────
 //
 // `https://chatgpt.com/backend-api/codex/usage` 는 ChatGPT 백엔드의 비공식 endpoint.
@@ -3801,6 +3898,9 @@ pub fn run_with_options(start_minimized: bool) {
             codex_login_status,
             codex_register_mcp,
             codex_fetch_usage,
+            // Phase 135 — Gemini CLI 구독 OAuth 내장 로그인
+            gemini_login,
+            gemini_login_status,
             // Phase 127 (v0.6.82) — 텔레그램 봇 브리지 (폰에서 KDA 원격)
             telegram_get_updates,
             telegram_send_message,
