@@ -97,6 +97,10 @@ export async function initDB(): Promise<Database> {
   // attachments_json = FolderAttachment[] 의 JSON. 빈 array 면 null 또는 "[]" 저장 가능.
   try { await db.execute(`ALTER TABLE folders ADD COLUMN system_prompt TEXT`); } catch {}
   try { await db.execute(`ALTER TABLE folders ADD COLUMN attachments_json TEXT`); } catch {}
+  // Phase 138 (v0.7.10) — #3 대화별 프로젝트 모드: 폴더(프로젝트)별 격리 프로필 JSON.
+  // ProjectProfile { name?, forbiddenTools?[], memoryTags?[], defaultPath? } 직렬화.
+  // agent-flags.json 의 projectMode 가 ON 일 때만 sidecar 가 enforce (OFF 면 무시 → 종전 동작).
+  try { await db.execute(`ALTER TABLE folders ADD COLUMN project_profile_json TEXT`); } catch {}
   // Phase 109 (v0.6.58) — conv 별 "마지막으로 폴더 첨부 박은 폴더 ID" 추적.
   // send 시점에 last_attached_folder_id !== 현재 folder_id 이면 attach 다시 박음.
   // - 새 대화 (null vs X) → attach
@@ -412,6 +416,21 @@ export interface DBFolder {
   // Phase 107 (v0.6.56) — 프로젝트 지침 + 첨부 reference
   system_prompt: string | null;
   attachments_json: string | null;
+  // Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필 JSON (없으면 null)
+  project_profile_json: string | null;
+}
+
+// Phase 138 (v0.7.10) — #3 대화별 프로젝트 모드.
+// 폴더(프로젝트)에 부여하는 스코프 격리 규칙. 모든 필드 optional.
+//   - name:           프로젝트 표시 이름 (sidecar 시스템 텍스트에 명시)
+//   - forbiddenTools: 이 프로젝트에서 금지할 도구 풀네임 (sidecar 가 disallowed 병합)
+//   - memoryTags:     로딩 허용 메모리 태그 (memory/*.md 의 `projects:` 와 교집합만 로딩)
+//   - defaultPath:    기본 작업 경로 안내
+export interface ProjectProfile {
+  name?: string;
+  forbiddenTools?: string[];
+  memoryTags?: string[];
+  defaultPath?: string;
 }
 
 // Phase 107 — 폴더에 등록된 reference 파일 (절대 경로 + display name + meta).
@@ -435,6 +454,8 @@ export interface FolderRecord {
   // Phase 107
   systemPrompt: string | null;
   attachments: FolderAttachment[];
+  // Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필 (없으면 null)
+  projectProfile: ProjectProfile | null;
 }
 
 function parseFolderAttachments(raw: string | null | undefined): FolderAttachment[] {
@@ -457,6 +478,30 @@ function parseFolderAttachments(raw: string | null | undefined): FolderAttachmen
   }
 }
 
+// Phase 138 (v0.7.10) — project_profile_json 파싱 (방어적 normalize).
+// 잘못된 형태면 null 반환 (pitfall_js_arg_type_silent_throw 회피 — throw 안 함).
+function parseProjectProfile(raw: string | null | undefined): ProjectProfile | null {
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw);
+    if (!p || typeof p !== "object") return null;
+    const strArr = (v: unknown): string[] | undefined =>
+      Array.isArray(v)
+        ? v.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => x.trim())
+        : undefined;
+    const out: ProjectProfile = {};
+    if (typeof p.name === "string" && p.name.trim()) out.name = p.name.trim();
+    if (typeof p.defaultPath === "string" && p.defaultPath.trim()) out.defaultPath = p.defaultPath.trim();
+    const ft = strArr(p.forbiddenTools);
+    if (ft && ft.length > 0) out.forbiddenTools = ft;
+    const mt = strArr(p.memoryTags);
+    if (mt && mt.length > 0) out.memoryTags = mt;
+    return Object.keys(out).length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 function rowToFolder(row: DBFolder): FolderRecord {
   return {
     id: row.id,
@@ -468,6 +513,7 @@ function rowToFolder(row: DBFolder): FolderRecord {
     createdAt: row.created_at,
     systemPrompt: row.system_prompt ?? null,
     attachments: parseFolderAttachments(row.attachments_json),
+    projectProfile: parseProjectProfile(row.project_profile_json),
   };
 }
 
@@ -509,6 +555,7 @@ export async function createFolder(
     createdAt: now,
     systemPrompt: null,
     attachments: [],
+    projectProfile: null,
   };
 }
 
@@ -551,6 +598,35 @@ export async function updateFolderInstructions(
   await database.execute(
     `UPDATE folders SET system_prompt = ?, attachments_json = ? WHERE id = ?`,
     [normalizedPrompt, attachmentsJson, id],
+  );
+}
+
+// Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필 갱신.
+// null/빈 프로필이면 column 을 null 로 저장 (UI 표시 단순화).
+export async function updateFolderProjectProfile(
+  id: string,
+  profile: ProjectProfile | null,
+): Promise<void> {
+  const database = await initDB();
+  // 빈 필드 제거 후 남는 게 없으면 null 저장
+  let json: string | null = null;
+  if (profile) {
+    const cleaned: ProjectProfile = {};
+    if (profile.name && profile.name.trim()) cleaned.name = profile.name.trim();
+    if (profile.defaultPath && profile.defaultPath.trim()) cleaned.defaultPath = profile.defaultPath.trim();
+    const ft = Array.isArray(profile.forbiddenTools)
+      ? profile.forbiddenTools.filter((t) => typeof t === "string" && t.trim()).map((t) => t.trim())
+      : [];
+    if (ft.length > 0) cleaned.forbiddenTools = ft;
+    const mt = Array.isArray(profile.memoryTags)
+      ? profile.memoryTags.filter((t) => typeof t === "string" && t.trim()).map((t) => t.trim())
+      : [];
+    if (mt.length > 0) cleaned.memoryTags = mt;
+    if (Object.keys(cleaned).length > 0) json = JSON.stringify(cleaned);
+  }
+  await database.execute(
+    `UPDATE folders SET project_profile_json = ? WHERE id = ?`,
+    [json, id],
   );
 }
 

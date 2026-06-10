@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "version:check": "node scripts/release-version-guard.mjs check",
     "release:guard": "node scripts/release-version-guard.mjs release",
+    "release:gate": "node scripts/release-gate.mjs",
+    "release:gate:fast": "node scripts/release-gate.mjs --fast",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

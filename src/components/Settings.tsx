@@ -1300,6 +1300,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     memoryWrite: false,
     schedule: false,
     skillRegistry: false,
+    projectMode: false,
   });
   const [agentFlagBusy, setAgentFlagBusy] = useState<string | null>(null);
   const [soulStatus, setSoulStatus] = useState<{ exists: boolean; bytes: number } | null>(null);
@@ -2204,6 +2205,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           memoryWrite: !!f?.memoryWrite,
           schedule: !!f?.schedule,
           skillRegistry: !!f?.skillRegistry,
+          projectMode: !!f?.projectMode,
         });
       })
       .catch((err) => console.error("get_agent_flags failed:", err));
@@ -3475,6 +3477,12 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     title: "스킬 import",
                     desc: "db_skill_scan/import 도구 활성 — 외부 SKILL.md 5겹 검증 후 K 승인 시에만 설치.",
                     risk: "중간",
+                  },
+                  {
+                    key: "projectMode",
+                    title: "프로젝트 모드 (#3)",
+                    desc: "폴더(프로젝트)에 부여한 프로필(금지 도구·메모리 태그·기본 경로)을 enforce — 대화별 스코프 격리. 폴더 우클릭→프로젝트 지침에서 프로필 설정.",
+                    risk: "낮음",
                   },
                 ].map((feat) => (
                   <div

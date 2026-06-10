@@ -235,6 +235,10 @@ async fn send_message(
     // Phase 107 — 폴더 첨부 reference (절대 경로). 새 대화 첫 message 일 때만 박힘.
     // sidecar 는 path 를 prompt 의 "참고 파일" 블록에 안내. Claude CLI 가 Read 로 읽음.
     folder_attachment_paths: Option<Vec<String>>,
+    // Phase 138 (v0.7.10) — #3 대화별 프로젝트 모드 프로필.
+    // { name?, forbiddenTools?[], memoryTags?[], defaultPath? } (JS `projectProfile`).
+    // sidecar 가 agent-flags.json 의 projectMode ON 일 때만 enforce.
+    project_profile: Option<serde_json::Value>,
     // Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션. 엔진 2개 이상이면
     // type=orchestrate_message 로 전환 → sidecar 가 fan-out/fan-in. 화이트리스트만 통과.
     // (JS 측 `orchestrateEngines` → Tauri 케이스 변환으로 수신)
@@ -314,6 +318,13 @@ async fn send_message(
     if let Some(paths) = folder_attachment_paths {
         if !paths.is_empty() {
             payload["folderAttachmentPaths"] = serde_json::json!(paths);
+        }
+    }
+    // Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필 전달 (object 이면 그대로).
+    // sidecar 는 projectProfile 키로 읽음 (projectMode flag OFF 면 무시).
+    if let Some(profile) = project_profile {
+        if profile.is_object() {
+            payload["projectProfile"] = profile;
         }
     }
     let line = format!("{}\n", payload);
@@ -2989,16 +3000,17 @@ async fn set_sidecar_config_flag(
 // ────────── Agent feature flags (v0.7.1 — 실험 기능 토글 UI) ──────────
 //
 // sidecar 가 turn spawn 시 읽는 ~/.kda/agent-flags.json 의 한 키만 partial-update.
-// 5개 키: nudge / failureCapture / memoryWrite / schedule / skillRegistry (전부 기본 false).
+// 6개 키: nudge / failureCapture / memoryWrite / schedule / skillRegistry / projectMode (전부 기본 false).
 // 효과는 다음 turn 부터 — sidecar 의 loadAgentFlags() 가 메시지마다 mtime 캐시로 재로드.
 // BOM 없는 UTF-8 write (Rust std::fs::write 는 raw bytes — pitfall_powershell_secret_bom 무관).
 
-const AGENT_FLAG_KEYS: [&str; 5] = [
+const AGENT_FLAG_KEYS: [&str; 6] = [
     "nudge",
     "failureCapture",
     "memoryWrite",
     "schedule",
     "skillRegistry",
+    "projectMode",
 ];
 
 fn agent_flags_path() -> Result<PathBuf, String> {

@@ -59,6 +59,9 @@ import {
   // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부
   getFolderById,
   updateFolderInstructions,
+  // Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필
+  updateFolderProjectProfile,
+  type ProjectProfile,
   type FolderRecord,
   type FolderAttachment,
   // Phase 109 (v0.6.58) — 폴더 첨부 invalidation
@@ -462,11 +465,17 @@ export default function App() {
   });
 
   const handleSaveFolderInstructions = useStableCallback(
-    async (systemPrompt: string | null, attachments: FolderAttachment[]) => {
+    async (
+      systemPrompt: string | null,
+      attachments: FolderAttachment[],
+      projectProfile: ProjectProfile | null,
+    ) => {
       if (!folderInstructionsDialog) return;
       const folderId = folderInstructionsDialog.id;
       try {
         await updateFolderInstructions(folderId, systemPrompt, attachments);
+        // Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필도 함께 저장.
+        await updateFolderProjectProfile(folderId, projectProfile);
         // Phase 110 (v0.6.59) — 그 폴더 안 conv 들의 lastAttachedFolderId reset.
         // 다음 send 에서 lastAttachedFolderId (null) !== folderId (X) 으로 mismatch →
         // 새 첨부 자동 박힘. systemPrompt 만 바꿨어도 reset 되지만 토큰 비용 acceptable.
@@ -2435,6 +2444,9 @@ export default function App() {
       let folderSystemPrompt: string | undefined;
       let folderAttachmentPaths: string[] | undefined;
       let didAttachFolderId: string | null = null; // 박은 직후 DB 갱신용
+      // Phase 138 (v0.7.10) — #3 프로젝트 모드: 폴더에 부여된 프로필을 매 turn 전달.
+      // sidecar 가 agent-flags.json 의 projectMode ON 일 때만 enforce (OFF 면 무시).
+      let projectProfile: ProjectProfile | undefined;
       if (convId) {
         try {
           const conv = conversations.find((c) => c.id === convId);
@@ -2442,6 +2454,9 @@ export default function App() {
             const folder = await getFolderById(conv.folderId);
             if (folder?.systemPrompt && folder.systemPrompt.trim()) {
               folderSystemPrompt = folder.systemPrompt;
+            }
+            if (folder?.projectProfile) {
+              projectProfile = folder.projectProfile;
             }
             const shouldAttach =
               (conv.lastAttachedFolderId ?? null) !== conv.folderId &&
@@ -2508,6 +2523,7 @@ export default function App() {
         safeMode,
         folderSystemPrompt,
         folderAttachmentPaths,
+        projectProfile,
         orchestrateEngines,
         engineApiKeys,
       });

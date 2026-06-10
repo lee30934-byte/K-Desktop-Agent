@@ -41,6 +41,13 @@ jobs:
         shell: pwsh
         run: npm run release:guard -- ${{ github.ref_name }}
 
+      - name: Release gate (fast — static checks + regression)
+        # Phase 139 (#8) — 릴리스 전 자동 게이트. webview 캐시 메타, 금지 의존성/삭제
+        # 기능 재유입, 회귀테스트 일괄을 빌드 전에 한 번에 강제한다. 빌드/cargo 는 아래
+        # tauri-action 이 어차피 돌리므로 --fast 로 중복 생략. 정적 게이트는 deps 불필요.
+        shell: pwsh
+        run: npm run release:gate:fast
+
       - name: Build sidecar
         # Phase 120 (v0.6.75) — 업데이트 다운로드 다이어트.
         # tsc 컴파일이 끝난 뒤(dist/ 생성) devDependencies(typescript/tsx/@esbuild/@types 등 ~37MB)를

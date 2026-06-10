@@ -8,14 +8,42 @@
 // 새 대화가 이 폴더에 속한 채 첫 message 송신될 때 sidecar 가 자동 inject.
 
 import { useEffect, useState, useCallback, memo } from "react";
+import type { CSSProperties } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { FolderRecord, FolderAttachment } from "../db";
+import type { FolderRecord, FolderAttachment, ProjectProfile } from "../db";
 
 interface Props {
   folder: FolderRecord;
   onClose: () => void;
-  onSave: (systemPrompt: string | null, attachments: FolderAttachment[]) => Promise<void> | void;
+  onSave: (
+    systemPrompt: string | null,
+    attachments: FolderAttachment[],
+    // Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필 (null 이면 미설정)
+    projectProfile: ProjectProfile | null,
+  ) => Promise<void> | void;
 }
+
+// Phase 138 — 줄/콤마 구분 문자열 → 정규화된 배열.
+function splitLines(s: string): string[] {
+  return s
+    .split(/[\n,]/)
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0);
+}
+
+// Phase 138 — 프로젝트 프로필 입력 공통 스타일.
+const inputStyle: CSSProperties = {
+  width: "100%",
+  padding: "8px 10px",
+  fontFamily: "inherit",
+  fontSize: 12,
+  lineHeight: 1.5,
+  background: "var(--bg-1, #0a0e18)",
+  border: "1px solid var(--border-dim, #1d2540)",
+  borderRadius: 6,
+  color: "var(--text, #e8eaff)",
+  boxSizing: "border-box",
+};
 
 function basenameOf(p: string): string {
   // Windows 경로 둘 다 처리
@@ -37,6 +65,17 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
   );
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필 필드.
+  const pp = folder.projectProfile;
+  const [projName, setProjName] = useState<string>(pp?.name ?? "");
+  const [projDefaultPath, setProjDefaultPath] = useState<string>(pp?.defaultPath ?? "");
+  const [projForbidden, setProjForbidden] = useState<string>(
+    Array.isArray(pp?.forbiddenTools) ? pp!.forbiddenTools!.join("\n") : "",
+  );
+  const [projMemoryTags, setProjMemoryTags] = useState<string>(
+    Array.isArray(pp?.memoryTags) ? pp!.memoryTags!.join(", ") : "",
+  );
 
   // ESC 로 닫기
   useEffect(() => {
@@ -84,14 +123,23 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
     setSaving(true);
     setErrorMsg(null);
     try {
-      await onSave(prompt.trim() ? prompt : null, attachments);
+      // Phase 138 — 채워진 필드만 모아 ProjectProfile 구성 (전부 비면 null).
+      const profile: ProjectProfile = {};
+      if (projName.trim()) profile.name = projName.trim();
+      if (projDefaultPath.trim()) profile.defaultPath = projDefaultPath.trim();
+      const ft = splitLines(projForbidden);
+      if (ft.length > 0) profile.forbiddenTools = ft;
+      const mt = splitLines(projMemoryTags);
+      if (mt.length > 0) profile.memoryTags = mt;
+      const profileOrNull = Object.keys(profile).length > 0 ? profile : null;
+      await onSave(prompt.trim() ? prompt : null, attachments, profileOrNull);
       onClose();
     } catch (err) {
       console.error("[FolderInstructionsDialog] 저장 실패:", err);
       setErrorMsg(`저장 실패: ${err instanceof Error ? err.message : String(err)}`);
       setSaving(false);
     }
-  }, [prompt, attachments, onSave, onClose]);
+  }, [prompt, attachments, projName, projDefaultPath, projForbidden, projMemoryTags, onSave, onClose]);
 
   return (
     <div
@@ -305,6 +353,84 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
             >
               + 파일 추가…
             </button>
+          </div>
+
+          {/* Phase 138 (v0.7.10) — #3 프로젝트 모드 프로필 */}
+          <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border-dim, #1d2540)" }}>
+            <label
+              style={{
+                display: "block",
+                fontSize: 12,
+                fontWeight: 600,
+                marginBottom: 4,
+                color: "var(--accent, #66ccff)",
+              }}
+            >
+              프로젝트 모드 프로필 (#3)
+            </label>
+            <div style={{ fontSize: 10, opacity: 0.55, marginBottom: 10, lineHeight: 1.5 }}>
+              설정 → 실험 기능에서 <b>프로젝트 모드</b>가 ON 일 때만 적용됩니다 (OFF 면 무시).
+              이 프로젝트의 대화에 스코프 격리(금지 도구·메모리 범위·기본 경로)를 강제합니다.
+            </div>
+
+            {/* 프로젝트 이름 */}
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 4 }}>프로젝트 이름</div>
+              <input
+                type="text"
+                value={projName}
+                onChange={(e) => setProjName(e.target.value)}
+                disabled={saving}
+                placeholder={folder.name}
+                spellCheck={false}
+                style={inputStyle}
+              />
+            </div>
+
+            {/* 기본 작업 경로 */}
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 4 }}>기본 작업 경로</div>
+              <input
+                type="text"
+                value={projDefaultPath}
+                onChange={(e) => setProjDefaultPath(e.target.value)}
+                disabled={saving}
+                placeholder="예) C:/Users/user/Documents/트레이딩봇"
+                spellCheck={false}
+                style={inputStyle}
+              />
+            </div>
+
+            {/* 금지 도구 */}
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 4 }}>
+                금지 도구 (한 줄에 하나 — 도구 풀네임)
+              </div>
+              <textarea
+                value={projForbidden}
+                onChange={(e) => setProjForbidden(e.target.value)}
+                disabled={saving}
+                placeholder={"예)\nmcp__k-personal__fm_move_file\nmcp__k-personal__app_kill\nBash"}
+                spellCheck={false}
+                style={{ ...inputStyle, minHeight: 70, resize: "vertical", fontFamily: "monospace" }}
+              />
+            </div>
+
+            {/* 메모리 태그 */}
+            <div>
+              <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 4 }}>
+                메모리 범위 태그 (콤마 구분 — memory/*.md 의 projects: 와 매칭)
+              </div>
+              <input
+                type="text"
+                value={projMemoryTags}
+                onChange={(e) => setProjMemoryTags(e.target.value)}
+                disabled={saving}
+                placeholder="예) trading, 5080"
+                spellCheck={false}
+                style={inputStyle}
+              />
+            </div>
           </div>
 
           {errorMsg && (

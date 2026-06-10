@@ -27,8 +27,8 @@ console.log("Phase 136 — Hermes 엔진 동등 배선 회귀 테스트\n");
 // ── 1. 공유 헬퍼 ─────────────────────────────────────────────────────────
 console.log("[1] buildEngineSystemText 헬퍼");
 check("buildEngineSystemText 함수 존재", /function buildEngineSystemText\(/.test(src));
-check("SYSTEM_PROMPT + soul + folder + featureGuidance + gatedNotice 조립",
-  /return SYSTEM_PROMPT \+ soulBlock \+ folderBlock \+ featureGuidance \+ gatedNotice;/.test(src));
+check("SYSTEM_PROMPT + soul + folder + projectProfile + featureGuidance + gatedNotice 조립",
+  /return SYSTEM_PROMPT \+ soulBlock \+ folderBlock \+ projectProfileBlock \+ featureGuidance \+ gatedNotice;/.test(src));
 check("compact 모드 (Codex resume 리마인더) 존재", /opts\?\.compact/.test(src) && /KDA 룰 리마인더/.test(src));
 check("게이트 도구 호출 금지 블록", /\[비활성 도구 — 호출 금지\]/.test(src));
 check("flagGatedDisallowed 를 게이트 목록 소스로 사용",
@@ -45,8 +45,8 @@ check("history 있을 때도 systemBlock prepend", /return systemBlock \+ memory
 console.log("\n[3] Codex 경로 (handleViaCodexCLI)");
 const codexBody = src.slice(src.indexOf("async function handleViaCodexCLI"), src.indexOf("async function handleViaGeminiCLI"));
 check("codexAgentFlags = loadAgentFlags()", /const codexAgentFlags = loadAgentFlags\(\);/.test(codexBody));
-check("codexSystemText = buildEngineSystemText(... compact: !!effectiveAgentId)",
-  /buildEngineSystemText\(msg\.folderSystemPrompt, codexAgentFlags, \{\s*compact: !!effectiveAgentId,\s*\}\)/.test(codexBody));
+check("codexSystemText = buildEngineSystemText(... compact + projectProfile)",
+  /buildEngineSystemText\(msg\.folderSystemPrompt, codexAgentFlags, \{\s*compact: !!effectiveAgentId,\s*projectProfile: msg\.projectProfile,\s*\}\)/.test(codexBody));
 check("resume 분기에도 systemText 전달",
   /buildPromptWithHistory\(baseContent, undefined, undefined, codexSystemText\)/.test(codexBody));
 check("bootstrap 분기에도 systemText 전달",
@@ -57,8 +57,8 @@ check("로그에 systemBytes 기록", /systemBytes=\$\{Buffer\.byteLength\(codex
 console.log("\n[4] Gemini CLI 경로 (handleViaGeminiCLI)");
 const geminiBody = src.slice(src.indexOf("async function handleViaGeminiCLI"), src.indexOf("async function handleViaRestAPI"));
 check("geminiAgentFlags = loadAgentFlags()", /const geminiAgentFlags = loadAgentFlags\(\);/.test(geminiBody));
-check("geminiSystemText = buildEngineSystemText(...)",
-  /const geminiSystemText = buildEngineSystemText\(msg\.folderSystemPrompt, geminiAgentFlags\);/.test(geminiBody));
+check("geminiSystemText = buildEngineSystemText(... projectProfile)",
+  /const geminiSystemText = buildEngineSystemText\(msg\.folderSystemPrompt, geminiAgentFlags, \{\s*projectProfile: msg\.projectProfile,\s*\}\);/.test(geminiBody));
 check("buildPromptWithHistory 에 geminiSystemText 전달",
   /buildPromptWithHistory\(\s*baseContent,\s*bootstrapHistory,\s*memory\.content,\s*geminiSystemText,\s*\)/.test(geminiBody));
 check("로그에 systemBytes 기록", /systemBytes=\$\{Buffer\.byteLength\(geminiSystemText/.test(geminiBody));
@@ -67,16 +67,16 @@ check("로그에 systemBytes 기록", /systemBytes=\$\{Buffer\.byteLength\(gemin
 console.log("\n[5] REST 경로 (handleViaRestAPI)");
 const restBody = src.slice(src.indexOf("async function handleViaRestAPI"));
 check("restAgentFlags = loadAgentFlags()", /const restAgentFlags = loadAgentFlags\(\);/.test(restBody));
-check("restSystemPrompt 에 featureGuidance 포함",
-  /SYSTEM_PROMPT_REST \+ restSoulBlock \+ restFeatureGuidance \+ memory\.content/.test(restBody));
+check("restSystemPrompt 에 featureGuidance + projectBlock 포함",
+  /SYSTEM_PROMPT_REST \+ restSoulBlock \+ restFeatureGuidance \+ restProjectBlock \+ memory\.content/.test(restBody));
 check("disallowedSet 에 flagGatedDisallowed 하드 차단",
   /new Set\(\[\s*\.\.\.permFlags\.disallowed,\s*\.\.\.flagGatedDisallowed\(restAgentFlags\),\s*\]\)/.test(restBody));
 
 // ── 6. Claude 경로 무회귀 ───────────────────────────────────────────────
 console.log("\n[6] Claude 경로 무회귀");
 const claudeBody = src.slice(src.indexOf("async function handleViaClaudeCLI"), src.indexOf("async function handleViaCodexCLI"));
-check("Claude 의 fullSystemPrompt 조립 유지",
-  /SYSTEM_PROMPT \+ soulBlock \+ folderInstructionBlock \+ askGuidance \+ manualGuidance \+ featureGuidance/.test(claudeBody));
+check("Claude 의 fullSystemPrompt 조립 유지 (+ projectProfileBlock)",
+  /SYSTEM_PROMPT \+ soulBlock \+ folderInstructionBlock \+ projectProfileBlock \+ askGuidance \+ manualGuidance \+ featureGuidance/.test(claudeBody));
 check("Claude 의 --disallowed-tools 게이트 유지", /--disallowed-tools/.test(claudeBody));
 check("Claude 경로는 buildPromptWithHistory 에 systemText 미전달 (이중 주입 방지)",
   !/buildPromptWithHistory\([^)]*SystemText\)/.test(claudeBody));
