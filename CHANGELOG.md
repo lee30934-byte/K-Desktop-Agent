@@ -5,7 +5,7 @@
 
 ## [Unreleased]
 
-## [0.7.5] - 2026-06-10
+## [0.7.6] - 2026-06-10
 
 ### Added
 - Claude Fable 5 (`claude-fable-5`) is now available in both Claude Code (Max OAuth) and Anthropic API provider model pickers.
@@ -14,6 +14,9 @@
 - PDF attachments are now text-extracted in the sidecar before Claude/Codex launch. Extracted text is appended to the prompt while the original file path remains available for manual Read checks.
 - Added `scripts/extract-pdf-text.ps1` and `sidecar/src/pdf-extract-cli.ts` for standalone PDF text extraction.
 - Added `scripts/smoke-pdf-extraction.ps1`, covering two different PDF layouts and verifying extracted prompt text plus temp attachment cleanup. The release confidence pipeline now runs this smoke.
+
+### Fixed
+- **PDF smoke가 CI(pwsh7+Node20)에서만 멈추던 릴리스 차단 버그**: PowerShell 7의 `StreamWriter.WriteLine`+`Flush()`가 stdin 라인을 `Close()` 시점까지 버퍼링 → 사이드카가 라인+EOF를 동시에 받아 `rl.on("close")` → `process.exit(0)`가 진행 중인 비동기 턴을 죽였다. 스모크 하니스가 BOM 없는 raw UTF-8 바이트+`\n`을 `StandardInput.BaseStream`에 직접 써서 즉시 전달하도록 수정(PowerShell 에디션 무관). v0.7.5 릴리스 빌드 실패의 근본 원인이었다.
 
 ---
 
