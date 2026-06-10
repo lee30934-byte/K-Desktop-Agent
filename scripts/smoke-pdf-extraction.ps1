@@ -157,6 +157,8 @@ $psi.Arguments              = '"' + $entryPath + '"'
 $psi.EnvironmentVariables['CLAUDE_CLI'] = $stubPath
 $psi.EnvironmentVariables['KDA_SMOKE_CAPTURE'] = $capturePath
 $psi.EnvironmentVariables['PDF2JSON_DISABLE_LOGS'] = '1'
+# stdin 수신/디스패치 추적을 sidecar stdout 으로 흘림 — 실패 시 어디서 멈췄는지 stdout tail 로 즉시 진단.
+$psi.EnvironmentVariables['KDA_STDIN_TRACE'] = '1'
 
 $proc = [System.Diagnostics.Process]::Start($psi)
 Write-SmokeStep "sidecar PID $($proc.Id)"
@@ -185,8 +187,14 @@ $payload = @{
 } | ConvertTo-Json -Compress -Depth 6
 
 Write-SmokeStep "inject id=$smokeId"
-$proc.StandardInput.WriteLine($payload)
-$proc.StandardInput.Flush()
+# pwsh7(StreamWriter)는 PS5.1과 달리 WriteLine+Flush 가 즉시 파이프로 안 밀어내고
+# (UTF-8 BOM preamble + 내부 버퍼링) Close() 시점에야 한 줄+EOF 를 동시에 흘리는 일이 있다.
+# 그러면 sidecar 가 라인을 받자마자 rl.on("close") 의 process.exit(0) 가 in-flight turn 을
+# 즉사시켜 진단 라인/프롬프트 마커가 안 나온다(CI-only hang). BaseStream 에 BOM 없는 raw
+# UTF-8 + "`n" 을 직접 써서 flush — PowerShell 에디션 무관하게 즉시 전달 보장.
+$stdinBytes = [System.Text.Encoding]::UTF8.GetBytes($payload + "`n")
+$proc.StandardInput.BaseStream.Write($stdinBytes, 0, $stdinBytes.Length)
+$proc.StandardInput.BaseStream.Flush()
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $diagLine = $null
@@ -233,8 +241,12 @@ try {
             }
             if (Test-Path $attDir) {
                 $interrupt = @{ type = 'interrupt'; id = $smokeId } | ConvertTo-Json -Compress
-                try { $proc.StandardInput.WriteLine($interrupt) } catch {}
-                try { $proc.StandardInput.Flush() } catch {}
+                # inject 와 동일 이유 — BaseStream raw 바이트로 즉시 전달 (pwsh7 버퍼링 회피).
+                try {
+                    $iBytes = [System.Text.Encoding]::UTF8.GetBytes($interrupt + "`n")
+                    $proc.StandardInput.BaseStream.Write($iBytes, 0, $iBytes.Length)
+                    $proc.StandardInput.BaseStream.Flush()
+                } catch {}
                 $cleanupDeadline = (Get-Date).AddSeconds(3)
                 while ((Get-Date) -lt $cleanupDeadline -and (Test-Path $attDir)) {
                     Start-Sleep -Milliseconds 100

@@ -2241,12 +2241,18 @@ async function materializeAttachments(
 
 // ─── Claude Code CLI 경로 (Max 구독 OAuth) ─────────────
 async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
+  if (process.env.KDA_STDIN_TRACE) {
+    emit({ type: "log", level: "info", message: `[stdin-trace] handleViaClaudeCLI enter id=${msg.id} attachments=${msg.attachments?.length ?? 0}` });
+  }
   const mcpConfig = buildMCPConfig(cachedMCPHealth);
 
   // 첨부 파일을 임시 폴더에 풀고, prompt 에 path 안내를 덧붙임.
   // 임시 폴더는 finally 에서 통째로 삭제.
   const { dir: attachmentsDir, guidance: attachmentsGuidance } =
     await materializeAttachments(msg);
+  if (process.env.KDA_STDIN_TRACE) {
+    emit({ type: "log", level: "info", message: `[stdin-trace] materialized id=${msg.id} dir=${attachmentsDir ?? "null"} guidanceBytes=${(attachmentsGuidance ?? "").length}` });
+  }
 
   // Phase 107 (v0.6.56) — 폴더 첨부 reference 안내 추가.
   // App.tsx 가 새 대화 첫 message 일 때만 박음 (토큰 절약). path 가 절대 경로 → Claude CLI Read 도구가 직접 읽음.
@@ -4843,6 +4849,16 @@ rl.on("line", (line) => {
       message: `Invalid JSON on stdin: ${String(err)}`,
     });
     return;
+  }
+
+  // 진단: KDA_STDIN_TRACE 켜지면 수신/디스패치를 stdout 으로 흘려 smoke 가 캡처.
+  // 평소(env 미설정)엔 완전 무동작 — 프로덕션 noise 0. CI hang 원인 추적 facility.
+  if (process.env.KDA_STDIN_TRACE) {
+    emit({
+      type: "log",
+      level: "info",
+      message: `[stdin-trace] received type=${msg?.type} id=${msg?.id} bytes=${Buffer.byteLength(trimmed, "utf-8")}`,
+    });
   }
 
   switch (msg.type) {
