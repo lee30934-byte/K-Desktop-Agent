@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-06-10
+
+### Removed
+- **PDF 첨부 텍스트 추출 기능 전체 제거 (K 요청)**. 이 기능은 K님 회사 업무용 스캔-PDF OCR 작업(별도 프로젝트)을 KDA로 검증하던 과정에서 곁가지로 파생돼 v0.7.7에 동봉됐으나, K님이 원치 않아 다시 떼어냄.
+  - 삭제: `sidecar/src/pdfText.ts`, `sidecar/src/pdf-extract-cli.ts`, `scripts/extract-pdf-text.ps1`, `scripts/smoke-pdf-extraction.ps1`.
+  - 사이드카 `materializeAttachments`에서 PDF 텍스트 추출/프롬프트 주입 경로 제거 — 첨부 파일은 이전처럼 temp 경로 전달만(이미지 vision·텍스트 본문은 그대로). `pdf2json` 의존성 제거.
+  - CI: release.yml / smoke.yml 의 PDF 스모크 스텝과 release-confidence 파이프라인(`full-rebuild-and-verify.ps1`)의 PDF 스모크 단계 제거. v0.7.5~v0.7.7을 괴롭힌 PDF 스모크 CI hang 이슈도 함께 소멸.
+- Fable 5 모델 지원(v0.7.7) 및 그 외 기능은 그대로 유지.
+
 ## [0.7.7] - 2026-06-10
 
 ### Added

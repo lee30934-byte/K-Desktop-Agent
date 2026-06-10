@@ -30,11 +30,6 @@ import treeKill from "tree-kill";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import {
-  extractPdfText,
-  formatPdfTextBlock,
-  isPdfAttachment,
-} from "./pdfText.js";
 
 // Phase 11 G1 — MCP-via-REST: lets non-Claude providers reach K-Personal MCP tools.
 import {
@@ -2173,7 +2168,6 @@ async function materializeAttachments(
   }
 
   const lines: string[] = [];
-  const pdfTextBlocks: string[] = [];
   let saved = 0;
   for (let i = 0; i < list.length; i++) {
     const att = list[i];
@@ -2192,20 +2186,6 @@ async function materializeAttachments(
       saved++;
       const sizeKB = Math.max(1, Math.round((att.size ?? 0) / 1024));
       lines.push(`  - ${target}  (${att.type || "application/octet-stream"}, ${sizeKB}KB)`);
-      if (isPdfAttachment(safeName, att.type)) {
-        const extracted = await extractPdfText(target);
-        if (extracted.ok && extracted.text) {
-          pdfTextBlocks.push(formatPdfTextBlock(safeName, extracted));
-          logToFile(
-            "info",
-            `PDF attachment text extracted name=${safeName} pages=${extracted.pages ?? "?"} chars=${extracted.chars ?? extracted.text.length} truncated=${extracted.truncated ? "yes" : "no"}`,
-          );
-        } else {
-          const reason = extracted.error ?? "unknown error";
-          pdfTextBlocks.push(formatPdfTextBlock(safeName, extracted));
-          logToFile("warn", `PDF attachment text extraction failed name=${safeName}: ${reason}`);
-        }
-      }
     } catch (e) {
       logToFile(
         "warn",
@@ -2226,17 +2206,7 @@ async function materializeAttachments(
     ...lines,
   ].join("\n");
 
-  const pdfGuidance = pdfTextBlocks.length > 0
-    ? [
-        "",
-        "",
-        "[PDF 문자추출 결과]",
-        "아래 내용은 sidecar가 첨부 PDF에서 자동 추출한 텍스트입니다. 표/다단 PDF는 읽기 순서가 완벽하지 않을 수 있으니 필요하면 위 원본 파일 경로도 함께 확인하세요.",
-        ...pdfTextBlocks,
-      ].join("\n\n")
-    : "";
-
-  return { dir, guidance: guidance + pdfGuidance };
+  return { dir, guidance };
 }
 
 // ─── Claude Code CLI 경로 (Max 구독 OAuth) ─────────────

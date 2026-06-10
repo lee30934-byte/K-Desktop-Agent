@@ -8,12 +8,10 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "pdf:extract": "node dist/pdf-extract-cli.js",
     "start": "node dist/index.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
-    "pdf2json": "^4.0.3",
     "tree-kill": "^1.2.2"
   },
   "devDependencies": {
