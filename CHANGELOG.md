@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-06-10
+
+### Added
+- **대화별 프로젝트 모드 (#3, Phase 138)**: 폴더(프로젝트)마다 "프로젝트 프로필"을 붙여 스코프를 격리한다 — 금지 도구, 메모리 범위 태그, 기본 작업 경로, 프로젝트 이름. `설정 → 실험 기능 → 프로젝트 모드(#3)` 토글이 ON일 때만 작동(기본 OFF = 종전 동작 100% 동일, zero-regression). ① 금지 도구는 해당 대화에서만 Claude/REST `--disallowed-tools`로 하드 차단(Codex/Gemini는 시스템 텍스트로 명시 금지) ② 메모리는 `memory/*.md`의 `projects:` frontmatter와 교집합 있는 파일 + 공용(태그 없는) 파일만 로딩하고 타 프로젝트 메모리는 stub 처리 ③ 이름/경로는 `[프로젝트 모드]` 블록으로 시스템 텍스트에 주입. `workproject_bleeds_into_kda_core`(회사 작업이 KDA 코어로 새어 릴리스에 동봉된 v0.7.7 사건)를 사람 주의력이 아니라 시스템으로 차단. 배선: FolderInstructionsDialog → db(`project_profile_json` 마이그레이션) → App → Rust → sidecar.
+- **릴리스 전 자동 게이트 (#8, Phase 139)**: `npm run release:gate` (빌드 생략 `release:gate:fast`)로 릴리스 직전 6단계를 한 번에 강제 — ① 버전 파일 동기화(기존 `release-version-guard` 재사용) ② webview2 캐시 stale 방지 메타 ③ 금지 의존성/삭제 기능(pdf2json·pdfText 등) 재유입 차단 ④ `sidecar/test-*.mjs` 회귀테스트 일괄 실행+집계 ⑤ CHANGELOG 현재 버전 엔트리 ⑥ sidecar tsc/frontend build/cargo check. CI(release.yml)도 빌드 전 fast 게이트를 돌린다. v0.7.7~0.7.9 세 번 연속 릴리스 사고(package-lock 불일치·secret BOM·webview 캐시 stale·PDF 재유입)가 전부 "사람이 체크리스트를 까먹어서"였던 것을 스크립트로 박았다.
+
 ## [0.7.9] - 2026-06-10
 
 ### Added
