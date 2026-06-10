@@ -40,6 +40,13 @@ const FORBIDDEN_FILES = [
   "scripts/smoke-pdf-extraction.ps1",
 ];
 
+// 환경 의존 회귀테스트: 순수 소스 정적 검사가 아니라 런타임 자원이 필요한 테스트.
+// 예) test-headless-mcp.mjs 는 Python 을 spawn 하고 K-Personal-MCP server.py +
+// 빌드된 sidecar/dist/index.js 를 읽는다. 이것들은 CI 의 fast 게이트 단계(빌드·MCP
+// fetch 이전)나 깨끗한 체크아웃엔 없으므로 --fast 에선 건너뛴다(로컬 전체 게이트는 실행).
+// 근본 원인: 모든 test-*.mjs 가 정적 검사라는 가정이 틀렸음 → 환경 의존분을 명시 분리.
+const ENV_DEPENDENT_TESTS = new Set(["test-headless-mcp.mjs"]);
+
 // ─── 결과 수집 ────────────────────────────────────────────────────────────
 const results = [];
 function record(name, status, detail) {
@@ -147,7 +154,13 @@ function runRegressionTests() {
   let failed = 0;
   let totalPass = 0;
   let totalAll = 0;
+  let skipped = 0;
   for (const f of files) {
+    if (FAST && ENV_DEPENDENT_TESTS.has(f)) {
+      skipped++;
+      console.log(`     · ${f}: ⏭️  SKIP (환경 의존 — Python/MCP/dist 필요, --fast 제외)`);
+      continue;
+    }
     const r = spawnSync(process.execPath, [f], { cwd: sidecarDir, encoding: "utf8" });
     const out = (r.stdout || "") + (r.stderr || "");
     const m = /결과:\s*(\d+)\/(\d+)\s*통과/.exec(out);
@@ -162,10 +175,12 @@ function runRegressionTests() {
       console.log(`     · ${f}: ❌ exit ${r.status} ${m ? "(" + m[1] + "/" + m[2] + ")" : ""}`);
     }
   }
+  const ran = files.length - skipped;
+  const skipNote = skipped > 0 ? `, ${skipped}개 환경의존 SKIP` : "";
   if (failed === 0) {
-    record("regression", "PASS", `${files.length}개 파일, ${totalPass}/${totalAll} assertion 통과`);
+    record("regression", "PASS", `${ran}개 파일, ${totalPass}/${totalAll} assertion 통과${skipNote}`);
   } else {
-    record("regression", "FAIL", `${failed}/${files.length}개 파일 실패`);
+    record("regression", "FAIL", `${failed}/${ran}개 파일 실패${skipNote}`);
   }
 }
 
