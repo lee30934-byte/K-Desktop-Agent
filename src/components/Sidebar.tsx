@@ -174,10 +174,13 @@ function Sidebar({
 
   // Phase 38 — 폴더 picker (대화→폴더 이동 fallback, DnD 안 될 때)
   const [folderPicker, setFolderPicker] = useState<{
-    convId: string;
+    convIds: string[];
     x: number;
     y: number;
   } | null>(null);
+  const [bulkSelectMode, setBulkSelectMode] = useState(false);
+  const [selectedConvIds, setSelectedConvIds] = useState<Set<string>>(() => new Set());
+  const [bulkMovePending, setBulkMovePending] = useState(false);
 
   // Phase 38 — 폴더 삭제 confirm dialog (confirm() 도 Tauri webview 에서 안 뜰 수 있음)
   const [folderDeleteDialog, setFolderDeleteDialog] = useState<{
@@ -205,6 +208,17 @@ function Sidebar({
       editInputRef.current.select();
     }
   }, [editingState?.id, editingState?.kind]);
+
+  useEffect(() => {
+    const liveIds = new Set(conversations.map((c) => c.id));
+    setSelectedConvIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (liveIds.has(id)) next.add(id);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [conversations]);
 
   // 우클릭 메뉴 / picker / folder picker 외부 클릭 닫기 + Escape
   useEffect(() => {
@@ -389,6 +403,47 @@ function Sidebar({
       return false;
     },
     [tree, visibleConvIds],
+  );
+
+  const toggleBulkSelection = useCallback((convId: string) => {
+    setSelectedConvIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(convId)) next.delete(convId);
+      else next.add(convId);
+      return next;
+    });
+  }, []);
+
+  const setBulkSelectionFor = useCallback((convIds: string[], selected: boolean) => {
+    setSelectedConvIds((prev) => {
+      const next = new Set(prev);
+      for (const id of convIds) {
+        if (selected) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const moveConversationsToFolder = useCallback(
+    async (convIds: string[], folderId: string | null) => {
+      if (!onMoveConversationToFolder || convIds.length === 0) return;
+      setBulkMovePending(true);
+      try {
+        for (let i = 0; i < convIds.length; i++) {
+          await onMoveConversationToFolder(convIds[i], folderId, i);
+        }
+        setSelectedConvIds((prev) => {
+          const next = new Set(prev);
+          for (const id of convIds) next.delete(id);
+          return next;
+        });
+        if (bulkSelectMode) setBulkSelectMode(false);
+      } finally {
+        setBulkMovePending(false);
+      }
+    },
+    [bulkSelectMode, onMoveConversationToFolder],
   );
 
   // 검색 active 면 모든 폴더 자동 펼치기 (사용자 펼침 상태와 OR)
@@ -834,7 +889,7 @@ function Sidebar({
       });
       items.push({
         label: "📁 폴더로 이동…",
-        action: () => setFolderPicker({ convId: id, x: contextMenu.x, y: contextMenu.y }),
+        action: () => setFolderPicker({ convIds: [id], x: contextMenu.x, y: contextMenu.y }),
       });
       items.push({
         label: "📂 루트로 이동",
@@ -956,6 +1011,7 @@ function Sidebar({
       // editingState 만 세팅하고 그릴 곳이 없어 silent 무반응.
       const isEditing =
         editingState?.kind === "conversation" && editingState.id === c.id;
+      const selected = selectedConvIds.has(c.id);
       // Phase 113.1 (v0.6.65) — Explorer 대화 카드에 DnD wrap.
       // DraggableConv 로 wrap 하면 8px 이동 시 drag 시작 (PointerSensor activation),
       // 짧은 click 은 정상 onClick 호출 → 활성화. drop 처리는 handleDndEnd 가 담당.
@@ -963,8 +1019,8 @@ function Sidebar({
         <DraggableConv
           key={`conv-${c.id}`}
           convId={c.id}
-          disabled={isEditing}
-          className={`explorer-item explorer-conv ${active ? "active" : ""}`}
+          disabled={isEditing || bulkSelectMode}
+          className={`explorer-item explorer-conv ${active ? "active" : ""} ${selected ? "selected" : ""}`}
           style={{
             display: "flex",
             alignItems: "center",
@@ -973,12 +1029,16 @@ function Sidebar({
             borderRadius: 6,
             cursor: "pointer",
             userSelect: "none",
-            background: active ? "var(--accent-dim, rgba(102,204,255,0.18))" : "transparent",
+            background: active || selected ? "var(--accent-dim, rgba(102,204,255,0.18))" : "transparent",
             transition: "background 0.1s",
             borderLeft: active ? "2px solid var(--accent, #66ccff)" : "2px solid transparent",
           }}
           onClick={() => {
             if (isEditing) return;
+            if (bulkSelectMode) {
+              toggleBulkSelection(c.id);
+              return;
+            }
             onSelectConversation(c.id);
             setContextMenu(null);
           }}
@@ -988,17 +1048,27 @@ function Sidebar({
             setContextMenu({ type: "conversation", id: c.id, x: e.clientX, y: e.clientY });
           }}
           onMouseEnter={(e) => {
-            if (!active) {
+            if (!active && !selected) {
               (e.currentTarget as HTMLElement).style.background = "var(--bg-2, rgba(255,255,255,0.05))";
             }
           }}
           onMouseLeave={(e) => {
-            if (!active) {
+            if (!active && !selected) {
               (e.currentTarget as HTMLElement).style.background = "transparent";
             }
           }}
           title="클릭=열기 · 우클릭=메뉴 · 드래그=폴더로 이동"
         >
+          {bulkSelectMode && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={() => toggleBulkSelection(c.id)}
+              onClick={(e) => e.stopPropagation()}
+              title="Select conversation"
+              style={{ width: 14, height: 14, flexShrink: 0 }}
+            />
+          )}
           <span style={{ fontSize: 14 }}>
             {c.isFavorite ? "★" : c.icon ?? "💬"}
           </span>
@@ -1061,6 +1131,10 @@ function Sidebar({
       : null;
     const parentId = currentFolder?.parentId ?? null;
     const canGoUp = currentFolderId !== null;
+    const visibleConvIdsInFolder = convs.map((c) => c.id);
+    const selectedVisibleCount = visibleConvIdsInFolder.filter((id) => selectedConvIds.has(id)).length;
+    const allVisibleSelected =
+      visibleConvIdsInFolder.length > 0 && selectedVisibleCount === visibleConvIdsInFolder.length;
 
     return (
       <div
@@ -1138,6 +1212,64 @@ function Sidebar({
         </div>
 
         {/* 본문 — 폴더 + 대화 list */}
+        <div
+          className="bulk-organize-bar"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 8px",
+            borderBottom: "1px solid var(--border-dim, #1d2540)",
+            background: "var(--bg-1, #0a0e18)",
+            flexShrink: 0,
+          }}
+        >
+          <button
+            type="button"
+            className="folder-picker-item"
+            style={{ width: "auto", padding: "4px 8px", fontSize: 11 }}
+            onClick={() => {
+              const nextMode = !bulkSelectMode;
+              setBulkSelectMode(nextMode);
+              if (!nextMode) setSelectedConvIds(new Set<string>());
+            }}
+            title="여러 대화를 선택해서 폴더로 이동"
+          >
+            {bulkSelectMode ? "정리 종료" : "대량 정리"}
+          </button>
+          {bulkSelectMode && (
+            <>
+              <button
+                type="button"
+                className="folder-picker-item"
+                style={{ width: "auto", padding: "4px 8px", fontSize: 11 }}
+                disabled={visibleConvIdsInFolder.length === 0}
+                onClick={() => setBulkSelectionFor(visibleConvIdsInFolder, !allVisibleSelected)}
+              >
+                {allVisibleSelected ? "보이는 항목 해제" : "보이는 항목 선택"}
+              </button>
+              <button
+                type="button"
+                className="folder-picker-item"
+                style={{ width: "auto", padding: "4px 8px", fontSize: 11 }}
+                disabled={selectedConvIds.size === 0 || bulkMovePending}
+                onClick={(e) =>
+                  setFolderPicker({
+                    convIds: Array.from(selectedConvIds),
+                    x: e.currentTarget.getBoundingClientRect().left,
+                    y: e.currentTarget.getBoundingClientRect().bottom + 4,
+                  })
+                }
+              >
+                이동 {selectedConvIds.size}
+              </button>
+              <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.55 }}>
+                {selectedVisibleCount}/{visibleConvIdsInFolder.length}
+              </span>
+            </>
+          )}
+        </div>
+
         <div
           className="explorer-body"
           style={{
@@ -1471,9 +1603,7 @@ function Sidebar({
           <button
             className="folder-picker-item"
             onClick={() => {
-              if (onMoveConversationToFolder) {
-                void onMoveConversationToFolder(folderPicker.convId, null, 0);
-              }
+              void moveConversationsToFolder(folderPicker.convIds, null);
               setFolderPicker(null);
             }}
           >
@@ -1497,9 +1627,7 @@ function Sidebar({
                   className="folder-picker-item"
                   style={{ paddingLeft: `${10 + depth * 14}px` }}
                   onClick={() => {
-                    if (onMoveConversationToFolder) {
-                      void onMoveConversationToFolder(folderPicker.convId, f.id, 0);
-                    }
+                    void moveConversationsToFolder(folderPicker.convIds, f.id);
                     setFolderPicker(null);
                   }}
                 >
