@@ -71,6 +71,14 @@ struct FileChangeEvent {
     timestamp: u64,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct SystemMemoryStatus {
+    total_physical_bytes: u64,
+    available_physical_bytes: u64,
+    used_physical_bytes: u64,
+    used_percent: f64,
+}
+
 fn get_watched_folders() -> &'static Arc<RwLock<HashMap<String, WatchedFolder>>> {
     WATCHED_FOLDERS.get_or_init(|| Arc::new(RwLock::new(HashMap::new())))
 }
@@ -81,6 +89,44 @@ fn get_tx_holder() -> &'static Arc<Mutex<Option<mpsc::Sender<String>>>> {
 
 fn get_child_holder() -> &'static Arc<Mutex<Option<Child>>> {
     SIDECAR_CHILD.get_or_init(|| Arc::new(Mutex::new(None)))
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn get_system_memory_status() -> Result<SystemMemoryStatus, String> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+
+    unsafe {
+        GlobalMemoryStatusEx(&mut status)
+            .map_err(|e| format!("GlobalMemoryStatusEx failed: {e}"))?;
+    }
+
+    let total = status.ullTotalPhys;
+    let available = status.ullAvailPhys;
+    let used = total.saturating_sub(available);
+    let used_percent = if total > 0 {
+        (used as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    Ok(SystemMemoryStatus {
+        total_physical_bytes: total,
+        available_physical_bytes: available,
+        used_physical_bytes: used,
+        used_percent,
+    })
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn get_system_memory_status() -> Result<SystemMemoryStatus, String> {
+    Err("system memory status is only available on Windows".to_string())
 }
 
 // ────────── Lifecycle logging ──────────
@@ -3877,6 +3923,7 @@ pub fn run_with_options(start_minimized: bool) {
             interrupt,
             reload_sidecar,
             ping_sidecar,
+            get_system_memory_status,
             // Phase 69 (v0.6.13) — frontend → sidecar.log echo bridge
             frontend_log,
             elicitation_response,

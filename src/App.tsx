@@ -88,6 +88,13 @@ import {
   getManualOverrideInfo,
 } from "./utils/safeModeSchedule";
 
+type SystemMemoryStatus = {
+  total_physical_bytes: number;
+  available_physical_bytes: number;
+  used_physical_bytes: number;
+  used_percent: number;
+};
+
 // ─── Rate Limit Normalization (Phase 15.5) ────────────────────────────────
 //
 // provider 별 raw payload → 표준 RateLimitInfo 로 변환.
@@ -597,10 +604,13 @@ export default function App() {
   const activeConversationIdRef = useRef<string | null>(null);
   const dbReadyRef = useRef(false);
   const isStreamingRef = useRef(false);
+  const currentTurnIdRef = useRef<string | null>(null);
+  const currentTurnStartedAtRef = useRef<number>(0);
   const messagesRef = useRef<ChatMessage[]>([]);
   useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
   useEffect(() => { dbReadyRef.current = dbReady; }, [dbReady]);
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+  useEffect(() => { currentTurnIdRef.current = currentTurnId; }, [currentTurnId]);
 
   // Phase 111 (v0.6.60) — 동시 대화창 이동 정공법.
   // turn id → conv id 매핑. send 시점에 set, done/error 시점에 delete.
@@ -631,6 +641,8 @@ export default function App() {
   // 비파괴적 "멈춘 것 같아요 — 중단" 배너를 노출(자동 kill 아님 — K 가 직접 중단 선택).
   const lastSidecarEventAtRef = useRef<number>(Date.now());
   const [streamStalled, setStreamStalled] = useState(false);
+  const [memoryPressure, setMemoryPressure] = useState<SystemMemoryStatus | null>(null);
+  const memoryAlertLevelRef = useRef<"normal" | "warn" | "block" | "critical">("normal");
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   const buildLongTaskAutoResumePrompt = useCallback((task: DBLongTask, reason: string) => {
@@ -1185,13 +1197,93 @@ export default function App() {
     }
     lastSidecarEventAtRef.current = Date.now(); // streaming 시작 시 리셋
     const STREAM_STALL_MS = 90_000;
+    const STREAM_FORCE_UNLOCK_MS = 12 * 60_000;
     const t = setInterval(() => {
-      if (Date.now() - lastSidecarEventAtRef.current > STREAM_STALL_MS) {
+      const idleMs = Date.now() - lastSidecarEventAtRef.current;
+      if (idleMs > STREAM_STALL_MS) {
         setStreamStalled(true);
+      }
+      if (idleMs > STREAM_FORCE_UNLOCK_MS) {
+        // 12분 전역 무이벤트 = sidecar 가 죽었거나 멈춘 상태 — 특정 conv 만이 아니라
+        // 모든 streaming 표시/턴 매핑을 일괄 정리해야 다른 대화가 영원히 "응답 중" 으로 남지 않음.
+        turnToConvMap.current.clear();
+        setStreamingConvIds(new Set());
+        currentTurnIdRef.current = null;
+        currentTurnStartedAtRef.current = 0;
+        setIsStreaming(false);
+        setCurrentTurnId(null);
+        setStreamStalled(false);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.role === "assistant" && (m as any).streaming
+              ? { ...m, streaming: false }
+              : m
+          )
+        );
+        pushSystem("응답 스트림이 12분 동안 멈춰 채팅 입력 잠금을 자동 해제했습니다. 필요한 경우 같은 요청을 새 turn으로 다시 보내세요.", "warn");
       }
     }, 5_000);
     return () => clearInterval(t);
   }, [isStreaming]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let lastCriticalUnlockAt = 0;
+
+    const poll = async () => {
+      try {
+        const status = await invoke<SystemMemoryStatus>("get_system_memory_status");
+        if (cancelled) return;
+        setMemoryPressure(status);
+
+        const level: "normal" | "warn" | "block" | "critical" =
+          status.used_percent >= 95 ? "critical" :
+          status.used_percent >= 92 ? "block" :
+          status.used_percent >= 85 ? "warn" :
+          "normal";
+
+        if (level !== memoryAlertLevelRef.current) {
+          memoryAlertLevelRef.current = level;
+          if (level === "warn") {
+            pushSystem(`시스템 메모리 사용률이 ${status.used_percent.toFixed(1)}%입니다. 새 장기 작업 시작은 피하는 것이 좋습니다.`, "warn");
+          } else if (level === "block") {
+            pushSystem(`시스템 메모리 사용률이 ${status.used_percent.toFixed(1)}%입니다. KDA가 새 turn 전송을 차단합니다. 불필요한 앱을 먼저 종료하세요.`, "warn");
+          } else if (level === "critical") {
+            pushSystem(`시스템 메모리 사용률이 ${status.used_percent.toFixed(1)}%입니다. KDA 입력 잠금 방지를 위해 멈춘 stream 상태를 자동 복구합니다.`, "error");
+          }
+        }
+
+        if (level === "critical" && isStreamingRef.current && Date.now() - lastCriticalUnlockAt > 60_000) {
+          lastCriticalUnlockAt = Date.now();
+          // critical 복구는 "멈춘 stream 으로 인한 입력 잠금 해제" 가 목적 —
+          // 현재 turn 만이 아니라 전체 streaming 표시/턴 매핑을 일괄 정리.
+          turnToConvMap.current.clear();
+          setStreamingConvIds(new Set());
+          currentTurnIdRef.current = null;
+          currentTurnStartedAtRef.current = 0;
+          setIsStreaming(false);
+          setCurrentTurnId(null);
+          setStreamStalled(false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.role === "assistant" && (m as any).streaming
+                ? { ...m, streaming: false }
+                : m
+            )
+          );
+        }
+      } catch (err) {
+        logger.warn(`[MemoryWatchdog] get_system_memory_status failed: ${err}`);
+      }
+    };
+
+    void poll();
+    const t = window.setInterval(() => { void poll(); }, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
 
   // ─── 트레이에서 Settings 열기 이벤트 ──────────────────
   useEffect(() => {
@@ -2119,6 +2211,17 @@ export default function App() {
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text && (!files || files.length === 0)) return;
 
+    // 메모리 92%+ 차단 — streaming 여부와 무관하게 입구에서 차단.
+    // (종전 !isStreamingRef.current 조건은 streaming 중 메시지를 큐에 넣었다가
+    //  flush 시점에 드롭시켜 K 입력이 증발하는 구멍이었음)
+    if (memoryPressure && memoryPressure.used_percent >= 92) {
+      pushSystem(
+        `시스템 메모리 사용률이 ${memoryPressure.used_percent.toFixed(1)}%라 새 turn을 시작하지 않았습니다. HyperX/브라우저 등 메모리 점유 앱을 먼저 종료하세요.`,
+        "warn",
+      );
+      return;
+    }
+
     // Phase 67.1 (v0.6.3) + Phase 68 (v0.6.4) — AskUserQuestion cancel path.
     //
     // Phase 68 의 진짜 fix: 직전 turn 의 AskUserQuestion ToolMessage 의 toolOutput 자리에
@@ -2231,6 +2334,8 @@ export default function App() {
 
     setMessages((prev) => [...prev, userMsg]);
     setCurrentTurnId(turnId);
+    currentTurnIdRef.current = turnId;
+    currentTurnStartedAtRef.current = Date.now();
     setIsStreaming(true);
 
     // Phase 111 (v0.6.60) — turn → conv 매핑 박음. emit handler 들이 이 map 으로 routing.
@@ -2973,6 +3078,21 @@ export default function App() {
     queuedSendRef.current = null;
     setQueuedSend(null);
     // 3. 자동 세션 갱신 차단
+    const turnIdToClear = currentTurnIdRef.current ?? currentTurnId;
+    // map miss (orphan turn) 여도 활성 대화로 폴백해 streaming 표시가 영구히 남는 것 방지.
+    const convIdToClear =
+      (turnIdToClear ? turnToConvMap.current.get(turnIdToClear) : null) ?? activeConversationIdRef.current;
+    if (turnIdToClear) turnToConvMap.current.delete(turnIdToClear);
+    if (convIdToClear) {
+      setStreamingConvIds((prev) => {
+        if (!prev.has(convIdToClear)) return prev;
+        const next = new Set(prev);
+        next.delete(convIdToClear);
+        return next;
+      });
+    }
+    currentTurnIdRef.current = null;
+    currentTurnStartedAtRef.current = 0;
     isRefreshingSessionRef.current = false;
     // 4. pending resume (중단된 turn 같은 질문 재시도) 차단
     setPendingResume(null);
@@ -3460,6 +3580,8 @@ export default function App() {
 
     const turnId = crypto.randomUUID();
     setCurrentTurnId(turnId);
+    currentTurnIdRef.current = turnId;
+    currentTurnStartedAtRef.current = Date.now();
     setIsStreaming(true);
 
     try {

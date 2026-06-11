@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-06-11
+
+### Added
+- Windows system memory watchdog using `GlobalMemoryStatusEx`, exposed through the Tauri command `get_system_memory_status`.
+
+### Fixed
+- Block new turns immediately when system memory is at or above 92%, including while another stream is active, so queued input is not silently dropped later.
+- Clear all stale streaming conversation state after a 12-minute no-event stall or 95% critical memory recovery, preventing other conversations from staying permanently locked as "responding".
+- Harden Hard Stop cleanup when a turn-to-conversation map entry is missing by falling back to the active conversation before clearing streaming state.
+
 ## [0.7.11] - 2026-06-10
 
 ### Added
