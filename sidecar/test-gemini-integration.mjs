@@ -131,7 +131,7 @@ for (const [label, p] of [
   }
 
   // 항상 bootstrap history 재주입
-  if (/compactHistoryForCodexBootstrap\(msg\.history\)/.test(handlerBody)) {
+  if (/compactHistoryForCodexBootstrap(Stats)?\(msg\.history\)/.test(handlerBody)) {
     ok("gemini-cli 매 turn history bootstrap 재주입 박힘");
   } else {
     ng("gemini-cli history bootstrap 누락");
