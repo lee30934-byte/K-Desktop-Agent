@@ -150,11 +150,43 @@ function isBrokenStdoutPipe(err: unknown): boolean {
   return code === "EPIPE" || code === "ERR_STREAM_DESTROYED" || message.includes("broken pipe");
 }
 
+// 종료(self-exit / 신호) 시 in-flight turn 의 claude/codex 자식 트리를 "동기" 회수.
+// sidecar 가 죽으면 per-turn finally 의 tree-kill(handleUserMessage) 이 실행될 기회조차 없어
+// claude.exe 손자가 고아로 남아 호스트 메모리가 단조 증가했다
+// (pitfall kda_claude_subagent_tree_orphan_happy_path). exit 직전 동기 taskkill /T /F 로 회수.
+// activeTurns 는 아래에서 const 로 선언되지만 이 함수는 런타임(종료 시점)에만 호출 → TDZ 무관.
+let reapedActiveTurns = false;
+function reapActiveTurns(reason: string): void {
+  if (reapedActiveTurns) return;
+  reapedActiveTurns = true;
+  if (activeTurns.size === 0) return;
+  for (const [id, proc] of activeTurns) {
+    const pid = proc.pid;
+    if (!pid) continue;
+    try {
+      if (process.platform === "win32") {
+        // exit 핸들러는 동기여야 하므로 async tree-kill 대신 동기 taskkill /T /F.
+        spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+      } else {
+        try { process.kill(pid, "SIGKILL"); } catch { /* ignore */ }
+      }
+      logToFile("info", `shutdown reap: tree-killed turn ${id} PID=${pid} (${reason})`);
+    } catch (e) {
+      logToFile(
+        "warn",
+        `shutdown reap 실패 turn ${id} PID=${pid}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  activeTurns.clear();
+}
+
 let exitingForBrokenStdoutPipe = false;
 function exitForBrokenStdoutPipe(reason: string): never {
   if (!exitingForBrokenStdoutPipe) {
     exitingForBrokenStdoutPipe = true;
     logToFile("fatal", `stdout pipe is broken; exiting sidecar for parent respawn (${reason})`);
+    reapActiveTurns("broken stdout pipe");
     process.exitCode = 1;
     setImmediate(() => process.exit(1));
   }
@@ -179,6 +211,20 @@ process.on("unhandledRejection", (reason) => {
   if (isBrokenStdoutPipe(reason)) {
     exitForBrokenStdoutPipe(reason instanceof Error ? reason.message : String(reason));
   }
+});
+
+// 종료 신호/정상 종료 시 in-flight turn 자식 트리 회수 (defense-in-depth — Rust 측 taskkill 과 이중).
+// Windows 에선 Rust 가 taskkill /T 로 강제 종료하면 이 핸들러가 못 뜰 수 있으나, sidecar 가 스스로
+// 종료하는 경로(broken pipe / 신호 / 정상 exit)는 여기서 잡아 고아 0 을 보장.
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+  process.on(sig, () => {
+    logToFile("info", `received ${sig} — reaping active turns then exit`);
+    reapActiveTurns(sig);
+    process.exit(0);
+  });
+}
+process.on("exit", () => {
+  reapActiveTurns("process exit");
 });
 
 // ─── 설정 ─────────────────────────────────────────────
@@ -2336,50 +2382,107 @@ function buildPromptWithHistory(
   return systemBlock + memoryBlock + lines.join("\n");
 }
 
-const CODEX_BOOTSTRAP_HISTORY_MAX_ITEMS = 24;
-const CODEX_BOOTSTRAP_HISTORY_MAX_CHARS = 24_000;
+const PROMPT_HISTORY_MAX_ITEMS = 12;
+const PROMPT_HISTORY_MAX_CHARS = 12_000;
 
-function compactHistoryForCodexBootstrap(
+interface CompactedHistory {
+  history?: Array<HistoryItem>;
+  originalItems: number;
+  sentItems: number;
+  omittedItems: number;
+  approxChars: number;
+}
+
+function estimateHistoryItemChars(item: HistoryItem): number {
+  if (item.role === "tool") {
+    return (
+      (item.toolName?.length ?? 0) +
+      JSON.stringify(item.toolInput ?? "").length +
+      (item.toolOutput?.length ?? 0)
+    );
+  }
+  return item.content.length;
+}
+
+function summarizeOmittedHistory(items: Array<HistoryItem>): string {
+  const counts = { user: 0, assistant: 0, tool: 0 };
+  const snippets: string[] = [];
+  for (const item of items) counts[item.role]++;
+  for (const item of items.slice(-6)) {
+    if (item.role === "tool") {
+      snippets.push(`Tool:${item.toolName ?? "unknown"}`);
+      continue;
+    }
+    const oneLine = item.content.replace(/\s+/g, " ").trim();
+    snippets.push(`${item.role}:${oneLine.slice(0, 160)}`);
+  }
+  return [
+    `[KDA context summary] ${items.length} older messages were compacted before this turn.`,
+    `Counts: user=${counts.user}, assistant=${counts.assistant}, tool=${counts.tool}.`,
+    "Recent compacted anchors:",
+    ...snippets.map((s) => `- ${s}`),
+    "Use the live current message, active project rules, and recent uncompressed turns first. Ask K before relying on omitted details.",
+  ].join("\n");
+}
+
+function compactHistoryForPrompt(
   history?: Array<HistoryItem>,
-): Array<HistoryItem> | undefined {
-  if (!history || history.length === 0) return history;
+  maxItems = PROMPT_HISTORY_MAX_ITEMS,
+  maxChars = PROMPT_HISTORY_MAX_CHARS,
+): CompactedHistory {
+  if (!history || history.length === 0) {
+    return { history, originalItems: history?.length ?? 0, sentItems: history?.length ?? 0, omittedItems: 0, approxChars: 0 };
+  }
 
   const selected: Array<HistoryItem> = [];
   let chars = 0;
-  let omitted = 0;
+  let cutoff = 0;
 
   for (let i = history.length - 1; i >= 0; i--) {
     const item = history[i];
-    const itemChars =
-      item.role === "tool"
-        ? (item.toolName?.length ?? 0) +
-          JSON.stringify(item.toolInput ?? "").length +
-          (item.toolOutput?.length ?? 0)
-        : item.content.length;
-
-    if (
-      selected.length >= CODEX_BOOTSTRAP_HISTORY_MAX_ITEMS ||
-      (selected.length > 0 && chars + itemChars > CODEX_BOOTSTRAP_HISTORY_MAX_CHARS)
-    ) {
-      omitted = i + 1;
+    const itemChars = estimateHistoryItemChars(item);
+    if (selected.length >= maxItems || (selected.length > 0 && chars + itemChars > maxChars)) {
+      cutoff = i + 1;
       break;
     }
-
     selected.push(item);
     chars += itemChars;
   }
 
   selected.reverse();
-  if (omitted > 0) {
+  if (cutoff > 0) {
     selected.unshift({
       role: "assistant",
-      content:
-        `[KDA Codex fast-start] Earlier conversation context was omitted for latency ` +
-        `(${omitted} older messages). Use the visible recent conversation first; ` +
-        `ask K if older details are required.`,
+      content: summarizeOmittedHistory(history.slice(0, cutoff)),
     });
   }
-  return selected;
+
+  return {
+    history: selected,
+    originalItems: history.length,
+    sentItems: selected.length,
+    omittedItems: cutoff,
+    approxChars: chars,
+  };
+}
+
+const CODEX_BOOTSTRAP_HISTORY_MAX_ITEMS = PROMPT_HISTORY_MAX_ITEMS;
+const CODEX_BOOTSTRAP_HISTORY_MAX_CHARS = PROMPT_HISTORY_MAX_CHARS;
+
+function compactHistoryForCodexBootstrapStats(
+  history?: Array<HistoryItem>,
+): CompactedHistory {
+  return compactHistoryForPrompt(
+    history,
+    CODEX_BOOTSTRAP_HISTORY_MAX_ITEMS,
+    CODEX_BOOTSTRAP_HISTORY_MAX_CHARS,
+  );
+}
+
+function compactHistoryForCodexBootstrap(
+  history?: Array<HistoryItem>,
+): Array<HistoryItem> | undefined {
+  return compactHistoryForCodexBootstrapStats(history).history;
 }
 
 const activeTurns = new Map<string, ChildProcess>();
@@ -2812,9 +2915,10 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     msg.content,
     resolveProjectMemoryTags(msg.projectProfile, loadAgentFlags()),
   );
+  const promptHistory = compactHistoryForPrompt(msg.history);
   const promptWithHistory = buildPromptWithHistory(
     baseContent,
-    msg.history,
+    promptHistory.history,
     memory.content,
   );
 
@@ -3126,7 +3230,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   const attachmentsCount = msg.attachments?.length ?? 0;
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} argsLen=${argsTotalLen} tmpFiles=${tmpFiles.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} settingsBytes=${settingsBytes} mcpBytes=${mcpBytes} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hooks=overwriteGuard+pitfallGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} argsLen=${argsTotalLen} tmpFiles=${tmpFiles.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} settingsBytes=${settingsBytes} mcpBytes=${mcpBytes} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hooks=overwriteGuard+pitfallGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b historyOriginal=${promptHistory.originalItems} historySent=${promptHistory.sentItems} historyOmitted=${promptHistory.omittedItems} historyApproxChars=${promptHistory.approxChars}`
   );
   // 진단용 head50 (Phase F 2026-05-06 사고 재발 시 즉시 원인 잡기 위해)
   logToFile(
@@ -3146,6 +3250,8 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   let watchdogTripped = false;
   let idleWatchdog: ReturnType<typeof setInterval> | undefined;
   let turnKeepalive: ReturnType<typeof setInterval> | undefined;
+  // Phase 122: finally 에서 손자 reap 하려면 pid 를 try 밖에서 잡아야 한다 (proc 은 try 블록 스코프).
+  let turnPid: number | undefined;
   try {
     // Claude CLI 실행
     // hook 스크립트(preToolUse-overwriteGuard.mjs) 가 자식 자식 프로세스로 실행되므로
@@ -3167,6 +3273,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     });
 
     activeTurns.set(msg.id, proc);
+    turnPid = proc.pid;
 
     // prompt 본문을 stdin 으로 흘려보냄 (명령행 길이 한계 우회)
     if (proc.stdin) {
@@ -3583,6 +3690,20 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     clearInterval(turnKeepalive);
     logToFile("info", `CLI query end id=${msg.id}`);
     activeTurns.delete(msg.id);
+    // Phase 122 (mem leak fix): 정상 종료 경로엔 tree-kill 이 없어, claude CLI 가 띄운
+    // subagent claude.exe / MCP 서버 손자들이 Windows 에서 reap 안 되고 고아로 누적됐다
+    // (06-18 진단: 한 세션의 9-proc claude 트리가 40h+ 잔존 → 호스트 메모리 단조 증가).
+    // await proc.on("close") 가 이미 끝났으므로 main proc 은 종료된 상태 — 여기서 트리를
+    // best-effort reap 하면 살아남은 손자만 회수된다 (없으면 no-op). idle 워치독/abort 경로의
+    // tree-kill 과 동일 패턴. PID 재사용 race 는 ms 단위라 무시 가능 (기존 경로도 동일 수용).
+    if (turnPid) {
+      treeKill(turnPid, "SIGKILL", (err) => {
+        if (err) {
+          // "프로세스를 찾을 수 없습니다" 류는 정상 (손자 없이 깨끗이 종료된 경우) — debug 만.
+          logToFile("info", `turn-end tree reap PID=${turnPid} (잔존 손자 없음 또는 이미 종료): ${err.message}`);
+        }
+      });
+    }
     // 외화한 임시 인자 파일들 통째 정리 — system-prompt-file, settings, mcp-config 모두.
     // tmpFiles 가 mcpConfigFile 도 포함하므로 별도 처리 불필요.
     for (const f of tmpFiles) {
@@ -3942,9 +4063,10 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // Phase 48 (v0.5.36): Codex resume 사용 시 prior_conversation 안 박음 — Codex 가 thread state
   // 로 history 보유. 매 turn 마다 통째 재주입 시 context 폭발 (K 의 다른 PC root cause).
   // resume 아닐 때만 history 박음. Phase 59: effectiveAgentId 기준 (poisoned 시 새 세션 path).
-  const codexBootstrapHistory = effectiveAgentId
-    ? undefined
-    : compactHistoryForCodexBootstrap(msg.history);
+  const codexHistory = effectiveAgentId
+    ? { history: undefined, originalItems: msg.history?.length ?? 0, sentItems: 0, omittedItems: msg.history?.length ?? 0, approxChars: 0 }
+    : compactHistoryForCodexBootstrapStats(msg.history);
+  const codexBootstrapHistory = codexHistory.history;
   // Phase 136 — Hermes 동등 배선: SYSTEM_PROMPT + soul + 프로젝트 지침 + featureGuidance
   // + 도구 게이트를 <kda_system> 블록으로 주입. 종전엔 Codex 가 KDA 룰을 전혀 못 받았음.
   // resume 턴은 thread 에 bootstrap 의 전체 지침이 있으므로 compact 리마인더만 (context 보호).
@@ -4011,7 +4133,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
   logToFile(
     "info",
-    `Codex query start id=${msg.id} model=${msg.model ?? "default"} reasoning=${reasoning && VALID_REASONING_EFFORTS.has(reasoning) ? reasoning : "default"} resume=${msg.agent_id ?? "none"} promptBytes=${promptBytes} historyIn=${msg.history?.length ?? 0} historySent=${codexBootstrapHistory?.length ?? 0} memorySent=${effectiveAgentId ? 0 : memory.bytes} systemBytes=${Buffer.byteLength(codexSystemText, "utf-8")}${effectiveAgentId ? "(compact)" : ""} attachments=${msg.attachments?.length ?? 0}`,
+    `Codex query start id=${msg.id} model=${msg.model ?? "default"} reasoning=${reasoning && VALID_REASONING_EFFORTS.has(reasoning) ? reasoning : "default"} resume=${msg.agent_id ?? "none"} promptBytes=${promptBytes} historyIn=${codexHistory.originalItems} historySent=${codexHistory.sentItems} historyOmitted=${codexHistory.omittedItems} historyApproxChars=${codexHistory.approxChars} memorySent=${effectiveAgentId ? 0 : memory.bytes} systemBytes=${Buffer.byteLength(codexSystemText, "utf-8")}${effectiveAgentId ? "(compact)" : ""} attachments=${msg.attachments?.length ?? 0}`,
   );
 
   // Per-turn usage 집계 — Codex 는 turn.completed 에 정확한 컨텍스트 크기 한 번 옴.
@@ -4066,6 +4188,8 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   let watchdogTripped = false;
   let idleWatchdog: ReturnType<typeof setInterval> | undefined;
   let turnKeepalive: ReturnType<typeof setInterval> | undefined;
+  // Phase 122 (mem leak fix): finally 에서 손자 reap 위해 pid 를 try 밖에서 잡는다.
+  let turnPid: number | undefined;
 
   try {
     const proc = spawn(CODEX_CLI, args, {
@@ -4077,6 +4201,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     });
 
     activeTurns.set(msg.id, proc);
+    turnPid = proc.pid;
 
     // idle 워치독 기준 시각 — stdout 라인/stderr chunk 올 때마다 갱신.
     let lastActivity = Date.now();
@@ -4876,6 +5001,15 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     clearInterval(turnKeepalive);
     logToFile("info", `Codex query end id=${msg.id}`);
     activeTurns.delete(msg.id);
+    // Phase 122 (mem leak fix): 정상 종료 경로 tree reap — Codex CLI 가 띄운 손자(MCP 서버 등)가
+    // Windows 에서 reap 안 되고 고아로 누적되는 것 방지. await proc close 이후라 main 은 종료됨.
+    if (turnPid) {
+      treeKill(turnPid, "SIGKILL", (err) => {
+        if (err) {
+          logToFile("info", `Codex turn-end tree reap PID=${turnPid} (잔존 손자 없음 또는 이미 종료): ${err.message}`);
+        }
+      });
+    }
     if (attachmentsDir) {
       try {
         rmSync(attachmentsDir, { recursive: true, force: true });
@@ -5212,7 +5346,8 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
   );
 
   // v1 stateless — 항상 bootstrap history 재주입 (resume 함정 구조적 회피, 상단 주석 참조).
-  const bootstrapHistory = compactHistoryForCodexBootstrap(msg.history);
+  const geminiHistory = compactHistoryForCodexBootstrapStats(msg.history);
+  const bootstrapHistory = geminiHistory.history;
   // Phase 136 — Hermes 동등 배선 (Codex 경로와 동일). stateless 라 매 턴 전체 주입.
   const geminiAgentFlags = loadAgentFlags();
   const geminiSystemText = buildEngineSystemText(msg.folderSystemPrompt, geminiAgentFlags, {
@@ -5250,7 +5385,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
 
   logToFile(
     "info",
-    `Gemini CLI query start id=${msg.id} model=${msg.model ?? "default"} promptBytes=${promptBytes} historyIn=${msg.history?.length ?? 0} historySent=${bootstrapHistory?.length ?? 0} memorySent=${memory.bytes} systemBytes=${Buffer.byteLength(geminiSystemText, "utf-8")} attachments=${msg.attachments?.length ?? 0} auth=${msg.api_key ? "api_key" : "oauth(구독)"}`,
+    `Gemini CLI query start id=${msg.id} model=${msg.model ?? "default"} promptBytes=${promptBytes} historyIn=${geminiHistory.originalItems} historySent=${geminiHistory.sentItems} historyOmitted=${geminiHistory.omittedItems} historyApproxChars=${geminiHistory.approxChars} memorySent=${memory.bytes} systemBytes=${Buffer.byteLength(geminiSystemText, "utf-8")} attachments=${msg.attachments?.length ?? 0} auth=${msg.api_key ? "api_key" : "oauth(구독)"}`,
   );
 
   let sessionId: string | null = null;
@@ -5265,6 +5400,8 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
   let watchdogTripped = false;
   let idleWatchdog: ReturnType<typeof setInterval> | undefined;
   let turnKeepalive: ReturnType<typeof setInterval> | undefined;
+  // Phase 122 (mem leak fix): finally 에서 손자 reap 위해 pid 를 try 밖에서 잡는다.
+  let turnPid: number | undefined;
 
   try {
     const proc = spawn(GEMINI_CLI, args, {
@@ -5285,6 +5422,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
     });
 
     activeTurns.set(msg.id, proc);
+    turnPid = proc.pid;
 
     let lastActivity = Date.now();
     const activeToolCalls = new Set<string>();
@@ -5543,6 +5681,14 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
     clearInterval(turnKeepalive);
     logToFile("info", `Gemini CLI query end id=${msg.id}`);
     activeTurns.delete(msg.id);
+    // Phase 122 (mem leak fix): 정상 종료 경로 tree reap — Gemini CLI 손자 reap.
+    if (turnPid) {
+      treeKill(turnPid, "SIGKILL", (err) => {
+        if (err) {
+          logToFile("info", `Gemini turn-end tree reap PID=${turnPid} (잔존 손자 없음 또는 이미 종료): ${err.message}`);
+        }
+      });
+    }
     if (attachmentsDir) {
       try {
         rmSync(attachmentsDir, { recursive: true, force: true });
@@ -5672,7 +5818,8 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   }
 
   const model = (msg.model && msg.model.trim()) || defaultModelFor(provider);
-  const history = msg.history ?? [];
+  const restHistory = compactHistoryForPrompt(msg.history);
+  const history = restHistory.history ?? [];
 
   // History flattening — same shape as before. Tool messages from prior turns get
   // text-summarised and absorbed into the previous assistant turn so the OpenAI/Gemini
@@ -5791,7 +5938,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
 
   logToFile(
     "info",
-    `REST query start id=${msg.id} provider=${provider} model=${model} historyLen=${history.length} memory=${memory.count}/${memory.bytes}b mcp=${mcp ? `${mcp.tools.length}tools/${knownToolNames.size}exposed` : "off"} maxRounds=${MAX_TOOL_ROUNDS}`
+    `REST query start id=${msg.id} provider=${provider} model=${model} historyOriginal=${restHistory.originalItems} historySent=${restHistory.sentItems} historyOmitted=${restHistory.omittedItems} historyApproxChars=${restHistory.approxChars} memory=${memory.count}/${memory.bytes}b mcp=${mcp ? `${mcp.tools.length}tools/${knownToolNames.size}exposed` : "off"} maxRounds=${MAX_TOOL_ROUNDS}`
   );
 
   // Round 0 mirrors the legacy single-shot path; rounds 1..N append tool results and

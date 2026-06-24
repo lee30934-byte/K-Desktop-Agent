@@ -33,6 +33,10 @@ const MAX_RESTART_ATTEMPTS: u32 = 3;
 /// sidecar heartbeat/stdout event watchdog. Sidecar emits heartbeat events even when idle.
 static LAST_SIDECAR_EVENT_SECS: AtomicU64 = AtomicU64::new(0);
 static LAST_SIDECAR_SPAWN_SECS: AtomicU64 = AtomicU64::new(0);
+/// 현재 sidecar(node.exe) PID. spawn 시 저장, 종료(reload/restart/quit) 시 트리킬 대상.
+/// RunEvent::Exit 같은 동기 컨텍스트에서 tokio Mutex(Child) 를 못 잠그므로 PID 만 별도 보관한다.
+/// 0 = 미기동/이미 종료. (pitfall kda_claude_subagent_tree_orphan_happy_path)
+static SIDECAR_PID: AtomicU32 = AtomicU32::new(0);
 const SIDECAR_WATCHDOG_INTERVAL_SECS: u64 = 30;
 const SIDECAR_STARTUP_GRACE_SECS: u64 = 60;
 const SIDECAR_HEARTBEAT_TIMEOUT_SECS: u64 = 120;
@@ -89,6 +93,23 @@ fn get_tx_holder() -> &'static Arc<Mutex<Option<mpsc::Sender<String>>>> {
 
 fn get_child_holder() -> &'static Arc<Mutex<Option<Child>>> {
     SIDECAR_CHILD.get_or_init(|| Arc::new(Mutex::new(None)))
+}
+
+/// sidecar node.exe + 그 자손(claude.exe / MCP 서버 등) 트리 전체를 taskkill /T /F 로 회수.
+/// `child.start_kill()` 은 node.exe 만 죽여 손자 claude.exe 가 고아로 남는다 — 모든 종료 경로
+/// (reload / 재기동 watchdog / 앱 quit)에서 start_kill 직전 이 함수를 호출해 고아 누적을 원천 차단.
+/// (pitfall kda_claude_subagent_tree_orphan_happy_path). non-Windows 에선 taskkill 부재로 no-op.
+fn tree_kill_sidecar_pid(pid: u32) {
+    if pid == 0 || pid == std::process::id() {
+        return;
+    }
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output();
+    log_lifecycle(
+        "sidecar.log",
+        &format!("tree_kill_sidecar_pid: taskkill /T /F PID={}", pid),
+    );
 }
 
 #[cfg(windows)]
@@ -554,6 +575,10 @@ async fn reload_sidecar(app: AppHandle) -> Result<(), String> {
     {
         let mut guard = child_holder.lock().await;
         if let Some(mut child) = guard.take() {
+            // node.exe 만 죽이면 claude.exe 손자가 고아로 남으므로 트리 통째 회수 후 start_kill.
+            if let Some(pid) = child.id() {
+                tree_kill_sidecar_pid(pid);
+            }
             let _ = child.start_kill();
             let _ = child.wait().await;
         }
@@ -3423,6 +3448,10 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
 
     // 저장
     {
+        // 동기 종료 경로(RunEvent::Exit)용 PID 별도 보관 — child 를 move 하기 전에 캡처.
+        if let Some(pid) = child.id() {
+            SIDECAR_PID.store(pid, Ordering::SeqCst);
+        }
         let child_holder = get_child_holder().clone();
         let mut guard = child_holder.lock().await;
         *guard = Some(child);
@@ -3862,6 +3891,9 @@ pub fn run_with_options(start_minimized: bool) {
                         let child_holder = get_child_holder().clone();
                         let mut guard = child_holder.lock().await;
                         if let Some(child) = guard.as_mut() {
+                            if let Some(pid) = child.id() {
+                                tree_kill_sidecar_pid(pid);
+                            }
                             let _ = child.start_kill();
                         } else if let Some(tx) = RESPAWN_TX.get() {
                             let attempt = RESTART_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
@@ -3895,6 +3927,9 @@ pub fn run_with_options(start_minimized: bool) {
                     let child_holder = get_child_holder().clone();
                     let mut guard = child_holder.lock().await;
                     if let Some(child) = guard.as_mut() {
+                        if let Some(pid) = child.id() {
+                            tree_kill_sidecar_pid(pid);
+                        }
                         let _ = child.start_kill();
                     } else if let Some(tx) = RESPAWN_TX.get() {
                         let attempt = RESTART_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
@@ -4014,6 +4049,13 @@ pub fn run_with_options(start_minimized: bool) {
             }
             RunEvent::Exit => {
                 log_lifecycle("shutdown.log", "RunEvent::Exit (process terminating)");
+                // 앱 종료 시 sidecar 트리(node.exe + claude.exe 손자)를 통째 회수.
+                // 기존엔 kill 자체가 없어 종료 중이던 claude 가 고아로 남았다
+                // (pitfall kda_claude_subagent_tree_orphan_happy_path).
+                let pid = SIDECAR_PID.load(Ordering::SeqCst);
+                if pid != 0 {
+                    tree_kill_sidecar_pid(pid);
+                }
             }
             _ => {}
         });
