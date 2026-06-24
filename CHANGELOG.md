@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-06-24
+
+### Fixed
+- **고아 claude 프로세스 누적 차단 (`kda_claude_subagent_tree_orphan_happy_path` 근본 수정)**: per-turn 종료 경로엔 이미 tree-kill 이 있었으나, sidecar(node.exe) 자체가 reload·기동타임아웃·heartbeat타임아웃·앱종료(`RunEvent::Exit`)·broken stdout pipe 로 죽을 때는 node.exe 만 죽고 손자 claude.exe 들이 고아로 남아 호스트 메모리가 단조 증가했다. Rust 4개 사이트에서 `SIDECAR_PID` 기반 `taskkill /F /T` 트리킬을 추가하고, sidecar 에 `reapActiveTurns()` 셀프-리퍼(broken pipe·SIGTERM/SIGINT/SIGHUP·process exit)를 더해 어느 경로로 sidecar 가 죽든 claude 손자가 함께 회수되도록 했다. 주기적 청소(KDA-MemReaper) 없이 고아가 구조적으로 불가능.
+
 ## [0.7.12] - 2026-06-11
 
 ### Added
