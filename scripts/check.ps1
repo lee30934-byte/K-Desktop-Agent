@@ -179,6 +179,7 @@ Invoke-Step "Sidecar tests (perm-gate + hook + cmdline-limit + context-meter + h
         "sidecar/test-hook-pitfallGuard.mjs",
         "sidecar/test-cmdline-limit.mjs",
         "sidecar/test-context-meter.mjs",
+        "sidecar/test-context-builder.mjs",
         "sidecar/test-headless-mcp.mjs",
         "sidecar/test-codex-integration.mjs"
     )
