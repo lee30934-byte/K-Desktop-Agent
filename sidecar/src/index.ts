@@ -1301,6 +1301,125 @@ function extractPitfallSummary(memoryDir: string): { count: number; lines: strin
 }
 
 /**
+ * Phase 142 (v0.7.14) — Retrieval-augmented pitfall bodies.
+ *
+ * 문제(pitfall_memory_injection_cap_dilutes_pitfall_recall): pitfall_*.md 146개(338KB)는
+ * extractPitfallSummary 가 "이름 + description 한 줄" 요약만 주입한다. 정작 actionable 한
+ * 진단/회피책은 본문에 있는데 본문이 32KB cap 에 들어오지 못해, 결정 시점에 fix 가 부재 →
+ * 같은 함정 반복. 기록이 늘수록(146→) 개별 회상은 더 희석되는 역설.
+ *
+ * 해결: 현재 사용자 메시지가 어떤 pitfall 의 키워드와 매치되면 그 pitfall 의 **full body** 를
+ * priority TRIGGERED 로 주입 (feedback/skill 의 기존 선택 로딩과 동일 경로 재사용).
+ * 매치 안 된 나머지는 종전대로 한 줄 요약만 (extractPitfallSummary 블록은 인덱스로 유지).
+ * 상위 N개로 cap → 양이 146→300개로 늘어도 budget 안정 + 회상 품질 유지.
+ *
+ * 키워드 = explicit `triggers:`(있으면) + `tags:` + slug 토큰(_/- 분리, 길이>=4).
+ * 기존 146개 pitfall 이 frontmatter 수정 없이도 즉시 혜택 (slug/tags 자동 파생).
+ */
+const MAX_TRIGGERED_PITFALLS = 8;
+const PITFALL_TRIGGER_MIN_TOKEN_LEN = 4;
+// slug/tags 에서 흔히 나오는 과도하게 일반적인 토큰 → 오매치 방지 (explicit triggers 는 면제).
+// windows/powershell 은 의도적으로 제외(=매칭 허용): K 가 그 단어를 쓰면 해당 도메인 함정이 정확히 필요.
+const PITFALL_TRIGGER_STOPWORDS = new Set<string>([
+  "memory", "file", "files", "path", "paths", "data", "code", "tool", "tools",
+  "user", "json", "node", "test", "tests", "name", "list", "mode", "time",
+  "work", "true", "false", "with", "from", "this", "that", "when", "then",
+  "pitfall", "kda",
+]);
+// description/triggers 에서 뽑은 한글 토큰 중 변별력 없는 조사·일반어 → 제외.
+// (K 는 한국어로 명령하는데 slug 는 영문이라, 한글 토큰 매칭이 회상의 핵심 경로다.)
+const PITFALL_TRIGGER_KSTOP = new Set<string>([
+  "없이", "하는", "해서", "에서", "으로", "그리고", "또는", "같은", "경우", "때문",
+  "대신", "직접", "다시", "매번", "항상", "절대", "반복", "사용", "호출", "실행",
+  "파일", "작업", "메모리", "내용", "자세한", "참조", "문제", "발생", "우회", "회피",
+  "확인", "처리", "결과", "상태", "설정", "변경", "추가", "제거", "생성", "적용",
+  "필요", "가능", "시도", "해야", "된다", "안됨", "해도", "하면", "이나", "에는",
+  "에도", "까지", "부터", "보다", "마다", "위해", "통해", "관련", "경로", "스크립트",
+  "명령", "호스트", "사용자", "요청", "동작", "구조", "기존",
+]);
+
+/** 한글 2자+ 토큰만 추출(조사 섞여도 substring 매칭되도록), KSTOP 제외. */
+function extractHangulTokens(text: string | null): string[] {
+  if (!text) return [];
+  const out = new Set<string>();
+  for (const m of text.matchAll(/[가-힣]{2,}/g)) {
+    if (!PITFALL_TRIGGER_KSTOP.has(m[0])) out.add(m[0]);
+  }
+  return [...out];
+}
+
+function derivePitfallTriggers(slug: string, block: string | null): {
+  explicit: string[];
+  derived: string[];
+  korean: string[];
+} {
+  const explicit = new Set<string>();
+  const derived = new Set<string>();
+  const korean = new Set<string>();
+  if (block) {
+    for (const t of extractYamlList(block, "triggers")) {
+      if (t) explicit.add(t.toLowerCase());
+      for (const w of extractHangulTokens(t)) korean.add(w);
+    }
+    for (const t of extractYamlList(block, "tags")) {
+      const lt = t.toLowerCase();
+      if (lt.length >= PITFALL_TRIGGER_MIN_TOKEN_LEN && !PITFALL_TRIGGER_STOPWORDS.has(lt)) {
+        derived.add(lt);
+      }
+    }
+    // K 는 한국어로 쓰므로 description 의 한글 명사 토큰을 매칭 키로 사용 (slug 는 영문).
+    for (const w of extractHangulTokens(extractYamlScalar(block, "description"))) korean.add(w);
+  }
+  for (const tok of slug.split(/[_\-]/)) {
+    const lt = tok.toLowerCase();
+    if (lt.length >= PITFALL_TRIGGER_MIN_TOKEN_LEN && !PITFALL_TRIGGER_STOPWORDS.has(lt)) {
+      derived.add(lt);
+    }
+  }
+  return { explicit: [...explicit], derived: [...derived], korean: [...korean] };
+}
+
+/**
+ * 현재 메시지에 매치되는 pitfall 들의 full-body MemorySectionEntry 를 반환.
+ * 점수 = explicit trigger(가중 2) + derived 영문토큰(1) + 한글토큰(1). 상위 N 개만.
+ */
+function buildTriggeredPitfallEntries(memoryDir: string, currentMsg: string): MemorySectionEntry[] {
+  if (!currentMsg || !existsSync(memoryDir)) return [];
+  const lc = currentMsg.toLowerCase();
+  let files: string[];
+  try {
+    files = readdirSync(memoryDir).filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"));
+  } catch {
+    return [];
+  }
+  const scored: { file: string; score: number; body: string }[] = [];
+  for (const f of files) {
+    try {
+      const body = readMemoryFileCached(path.join(memoryDir, f));
+      const block = extractFrontmatterBlock(body);
+      const slug = f.replace(/^pitfall_/, "").replace(/\.md$/, "");
+      const { explicit, derived, korean } = derivePitfallTriggers(slug, block);
+      let score = 0;
+      for (const t of explicit) if (t && lc.includes(t)) score += 2;
+      for (const t of derived) if (t && lc.includes(t)) score += 1;
+      for (const t of korean) if (currentMsg.includes(t)) score += 1;
+      if (score > 0) scored.push({ file: f, score, body });
+    } catch {
+      /* skip */
+    }
+  }
+  scored.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+  return scored.slice(0, MAX_TRIGGERED_PITFALLS).map((s) => ({
+    group: "memory" as const,
+    priority: MEMORY_PRIORITY_TRIGGERED,
+    file: s.file,
+    text: `### ${s.file} (관련 함정 — 본문 로딩됨, 회피책 반드시 적용)\n${s.body
+      .replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
+      .trim()}`,
+  }));
+}
+
+/**
  * Phase 89 — team-memory/memory/ 에서 추가 메모리 파일 로드.
  * personal memory 와 별도 섹션으로 합치기 위해 분리. team 폴더 없으면 빈 결과.
  */
@@ -1449,6 +1568,11 @@ function loadMemoryContext(
     // Phase 107 — skill 메모리 (skill_*.md): 인덱스 + 트리거 매치된 본문
     for (const e of buildSkillEntries(dir, currentMsg)) entries.push(e);
 
+    // Phase 142 (v0.7.14) — retrieval-augmented pitfall 본문: 현재 메시지에 매치된 관련
+    // pitfall 만 full body 로 승격 (priority TRIGGERED). 나머지는 아래 pitfall summary 인덱스로.
+    // pitfall_memory_injection_cap_dilutes_pitfall_recall 의 근본 대책.
+    for (const e of buildTriggeredPitfallEntries(dir, currentMsg)) entries.push(e);
+
     // Phase 81 (v0.6.25): lee-profile.md 가 있으면 memory 보다 먼저 박힘 (K 의 개인 규칙이 최우선)
     const leeBlock = leeProfile.exists && leeProfile.content
       ? [
@@ -1471,7 +1595,8 @@ function loadMemoryContext(
           "## ⚠ 절대 반복 금지 함정 (pitfall summary)",
           "",
           `다음 ${pitfallSummary.count}개는 K 와 이미 한 번 겪은 함정입니다. 같은 패턴 반복 금지.`,
-          "각 항목의 자세한 진단/회피책은 위의 memory_context 안 같은 이름의 pitfall_*.md 참조.",
+          "이번 턴 메시지와 관련된 함정은 위 '누적 메모리'에 **본문(회피책)이 자동 로딩**됩니다.",
+          "그 외 항목의 자세한 진단/회피책이 필요하면 같은 이름의 pitfall_*.md 를 직접 read 하세요.",
           "",
           ...pitfallSummary.lines,
         ].join("\n")

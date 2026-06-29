@@ -5,7 +5,10 @@
 
 ## [Unreleased]
 
-## [0.7.13] - 2026-06-24
+## [0.7.14] - 2026-06-29
+
+### Added
+- **검색증강 함정 주입 (`memory_injection_cap_dilutes_pitfall_recall` 근본 수정)**: 누적 메모리의 `pitfall_*.md` 본문 전체를 32KB cap 에 욱여넣다 대부분 잘려 회피책이 LLM 에 도달하지 못하던 문제(기록이 늘수록 회상이 약해지는 역설)를 구조적으로 해결. 매 턴 메시지와 관련된 함정만 trigger/태그/한글 토큰 매칭으로 골라 상위 N개(기본 8개) 본문 전체를 우선순위 주입한다(`buildTriggeredPitfallEntries`). 나머지는 기존대로 한 줄 요약. 한국어 메시지가 영어 슬러그와 매칭되지 않던 간극도 `extractHangulTokens` 로 description/triggers 의 한글 토큰을 대조해 메움. 함정 개수가 늘어도 회상 품질이 희석되지 않는 구조.
 
 ### Fixed
 - **고아 claude 프로세스 누적 차단 (`kda_claude_subagent_tree_orphan_happy_path` 근본 수정)**: per-turn 종료 경로엔 이미 tree-kill 이 있었으나, sidecar(node.exe) 자체가 reload·기동타임아웃·heartbeat타임아웃·앱종료(`RunEvent::Exit`)·broken stdout pipe 로 죽을 때는 node.exe 만 죽고 손자 claude.exe 들이 고아로 남아 호스트 메모리가 단조 증가했다. Rust 4개 사이트에서 `SIDECAR_PID` 기반 `taskkill /F /T` 트리킬을 추가하고, sidecar 에 `reapActiveTurns()` 셀프-리퍼(broken pipe·SIGTERM/SIGINT/SIGHUP·process exit)를 더해 어느 경로로 sidecar 가 죽든 claude 손자가 함께 회수되도록 했다. 주기적 청소(KDA-MemReaper) 없이 고아가 구조적으로 불가능.
