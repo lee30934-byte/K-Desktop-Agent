@@ -70,6 +70,7 @@ function denominatorFor(provider, modelId) {
   if (provider === "claude" && (!modelId || modelId === "default")) return 1_000_000;
   const id = (modelId || "").toLowerCase();
   if (id.includes("1m")) return 1_000_000;
+  if (id === "gpt-5.6" || id.startsWith("gpt-5.6-")) return 1_050_000;
   if (id === "claude-fable-5") return 1_000_000;
   return 200_000;
 }
@@ -200,6 +201,10 @@ const cases = [
       const errors = [];
       const d1 = denominatorFor("openai", "gpt-4o-mini");
       if (d1 !== 200_000) errors.push(`openai/gpt-4o-mini → ${d1}, 기대 200K`);
+      const d56 = denominatorFor("openai", "gpt-5.6");
+      if (d56 !== 1_050_000) errors.push(`openai/gpt-5.6 → ${d56}, 기대 1.05M`);
+      const d56Sol = denominatorFor("codex", "gpt-5.6-sol");
+      if (d56Sol !== 1_050_000) errors.push(`codex/gpt-5.6-sol → ${d56Sol}, 기대 1.05M`);
       const d2 = denominatorFor("anthropic", "claude-sonnet-4-5");
       if (d2 !== 200_000) errors.push(`anthropic/sonnet-4.5 → ${d2}, 기대 200K`);
       const d3 = denominatorFor("gemini", "gemini-2.0-flash");

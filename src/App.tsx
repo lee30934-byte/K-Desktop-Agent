@@ -935,6 +935,10 @@ export default function App() {
 
     if (id === "claude-fable-5") return { tokens: 1_000_000, source: "Fable 5 (1M)" };
 
+    if (id === "gpt-5.6" || id.startsWith("gpt-5.6-")) {
+      return { tokens: 1_050_000, source: "GPT-5.6 1.05M" };
+    }
+
     // OpenAI GPT-5 family / Codex — 공식 400K input window (2025 spec)
     if (
       id.startsWith("gpt-5") ||

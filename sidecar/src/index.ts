@@ -5841,7 +5841,7 @@ type ProviderFormat = "openai" | "anthropic" | "gemini";
 function defaultModelFor(provider: Provider): string {
   switch (provider) {
     case "anthropic": return "claude-sonnet-4-5";
-    case "openai": return "gpt-4o-mini";
+    case "openai": return "gpt-5.6";
     case "gemini": return "gemini-2.5-flash";
     case "openrouter": return "openai/gpt-4o-mini";
     case "codex": return "default";

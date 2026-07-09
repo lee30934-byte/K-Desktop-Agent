@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-07-10
+
+### Added
+- OpenAI GPT-5.6 model picker support: `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`.
+- Codex model picker support for the GPT-5.6 family.
+
+### Changed
+- OpenAI REST default model updated to `gpt-5.6`.
+- Context meter fallback updated for GPT-5.6's 1.05M context window.
+
 ## [0.7.14] - 2026-06-29
 
 ### Added
