@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-07-10
+
+### Added
+- **스트림 끊김/401 자동 회복 (Phase 143)**: 2026-07-10 K 실사고 — 긴 turn 도중 "Reconnecting... 5/5 (stream disconnected before completion: websocket closed by server before response.completed)" 로 turn 이 통째 유실되고 직후 "Failed to authenticate. API Error: 401" 이 여러 turn 연쇄. Claude/Codex CLI 경로 공통으로 stderr 에서 두 패턴을 감지해 **같은 세션 그대로 1회 자동 재시도** (스트림 끊김 3초 / 401 5초 대기 — 토큰 갱신 여유). 구 Phase 61 의 blocklist 방식(멀쩡한 세션까지 영구 차단, v0.7.0 에서 비활성)과 달리 세션을 차단하지 않아 대화 맥락이 그대로 유지된다. 재시도 후에도 401 이면 raw 에러 dump 대신 `codex login`/`claude /login` 재로그인 안내로 변환해 표시. `_streamRetried`/`_authRetried` 가드로 무한 재귀 방지, 재시도 턴은 long_task 중복 등록 안 함. 회귀테스트 `test-stream-auth-retry.mjs` (실사고 문자열 + 오탐 방지 + 구조 불변식 15건) 추가.
+
 ## [0.7.15] - 2026-07-10
 
 ### Added

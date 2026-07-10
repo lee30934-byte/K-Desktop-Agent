@@ -1926,6 +1926,14 @@ type UserMessage = {
   // Phase 126 (v0.6.81) — Codex resume 실패 자동 회복 가드 (내부 전용, frontend 미사용).
   // true 면 그 turn 은 이미 "새 세션 재시도" 진입 → 무한 재귀/중복 long_task 방지.
   _codexResumeRetried?: boolean;
+  // Phase 143 (v0.7.16) — 스트림 끊김("Reconnecting 5/5"/websocket close) 1회 자동 재시도 가드.
+  // 2026-07-10 K 실사고: 긴 turn 도중 서버측 스트림 끊김 → turn 유실. blocklist 방식(구 Phase 61)은
+  // 멀쩡한 세션까지 영구 차단해 v0.7.0 에서 꺼둠 — 대신 같은 세션 그대로 1회 재시도.
+  _streamRetried?: boolean;
+  // Phase 143 (v0.7.16) — 401 인증 오류("Failed to authenticate" 등) 1회 자동 재시도 가드.
+  // OAuth 토큰 만료/갱신 실패는 잠시 후 회복되는 경우가 많음 — 5초 대기 후 1회 재시도,
+  // 그래도 실패하면 재로그인 안내 메시지로 변환해 emit.
+  _authRetried?: boolean;
   // history 항목:
   //   user/assistant: { role, content } — 일반 대화 메시지
   //   tool: { role: "tool", toolName, toolInput?, toolOutput? } — 도구 호출/결과 (Resume 시 포함)
@@ -2848,6 +2856,8 @@ function runOrchSubTurn(raw: OrchestrateMessage, engine: Provider): Promise<Orch
       // resume 금지 — 같은 thread 를 병렬 sub-turn 이 공유하면 충돌/오염.
       agent_id: undefined,
       _codexResumeRetried: undefined,
+      _streamRetried: undefined,
+      _authRetried: undefined,
       api_key: raw.engineApiKeys?.[engine],
     };
     void handleUserMessage(subMsg).catch((e) => {
@@ -3506,6 +3516,9 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     // exit 0 + 빈 result 로 마무리한다. 이 경우 frontend 가 빈 응답 + 사라지는 작업 표시 만 보고
     // 원인을 모르니, 명시적 에러로 변환해 자동 회복 흐름 (agent_id 클리어 + 재시도) 트리거.
     let resumeSessionMissing = false;
+    // Phase 143 (v0.7.16) — 스트림 끊김/401 감지 플래그 (close 후 1회 자동 재시도 트리거).
+    let streamDisconnected = false;
+    let authFailed = false;
     if (proc.stderr) {
       proc.stderr.on("data", (chunk: Buffer) => {
         lastActivity = Date.now(); // idle 워치독 리셋
@@ -3525,6 +3538,15 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
             "warn",
             `CLI resume target missing — agent_id=${msg.agent_id ?? "?"} 새 session 으로 자동 회복 안내 emit 예정`,
           );
+        }
+        // Phase 143: stderr tail 전체 기준으로 검사 — 패턴이 chunk 경계에 걸려도 잡히게.
+        if (!streamDisconnected && STREAM_DISCONNECT_RE.test(stderrTail)) {
+          streamDisconnected = true;
+          logToFile("warn", `CLI 스트림 끊김 감지 (Reconnecting 5/5 / websocket close) — close 후 1회 자동 재시도 예정 id=${msg.id}`);
+        }
+        if (!authFailed && AUTH_FAILURE_RE.test(stderrTail)) {
+          authFailed = true;
+          logToFile("warn", `CLI 401 인증 오류 감지 — close 후 1회 자동 재시도 예정 id=${msg.id}`);
         }
         logToFile("warn", `CLI stderr: ${decoded.trimEnd()}`);
       });
@@ -3781,9 +3803,17 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     }
 
     // 프로세스 종료 대기
+    // Phase 143 (v0.7.16) — 스트림 끊김/401 은 reject 대신 1회 자동 재시도로 회복.
+    let retryReason: "stream" | "auth" | null = null;
     await new Promise<void>((resolve, reject) => {
       proc.on("close", (code) => {
         if (code === 0 || sawResult) {
+          resolve();
+        } else if (streamDisconnected && !msg._streamRetried) {
+          retryReason = "stream";
+          resolve();
+        } else if (authFailed && !msg._authRetried) {
+          retryReason = "auth";
           resolve();
         } else {
           const tail = stderrTail.trim();
@@ -3796,6 +3826,34 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
       proc.on("error", reject);
     });
 
+    // Phase 143 — 같은 세션 그대로 1회 자동 재시도. 세션은 멀쩡하므로(서버측 일시 장애 /
+    // 토큰 일시 만료) resume 유지 → 맥락 손실 없음. 가드 플래그로 무한 재귀 방지.
+    // 재시도 call 이 done/error emit 을 책임지므로 여기서 early return.
+    if (retryReason) {
+      clearInterval(idleWatchdog);
+      clearInterval(turnKeepalive);
+      const delay = retryReason === "stream" ? STREAM_RETRY_DELAY_MS : AUTH_RETRY_DELAY_MS;
+      logToFile(
+        "warn",
+        `CLI ${retryReason === "stream" ? "스트림 끊김" : "401 인증 오류"} — ${delay / 1000}초 후 같은 세션으로 1회 자동 재시도 id=${msg.id} agentId=${sessionId ?? msg.agent_id ?? "NULL"}`,
+      );
+      emit({
+        type: "log",
+        level: "warn",
+        message:
+          retryReason === "stream"
+            ? "서버측 스트림이 끊겨 같은 세션으로 자동 재시도합니다 (대화 맥락 유지)."
+            : "인증 오류(401)가 감지되어 잠시 후 자동 재시도합니다 (토큰 갱신 대기).",
+      });
+      await sleepMs(delay);
+      await handleViaClaudeCLI({
+        ...msg,
+        agent_id: sessionId ?? msg.agent_id,
+        ...(retryReason === "stream" ? { _streamRetried: true } : { _authRetried: true }),
+      });
+      return;
+    }
+
     // result 이벤트가 없었을 때만 fallback done 보냄 (중복 방지)
     if (!sawResult && activeTurns.has(msg.id)) {
       emit({ type: "done", id: msg.id, agentId: sessionId });
@@ -3805,9 +3863,12 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     const rawMessage = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
     // idle 워치독이 죽인 경우 — generic "exited with code null" 대신 원인을 명확히.
+    // Phase 143: 재시도 후에도 401 이면 raw dump 대신 재로그인 안내로 변환.
     const message = watchdogTripped
       ? `응답이 ${Math.round(IDLE_TIMEOUT_MS / 1000)}초간 멈춰 자동 중단했습니다. 다시 시도해 주세요. (idle watchdog)`
-      : rawMessage;
+      : msg._authRetried && AUTH_FAILURE_RE.test(rawMessage)
+        ? friendlyAuthErrorMessage("claude")
+        : rawMessage;
     logToFile("error", `CLI query error id=${msg.id}: ${rawMessage}${watchdogTripped ? " [idle watchdog kill]" : ""}${stack ? `\n${stack}` : ""}`);
     emit({ type: "error", id: msg.id, message });
   } finally {
@@ -3979,6 +4040,30 @@ function blockSession(agentId: string, reason: string): void {
   sessionBlocklist.add(agentId);
   savePersistentSessionBlocklist();
   logToFile("warn", `Session ${agentId} 자동 blocklist 추가 — ${reason}`);
+}
+
+// Phase 143 (v0.7.16) — 스트림 끊김/인증 오류 자동 회복 (엔진 공통 패턴).
+// 2026-07-10 K 실사고: 긴 turn 도중 "Reconnecting... 5/5 (stream disconnected before
+// completion: websocket closed by server before response.completed)" 로 turn 이 통째 유실,
+// 직후 "Failed to authenticate. API Error: 401" 이 여러 turn 연쇄.
+// 대응: blocklist(구 Phase 61, v0.7.0 에서 비활성) 대신 **같은 세션 그대로 1회 자동 재시도**.
+//   - 스트림 끊김: 서버측 일시 장애 — 3초 대기 후 재시도 (세션은 멀쩡하므로 차단 안 함).
+//   - 401 인증: 토큰 만료/갱신 실패 — 5초 대기 후 재시도, 그래도 실패면 재로그인 안내로 변환.
+const STREAM_DISCONNECT_RE =
+  /Reconnecting[\s\S]{0,120}5\/5|stream disconnected before completion|websocket closed (?:by server )?before response\.completed/i;
+const AUTH_FAILURE_RE =
+  /Failed to authenticate|invalid authentication credentials|API Error:?\s*401|401 Unauthorized|authentication_error/i;
+const STREAM_RETRY_DELAY_MS = 3_000;
+const AUTH_RETRY_DELAY_MS = 5_000;
+
+function friendlyAuthErrorMessage(engine: "claude" | "codex"): string {
+  return engine === "codex"
+    ? "Codex 인증이 만료됐습니다 (401). 자동 재시도로도 회복되지 않았습니다 — 터미널에서 `codex login` 으로 재로그인 후 다시 시도해 주세요."
+    : "Claude 인증이 만료됐습니다 (401). 자동 재시도로도 회복되지 않았습니다 — 터미널에서 `claude /login` 으로 재로그인(또는 KDA 재시작) 후 다시 시도해 주세요.";
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 // Phase 59 (v0.5.47): poisoned Codex session 차단 — K 의 다른 PC 진단 결정타.
@@ -4288,6 +4373,10 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // Phase 126 (v0.6.81) — resume 대상 rollout 이 없어 Codex 가 크래시한 케이스 reactive 감지.
   // 사전 codexRolloutExists 가드를 통과했더라도 (파일은 있는데 Codex 가 못 읽는 등) 안전망.
   let resumeRolloutMissing = false;
+  // Phase 143 (v0.7.16) — 스트림 끊김("Reconnecting 5/5"/websocket close)/401 감지 플래그.
+  // close 후 같은 세션 그대로 1회 자동 재시도 트리거 (blocklist 안 함 — 구 Phase 61 과 차이).
+  let streamDisconnected = false;
+  let authFailed = false;
   // Phase 63 (v0.5.51): K 다른 PC 진단 — turn.completed 와 token_count 의 race condition.
   // turn.completed 가 먼저 도착하면 그 시점엔 sawCodexLastTokenUsage=false → 가드 무력 →
   // cumulative 값 (121K) 박힘 → done emit 후 늦게 도착한 token_count 의 last_token_usage
@@ -4397,7 +4486,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     }, TURN_KEEPALIVE_INTERVAL_MS);
     turnKeepalive.unref?.();
 
-    if (!msg._codexResumeRetried) {
+    if (!msg._codexResumeRetried && !msg._streamRetried && !msg._authRetried) {
       emit({
         type: "long_task_started",
         taskId: msg.id,
@@ -4447,38 +4536,21 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             `Codex resume 대상 rollout 없음 — agentId=${effectiveAgentId}. 새 세션으로 1회 자동 재시도 예정`,
           );
         }
-        // Phase 61 (v0.5.49): "Reconnecting... 5/5" 또는 "websocket closed before response.completed"
-        // pattern 감지 → 그 session 을 자동 blocklist. 다음 spawn 의 inspectCodexSessionFile
-        // 가드가 우선 검사로 즉시 차단.
-        // K 다른 PC 진단: 비대한 resume session 에서 stream 안정성 깨짐 → 5번 retry 후 실패 패턴.
-        if (false && effectiveAgentId && (
-          /Reconnecting[\s\S]*5\/5/.test(decoded) ||
-          /websocket closed before response\.completed/.test(decoded)
-        )) {
-          blockSession(
-            effectiveAgentId!,
-            `Codex stderr 에 Reconnecting 5/5 또는 websocket close 감지 — 다음 spawn 부터 resume 차단`,
+        // Phase 143 (v0.7.16) — 구 Phase 61 blocklist 방식(멀쩡한 세션까지 영구 차단, v0.7.0 에서
+        // 비활성) 을 대체: 감지만 하고 close 후 같은 세션으로 1회 자동 재시도.
+        // 2026-07-10 K 실사고: "Reconnecting... 5/5 (stream disconnected before completion:
+        // websocket closed by server before response.completed)" 로 turn 유실.
+        // stderrTail 전체 기준 검사 — 패턴이 chunk 경계에 걸려도 잡히게.
+        if (!streamDisconnected && STREAM_DISCONNECT_RE.test(stderrTail)) {
+          streamDisconnected = true;
+          logToFile(
+            "warn",
+            `Codex 스트림 끊김 감지 (Reconnecting 5/5 / websocket close) — close 후 1회 자동 재시도 예정 id=${msg.id}`,
           );
-          // Phase 83 (v0.6.26) — Session Recovery Hook: 5/5 timeout 시 frontend 에 즉시
-          // 알려 RecoveryBanner 재스캔 trigger. K 가 conversation 으로 이동해 long_task
-          // 진행 상황 확인 가능. Lee 의 학습효과 패치 #7 (Session Recovery Hook) 의 자동
-          // 진입 path — 끊긴 세션이 작업 중단으로 이어지지 않게.
-          emit({
-            type: "session_recovery_triggered",
-            reason: "codex_reconnect_5_5",
-            agentId: effectiveAgentId,
-            taskId: msg.id,
-          } as any);
         }
-        // Phase 83 (v0.6.26): 2/5 timeout 도 캡처 — K 의 다른 PC 진단의 핵심 ("Reconnecting 2/5
-        // timeout waiting for child process to exit"). 차단까지는 안 가지만 알림은 띄움.
-        else if (false && effectiveAgentId && /Reconnecting[\s\S]*[2-4]\/5/.test(decoded)) {
-          emit({
-            type: "session_recovery_triggered",
-            reason: "codex_reconnect_partial",
-            agentId: effectiveAgentId,
-            taskId: msg.id,
-          } as any);
+        if (!authFailed && AUTH_FAILURE_RE.test(stderrTail)) {
+          authFailed = true;
+          logToFile("warn", `Codex 401 인증 오류 감지 — close 후 1회 자동 재시도 예정 id=${msg.id}`);
         }
       });
     }
@@ -5053,7 +5125,9 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     }
 
     // Phase 126 (v0.6.81) — resume 실패(고아 thread_id) 자동 회복 여부.
+    // Phase 143 (v0.7.16) — 스트림 끊김/401 도 reject 대신 1회 자동 재시도.
     let willRetryNewSession = false;
+    let retryReason: "stream" | "auth" | null = null;
     await new Promise<void>((resolve, reject) => {
       proc.on("close", (code) => {
         if (code === 0 || sawCompletion) {
@@ -5065,6 +5139,12 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
         ) {
           // 고아 thread_id resume 실패 — reject 대신 resolve 후 새 세션으로 1회 재시도.
           willRetryNewSession = true;
+          resolve();
+        } else if (streamDisconnected && !msg._streamRetried) {
+          retryReason = "stream";
+          resolve();
+        } else if (authFailed && !msg._authRetried) {
+          retryReason = "auth";
           resolve();
         } else {
           const tail = stderrTail.trim();
@@ -5100,6 +5180,33 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       return;
     }
 
+    // Phase 143 (v0.7.16) — 스트림 끊김/401 자동 회복: 같은 세션 그대로 1회 재시도.
+    // 서버측 일시 장애/토큰 일시 만료라 세션은 멀쩡 → resume 유지, 맥락 손실 없음.
+    // 재시도 call 이 done/long_task_done 을 책임 (early return).
+    if (retryReason) {
+      clearInterval(idleWatchdog);
+      const delay = retryReason === "stream" ? STREAM_RETRY_DELAY_MS : AUTH_RETRY_DELAY_MS;
+      logToFile(
+        "warn",
+        `Codex ${retryReason === "stream" ? "스트림 끊김" : "401 인증 오류"} — ${delay / 1000}초 후 같은 세션으로 1회 자동 재시도 id=${msg.id} agentId=${sessionId ?? effectiveAgentId ?? "NULL"}`,
+      );
+      emit({
+        type: "log",
+        level: "warn",
+        message:
+          retryReason === "stream"
+            ? "서버측 스트림이 끊겨 같은 세션으로 자동 재시도합니다 (대화 맥락 유지)."
+            : "인증 오류(401)가 감지되어 잠시 후 자동 재시도합니다 (토큰 갱신 대기).",
+      });
+      await sleepMs(delay);
+      await handleViaCodexCLI({
+        ...msg,
+        agent_id: sessionId ?? effectiveAgentId ?? msg.agent_id,
+        ...(retryReason === "stream" ? { _streamRetried: true } : { _authRetried: true }),
+      });
+      return;
+    }
+
     if (!sawCompletion && activeTurns.has(msg.id)) {
       emit({ type: "done", id: msg.id, agentId: sessionId });
     }
@@ -5109,9 +5216,12 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     const rawMessage = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
     // idle 워치독이 죽인 경우 — generic "exited with code null" 대신 원인을 명확히.
+    // Phase 143: 재시도 후에도 401 이면 raw dump 대신 재로그인 안내로 변환.
     const message = watchdogTripped
       ? `응답이 ${Math.round(IDLE_TIMEOUT_MS / 1000)}초간 멈춰 자동 중단했습니다. 다시 시도해 주세요. (idle watchdog)`
-      : rawMessage;
+      : msg._authRetried && AUTH_FAILURE_RE.test(rawMessage)
+        ? friendlyAuthErrorMessage("codex")
+        : rawMessage;
     logToFile("error", `Codex query error id=${msg.id}: ${rawMessage}${watchdogTripped ? " [idle watchdog kill]" : ""}${stack ? `\n${stack}` : ""}`);
     emit({ type: "error", id: msg.id, message });
     // Phase 79 (v0.6.22): Codex 실패 종료 — long_tasks status='failed' 로 mark.
