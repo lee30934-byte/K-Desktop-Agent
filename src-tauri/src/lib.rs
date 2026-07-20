@@ -1199,6 +1199,277 @@ fn append_schedule_log(line: String) -> Result<(), String> {
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// task-watch (v0.7.17) — 장기 분리작업 완료 자동 이어가기.
+//
+// 배경: KDA 는 Claude 를 `claude -p`(단발성)로 spawn 하므로 에이전트가 turn 안에서
+// 띄운 감시자는 세션 경계에서 죽는다(pitfall_background_killed_on_session_boundary).
+// 그래서 "빌드/OCR 등 장기 분리작업이 끝나면 에이전트가 혼자 이어가기"가 신뢰성 있게 안 됐다.
+//
+// 해결: 마커 파일 폴더 `~/.kda/task-watch/*.json` 를 KDA 상주 프로세스(프론트 하트비트)가
+// 폴링한다. claude -p 프로세스와 완전히 무관하게 산다. 조건(감시대상 파일 존재 / PID 종료 /
+// timeout) 충족 시 프론트가 해당 conversation 에 새 turn 을 주입 → 에이전트가 깨어나 이어감.
+// 스케줄러 하트비트(X-4)와 동형이며, time 기반 대신 조건 기반이라는 점만 다르다.
+//
+// 마커 JSON 스키마(에이전트가 Write/Bash 로 생성):
+//   {
+//     "id":            "빌드감시-abc123",         // 파일명 stem 과 동일 권장. clear 시 사용.
+//     "conversationId":"<대상 conv id>",          // 생략 시 프론트가 전용 ⏳ conv 로 주입
+//     "title":         "5080 빌드 감시",
+//     "prompt":        "빌드가 끝났습니다. 결과를 확인하고 이어서 진행하세요.",
+//     "watch":         { "type": "file", "path": "C:\\...\\build.done" },  // 존재하면 발화
+//                    // 또는 { "type": "pid", "pid": 12345 }               // 종료하면 발화
+//     "createdAt":     "2026-07-20T10:00:00.000Z",
+//     "timeoutMs":     3600000                     // 생략 가능. 초과 시 timeout 상태로 발화
+//   }
+// 참고: PID 감시는 PID 재사용(pitfall_sigilfall_keeper_pid_reuse_completed_job) 위험이 있어
+// 가능하면 `.done` 마커 파일 방식을 권장. timeoutMs 는 항상 안전망으로 두는 것이 좋다.
+
+/// task-watch 마커 폴더: `~/.kda/task-watch` (USERPROFILE 우선, HOME 폴백).
+fn task_watch_dir() -> PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".kda").join("task-watch")
+}
+
+/// 마커 id 안전성 검사 — 경로 구분자/상위참조 차단 (clear 시 임의 파일 삭제 방지).
+fn sanitize_watch_id(id: &str) -> Option<String> {
+    if id.is_empty() || id.len() > 200 {
+        return None;
+    }
+    if id.contains('/') || id.contains('\\') || id.contains("..") || id.contains(':') {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        match OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            Ok(h) if !h.is_invalid() => {
+                let r = WaitForSingleObject(h, 0);
+                let _ = CloseHandle(h);
+                // WAIT_TIMEOUT → 아직 signaled 안 됨 = 살아있음. WAIT_OBJECT_0 → 종료.
+                r == WAIT_TIMEOUT
+            }
+            // OpenProcess 실패 = 프로세스 없음(또는 접근 불가) → 종료로 간주.
+            _ => false,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn pid_alive(_pid: u32) -> bool {
+    true
+}
+
+/// 마커 하나의 조건을 평가해 상태 문자열을 반환. 발화 아니면 None.
+fn eval_watch(marker: &serde_json::Value, now_ms: i64) -> Option<(String, String)> {
+    // timeout 우선 검사 — 조건 미충족이어도 너무 오래되면 안전망 발화.
+    if let Some(timeout_ms) = marker.get("timeoutMs").and_then(|v| v.as_i64()) {
+        if timeout_ms > 0 {
+            if let Some(created) = marker.get("createdAt").and_then(|v| v.as_str()) {
+                if let Ok(created_ms) = parse_iso_ms(created) {
+                    if now_ms - created_ms >= timeout_ms {
+                        return Some((
+                            "timeout".to_string(),
+                            format!("timeoutMs={}ms 초과", timeout_ms),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let watch = marker.get("watch")?;
+    let wtype = watch.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match wtype {
+        "file" => {
+            let p = watch.get("path").and_then(|v| v.as_str())?;
+            if std::path::Path::new(p).exists() {
+                return Some(("fired".to_string(), format!("파일 존재: {}", p)));
+            }
+            None
+        }
+        "pid" => {
+            let pid = watch.get("pid").and_then(|v| v.as_u64())? as u32;
+            if !pid_alive(pid) {
+                return Some(("fired".to_string(), format!("PID {} 종료", pid)));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// 아주 관대한 ISO-8601 → epoch ms 파서 (외부 크레이트 없이).
+/// `2026-07-20T10:00:00.000Z` / `...+09:00` 형태를 처리. 실패 시 Err.
+fn parse_iso_ms(s: &str) -> Result<i64, String> {
+    let s = s.trim();
+    // 날짜/시간 분리
+    let (date, rest) = s.split_once(['T', ' ']).ok_or("no time separator")?;
+    let dparts: Vec<&str> = date.split('-').collect();
+    if dparts.len() != 3 {
+        return Err("bad date".into());
+    }
+    let year: i64 = dparts[0].parse().map_err(|_| "year")?;
+    let month: i64 = dparts[1].parse().map_err(|_| "month")?;
+    let day: i64 = dparts[2].parse().map_err(|_| "day")?;
+
+    // 타임존 오프셋 추출
+    let mut tz_offset_min: i64 = 0;
+    let mut time_str = rest.to_string();
+    if let Some(stripped) = time_str.strip_suffix('Z') {
+        time_str = stripped.to_string();
+    } else if let Some(idx) = time_str.rfind(['+', '-']) {
+        // 시간 파트 내 ':' 이후에 오는 부호만 오프셋 (밀리초 소수점 뒤)
+        if idx > 0 {
+            let (t, off) = time_str.split_at(idx);
+            let sign = if off.starts_with('-') { -1 } else { 1 };
+            let off = &off[1..];
+            if let Some((h, m)) = off.split_once(':') {
+                let oh: i64 = h.parse().unwrap_or(0);
+                let om: i64 = m.parse().unwrap_or(0);
+                tz_offset_min = sign * (oh * 60 + om);
+            }
+            time_str = t.to_string();
+        }
+    }
+    let tparts: Vec<&str> = time_str.split(':').collect();
+    if tparts.len() < 2 {
+        return Err("bad time".into());
+    }
+    let hour: i64 = tparts[0].parse().map_err(|_| "hour")?;
+    let minute: i64 = tparts[1].parse().map_err(|_| "minute")?;
+    let (sec, ms): (i64, i64) = if tparts.len() >= 3 {
+        let sp = tparts[2];
+        if let Some((sec_s, frac_s)) = sp.split_once('.') {
+            let sec: i64 = sec_s.parse().map_err(|_| "sec")?;
+            let frac = format!("{:0<3}", &frac_s[..frac_s.len().min(3)]);
+            let ms: i64 = frac.parse().unwrap_or(0);
+            (sec, ms)
+        } else {
+            (sp.parse().map_err(|_| "sec")?, 0)
+        }
+    } else {
+        (0, 0)
+    };
+
+    // days-from-civil (Howard Hinnant 알고리즘) → epoch days
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+
+    let total = days * 86400 * 1000
+        + hour * 3600 * 1000
+        + minute * 60 * 1000
+        + sec * 1000
+        + ms
+        - tz_offset_min * 60 * 1000;
+    Ok(total)
+}
+
+/// task-watch 마커 폴더를 스캔해 발화(fired/timeout) 상태인 마커만 반환.
+/// 프론트 하트비트가 폴링 → 발화분을 turn 으로 주입 → task_watch_clear 로 정리.
+#[tauri::command]
+fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
+    let dir = task_watch_dir();
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+        return Ok(vec![]);
+    }
+    let now_ms = current_unix_ms();
+    let mut fired: Vec<serde_json::Value> = Vec::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) => return Err(format!("task-watch 폴더 읽기 실패: {}", e)),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let marker: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue, // 손상 마커는 건너뜀 (다음 스캔에서 재시도 안 됨 — 방치)
+        };
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let id = marker
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&stem)
+            .to_string();
+        if let Some((status, note)) = eval_watch(&marker, now_ms) {
+            fired.push(serde_json::json!({
+                "id": id,
+                "file": stem,
+                "conversationId": marker.get("conversationId").and_then(|v| v.as_str()),
+                "title": marker.get("title").and_then(|v| v.as_str()).unwrap_or("작업 감시"),
+                "prompt": marker.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
+                "status": status,
+                "note": note,
+            }));
+        }
+    }
+    Ok(fired)
+}
+
+/// 발화 처리 끝난(또는 취소할) 마커 삭제. id 는 파일명 stem.
+#[tauri::command]
+fn task_watch_clear(id: String) -> Result<(), String> {
+    let safe = sanitize_watch_id(&id).ok_or_else(|| format!("잘못된 watch id: {}", id))?;
+    let path = task_watch_dir().join(format!("{}.json", safe));
+    match std::fs::remove_file(&path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), // 이미 없음 = OK
+        Err(e) => Err(format!("마커 삭제 실패 {}: {}", path.display(), e)),
+    }
+}
+
+/// task-watch 하트비트 로그 — `<data_root>/task-watch.log` 에 한 줄 append.
+#[tauri::command]
+fn task_watch_log(line: String) -> Result<(), String> {
+    let root = data_root();
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("task-watch.log");
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("task-watch.log 열기 실패: {}", e))?;
+    writeln!(f, "{}", line).map_err(|e| format!("로그 작성 실패: {}", e))?;
+    Ok(())
+}
+
+/// 현재 시각을 Unix epoch ms 로. std 만 사용.
+fn current_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// 데이터 폴더 변경. 옵션으로 기존 데이터 마이그레이션.
 ///
 /// 흐름:
@@ -4021,6 +4292,10 @@ pub fn run_with_options(start_minimized: bool) {
             // X-4 스케줄러 하트비트 — personal.db (schedules 테이블) 경로
             get_personal_db_path,
             append_schedule_log,
+            // v0.7.17 — task-watch (장기 분리작업 완료 자동 이어가기)
+            task_watch_scan,
+            task_watch_clear,
+            task_watch_log,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,

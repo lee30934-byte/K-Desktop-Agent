@@ -289,6 +289,19 @@ Phase 완료 전, 커밋 전, 새 의존성 추가 후에는 반드시 실행:
 - 파일 영향 범위: `mcp__k-personal__*` 로 로그/설정 파일 조회
 - 프로세스: `mcp__k-personal__*` 로 실행 중인 프로세스 체크
 
+## task-watch (v0.7.17) — 장기 분리작업 완료 자동 이어가기
+
+에이전트가 장기 작업(빌드·OCR 등)을 백그라운드로 돌린 뒤 완료 시 스스로 이어가게 하는 조건 기반 하트비트.
+스케줄러 하트비트(X-4, 시간 기반)의 조건 기반 쌍둥이. `claude -p` 세션 경계와 무관하게 KDA 상주 프로세스가 감시한다.
+
+- 마커: `~/.kda/task-watch/<id>.json` (에이전트가 Write/셸로 생성). 스키마는 `sidecar/src/index.ts` SYSTEM_PROMPT 의 `[장기 분리작업 자동 이어가기]` 참조.
+- 조건: `watch.type==="file"`(그 경로 파일 존재 시 발화) 또는 `"pid"`(그 PID 종료 시 발화). `timeoutMs` 안전망.
+- Rust(`src-tauri/src/lib.rs`): `task_watch_scan`(발화분 스캔) / `task_watch_clear`(마커 삭제) / `task_watch_log`.
+  - PID 생존 확인은 Windows `OpenProcess`+`WaitForSingleObject`. `createdAt` 파서는 외부 크레이트 없이 ISO→epoch.
+- 프론트(`src/App.tsx`): 20s 폴링 하트비트가 발화분을 대상 conv(마커의 `conversationId`, 없으면 전용 `⏳ 작업감시` conv)로 turn 주입.
+  - 마커 삭제→주입 순서로 재발화 폭주 방지. `taskWatchTurnsRef` busy gate + `taskWatchTickBusyRef` 틱 중첩 방지.
+- 로그: `<data_root>/task-watch.log`.
+
 ## 참고 정보
 
 - Claude Max 계정: kcppride@gmail.com

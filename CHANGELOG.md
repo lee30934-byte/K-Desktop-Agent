@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+## [0.7.17] - 2026-07-20
+
+### Added
+- **장기 분리작업 완료 자동 이어가기 — task-watch (전 대화창 공통)**: KDA 는 Claude 를 `claude -p`(단발성)로 spawn 하므로 에이전트가 턴 안에서 띄운 감시자가 세션 경계에서 죽어(`background_killed_on_session_boundary`), "빌드·OCR 같은 장기 분리작업이 끝나면 에이전트가 혼자 이어가기"가 신뢰성 있게 안 됐다. 이를 조건 기반 하트비트로 해결 — 스케줄러 하트비트(X-4, 시간 기반)의 조건 기반 쌍둥이. 에이전트가 `~/.kda/task-watch/<id>.json` 마커(감시 대상 `.done` 파일 또는 PID, `timeoutMs` 안전망, 깨울 때 주입할 `prompt`, 대상 `conversationId`)를 남기고 턴을 끝내면, KDA 상주 프로세스가 `claude -p` 프로세스와 무관하게 20초 주기로 폴링해 조건 충족 시 해당 대화창에 새 턴을 자동 주입해 에이전트를 깨운다. Rust `task_watch_scan`/`task_watch_clear`/`task_watch_log`(PID 생존은 `OpenProcess`+`WaitForSingleObject`, ISO→epoch 파서는 외부 크레이트 없이 구현), 프론트 하트비트는 마커 삭제→주입 순서로 재발화 폭주를 막고 `taskWatchTurnsRef`/`taskWatchTickBusyRef` 로 동시 1턴·틱 중첩을 차단한다. SYSTEM_PROMPT 에 등록법을 심어 전 대화창에서 사용 가능. 회귀테스트 `sidecar/test-task-watch.mjs` 추가.
+
 ## [0.7.16] - 2026-07-10
 
 ### Added

@@ -628,6 +628,10 @@ export default function App() {
   const scheduleTurnsRef = useRef<Map<string, { scheduleId: number; title: string }>>(new Map());
   // scheduleId → 마지막 발화 epoch(ms). db_schedule_done 누락 시 매 틱 재발화 폭주 방지(쿨다운).
   const scheduleFiredAtRef = useRef<Map<number, number>>(new Map());
+  // v0.7.17 — task-watch: 장기 분리작업 완료 자동 이어가기. ~/.kda/task-watch/*.json 마커를
+  // 20s 폴링(Rust task_watch_scan)해 발화분을 대상 conv 로 turn 주입. turnId → {watchId,title} 매핑.
+  // done/error 시 정리. 동시 1턴(busy gate). 발화 후 마커는 즉시 삭제(task_watch_clear)해 재발화 방지.
+  const taskWatchTurnsRef = useRef<Map<string, { watchId: string; title: string }>>(new Map());
   // 텔레그램 회신 함수 ref — handleSidecarEvent(상단 정의)가 하단 정의된 deliverTelegramReply 를
   // 호출하기 위한 우회 (source 순서 디커플). 브리지 섹션에서 .current 할당.
   const deliverTelegramReplyRef = useRef<(chatId: string, text: string) => void>(() => {});
@@ -1608,6 +1612,15 @@ export default function App() {
             void invoke("append_schedule_log", { line }).catch(() => {});
           }
         }
+        // v0.7.17 — task-watch turn 이면 busy gate 해제 + 완료 로그.
+        {
+          const tw = taskWatchTurnsRef.current.get(ev.id);
+          if (tw) {
+            taskWatchTurnsRef.current.delete(ev.id);
+            const line = `[${new Date().toLocaleString("sv-SE")}] DONE task-watch "${tw.watchId}" (${tw.title}) turn=${ev.id}`;
+            void invoke("task_watch_log", { line }).catch(() => {});
+          }
+        }
         // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
         // Background turn (다른 conv) 면 early return + agentId/DB 만 갱신.
         // Active conv 면 기존 로직 그대로 (isStreaming reset, setMessages, setMetrics, 세션 임계치 등).
@@ -1793,6 +1806,16 @@ export default function App() {
             scheduleTurnsRef.current.delete(schId);
             const line = `[${new Date().toLocaleString("sv-SE")}] ERROR schedule#${sch.scheduleId} "${sch.title}" turn=${schId} msg=${(ev as any).message ?? "?"}`;
             void invoke("append_schedule_log", { line }).catch(() => {});
+          }
+        }
+        // v0.7.17 — task-watch turn 실패면 busy gate 해제 + 실패 로그. 마커는 이미 삭제됨(재발화 없음).
+        {
+          const twId = ev.id;
+          const tw = twId ? taskWatchTurnsRef.current.get(twId) : undefined;
+          if (tw && twId) {
+            taskWatchTurnsRef.current.delete(twId);
+            const line = `[${new Date().toLocaleString("sv-SE")}] ERROR task-watch "${tw.watchId}" (${tw.title}) turn=${twId} msg=${(ev as any).message ?? "?"}`;
+            void invoke("task_watch_log", { line }).catch(() => {});
           }
         }
         // Phase 111 (v0.6.60) — background turn 의 error 도 routing.
@@ -3029,6 +3052,142 @@ export default function App() {
       clearTimeout(startTimer);
       clearInterval(interval);
       if (db) { try { db.close(); } catch { /* ignore */ } }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────
+  // v0.7.17 — task-watch 하트비트. 장기 분리작업(빌드·OCR 등) 완료 자동 이어가기.
+  // ~/.kda/task-watch/*.json 마커를 Rust task_watch_scan 으로 20s 폴링 → 발화(fired/timeout)분을
+  // 대상 conv 로 turn 주입 → task_watch_clear 로 마커 삭제(재발화 방지). claude -p 프로세스와
+  // 무관하게 상주 프론트가 감시하므로 세션 경계에서 안 죽는다(background_killed_on_session_boundary).
+  // 스케줄러 하트비트(X-4)와 동형 — time 기반 대신 조건 기반이라는 점만 다르다.
+  // ─────────────────────────────────────────────────────────────
+  const taskWatchTickBusyRef = useRef(false);
+  const taskWatchLog = useCallback((line: string) => {
+    void invoke("task_watch_log", { line: `[${new Date().toLocaleString("sv-SE")}] ${line}` }).catch(() => {});
+  }, []);
+
+  const sendTaskWatchTurn = useStableCallback(
+    async (w: { id: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }) => {
+      if (!dbReadyRef.current) return;
+      if (taskWatchTurnsRef.current.size > 0) return; // busy — 다음 틱
+      let turnId: string | undefined;
+      try {
+        // 대상 conv 확보: 마커의 conversationId 가 실제 존재하면 그 conv(맥락 보존),
+        // 아니면 전용 ⏳ 작업감시 conv (localStorage 영속).
+        let convId = (w.conversationId || "").trim();
+        let convValid = false;
+        if (convId) {
+          try { await getMessages(convId); convValid = true; } catch { convValid = false; }
+        }
+        if (!convValid) {
+          convId = localStorage.getItem("kda_taskwatch_conv_id") || "";
+          const exists = convId && conversations.some((c) => c.id === convId);
+          if (!convId || !exists) {
+            let inDb = false;
+            if (convId) { try { await getMessages(convId); inDb = true; } catch { inDb = false; } }
+            if (!convId || !inDb) {
+              convId = crypto.randomUUID();
+              const newConv = await createConversation(convId, "⏳ 작업감시");
+              setConversations((prev) => [newConv, ...prev]);
+              localStorage.setItem("kda_taskwatch_conv_id", convId);
+            }
+          }
+        }
+
+        // 이전 맥락 (최근 20턴).
+        let history: Array<{ role: "user" | "assistant"; content: string }> = [];
+        try {
+          const prior = await getMessages(convId);
+          history = prior
+            .filter((m) => m.role === "user" || m.role === "assistant")
+            .slice(-20)
+            .map((m) => ({
+              role: m.role as "user" | "assistant",
+              content: m.content.length > 8000 ? m.content.slice(0, 8000) + "\n[...생략...]" : m.content,
+            }));
+        } catch { /* 맥락 없이 진행 */ }
+
+        let agentId: string | undefined;
+        try { const aid = await getConversationAgentId(convId); if (aid) agentId = aid; } catch { /* ignore */ }
+
+        const statusNote =
+          w.status === "timeout"
+            ? `\n⚠ 감시 조건이 확인되지 않은 채 타임아웃으로 깨어났습니다 (${w.note}). 작업이 실제로 끝났는지 먼저 확인하세요.`
+            : `\n(감시 발화: ${w.note})`;
+        const text =
+          `⏳ 감시하던 장기 작업 "${w.title}" 이(가) 완료 신호를 보냈습니다.${statusNote}\n\n` +
+          (w.prompt ? `${w.prompt}\n\n` : "") +
+          `이어서 진행하세요. 추가로 또 다른 장기 작업을 기다려야 하면 ~/.kda/task-watch/ 에 새 마커를 등록하세요.`;
+
+        const userMsg: ChatMessage = {
+          id: crypto.randomUUID(), role: "user", content: text, timestamp: Date.now(),
+        };
+        queueMessageSave(userMsg, convId);
+
+        turnId = crypto.randomUUID();
+        turnToConvMap.current.set(turnId, convId);
+        taskWatchTurnsRef.current.set(turnId, { watchId: w.id, title: w.title });
+        setStreamingConvIds((prev) => {
+          if (prev.has(convId)) return prev;
+          const next = new Set(prev); next.add(convId); return next;
+        });
+
+        const s = buildSendSettings();
+        await invoke("send_message", {
+          message: text, id: turnId, agentId,
+          history: history.length > 0 ? history : undefined,
+          apiKey: s.apiKey, provider: s.provider, model: s.model,
+          reasoningEffort: s.reasoningEffort, permissions: s.permissions,
+          lockedTools: s.lockedTools, safeMode: s.safeMode,
+        });
+        taskWatchLog(`FIRE task-watch "${w.id}" (${w.title}) status=${w.status} conv=${convId.slice(0, 8)} turn=${turnId}`);
+      } catch (err) {
+        // turn 이 시작 안 됐으면 done/error 이벤트가 안 오므로 busy gate 를 여기서 직접 원복.
+        if (turnId) {
+          taskWatchTurnsRef.current.delete(turnId);
+          turnToConvMap.current.delete(turnId);
+        }
+        taskWatchLog(`FIRE-FAIL task-watch "${w.id}" err=${String(err)}`);
+        console.error("[task-watch] turn 주입 실패:", err);
+      }
+    },
+  );
+
+  // 하트비트 루프 — Rust task_watch_scan 폴링. tickBusyRef 로 틱 중첩 방지.
+  useEffect(() => {
+    let cancelled = false;
+    taskWatchLog("HEARTBEAT 시작");
+    const tick = async () => {
+      if (cancelled || !dbReadyRef.current) return;
+      if (taskWatchTickBusyRef.current) return;
+      if (taskWatchTurnsRef.current.size > 0) return; // busy — 진행 중 turn 있음
+      taskWatchTickBusyRef.current = true;
+      try {
+        let fired: Array<{ id: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }> = [];
+        try {
+          fired = (await invoke("task_watch_scan")) as any[];
+        } catch (e) {
+          taskWatchLog(`SCAN-ERR ${String(e)}`);
+          return;
+        }
+        if (!Array.isArray(fired) || fired.length === 0) return;
+        // 한 틱에 1건 — 가장 앞의 발화분만. 마커는 주입 직전 삭제(재발화 폭주 방지);
+        // 주입이 실패해도 done/error(또는 catch)에서 gate 는 풀린다.
+        const w = fired[0];
+        try { await invoke("task_watch_clear", { id: w.id }); } catch { /* 삭제 실패해도 진행 */ }
+        await sendTaskWatchTurn(w);
+      } finally {
+        taskWatchTickBusyRef.current = false;
+      }
+    };
+    const startTimer = setTimeout(() => { void tick(); }, 10000);
+    const interval = setInterval(() => { void tick(); }, 20_000);
+    return () => {
+      cancelled = true;
+      clearTimeout(startTimer);
+      clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
