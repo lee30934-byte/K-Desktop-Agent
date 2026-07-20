@@ -50,12 +50,16 @@ function check(name, cond) {
 check("① fn task_watch_scan 정의", /fn task_watch_scan\s*\(/.test(libRs));
 check("① fn task_watch_clear 정의", /fn task_watch_clear\s*\(/.test(libRs));
 check("① fn task_watch_log 정의", /fn task_watch_log\s*\(/.test(libRs));
+check("① fn task_watch_claim 정의", /fn task_watch_claim\s*\(/.test(libRs));
+check("① fn task_watch_ack 정의", /fn task_watch_ack\s*\(/.test(libRs));
+check("① fn task_watch_release 정의", /fn task_watch_release\s*\(/.test(libRs));
 // generate_handler! 목록에 3개 모두 등록됐는지 (등록 누락 시 invoke 가 런타임 실패)
 const handlerIdx = libRs.indexOf("generate_handler!");
 const handlerBlock = handlerIdx >= 0 ? libRs.slice(handlerIdx, handlerIdx + 4000) : "";
 check("① handler 등록 task_watch_scan", /\btask_watch_scan\b/.test(handlerBlock));
 check("① handler 등록 task_watch_clear", /\btask_watch_clear\b/.test(handlerBlock));
 check("① handler 등록 task_watch_log", /\btask_watch_log\b/.test(handlerBlock));
+check("① handler 등록 durable delivery", /\btask_watch_claim\b/.test(handlerBlock) && /\btask_watch_ack\b/.test(handlerBlock) && /\btask_watch_release\b/.test(handlerBlock));
 
 // ── ② PID 생존검사 + feature ──────────────────────────────
 check("② pid_alive 정의", /fn pid_alive\s*\(/.test(libRs));
@@ -72,13 +76,13 @@ check("③ 경로구분자/상위참조 차단", /contains\('\/'\)|contains\('\\
 
 // ── ④ 프론트 하트비트 wiring ───────────────────────────────
 check("④ task_watch_scan 폴링", /invoke\("task_watch_scan"\)/.test(appTsx));
-check("④ task_watch_clear 호출", /invoke\("task_watch_clear"/.test(appTsx));
 check("④ taskWatchTurnsRef 선언", /taskWatchTurnsRef\s*=\s*useRef/.test(appTsx));
 check("④ tick 중첩방지 gate", /taskWatchTickBusyRef/.test(appTsx));
-// 마커삭제(clear)가 주입(sendTaskWatchTurn)보다 먼저 — 재발화 폭주 방지 순서
-const clearIdx = appTsx.indexOf('invoke("task_watch_clear"');
-const sendIdx = appTsx.indexOf("await sendTaskWatchTurn(w)");
-check("④ clear→주입 순서 (재발화 폭주 방지)", clearIdx >= 0 && sendIdx >= 0 && clearIdx < sendIdx);
+check("④ 주입 전 durable claim", /invoke\("task_watch_claim"/.test(appTsx));
+check("④ done 뒤 ACK 삭제", /case "done"[\s\S]*?invoke\("task_watch_ack"/.test(appTsx));
+check("④ 완료 응답 DB 저장 뒤 ACK", /saveMessage\(convForTurn[\s\S]{0,500}invoke\("task_watch_ack"/.test(appTsx));
+check("④ error 뒤 retry release", /case "error"[\s\S]*?invoke\("task_watch_release"/.test(appTsx));
+check("④ 주입 전 clear 금지", !/invoke\("task_watch_clear"[\s\S]{0,500}sendTaskWatchTurn/.test(appTsx));
 
 // ── ⑤ done/error 양 경로 gate 정리 ─────────────────────────
 // taskWatchTurnsRef.current.delete 가 최소 2회(done + error) 이상 등장해야 함.
@@ -94,6 +98,8 @@ check("⑥ 마커 스키마 watch/type/timeoutMs 안내", /"timeoutMs"/.test(ind
 check("⑦ Rust send_message conversation_id 파라미터", /fn send_message\(([\s\S]*?)\)\s*->/.test(libRs) && /conversation_id:\s*Option<String>/.test(libRs));
 check("⑦ Rust payload conversation_id 주입", /payload\["conversation_id"\]\s*=/.test(libRs));
 check("⑦ sidecar KDA_CONVERSATION_ID env 노출", /KDA_CONVERSATION_ID:\s*\(msg as any\)\.conversation_id/.test(indexTs));
+const conversationEnvCount = (indexTs.match(/KDA_CONVERSATION_ID:/g) || []).length;
+check(`⑦ 모든 CLI provider conversation env 노출 ≥3 (실제 ${conversationEnvCount})`, conversationEnvCount >= 3);
 check("⑦ SYSTEM_PROMPT KDA_CONVERSATION_ID 안내", /KDA_CONVERSATION_ID/.test(indexTs));
 // 프론트 send 경로들이 conversationId 를 넘기는지 (최소 task-watch·일반·스케줄 = 3+)
 const convIdInvokes = (appTsx.match(/conversationId:\s*convId/g) || []).length;

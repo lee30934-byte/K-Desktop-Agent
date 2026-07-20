@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -1418,6 +1418,18 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
             Ok(v) => v,
             Err(_) => continue, // 손상 마커는 건너뜀 (다음 스캔에서 재시도 안 됨 — 방치)
         };
+        if let Some(delivery) = marker.get("_delivery") {
+            if let Some(next_attempt_at) = delivery.get("nextAttemptAt").and_then(|v| v.as_i64()) {
+                if now_ms < next_attempt_at {
+                    continue;
+                }
+            }
+            if let Some(claimed_at) = delivery.get("claimedAt").and_then(|v| v.as_i64()) {
+                if now_ms - claimed_at < 10 * 60 * 1000 {
+                    continue;
+                }
+            }
+        }
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -1432,7 +1444,8 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
             fired.push(serde_json::json!({
                 "id": id,
                 "file": stem,
-                "conversationId": marker.get("conversationId").and_then(|v| v.as_str()),
+                "conversationId": marker.get("conversationId").and_then(|v| v.as_str())
+                    .or_else(|| marker.get("_delivery").and_then(|v| v.get("conversationId")).and_then(|v| v.as_str())),
                 "title": marker.get("title").and_then(|v| v.as_str()).unwrap_or("작업 감시"),
                 "prompt": marker.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
                 "status": status,
@@ -1444,6 +1457,107 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
 }
 
 /// 발화 처리 끝난(또는 취소할) 마커 삭제. id 는 파일명 stem.
+fn task_watch_marker_path(file: &str) -> Result<PathBuf, String> {
+    let safe = sanitize_watch_id(file).ok_or_else(|| format!("invalid watch file: {}", file))?;
+    Ok(task_watch_dir().join(format!("{}.json", safe)))
+}
+
+fn read_task_watch_marker(path: &Path) -> Result<serde_json::Value, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("task-watch marker read failed {}: {}", path.display(), e))?;
+    serde_json::from_str(&raw)
+        .map_err(|e| format!("task-watch marker JSON invalid {}: {}", path.display(), e))
+}
+
+fn write_task_watch_marker(path: &Path, marker: &serde_json::Value) -> Result<(), String> {
+    let raw = serde_json::to_vec_pretty(marker)
+        .map_err(|e| format!("task-watch marker encode failed: {}", e))?;
+    std::fs::write(path, raw)
+        .map_err(|e| format!("task-watch marker write failed {}: {}", path.display(), e))
+}
+
+fn task_watch_claim_marker(path: &Path, turn_id: &str, conversation_id: &str) -> Result<(), String> {
+    let mut marker = read_task_watch_marker(&path)?;
+    let attempts = marker
+        .get("_delivery")
+        .and_then(|v| v.get("attempts"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        + 1;
+    marker["_delivery"] = serde_json::json!({
+        "state": "claimed",
+        "turnId": turn_id,
+        "conversationId": conversation_id,
+        "claimedAt": current_unix_ms(),
+        "attempts": attempts,
+    });
+    write_task_watch_marker(&path, &marker)
+}
+
+#[tauri::command]
+fn task_watch_claim(file: String, turn_id: String, conversation_id: String) -> Result<(), String> {
+    let path = task_watch_marker_path(&file)?;
+    task_watch_claim_marker(&path, &turn_id, &conversation_id)
+}
+
+fn task_watch_ack_marker(path: &Path, turn_id: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let marker = read_task_watch_marker(&path)?;
+    let owner = marker
+        .get("_delivery")
+        .and_then(|v| v.get("turnId"))
+        .and_then(|v| v.as_str());
+    if owner != Some(turn_id) {
+        return Err(format!("task-watch ack owner mismatch for {}", path.display()));
+    }
+    std::fs::remove_file(&path)
+        .map_err(|e| format!("task-watch ack remove failed {}: {}", path.display(), e))
+}
+
+#[tauri::command]
+fn task_watch_ack(file: String, turn_id: String) -> Result<(), String> {
+    let path = task_watch_marker_path(&file)?;
+    task_watch_ack_marker(&path, &turn_id)
+}
+
+fn task_watch_release_marker(path: &Path, turn_id: &str, error: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut marker = read_task_watch_marker(&path)?;
+    let delivery = marker
+        .get("_delivery")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let owner = delivery.get("turnId").and_then(|v| v.as_str());
+    if owner != Some(turn_id) {
+        return Err(format!("task-watch release owner mismatch for {}", path.display()));
+    }
+    let attempts = delivery.get("attempts").and_then(|v| v.as_u64()).unwrap_or(1);
+    let delay_ms = 30_000_i64 * (1_i64 << attempts.saturating_sub(1).min(4) as u32);
+    let conversation_id = delivery
+        .get("conversationId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    marker["_delivery"] = serde_json::json!({
+        "state": "retry_wait",
+        "conversationId": conversation_id,
+        "attempts": attempts,
+        "nextAttemptAt": current_unix_ms() + delay_ms,
+        "lastError": error.chars().take(1000).collect::<String>(),
+    });
+    write_task_watch_marker(&path, &marker)
+}
+
+#[tauri::command]
+fn task_watch_release(file: String, turn_id: String, error: String) -> Result<(), String> {
+    let path = task_watch_marker_path(&file)?;
+    task_watch_release_marker(&path, &turn_id, &error)
+}
+
 #[tauri::command]
 fn task_watch_clear(id: String) -> Result<(), String> {
     let safe = sanitize_watch_id(&id).ok_or_else(|| format!("잘못된 watch id: {}", id))?;
@@ -1476,6 +1590,56 @@ fn current_unix_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod task_watch_delivery_tests {
+    use super::*;
+
+    #[test]
+    fn claim_release_reclaim_ack_is_durable() {
+        let dir = std::env::temp_dir().join(format!(
+            "kda-task-watch-test-{}-{}",
+            std::process::id(),
+            current_unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let marker_path = dir.join("delivery.json");
+        write_task_watch_marker(
+            &marker_path,
+            &serde_json::json!({
+                "id": "delivery",
+                "conversationId": "conv-a",
+                "watch": { "type": "file", "path": "unused.done" }
+            }),
+        )
+        .expect("write marker");
+
+        task_watch_claim_marker(&marker_path, "turn-1", "conv-a").expect("claim");
+        let claimed = read_task_watch_marker(&marker_path).expect("read claim");
+        assert_eq!(claimed["_delivery"]["state"], "claimed");
+        assert_eq!(claimed["_delivery"]["turnId"], "turn-1");
+        assert_eq!(claimed["_delivery"]["attempts"], 1);
+        assert!(task_watch_ack_marker(&marker_path, "wrong-turn").is_err());
+        assert!(marker_path.exists());
+
+        task_watch_release_marker(&marker_path, "turn-1", "temporary failure")
+            .expect("release");
+        let released = read_task_watch_marker(&marker_path).expect("read release");
+        assert_eq!(released["_delivery"]["state"], "retry_wait");
+        assert_eq!(released["_delivery"]["conversationId"], "conv-a");
+        assert_eq!(released["_delivery"]["attempts"], 1);
+        assert!(released["_delivery"]["nextAttemptAt"].as_i64().unwrap() > current_unix_ms());
+
+        task_watch_claim_marker(&marker_path, "turn-2", "conv-a").expect("reclaim");
+        let reclaimed = read_task_watch_marker(&marker_path).expect("read reclaim");
+        assert_eq!(reclaimed["_delivery"]["turnId"], "turn-2");
+        assert_eq!(reclaimed["_delivery"]["attempts"], 2);
+        task_watch_ack_marker(&marker_path, "turn-2").expect("ack");
+        assert!(!marker_path.exists());
+
+        std::fs::remove_dir(&dir).expect("remove test dir");
+    }
 }
 
 /// 데이터 폴더 변경. 옵션으로 기존 데이터 마이그레이션.
@@ -4304,6 +4468,9 @@ pub fn run_with_options(start_minimized: bool) {
             task_watch_scan,
             task_watch_clear,
             task_watch_log,
+            task_watch_claim,
+            task_watch_ack,
+            task_watch_release,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,

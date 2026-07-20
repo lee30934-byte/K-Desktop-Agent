@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [0.7.19] - 2026-07-21
+
+### Fixed
+- **task-watch 완료 전달 보장 근본 수정**: v0.7.18은 `KDA_CONVERSATION_ID`를 Claude CLI에만 주입해 Codex/Gemini가 만든 마커는 대상 대화 ID가 비었고, 완료 마커를 turn 주입 전에 삭제해 전송·DB 저장 실패 시 복구할 수 없었다. 이제 conversation ID를 Claude/Codex/Gemini 세 CLI 모두에 전달한다. 발화 마커는 주입 전 durable claim으로 소유권을 기록하고, 사용자 메시지와 최종 assistant 응답이 DB에 저장된 뒤 일치하는 turn만 ACK 삭제한다. 실패는 30초부터 최대 8분까지 exponential backoff로 재시도하며, 앱 중단으로 남은 claim은 10분 뒤 회수한다. 마커의 최초 라우팅 대화 ID도 claim에 보존해 자동 후속 턴에서 다른 대화로 바뀌지 않는다.
+- **존재하지 않는 대화 ID 검증 수정**: `getMessages()`는 없는 대화에도 빈 배열을 반환하므로 기존 검사가 모든 ID를 유효하다고 오판했다. 실제 conversations row를 확인하는 `getConversationMetrics()` 기반 검증으로 교체했다.
+
+### Tests
+- task-watch wiring 회귀를 35개 불변식으로 확장하고, 실제 `claim → release/backoff → reclaim → ACK` 파일 상태 전이 Rust 테스트를 추가했다.
+
 ## [0.7.18] - 2026-07-20
 
 ### Fixed

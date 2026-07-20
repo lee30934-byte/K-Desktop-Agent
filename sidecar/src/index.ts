@@ -1942,6 +1942,7 @@ type UserMessage = {
   type: "user_message";
   id: string;
   content: string;
+  conversation_id?: string;
   agent_id?: string;  // resume 지원용 (기존 대화 이어가기)
   // Phase 126 (v0.6.81) — Codex resume 실패 자동 회복 가드 (내부 전용, frontend 미사용).
   // true 면 그 turn 은 이미 "새 세션 재시도" 진입 → 무한 재귀/중복 long_task 방지.
@@ -4435,7 +4436,10 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       shell: true,
       // Windows: cmd.exe 콘솔 창 깜빡임 방지 (shell:true 동반 필수)
       windowsHide: true,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        KDA_CONVERSATION_ID: msg.conversation_id ?? "",
+      },
     });
 
     activeTurns.set(msg.id, proc);
@@ -5669,6 +5673,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
       windowsHide: true,
       env: {
         ...process.env,
+        KDA_CONVERSATION_ID: msg.conversation_id ?? "",
         // 인증 이중화 (Phase 135):
         //   api_key 있음 → GEMINI_API_KEY 주입 (Settings 의 Gemini REST 키 재사용)
         //   없음 → GOOGLE_GENAI_USE_GCA=true 로 구독 OAuth 강제 — CLI 가

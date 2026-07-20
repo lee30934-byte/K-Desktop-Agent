@@ -630,8 +630,8 @@ export default function App() {
   const scheduleFiredAtRef = useRef<Map<number, number>>(new Map());
   // v0.7.17 — task-watch: 장기 분리작업 완료 자동 이어가기. ~/.kda/task-watch/*.json 마커를
   // 20s 폴링(Rust task_watch_scan)해 발화분을 대상 conv 로 turn 주입. turnId → {watchId,title} 매핑.
-  // done/error 시 정리. 동시 1턴(busy gate). 발화 후 마커는 즉시 삭제(task_watch_clear)해 재발화 방지.
-  const taskWatchTurnsRef = useRef<Map<string, { watchId: string; title: string }>>(new Map());
+  // 주입 전 durable claim, done ACK 뒤 삭제, error/backoff 재시도로 완료 전달을 보장한다.
+  const taskWatchTurnsRef = useRef<Map<string, { watchId: string; watchFile: string; title: string; lastText?: string }>>(new Map());
   // 텔레그램 회신 함수 ref — handleSidecarEvent(상단 정의)가 하단 정의된 deliverTelegramReply 를
   // 호출하기 위한 우회 (source 순서 디커플). 브리지 섹션에서 .current 할당.
   const deliverTelegramReplyRef = useRef<(chatId: string, text: string) => void>(() => {});
@@ -1357,6 +1357,10 @@ export default function App() {
           const tg = telegramTurnsRef.current.get(ev.id);
           if (tg) tg.text = ev.text;
         }
+        {
+          const tw = taskWatchTurnsRef.current.get(ev.id);
+          if (tw) tw.lastText = ev.text;
+        }
         // partial assistant 텍스트를 DB 에 incrementally 저장 — 강제 종료/재기동 시
         // 끊긴 시점까지의 응답이 휘발하지 않도록. queueMessageSave 가 300ms 디바운스라
         // 매 chunk 마다 DB write 부담은 없음 (같은 id 로 upsert).
@@ -1612,20 +1616,45 @@ export default function App() {
             void invoke("append_schedule_log", { line }).catch(() => {});
           }
         }
-        // v0.7.17 — task-watch turn 이면 busy gate 해제 + 완료 로그.
+        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        // task-watch turn: persist the final assistant message first, then ACK.
+        // If persistence or ACK fails, release the durable marker for retry.
         {
           const tw = taskWatchTurnsRef.current.get(ev.id);
           if (tw) {
             taskWatchTurnsRef.current.delete(ev.id);
             const line = `[${new Date().toLocaleString("sv-SE")}] DONE task-watch "${tw.watchId}" (${tw.title}) turn=${ev.id}`;
-            void invoke("task_watch_log", { line }).catch(() => {});
+            void (async () => {
+              try {
+                if (!convForTurn || !tw.lastText?.trim()) {
+                  throw new Error("done without a durable assistant response");
+                }
+                await saveMessage(convForTurn, {
+                  id: ev.id,
+                  role: "assistant",
+                  content: tw.lastText,
+                  timestamp: Date.now(),
+                  streaming: false,
+                });
+                await invoke("task_watch_ack", { file: tw.watchFile, turnId: ev.id });
+                await invoke("task_watch_log", { line });
+              } catch (err) {
+                await invoke("task_watch_release", {
+                  file: tw.watchFile,
+                  turnId: ev.id,
+                  error: String(err),
+                }).catch(() => {});
+                await invoke("task_watch_log", {
+                  line: `${line} ACK-ERROR=${String(err)} RETRY-SCHEDULED`,
+                }).catch(() => {});
+              }
+            })();
           }
         }
         // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
         // Background turn (다른 conv) 면 early return + agentId/DB 만 갱신.
         // Active conv 면 기존 로직 그대로 (isStreaming reset, setMessages, setMetrics, 세션 임계치 등).
         // v1 엔 background turn 의 메트릭 갱신은 skip — 다음 phase 에서 정밀화.
-        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
         const isActiveConv = convForTurn === activeConversationIdRef.current;
         // turnToConvMap / streamingConvIds 정리 — 항상.
         turnToConvMap.current.delete(ev.id);
@@ -1815,7 +1844,15 @@ export default function App() {
           if (tw && twId) {
             taskWatchTurnsRef.current.delete(twId);
             const line = `[${new Date().toLocaleString("sv-SE")}] ERROR task-watch "${tw.watchId}" (${tw.title}) turn=${twId} msg=${(ev as any).message ?? "?"}`;
-            void invoke("task_watch_log", { line }).catch(() => {});
+            void invoke("task_watch_release", {
+              file: tw.watchFile,
+              turnId: twId,
+              error: String((ev as any).message ?? "unknown error"),
+            })
+              .then(() => invoke("task_watch_log", { line: `${line} RETRY-SCHEDULED` }))
+              .catch((err) => invoke("task_watch_log", {
+                line: `${line} RELEASE-ERROR=${String(err)}`,
+              }));
           }
         }
         // Phase 111 (v0.6.60) — background turn 의 error 도 routing.
@@ -3062,7 +3099,7 @@ export default function App() {
   // ─────────────────────────────────────────────────────────────
   // v0.7.17 — task-watch 하트비트. 장기 분리작업(빌드·OCR 등) 완료 자동 이어가기.
   // ~/.kda/task-watch/*.json 마커를 Rust task_watch_scan 으로 20s 폴링 → 발화(fired/timeout)분을
-  // 대상 conv 로 turn 주입 → task_watch_clear 로 마커 삭제(재발화 방지). claude -p 프로세스와
+  // 대상 conv 로 turn 주입 → done ACK 뒤 마커 삭제. 실패·재시작 시 durable marker 로 복구한다.
   // 무관하게 상주 프론트가 감시하므로 세션 경계에서 안 죽는다(background_killed_on_session_boundary).
   // 스케줄러 하트비트(X-4)와 동형 — time 기반 대신 조건 기반이라는 점만 다르다.
   // ─────────────────────────────────────────────────────────────
@@ -3072,7 +3109,7 @@ export default function App() {
   }, []);
 
   const sendTaskWatchTurn = useStableCallback(
-    async (w: { id: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }) => {
+    async (w: { id: string; file?: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }) => {
       if (!dbReadyRef.current) return;
       if (taskWatchTurnsRef.current.size > 0) return; // busy — 다음 틱
       let turnId: string | undefined;
@@ -3082,14 +3119,14 @@ export default function App() {
         let convId = (w.conversationId || "").trim();
         let convValid = false;
         if (convId) {
-          try { await getMessages(convId); convValid = true; } catch { convValid = false; }
+          try { convValid = (await getConversationMetrics(convId)) !== null; } catch { convValid = false; }
         }
         if (!convValid) {
           convId = localStorage.getItem("kda_taskwatch_conv_id") || "";
           const exists = convId && conversations.some((c) => c.id === convId);
           if (!convId || !exists) {
             let inDb = false;
-            if (convId) { try { await getMessages(convId); inDb = true; } catch { inDb = false; } }
+            if (convId) { try { inDb = (await getConversationMetrics(convId)) !== null; } catch { inDb = false; } }
             if (!convId || !inDb) {
               convId = crypto.randomUUID();
               const newConv = await createConversation(convId, "⏳ 작업감시");
@@ -3127,11 +3164,17 @@ export default function App() {
         const userMsg: ChatMessage = {
           id: crypto.randomUUID(), role: "user", content: text, timestamp: Date.now(),
         };
-        queueMessageSave(userMsg, convId);
 
         turnId = crypto.randomUUID();
+        const watchFile = w.file || w.id;
+        await invoke("task_watch_claim", {
+          file: watchFile,
+          turnId,
+          conversationId: convId,
+        });
         turnToConvMap.current.set(turnId, convId);
-        taskWatchTurnsRef.current.set(turnId, { watchId: w.id, title: w.title });
+        taskWatchTurnsRef.current.set(turnId, { watchId: w.id, watchFile, title: w.title });
+        await saveMessage(convId, userMsg);
         setStreamingConvIds((prev) => {
           if (prev.has(convId)) return prev;
           const next = new Set(prev); next.add(convId); return next;
@@ -3150,6 +3193,14 @@ export default function App() {
       } catch (err) {
         // turn 이 시작 안 됐으면 done/error 이벤트가 안 오므로 busy gate 를 여기서 직접 원복.
         if (turnId) {
+          const tw = taskWatchTurnsRef.current.get(turnId);
+          if (tw) {
+            void invoke("task_watch_release", {
+              file: tw.watchFile,
+              turnId,
+              error: String(err),
+            }).catch(() => {});
+          }
           taskWatchTurnsRef.current.delete(turnId);
           turnToConvMap.current.delete(turnId);
         }
@@ -3169,7 +3220,7 @@ export default function App() {
       if (taskWatchTurnsRef.current.size > 0) return; // busy — 진행 중 turn 있음
       taskWatchTickBusyRef.current = true;
       try {
-        let fired: Array<{ id: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }> = [];
+        let fired: Array<{ id: string; file?: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }> = [];
         try {
           fired = (await invoke("task_watch_scan")) as any[];
         } catch (e) {
@@ -3177,10 +3228,9 @@ export default function App() {
           return;
         }
         if (!Array.isArray(fired) || fired.length === 0) return;
-        // 한 틱에 1건 — 가장 앞의 발화분만. 마커는 주입 직전 삭제(재발화 폭주 방지);
-        // 주입이 실패해도 done/error(또는 catch)에서 gate 는 풀린다.
+        // 한 틱에 1건 — claim을 먼저 영속화한다. done ACK에서만 삭제하고,
+        // 실패 시에는 backoff 상태로 release하여 다음 하트비트가 재시도한다.
         const w = fired[0];
-        try { await invoke("task_watch_clear", { id: w.id }); } catch { /* 삭제 실패해도 진행 */ }
         await sendTaskWatchTurn(w);
       } finally {
         taskWatchTickBusyRef.current = false;
