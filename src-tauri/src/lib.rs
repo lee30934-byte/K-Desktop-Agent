@@ -312,6 +312,10 @@ async fn send_message(
     orchestrate_engines: Option<Vec<String>>,
     // Phase 137 — 엔진별 API 키 (현재 gemini-cli 만 의미). JS `engineApiKeys`.
     engine_api_keys: Option<serde_json::Value>,
+    // v0.7.18 — task-watch: 이 turn 이 속한 KDA conversation id (JS `conversationId`).
+    // sidecar 가 claude 에 KDA_CONVERSATION_ID env 로 노출 → 에이전트가 task-watch 마커에
+    // 자기 conv id 를 넣을 수 있게 함(완료 turn 을 원래 대화창으로 라우팅). None 이면 미설정.
+    conversation_id: Option<String>,
 ) -> Result<(), String> {
     // Phase 137 — 오케스트레이션 엔진 화이트리스트 검증. 2개 이상이면 orchestrate_message.
     let orch: Vec<String> = orchestrate_engines
@@ -334,6 +338,10 @@ async fn send_message(
     // agent_id가 있으면 resume 지원을 위해 추가
     if let Some(aid) = agent_id {
         payload["agent_id"] = serde_json::Value::String(aid);
+    }
+    // v0.7.18 — conversation_id 를 sidecar 로 전달 (task-watch 원래 창 라우팅용).
+    if let Some(cid) = conversation_id {
+        payload["conversation_id"] = serde_json::Value::String(cid);
     }
     // history 가 있으면 sidecar 에 그대로 전달 (이전 턴 컨텍스트용)
     if let Some(h) = history {
@@ -1214,7 +1222,7 @@ fn append_schedule_log(line: String) -> Result<(), String> {
 // 마커 JSON 스키마(에이전트가 Write/Bash 로 생성):
 //   {
 //     "id":            "빌드감시-abc123",         // 파일명 stem 과 동일 권장. clear 시 사용.
-//     "conversationId":"<대상 conv id>",          // 생략 시 프론트가 전용 ⏳ conv 로 주입
+//     "conversationId":"<env KDA_CONVERSATION_ID 값>",  // 넣으면 원래 창으로, 비면 전용 ⏳ conv 폴백
 //     "title":         "5080 빌드 감시",
 //     "prompt":        "빌드가 끝났습니다. 결과를 확인하고 이어서 진행하세요.",
 //     "watch":         { "type": "file", "path": "C:\\...\\build.done" },  // 존재하면 발화

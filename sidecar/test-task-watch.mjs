@@ -89,5 +89,15 @@ check(`⑤ taskWatchTurnsRef 정리 ≥2회 (done+error), 실제 ${deleteCount}�
 check("⑥ SYSTEM_PROMPT task-watch 섹션", /task-watch/.test(indexTs) && /\.kda\/task-watch/.test(indexTs));
 check("⑥ 마커 스키마 watch/type/timeoutMs 안내", /"timeoutMs"/.test(indexTs) && /"type":"file"|"type": *"file"|type":"file"/.test(indexTs.replace(/\s+/g, "")));
 
+// ── ⑦ conversationId 라우팅 (v0.7.18) — 완료 turn 이 원래 창으로 가는 체인 ──
+// 이 체인 어느 한 고리라도 빠지면 마커 conversationId 가 비어 항상 ⏳ 폴백된다.
+check("⑦ Rust send_message conversation_id 파라미터", /fn send_message\(([\s\S]*?)\)\s*->/.test(libRs) && /conversation_id:\s*Option<String>/.test(libRs));
+check("⑦ Rust payload conversation_id 주입", /payload\["conversation_id"\]\s*=/.test(libRs));
+check("⑦ sidecar KDA_CONVERSATION_ID env 노출", /KDA_CONVERSATION_ID:\s*\(msg as any\)\.conversation_id/.test(indexTs));
+check("⑦ SYSTEM_PROMPT KDA_CONVERSATION_ID 안내", /KDA_CONVERSATION_ID/.test(indexTs));
+// 프론트 send 경로들이 conversationId 를 넘기는지 (최소 task-watch·일반·스케줄 = 3+)
+const convIdInvokes = (appTsx.match(/conversationId:\s*convId/g) || []).length;
+check(`⑦ 프론트 send_message conversationId 전달 ≥3 (실제 ${convIdInvokes})`, convIdInvokes >= 3);
+
 console.log(`\n${pass}/${pass + fail} 통과`);
 process.exit(fail > 0 ? 1 : 0);

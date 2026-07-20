@@ -1727,7 +1727,7 @@ KDA 상주 프로세스가 조건 충족을 감지하면 같은 대화창에 새
 등록 방법: \`~/.kda/task-watch/<고유id>.json\` 파일을 하나 생성 (Write 또는 셸 사용). 스키마:
   {
     "id": "<파일명과 동일한 고유 id>",
-    "conversationId": "<지금 이 대화창 id — 알면 넣고, 모르면 생략>",
+    "conversationId": "<환경변수 KDA_CONVERSATION_ID 값을 그대로 넣으세요 — 대개 채워져 있고, 이걸 넣어야 완료 turn 이 지금 이 대화창으로 옵니다. 비어 있으면 생략(전용 ⏳ 작업감시 창으로 폴백)>",
     "title": "5080 빌드 감시",
     "prompt": "빌드가 끝났습니다. 로그를 확인하고 실패면 원인 분석, 성공이면 다음 단계로 진행하세요.",
     "watch": { "type": "file", "path": "C:\\\\...\\\\build.done" },
@@ -3424,6 +3424,10 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
         KDA_FILE_DELETE_LEVEL: toolFlags.effective.file_delete ?? "auto",
         KDA_OVERWRITE_GUARD: "1",
         KDA_PITFALL_GUARD: process.env.KDA_PITFALL_GUARD ?? "1",
+        // v0.7.18 — task-watch: 이 turn 의 KDA conversation id 를 에이전트에 노출.
+        // 에이전트가 task-watch 마커에 이 값을 conversationId 로 넣으면 완료 turn 이
+        // 원래 대화창으로 라우팅됨(없으면 프론트가 ⏳ 작업감시 conv 로 폴백).
+        KDA_CONVERSATION_ID: (msg as any).conversation_id ?? "",
       },
     });
 

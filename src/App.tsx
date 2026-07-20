@@ -2644,6 +2644,7 @@ export default function App() {
         message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
         agentId,
+        conversationId: convId, // v0.7.18 — task-watch 원래 창 라우팅용
         history: history.length > 0 ? history : undefined,
         attachments,
         apiKey,
@@ -2828,6 +2829,7 @@ export default function App() {
         message: text,
         id: turnId,
         agentId,
+        conversationId: convId, // v0.7.18 — task-watch 원래 창 라우팅용
         history: history.length > 0 ? history : undefined,
         apiKey: s.apiKey,
         provider: s.provider,
@@ -2977,6 +2979,7 @@ export default function App() {
         const s = buildSendSettings();
         await invoke("send_message", {
           message: text, id: turnId, agentId,
+          conversationId: convId, // v0.7.18 — task-watch 원래 창 라우팅용
           history: history.length > 0 ? history : undefined,
           apiKey: s.apiKey, provider: s.provider, model: s.model,
           reasoningEffort: s.reasoningEffort, permissions: s.permissions,
@@ -3137,6 +3140,7 @@ export default function App() {
         const s = buildSendSettings();
         await invoke("send_message", {
           message: text, id: turnId, agentId,
+          conversationId: convId, // v0.7.18 — 이어가는 turn 도 같은 창 유지
           history: history.length > 0 ? history : undefined,
           apiKey: s.apiKey, provider: s.provider, model: s.model,
           reasoningEffort: s.reasoningEffort, permissions: s.permissions,
@@ -3859,6 +3863,7 @@ export default function App() {
         message: userMessage.content,
         id: turnId,
         agentId,
+        conversationId: activeConversationIdRef.current ?? undefined, // v0.7.18
         history: history.length > 0 ? history : undefined,
         // 첨부파일은 DB 에 base64 저장 안 함 → 재기동 후 복원 불가 (텍스트만 재전송)
         attachments: undefined,
@@ -4053,6 +4058,7 @@ export default function App() {
         message: summaryPrompt,
         id: summaryTurnId,
         agentId: null, // 새 세션으로 요약 요청
+        conversationId: activeConversationIdRef.current ?? undefined, // v0.7.18
         history: null,
       });
 

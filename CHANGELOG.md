@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+## [0.7.18] - 2026-07-20
+
+### Fixed
+- **task-watch 완료 turn 오배송 수정 (`taskwatch_no_conversationid_misroute`)**: v0.7.17 의 task-watch 가 장기작업 완료 시 turn 을 항상 전용 `⏳ 작업감시` conv 로만 떨궈, 작업을 시작했던 원래 대화창으로 돌아오지 않았다. 감지→발화→주입→완료 메커니즘은 정상이었고(로그 FIRE→DONE 확인), 원인은 설계 갭이었다 — `claude -p` 에이전트는 자기 KDA conversationId 를 알 방법이 없어(turn 요청에 conv id 필드가 없고 conv id 는 프론트에만 존재) 마커의 `conversationId` 를 항상 생략 → 항상 ⏳ 폴백. 이제 프론트가 아는 conversationId 를 turn 파이프라인(App.tsx `send_message` invoke → Rust `send_message` `conversation_id` 파라미터 → sidecar payload)으로 흘려 claude 프로세스에 `KDA_CONVERSATION_ID` env 로 노출한다. 에이전트가 마커에 그 값을 넣으면 완료 turn 이 **원래 대화창으로 정확히 라우팅**된다. conversationId 없는 구형 마커는 여전히 ⏳ 폴백(하위호환). 회귀테스트 `test-task-watch.mjs` 에 라우팅 체인 불변식 5건 추가.
+
 ## [0.7.17] - 2026-07-20
 
 ### Added
