@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+## [0.7.20] - 2026-07-27
+
+### Added
+- **Claude Opus 5 모델 선택 추가**: 신규 공개된 Opus 5 를 KDA 에이전트 모델로 선택 가능하게 했다. 모델 slug `claude-opus-5` 는 추측하지 않고 실제 Claude Code CLI 호출(`claude --model claude-opus-5 -p` → OK/EXIT 0)로 유효성을 검증했다(`codex_gpt56_model_slug_cli_version` 함정 회피). Claude(Max OAuth) provider 와 Claude API(직접) provider 양쪽 model picker 최상단에 추가하고, context 미터 분모(1M)·상태바 표시명("Opus 5")도 함께 반영. sidecar 는 `--model` 로 값을 그대로 전달(화이트리스트 없음)하므로 별도 변경 불필요. 기본 선택 모델은 기존(Fable 5) 유지 — K 가 Settings 에서 직접 선택.
+
 ## [0.7.19] - 2026-07-21
 
 ### Fixed
