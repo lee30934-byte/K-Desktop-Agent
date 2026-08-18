@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [0.7.20] - 2026-08-18
+
+### Added
+- **대화별 엔진(provider) 고정 — Claude 와 Codex 동시 사용**: 종전엔 provider 가 전역 토글(`localStorage.kda_active_provider`) 하나뿐이라 "대화 A 는 Claude, 대화 B 는 Codex" 가 원천적으로 불가능했다. 동시에 두 대화를 돌리려면 매 turn 마다 토글을 바꿔야 했고, 텔레그램·예약·task-watch 처럼 **사람이 없는 시점에 나가는 turn** 은 "그 순간 전역에 켜져 있던" 엔진으로 실행되는 오배송이 났다. 이제 `conversations` 테이블에 `provider`/`model` 컬럼을 두고, 대화 목록의 컨텍스트 메뉴 `🤖 엔진: …` 에서 대화별로 엔진을 고정한다. **NULL 은 "전역 따름"** 으로 기존 동작을 100% 보존하며, 고정된 대화에만 배지가 표시돼 폴백 상태가 눈에 보인다. 결정 로직은 DOM/React 비의존 순수 모듈 `src/providerResolve.ts` 한 곳으로 모아, 5개 send 경로(직접 입력·텔레그램·예약·task-watch·resume 재시도)가 전부 `buildSendSettings(convId)` 를 거치게 배선했다. 확정 provider 와 전역 provider 가 다르면 전역 model 을 상속하지 않는다(Claude 모델명이 Codex turn 에 실려 죽는 것을 차단). API 키도 전역이 아니라 **확정된 provider** 기준으로 읽는다.
+
+### Fixed
+- **provider 별 세션 id 분리 (`agent_id` 혼선)**: 세션 id 가 `conversations.agent_id` 한 칸에 저장돼, 한 대화를 Claude 로 쓰다 Codex 로 바꾸면 Claude session id 가 Codex resume 에 그대로 넘어가 고아 thread 크래시로 이어졌다. `agent_id_claude`/`agent_id_codex`/`agent_id_gemini` 컬럼을 추가하고, 레거시 `agent_id` 는 **claude 일 때만** 폴백으로 읽는다(마이그레이션 무손실). sidecar 의 done 이벤트는 provider 를 싣지 않으므로 프론트에 `turnProviderMap`(turn id → provider) 을 둬 어느 엔진이 만든 세션인지 확정한 뒤 저장한다.
+- **`resume_session_missing` 회복이 백그라운드 turn 에도 적용**: 종전엔 활성 대화가 아니면 에러 핸들러가 조기 return 해, 텔레그램·예약·task-watch 대화는 세션이 깨져도 영원히 자가회복하지 못했다. 이제 회복(해당 provider 컬럼만 NULL 로 비움)이 조기 return 보다 먼저 실행된다.
+- **task-watch 오배송 가드 (W3)**: 마커의 `conversationId` 가 지정한 대화의 provider 로 turn 이 나가도록 잠갔다. 라우팅은 이미 대화별이었는데 provider 만 전역이던 불일치를 닫은 것.
+
+### Tests
+- `sidecar/test-conversation-provider.mjs` 추가 (59 assertions). 정적 배선 검사뿐 아니라 **행위 테스트**를 포함한다 — `providerResolveBehavior.mjs` 를 `node --experimental-strip-types` 로 spawn 해 `src/providerResolve.ts` 를 실제 import 하고, **전역 provider 를 대화별 값과 정반대로 세팅한 상태**에서 대화별 값이 이기는지 확인한다(둘이 같으면 no-op 테스트가 되므로). 인자 없는 `buildSendSettings()` 호출 0건, send 경로별 개별 확인, 전역 localStorage 직접 읽기 재유입 감시로 "한 경로만 조용히 전역으로 되돌아가는" 회귀를 잠근다.
+
 ## [0.7.19] - 2026-07-21
 
 ### Fixed

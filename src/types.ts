@@ -363,6 +363,12 @@ export interface Conversation {
   // Phase 109 (v0.6.58) — 마지막으로 폴더 첨부 박은 폴더 ID.
   // send 시점에 이 값 !== 현재 folderId 면 attachments 다시 박음. 박은 직후 갱신.
   lastAttachedFolderId?: string | null;
+  // Phase 144 (v0.7.20) — W1 대화별 provider/model 고정.
+  // null/undefined = 미지정 → 전역 설정(kda_active_provider) 을 따른다("전역 따름").
+  // 값이 있으면 그 대화의 모든 turn(직접 입력/텔레그램/remote/task-watch/resume)이
+  // 전역 토글과 무관하게 이 provider 로 실행된다.
+  provider?: string | null;
+  model?: string | null;
 }
 
 // Phase 32 — 폴더 (N단계 중첩 가능)

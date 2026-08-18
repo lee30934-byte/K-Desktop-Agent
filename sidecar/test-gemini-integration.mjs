@@ -200,12 +200,24 @@ for (const [label, p] of [
 {
   const text = readFileSync(appTsx, "utf-8");
 
-  // gemini-cli → keys["gemini"] 폴백 3개 site (초기 send / buildSendSettings / Resume)
-  const fallbackCount = (text.match(/provider === "gemini-cli" && !apiKey/g) ?? []).length;
-  if (fallbackCount >= 3) {
-    ok(`App.tsx gemini-cli → gemini REST 키 폴백 ${fallbackCount}개 site 박힘 (필요 3+)`);
+  // Phase 144 (v0.7.20) 이전: gemini-cli → keys["gemini"] 폴백이 App.tsx 3곳에 **복제**돼 있어
+  // 한 곳만 빠지면 "Resume 만 인증 실패" 같은 부분 회귀가 났다. 그래서 3개 site 존재를 셌다.
+  // 이제 provider/키 결정이 순수 모듈 src/providerResolve.ts 한 곳으로 합쳐졌으므로,
+  // 검사도 (a) 단일 출처에 폴백이 살아 있는지 + (b) App.tsx 에 복제본이 되살아나지 않았는지로 바꾼다.
+  // (b) 는 종전보다 **더 강한** 조건이다 — 복제 자체를 금지한다.
+  // 실제 동작(gemini-cli 대화가 gemini 키를 받는지)은 sidecar/providerResolveBehavior.mjs ⑦ 이
+  // resolveProviderSettings 를 직접 import 해 값으로 검증한다.
+  const resolvePath = path.join(projectRoot, "src", "providerResolve.ts");
+  const resolveSrc = existsSync(resolvePath) ? readFileSync(resolvePath, "utf-8") : "";
+  const inResolver = /provider === "gemini-cli" && !apiKey/.test(resolveSrc) &&
+    /clean\(keys\["gemini"\]\)/.test(resolveSrc);
+  const dupInApp = (text.match(/provider === "gemini-cli" && !apiKey/g) ?? []).length;
+  if (inResolver && dupInApp === 0) {
+    ok("gemini-cli → gemini REST 키 폴백이 providerResolve.ts 단일 출처에 박힘 (App.tsx 복제 0)");
+  } else if (!inResolver) {
+    ng("providerResolve.ts 에 gemini-cli → gemini 키 폴백 누락 — 모든 경로가 인증 실패한다");
   } else {
-    ng(`App.tsx 키 폴백 site 부족: ${fallbackCount}개 (send/buildSendSettings/Resume 3곳 필요)`);
+    ng(`App.tsx 에 키 폴백 복제 ${dupInApp}개 재유입 — 단일 출처(providerResolve.ts)로 모아야 함`);
   }
 
   // 컨텍스트 분모 — gemini-cli default 모델이 200K fallback 으로 떨어지지 않게

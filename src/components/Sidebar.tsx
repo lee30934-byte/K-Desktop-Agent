@@ -21,6 +21,8 @@ import {
   type ExportedConversation,
   type ExportedBackup,
 } from "../db";
+// Phase 144 (v0.7.20) — W1 대화별 엔진 라벨/선택지 (App 과 동일 source)
+import { providerLabel, PINNABLE_PROVIDERS } from "../providerResolve";
 
 // Phase 32 — 색상/아이콘 picker 의 사전 정의 팔레트
 const COLOR_PALETTE: Array<{ key: string; value: string | null; label: string }> = [
@@ -81,6 +83,8 @@ interface SidebarProps {
   streamingConvIds?: Set<string>;
   // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel) 진입 callback.
   onOpenLibrary?: () => void;
+  // Phase 144 (v0.7.20) — W1 대화별 엔진(provider) 고정. null = 전역 설정 따름.
+  onSetConversationProvider?: (id: string, provider: string | null) => Promise<void> | void;
 }
 
 function Sidebar({
@@ -108,6 +112,7 @@ function Sidebar({
   onOpenSettings,
   streamingConvIds,
   onOpenLibrary,
+  onSetConversationProvider,
 }: SidebarProps) {
   // 제목 inline edit (대화/폴더 공용)
   const [editingState, setEditingState] = useState<
@@ -165,6 +170,8 @@ function Sidebar({
   const [pickerState, setPickerState] = useState<
     | { kind: "color"; type: "folder" | "conversation"; id: string; x: number; y: number }
     | { kind: "icon"; type: "folder" | "conversation"; id: string; x: number; y: number }
+    // Phase 144 (v0.7.20) — W1 대화별 엔진(provider) 지정
+    | { kind: "provider"; type: "conversation"; id: string; x: number; y: number }
     | null
   >(null);
 
@@ -623,6 +630,21 @@ function Sidebar({
               </div>
               <div className="conv-meta mono">
                 {c.messageCount} msg · {formatRelative(c.lastActive)}
+                {/* Phase 144 (v0.7.20) — 엔진이 고정된 대화만 배지. 미지정(전역 따름)은 표시 없음 */}
+                {c.provider && (
+                  <span
+                    title={`이 대화는 ${providerLabel(c.provider)} 로 고정됨 (전역 설정 무관)`}
+                    style={{
+                      marginLeft: 6,
+                      padding: "0 5px",
+                      borderRadius: 4,
+                      border: "1px solid var(--border)",
+                      opacity: 0.85,
+                    }}
+                  >
+                    {providerLabel(c.provider)}
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -887,6 +909,14 @@ function Sidebar({
         label: "💠 아이콘…",
         action: () => setPickerState({ kind: "icon", type: "conversation", id, x, y }),
       });
+      // Phase 144 (v0.7.20) — W1: 이 대화만의 엔진 고정. 미지정이면 "전역 따름".
+      // 라벨에 현재 상태를 그대로 노출해, 폴백 중인지 고정됐는지가 메뉴에서 바로 보이게 한다.
+      if (onSetConversationProvider) {
+        items.push({
+          label: `🤖 엔진: ${providerLabel(c?.provider ?? null)}…`,
+          action: () => setPickerState({ kind: "provider", type: "conversation", id, x, y }),
+        });
+      }
       items.push({
         label: "📁 폴더로 이동…",
         action: () => setFolderPicker({ convIds: [id], x: contextMenu.x, y: contextMenu.y }),
@@ -1315,6 +1345,42 @@ function Sidebar({
   const renderPicker = () => {
     if (!pickerState) return null;
     const { kind, type, id, x, y } = pickerState;
+    // Phase 144 (v0.7.20) — W1 대화별 엔진 선택.
+    // null(전역 따름) 을 첫 항목으로 둬서 "폴백 상태로 되돌리기" 가 항상 가능하게 한다.
+    if (kind === "provider") {
+      const conv = conversations.find((x) => x.id === id);
+      const current = conv?.provider ?? null;
+      const streaming = streamingConvIds?.has(id) ?? false;
+      return (
+        <div
+          className="picker-popover"
+          style={{ left: clampX(x), top: clampY(y), minWidth: 190 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="picker-label">이 대화의 엔진</div>
+          {PINNABLE_PROVIDERS.map((p) => (
+            <button
+              key={p ?? "__global__"}
+              className={`ctx-item ${current === p ? "active" : ""}`}
+              style={{ width: "100%", textAlign: "left" }}
+              onClick={() => {
+                if (onSetConversationProvider) void onSetConversationProvider(id, p);
+                setPickerState(null);
+              }}
+            >
+              {current === p ? "● " : "　"}
+              {providerLabel(p)}
+              {p === null ? " (기본)" : ""}
+            </button>
+          ))}
+          {streaming && (
+            <div className="picker-label" style={{ opacity: 0.7, fontSize: 11, marginTop: 6 }}>
+              ⏳ 응답 중 — 변경은 다음 턴부터 적용됩니다
+            </div>
+          )}
+        </div>
+      );
+    }
     if (kind === "color") {
       return (
         <div

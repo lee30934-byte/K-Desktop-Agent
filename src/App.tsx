@@ -37,7 +37,6 @@ import {
   updateConversationAgentId,
   getMessages,
   saveMessage,
-  getConversationAgentId,
   generateTitleFromMessage,
   generateSummaryPrompt,
   createCompressedConversation,
@@ -75,7 +74,14 @@ import {
   listRecoverableLongTasks,
   discardLongTask,
   type DBLongTask,
+  // Phase 144 (v0.7.20) — W1 대화별 provider / W2 provider 별 세션 id
+  getConversationProvider,
+  updateConversationProvider,
+  getConversationAgentIdFor,
+  updateConversationAgentIdFor,
 } from "./db";
+// Phase 144 (v0.7.20) — provider 결정 순수 로직 (전역/대화별 폴백 단일 지점)
+import { resolveProviderSettings, providerLabel } from "./providerResolve";
 import type { Folder } from "./types";
 import "./App.css";
 import logger from "./utils/logger";
@@ -617,6 +623,12 @@ export default function App() {
   // K 가 다른 conv 로 이동해도 emit handler 가 이 map 으로 그 turn 의 원래 conv 를 찾아
   // setMessages 분기 (active conv 면 UI 갱신) + DB save 는 항상 원래 conv 에 박음.
   const turnToConvMap = useRef<Map<string, string>>(new Map());
+  // Phase 144 (v0.7.20) — W2: turn id → 그 turn 을 실행한 provider.
+  // done 이벤트가 돌려주는 agentId 는 "어느 엔진의 세션 id 인지" 정보가 없다(sidecar 프로토콜에
+  // provider 필드가 없음). 이걸 모른 채 단일 agent_id 컬럼에 덮어쓰면, 다음 turn 에서 다른
+  // 엔진에 남의 세션 id 를 넘겨 `codex exec resume` 가 exit 1 로 죽는다
+  // (pitfall codex_resume_orphan_thread_crash). send 시점에 박고 done/error 에서 소비·정리.
+  const turnProviderMap = useRef<Map<string, string>>(new Map());
   // Phase 127 (v0.6.82) — 텔레그램 봇 브리지.
   // turnId → { chatId, text } 매핑. 텔레그램발 turn 만 등록. assistant_delta 가 text 누적,
   // done/error 가 그 text 를 chatId 로 회신 + 엔트리 정리. 일반 turn 은 미등록이라 무영향.
@@ -1670,7 +1682,9 @@ export default function App() {
           // Background turn 완료 — DB 의 agentId 만 갱신 + 사이드바 메타 refresh.
           if (ev.agentId && convForTurn && dbReadyRef.current) {
             const aid = ev.agentId;
-            updateConversationAgentId(convForTurn, aid)
+            // Phase 144 (v0.7.20) — W2: 그 turn 을 실행한 provider 의 컬럼에만 저장.
+            const prov = turnProviderMap.current.get(ev.id) ?? "claude";
+            updateConversationAgentIdFor(convForTurn, prov, aid)
               .then(() => {
                 setConversations((prev) =>
                   prev.map((c) => (c.id === convForTurn ? { ...c, agentId: aid } : c)),
@@ -1680,6 +1694,7 @@ export default function App() {
                 console.error("[App] background done — agentId 저장 실패:", err),
               );
           }
+          turnProviderMap.current.delete(ev.id);
           // 사이드바 메타 (메시지 카운트, lastActive) refresh — turn 완료 반영.
           setTimeout(() => refreshConversations(), 100);
           break;
@@ -1691,7 +1706,9 @@ export default function App() {
         const convIdForDone = activeConversationIdRef.current;
         if (ev.agentId && convIdForDone && dbReadyRef.current) {
           const aid = ev.agentId;
-          updateConversationAgentId(convIdForDone, aid)
+          // Phase 144 (v0.7.20) — W2: provider 별 컬럼에 저장 (엔진 섞임 방지).
+          const provForDone = turnProviderMap.current.get(ev.id) ?? "claude";
+          updateConversationAgentIdFor(convIdForDone, provForDone, aid)
             .then(() => {
               setConversations((prev) =>
                 prev.map((c) =>
@@ -1701,6 +1718,7 @@ export default function App() {
             })
             .catch((err) => console.error("[App] agentId 저장 실패:", err));
         }
+        turnProviderMap.current.delete(ev.id);
 
         setMessages((prev) => {
           // 스트리밍 완료 표시 및 DB 저장
@@ -1869,6 +1887,32 @@ export default function App() {
             return next;
           });
         }
+        // Phase 17 / Phase 144 (v0.7.20) — --resume target 이 없어진 경우 자동 회복:
+        // 그 대화·그 provider 의 세션 id 만 클리어해 다음 메시지부터 신규 session 으로 시작.
+        //
+        // W2: 종전엔 (a) 단일 agent_id 컬럼을 비웠고 (b) active conv 일 때만 회복했다.
+        // 대화별 provider 가 켜지면 background turn(텔레그램/예약/task-watch)이 Codex 로
+        // 도는 게 일상이라, 그 경로에서 고아 세션이 영구히 남아 매 turn 죽는다.
+        // → 회복을 active/background 분기보다 **먼저**, provider 별 컬럼에 수행한다.
+        const errAny = ev as any;
+        const errProvider = (ev.id && turnProviderMap.current.get(ev.id)) || "claude";
+        const isResumeMissing = errAny.code === "resume_session_missing";
+        if (isResumeMissing && convForErr && dbReadyRef.current) {
+          updateConversationAgentIdFor(convForErr, errProvider, null)
+            .then(() => {
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === convForErr && errProvider === "claude"
+                    ? { ...c, agentId: null }
+                    : c
+                )
+              );
+            })
+            .catch((e) =>
+              console.error("[App] resume_session_missing 회복 — agentId 클리어 실패:", e),
+            );
+        }
+        if (ev.id) turnProviderMap.current.delete(ev.id);
         if (!isActiveConvErr) {
           // Background turn error — 사이드바 메타 refresh 만. UI 상단 알림 X (K 가 그 conv 보고 있지 않음).
           // 다음 phase 에서 conv 별 토스트 알림 박을 수 있음.
@@ -1878,24 +1922,7 @@ export default function App() {
         setIsStreaming(false);
         setCurrentTurnId(null);
         setStatus("error");
-        // Phase 17: --resume target 이 없어진 경우 자동 회복 — 해당 conversation 의
-        // agent_id 를 클리어해 다음 메시지부터 신규 session 으로 시작.
-        const errAny = ev as any;
-        if (errAny.code === "resume_session_missing") {
-          const convIdForErr = activeConversationIdRef.current;
-          if (convIdForErr && dbReadyRef.current) {
-            updateConversationAgentId(convIdForErr, null)
-              .then(() => {
-                setConversations((prev) =>
-                  prev.map((c) =>
-                    c.id === convIdForErr ? { ...c, agentId: null } : c
-                  )
-                );
-              })
-              .catch((e) =>
-                console.error("[App] resume_session_missing 회복 — agentId 클리어 실패:", e),
-              );
-          }
+        if (isResumeMissing) {
           pushSystem(`⚠️ ${ev.message}`, "warn");
         } else {
           pushSystem(`Error: ${ev.message}`, "error");
@@ -2432,10 +2459,20 @@ export default function App() {
     }
 
     try {
-      // 기존 대화면 agent_id를 가져와서 resume 지원
+      // 활성 provider / model / API 키.
+      // Phase 144 (v0.7.20) — W1: 종전엔 아래쪽에서 localStorage 전역값을 직접 읽어
+      // 대화별 provider 가 불가능했다. 이제 대화 고정값 우선 → 미지정이면 전역 폴백.
+      // agent_id 조회보다 먼저 확정해야 한다 (W2: provider 별 세션 id 를 골라야 하므로).
+      const convSettings = await buildSendSettings(convId || undefined);
+      // W2: 이 turn 이 어느 엔진으로 나갔는지 기록 → done/error 가 그 provider 컬럼에만 저장.
+      turnProviderMap.current.set(turnId, convSettings.provider);
+
+      // 기존 대화면 agent_id를 가져와서 resume 지원.
+      // Phase 144 (v0.7.20) — W2: provider 별 세션 id. Claude 세션 id 를 Codex 에 넘기면
+      // `codex exec resume` 가 exit 1 로 죽는다(codex_resume_orphan_thread_crash).
       let agentId: string | undefined;
       if (convId && dbReady) {
-        const existingAgentId = await getConversationAgentId(convId);
+        const existingAgentId = await getConversationAgentIdFor(convId, convSettings.provider);
         if (existingAgentId) {
           agentId = existingAgentId;
         }
@@ -2526,28 +2563,10 @@ export default function App() {
         base64: f.base64,
       }));
 
-      // 활성 provider / model / API 키 가져오기 (Settings 에서 저장)
-      // Settings 의 LS_ACTIVE_PROVIDER / LS_ACTIVE_MODEL 와 동일 키.
-      let provider: string | undefined;
-      let model: string | undefined;
-      let apiKey: string | undefined;
-      try {
-        provider = localStorage.getItem("kda_active_provider") || "claude";
-        model = localStorage.getItem("kda_active_model") || undefined;
-        // claude(Max 구독) 외의 provider 는 API 키 필요
-        if (provider !== "claude") {
-          const storedKeys = localStorage.getItem("kda_api_keys");
-          if (storedKeys) {
-            const keys = JSON.parse(storedKeys);
-            apiKey = keys[provider];
-            // Gemini CLI 는 별도 키 입력란이 없음 — Gemini REST 키를 재사용 (GEMINI_API_KEY env 주입)
-            if (provider === "gemini-cli" && !apiKey) apiKey = keys["gemini"];
-          }
-        }
-      } catch (e) {
-        console.warn("[App] provider/model 로드 실패:", e);
-        provider = "claude";
-      }
+      // provider/model/apiKey 는 위(agent_id 조회 전)에서 이미 확정됨.
+      const provider: string | undefined = convSettings.provider;
+      const model: string | undefined = convSettings.model;
+      const apiKey: string | undefined = convSettings.apiKey;
 
       // Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort). Settings 의 kda_reasoning_effort.
       // codex provider 에서만 의미. "default"/미설정 → undefined → sidecar 가 config.toml 기본값.
@@ -2726,25 +2745,28 @@ export default function App() {
   // → 기존 send_message 파이프라인 그대로 처리 → done/error 시 [PC이름] 붙여 폰으로 회신.
   // 동시 1턴만 처리(telegramTurnsRef.size 게이트) — resume agentId 충돌 회피.
 
-  // send_message 공통 설정(provider/model/key/perm…) 을 localStorage 에서 읽어 구성.
-  // handleSendMessage 와 동일 키 — 단일 source.
-  const buildSendSettings = useStableCallback(() => {
-    let provider = "claude";
-    let model: string | undefined;
-    let apiKey: string | undefined;
-    try {
-      provider = localStorage.getItem("kda_active_provider") || "claude";
-      model = localStorage.getItem("kda_active_model") || undefined;
-      if (provider !== "claude") {
-        const storedKeys = localStorage.getItem("kda_api_keys");
-        if (storedKeys) {
-          const keys = JSON.parse(storedKeys);
-          apiKey = keys[provider];
-          // Gemini CLI 는 별도 키 입력란이 없음 — Gemini REST 키를 재사용
-          if (provider === "gemini-cli" && !apiKey) apiKey = keys["gemini"];
-        }
+  // send_message 공통 설정(provider/model/key/perm…) 구성.
+  //
+  // Phase 144 (v0.7.20) — W1: convId 를 받는다.
+  //   convId 가 주어지면 conversations.provider/model (대화별 고정값) 을 먼저 보고,
+  //   NULL 이면 전역 localStorage 로 폴백한다 → 기존 대화 동작 무변화.
+  //   convId 를 안 주면 종전과 동일하게 전역값만 쓴다.
+  //   결정 로직 자체는 providerResolve.ts (순수 함수) 한 곳에만 있다.
+  // 주의: DB 조회가 들어가므로 async 다. 호출부는 반드시 await 할 것.
+  const buildSendSettings = useStableCallback(async (convId?: string) => {
+    let pin: { provider: string | null; model: string | null } = { provider: null, model: null };
+    if (convId && dbReadyRef.current) {
+      try {
+        pin = await getConversationProvider(convId);
+      } catch (e) {
+        // DB 조회 실패 시엔 전역 폴백 — turn 을 죽이지 않는다.
+        console.warn("[App] 대화별 provider 조회 실패, 전역값 사용:", e);
       }
-    } catch { /* ignore */ }
+    }
+    const resolved = resolveProviderSettings(pin, localStorage);
+    const provider = resolved.provider;
+    const model = resolved.model;
+    const apiKey = resolved.apiKey;
     let permissions: Record<string, string> | undefined;
     try {
       const arr = JSON.parse(localStorage.getItem("kda_permissions") || "null");
@@ -2768,7 +2790,12 @@ export default function App() {
     let safeMode: "off" | "balanced" | "strict" = "off";
     const sm = localStorage.getItem("kda_safe_mode");
     if (sm === "balanced" || sm === "strict") safeMode = sm;
-    return { provider, model, apiKey, permissions, lockedTools, safeMode, reasoningEffort: loadReasoningEffort() };
+    return {
+      provider, model, apiKey, permissions, lockedTools, safeMode,
+      reasoningEffort: loadReasoningEffort(),
+      // Phase 144 — "conversation" 이면 대화 고정값이 이겼다는 뜻. 로그/디버깅용.
+      providerSource: resolved.source,
+    };
   });
 
   // 텔레그램 응답 회신 — [PC이름] 라벨 + 4096자 분할. done/error 핸들러가 ref 로 호출.
@@ -2835,10 +2862,13 @@ export default function App() {
           }));
       } catch { /* 맥락 없이 진행 */ }
 
-      // resume 용 agentId.
+      // Phase 144 (v0.7.20) — W1: 텔레그램 conv 에 고정된 provider 로 실행 (전역 토글 무관).
+      const s = await buildSendSettings(convId);
+
+      // resume 용 agentId — W2: 확정된 provider 의 세션 id 만 넘긴다.
       let agentId: string | undefined;
       try {
-        const aid = await getConversationAgentId(convId);
+        const aid = await getConversationAgentIdFor(convId, s.provider);
         if (aid) agentId = aid;
       } catch { /* ignore */ }
 
@@ -2853,6 +2883,7 @@ export default function App() {
 
       const turnId = crypto.randomUUID();
       turnToConvMap.current.set(turnId, convId);
+      turnProviderMap.current.set(turnId, s.provider); // W2 — 세션 id 저장 대상 컬럼 결정용
       telegramTurnsRef.current.set(turnId, { chatId, text: "" });
       setStreamingConvIds((prev) => {
         if (prev.has(convId)) return prev;
@@ -2861,7 +2892,6 @@ export default function App() {
         return next;
       });
 
-      const s = buildSendSettings();
       await invoke("send_message", {
         message: text,
         id: turnId,
@@ -2989,8 +3019,12 @@ export default function App() {
             }));
         } catch { /* 맥락 없이 진행 */ }
 
+        // Phase 144 (v0.7.20) — W1: 예약이 지정한 대화의 provider 로 실행 (전역 토글 무관).
+        const s = await buildSendSettings(convId);
+
+        // W2: 확정된 provider 의 세션 id 만 넘긴다.
         let agentId: string | undefined;
-        try { const aid = await getConversationAgentId(convId); if (aid) agentId = aid; } catch { /* ignore */ }
+        try { const aid = await getConversationAgentIdFor(convId, s.provider); if (aid) agentId = aid; } catch { /* ignore */ }
 
         const delayNote = overdueMin >= 1 ? ` (예정 ${row.next_run}, ${overdueMin}분 지연)` : ` (예정 ${row.next_run})`;
         const actionNote = row.action ? `\n할 일: ${row.action}` : "";
@@ -3006,6 +3040,7 @@ export default function App() {
 
         const turnId = crypto.randomUUID();
         turnToConvMap.current.set(turnId, convId);
+        turnProviderMap.current.set(turnId, s.provider); // W2
         scheduleTurnsRef.current.set(turnId, { scheduleId: row.id, title: row.title });
         scheduleFiredAtRef.current.set(row.id, Date.now());
         setStreamingConvIds((prev) => {
@@ -3013,7 +3048,6 @@ export default function App() {
           const next = new Set(prev); next.add(convId); return next;
         });
 
-        const s = buildSendSettings();
         await invoke("send_message", {
           message: text, id: turnId, agentId,
           conversationId: convId, // v0.7.18 — task-watch 원래 창 라우팅용
@@ -3149,8 +3183,15 @@ export default function App() {
             }));
         } catch { /* 맥락 없이 진행 */ }
 
+        // Phase 144 (v0.7.20) — W3: 마커가 지정한 대화(convId)의 provider 로 실행한다.
+        // 종전엔 buildSendSettings() 가 전역 provider 를 읽어, 마커가 A 대화를 지정해도
+        // "그 순간 전역에 켜져 있던" provider 로 turn 이 나갔다 (오배송).
+        // 라우팅(conversationId)은 이미 대화별인데 provider 만 전역이던 불일치를 여기서 닫는다.
+        const s = await buildSendSettings(convId);
+
+        // W2: 확정된 provider 의 세션 id 만 넘긴다 (Claude session id → Codex resume 크래시 차단).
         let agentId: string | undefined;
-        try { const aid = await getConversationAgentId(convId); if (aid) agentId = aid; } catch { /* ignore */ }
+        try { const aid = await getConversationAgentIdFor(convId, s.provider); if (aid) agentId = aid; } catch { /* ignore */ }
 
         const statusNote =
           w.status === "timeout"
@@ -3173,6 +3214,7 @@ export default function App() {
           conversationId: convId,
         });
         turnToConvMap.current.set(turnId, convId);
+        turnProviderMap.current.set(turnId, s.provider); // W2
         taskWatchTurnsRef.current.set(turnId, { watchId: w.id, watchFile, title: w.title });
         await saveMessage(convId, userMsg);
         setStreamingConvIds((prev) => {
@@ -3180,7 +3222,6 @@ export default function App() {
           const next = new Set(prev); next.add(convId); return next;
         });
 
-        const s = buildSendSettings();
         await invoke("send_message", {
           message: text, id: turnId, agentId,
           conversationId: convId, // v0.7.18 — 이어가는 turn 도 같은 창 유지
@@ -3189,7 +3230,7 @@ export default function App() {
           reasoningEffort: s.reasoningEffort, permissions: s.permissions,
           lockedTools: s.lockedTools, safeMode: s.safeMode,
         });
-        taskWatchLog(`FIRE task-watch "${w.id}" (${w.title}) status=${w.status} conv=${convId.slice(0, 8)} turn=${turnId}`);
+        taskWatchLog(`FIRE task-watch "${w.id}" (${w.title}) status=${w.status} conv=${convId.slice(0, 8)} turn=${turnId} provider=${s.provider}(${s.providerSource})`);
       } catch (err) {
         // turn 이 시작 안 됐으면 done/error 이벤트가 안 오므로 busy gate 를 여기서 직접 원복.
         if (turnId) {
@@ -3673,6 +3714,32 @@ export default function App() {
     },
   );
 
+  // Phase 144 (v0.7.20) — W1: 대화별 엔진(provider) 고정 / 해제.
+  // provider = null 이면 "전역 따름" 으로 되돌린다 (기존 동작).
+  // model 은 여기서 지정하지 않는다(null) — 엔진만 바꾸고 모델은 그 엔진 기본값을 쓴다.
+  //   전역 model 은 대부분 Claude 모델명이라, 그걸 Codex 대화에 물려주면 안 된다.
+  // 스트리밍 중 변경은 막지 않는다 — 진행 중 turn 은 이미 확정된 provider 로 끝나고,
+  // 다음 turn 부터 새 값이 적용된다 (picker 에 그 문구를 띄운다).
+  const handleSetConversationProvider = useStableCallback(
+    async (id: string, provider: string | null) => {
+      try {
+        await updateConversationProvider(id, provider, null);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === id ? { ...c, provider, model: null } : c)),
+        );
+        pushSystem(
+          provider
+            ? `이 대화의 엔진을 ${providerLabel(provider)} 로 고정했습니다 (전역 설정과 무관하게 적용).`
+            : `이 대화의 엔진 고정을 해제했습니다 (전역 설정을 따릅니다).`,
+          "info",
+        );
+      } catch (e) {
+        console.error("[App] 대화별 provider 변경 실패:", e);
+        pushSystem(`대화 엔진 변경 실패: ${String(e)}`, "error");
+      }
+    },
+  );
+
   const handleSearchConversations = useStableCallback(
     async (query: string): Promise<Set<string>> => {
       try {
@@ -3802,10 +3869,16 @@ export default function App() {
     setIsStreaming(true);
 
     try {
+      // Phase 144 (v0.7.20) — W1: 끊긴 턴 재시도도 그 대화의 provider 로 (전역 토글 무관).
+      const resumeSettings = await buildSendSettings(convId);
+      turnProviderMap.current.set(turnId, resumeSettings.provider); // W2
+      turnToConvMap.current.set(turnId, convId);
+
       // resume agentId — 마지막 완료된 턴의 것 (DB 에 저장됨). 없으면 신규 세션.
+      // W2: 확정된 provider 의 세션 id 만 (다른 엔진의 id 를 넘기면 resume 이 죽는다).
       let agentId: string | undefined;
       if (dbReady) {
-        const existingAgentId = await getConversationAgentId(convId);
+        const existingAgentId = await getConversationAgentIdFor(convId, resumeSettings.provider);
         if (existingAgentId) agentId = existingAgentId;
       }
 
@@ -3834,26 +3907,13 @@ export default function App() {
           return { role: m.role, content: m.content };
         });
 
-      // provider / model / API key — handleSendMessage 와 동일 로직
-      let provider: string | undefined;
-      let model: string | undefined;
-      let apiKey: string | undefined;
-      try {
-        provider = localStorage.getItem("kda_active_provider") || "claude";
-        model = localStorage.getItem("kda_active_model") || undefined;
-        if (provider !== "claude") {
-          const storedKeys = localStorage.getItem("kda_api_keys");
-          if (storedKeys) {
-            const keys = JSON.parse(storedKeys);
-            apiKey = keys[provider];
-            // Gemini CLI 는 별도 키 입력란이 없음 — Gemini REST 키를 재사용
-            if (provider === "gemini-cli" && !apiKey) apiKey = keys["gemini"];
-          }
-        }
-      } catch (e) {
-        console.warn("[Resume] provider/model 로드 실패:", e);
-        provider = "claude";
-      }
+      // provider / model / API key — handleSendMessage 와 동일 로직.
+      // Phase 144 (v0.7.20) — W1: 위에서 대화별로 확정한 값을 그대로 쓴다.
+      // (종전엔 여기서 전역 localStorage 를 다시 읽어, Codex 대화의 재시도가
+      //  전역이 Claude 면 Claude 로 나가는 오배송이 있었다.)
+      const provider: string | undefined = resumeSettings.provider;
+      const model: string | undefined = resumeSettings.model;
+      const apiKey: string | undefined = resumeSettings.apiKey;
 
       // Phase 125 (v0.6.80) — Resume path 도 Codex 추론 강도 동일 적용.
       const reasoningEffort = loadReasoningEffort();
@@ -4495,6 +4555,7 @@ export default function App() {
         onOpenSettings={openSettings}
         streamingConvIds={streamingConvIds}
         onOpenLibrary={handleOpenLibrary}
+        onSetConversationProvider={handleSetConversationProvider}
       />
 
       {/* Phase 79 (v0.6.22) — Task State Manager: 끊긴 long_task 복구 배너.

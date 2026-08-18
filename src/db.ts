@@ -108,6 +108,23 @@ export async function initDB(): Promise<Database> {
   // - 같은 conv 재 send (last=B vs current=B) → skip (모델이 history 로 기억)
   // - 폴더에서 빼기 (last=B vs current=null) → skip (빠진 거니까 첨부 불필요)
   try { await db.execute(`ALTER TABLE conversations ADD COLUMN last_attached_folder_id TEXT`); } catch {}
+  // Phase 144 (v0.7.20) — W1 대화별 provider/model.
+  // 종전엔 provider 가 localStorage("kda_active_provider") 의 앱 전역 단일값이라
+  // Claude 대화와 Codex 대화를 동시에 굴릴 수 없었다(대화를 옮길 때마다 전역 토글 필요).
+  // 마이그레이션 방침: 기존 대화는 provider = NULL → 전역 localStorage 값으로 폴백.
+  //   → 이 변경으로 기존 대화의 동작은 하나도 바뀌지 않는다. 명시 지정한 대화만 달라진다.
+  //   (폴백을 빼고 기본값을 하드코딩하면 기존 대화가 전부 claude 로 끌려간다 — 금지.)
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN provider TEXT`); } catch {}
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN model TEXT`); } catch {}
+  // Phase 144 (v0.7.20) — W2 provider 별 세션 id 분리.
+  // 종전 agent_id 단일 컬럼에 Claude session id 와 Codex thread id 가 섞여 들어갔다.
+  // 대화별 provider 가 켜지면 provider 혼재가 일상이 되므로, 다른 provider 의 세션 id 를
+  // 넘겨 `codex exec resume` 가 exit 1 로 죽는 사고(codex_resume_orphan_thread_crash)가
+  // 정식 경로가 된다. 컬럼을 provider 별로 쪼개되 기존 agent_id 는 남겨 claude 폴백으로만
+  // 읽어 마이그레이션 리스크를 0 으로 둔다.
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN agent_id_claude TEXT`); } catch {}
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN agent_id_codex TEXT`); } catch {}
+  try { await db.execute(`ALTER TABLE conversations ADD COLUMN agent_id_gemini TEXT`); } catch {}
   // Phase 92 (v0.6.34) — ToolMessage 의 risk 메타 (Phase 85 Connector/Tool Safety Layer) 영속화.
   // 종전엔 in-memory 만 박혀 KDA 재시작 또는 다른 PC 에서 history 불러올 때 위험도 배지 사라짐.
   // 컬럼 추가 후 messageToDbParams + dbRowToMessage 양방향 JSON 직렬화.
@@ -336,6 +353,13 @@ export interface DBConversation {
   icon?: string | null;
   // Phase 109 (v0.6.58) — 폴더 첨부 invalidation 추적
   last_attached_folder_id?: string | null;
+  // Phase 144 (v0.7.20) — W1 대화별 provider/model. NULL = 전역 설정 따름.
+  provider?: string | null;
+  model?: string | null;
+  // Phase 144 (v0.7.20) — W2 provider 별 세션 id.
+  agent_id_claude?: string | null;
+  agent_id_codex?: string | null;
+  agent_id_gemini?: string | null;
 }
 
 /**
@@ -369,6 +393,9 @@ export async function getAllConversations(): Promise<Conversation[]> {
     icon: row.icon ?? null,
     // Phase 109 (v0.6.58)
     lastAttachedFolderId: row.last_attached_folder_id ?? null,
+    // Phase 144 (v0.7.20) — null 이면 전역 설정 따름 ("전역 따름" 으로 표시)
+    provider: row.provider ?? null,
+    model: row.model ?? null,
   }));
 }
 
@@ -871,6 +898,105 @@ export async function getConversationAgentId(id: string): Promise<string | null>
     [id]
   );
   return rows[0]?.agent_id ?? null;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 144 (v0.7.20) — W1 대화별 provider / W2 provider 별 agent_id
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * 대화에 고정된 provider/model 조회.
+ * NULL(미지정) 이면 { provider: null } 을 돌려주고, 호출부가 전역 localStorage 로 폴백한다.
+ * 폴백 판단을 여기서 하지 않는 이유: DB 계층은 "저장된 사실" 만 말하고,
+ * 전역값 해석은 resolveProviderSettings (src/providerResolve.ts) 한 곳에서만 한다.
+ */
+export async function getConversationProvider(
+  id: string,
+): Promise<{ provider: string | null; model: string | null }> {
+  const database = await initDB();
+  const rows = await database.select<{ provider: string | null; model: string | null }[]>(
+    `SELECT provider, model FROM conversations WHERE id = ?`,
+    [id],
+  );
+  return {
+    provider: rows[0]?.provider ?? null,
+    model: rows[0]?.model ?? null,
+  };
+}
+
+/**
+ * 대화의 provider/model 고정. provider = null 이면 "전역 따름" 으로 되돌린다.
+ */
+export async function updateConversationProvider(
+  id: string,
+  provider: string | null,
+  model: string | null,
+): Promise<void> {
+  const database = await initDB();
+  await database.execute(
+    `UPDATE conversations SET provider = ?, model = ?, updated_at = ? WHERE id = ?`,
+    [provider, model, Date.now(), id],
+  );
+}
+
+// provider → agent_id 컬럼. gemini/gemini-cli 는 같은 세션 저장소를 공유한다.
+// 알 수 없는 provider 는 null → 호출부가 세션 id 없이(신규 세션) 진행.
+export function agentIdColumnFor(provider: string | null | undefined): string | null {
+  switch ((provider || "claude").trim()) {
+    case "claude": return "agent_id_claude";
+    case "codex": return "agent_id_codex";
+    case "gemini":
+    case "gemini-cli": return "agent_id_gemini";
+    default: return null;
+  }
+}
+
+/**
+ * provider 별 세션 id 조회.
+ * claude 는 전용 컬럼이 비어 있으면 레거시 agent_id 로 폴백한다 (v0.7.19 이전 대화 보존).
+ * codex/gemini 는 폴백하지 않는다 — 레거시 agent_id 에 Claude session id 가 들어 있을 수
+ * 있고, 그걸 `codex exec resume` 에 넘기면 exit 1 로 죽는다(codex_resume_orphan_thread_crash).
+ */
+export async function getConversationAgentIdFor(
+  id: string,
+  provider: string | null | undefined,
+): Promise<string | null> {
+  const col = agentIdColumnFor(provider);
+  if (!col) return null;
+  const database = await initDB();
+  const rows = await database.select<Record<string, string | null>[]>(
+    `SELECT ${col} AS aid, agent_id AS legacy FROM conversations WHERE id = ?`,
+    [id],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  if (row.aid) return row.aid;
+  if (col === "agent_id_claude") return row.legacy ?? null;
+  return null;
+}
+
+/**
+ * provider 별 세션 id 저장. null 이면 클리어(다음 턴은 새 세션).
+ * claude 는 레거시 agent_id 도 함께 갱신해 구경로(getConversationAgentId)와 어긋나지 않게 한다.
+ */
+export async function updateConversationAgentIdFor(
+  id: string,
+  provider: string | null | undefined,
+  agentId: string | null,
+): Promise<void> {
+  const col = agentIdColumnFor(provider);
+  if (!col) return;
+  const database = await initDB();
+  await database.execute(
+    `UPDATE conversations SET ${col} = ?, updated_at = ? WHERE id = ?`,
+    [agentId, Date.now(), id],
+  );
+  if (col === "agent_id_claude") {
+    await database.execute(
+      `UPDATE conversations SET agent_id = ? WHERE id = ?`,
+      [agentId, id],
+    );
+  }
 }
 
 /**
