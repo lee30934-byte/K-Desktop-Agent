@@ -10,8 +10,8 @@
 # `Unknown command: "pm"` 으로 즉사한다. → npm.cmd 를 절대경로로 호출할 것.
 param(
   [string]$Root = "C:\Users\lee30\Documents\K-Desktop-Agent",
-  [string]$Log  = "C:\Users\lee30\.kda\build-0.7.20-r2.log",
-  [string]$Done = "C:\Users\lee30\.kda\build-0.7.20-r2.done"
+  [string]$Log  = "C:\Users\lee30\.kda\build-0.7.21.log",
+  [string]$Done = "C:\Users\lee30\.kda\build-0.7.21.done"
 )
 
 # 상속 환경을 믿지 않고 PATH 재구성 (MSYS/Git-bash PATH 오염 방지)
@@ -29,7 +29,7 @@ function Write-Log([string]$Text) {
   Add-Content -LiteralPath $Log -Value $Text -Encoding UTF8
 }
 
-Set-Content -LiteralPath $Log -Value "=== v0.7.20 tauri build (r2) start $(Get-Date -Format o) ===" -Encoding UTF8
+Set-Content -LiteralPath $Log -Value "=== v0.7.21 tauri build start $(Get-Date -Format o) ===" -Encoding UTF8
 
 $exit = 1
 try {
