@@ -79,9 +79,17 @@ import {
   updateConversationProvider,
   getConversationAgentIdFor,
   updateConversationAgentIdFor,
+  // Phase 145 (v0.7.22) — 폴더 지침을 모든 send 경로에 싣기 위한 대화-폴더 상태 조회
+  getConversationFolderState,
 } from "./db";
 // Phase 144 (v0.7.20) — provider 결정 순수 로직 (전역/대화별 폴백 단일 지점)
 import { resolveProviderSettings, providerLabel } from "./providerResolve";
+// Phase 145 (v0.7.22) — 폴더 지침/프로필/첨부 결정 순수 로직 (모든 send 경로 공용)
+import {
+  resolveFolderContext,
+  EMPTY_FOLDER_CONTEXT,
+  type ResolvedFolderContext,
+} from "./folderContext";
 import type { Folder } from "./types";
 import "./App.css";
 import logger from "./utils/logger";
@@ -2633,42 +2641,12 @@ export default function App() {
       // - systemPrompt: 매 turn 박음 (Claude CLI 가 --resume 시 system prompt 새로 박음)
       // - attachments: lastAttachedFolderId !== folderId 일 때만 박음 → 박은 직후 DB + state 갱신.
       //   결과: 새 대화 첫 send + 폴더 이동 후 첫 send 둘 다 cover. 같은 폴더 재 send 는 skip (토큰 절약).
-      let folderSystemPrompt: string | undefined;
-      let folderAttachmentPaths: string[] | undefined;
-      let didAttachFolderId: string | null = null; // 박은 직후 DB 갱신용
-      // Phase 138 (v0.7.10) — #3 프로젝트 모드: 폴더에 부여된 프로필을 매 turn 전달.
-      // sidecar 가 agent-flags.json 의 projectMode ON 일 때만 enforce (OFF 면 무시).
-      let projectProfile: ProjectProfile | undefined;
-      if (convId) {
-        try {
-          const conv = conversations.find((c) => c.id === convId);
-          if (conv?.folderId) {
-            const folder = await getFolderById(conv.folderId);
-            if (folder?.systemPrompt && folder.systemPrompt.trim()) {
-              folderSystemPrompt = folder.systemPrompt;
-            }
-            if (folder?.projectProfile) {
-              projectProfile = folder.projectProfile;
-            }
-            const shouldAttach =
-              (conv.lastAttachedFolderId ?? null) !== conv.folderId &&
-              Array.isArray(folder?.attachments) &&
-              folder.attachments.length > 0;
-            if (shouldAttach) {
-              const paths = folder!.attachments
-                .map((a) => a.path)
-                .filter((p): p is string => typeof p === "string" && p.length > 0);
-              if (paths.length > 0) {
-                folderAttachmentPaths = paths;
-                didAttachFolderId = conv.folderId;
-              }
-            }
-          }
-        } catch (err) {
-          // pitfall_js_arg_type_silent_throw — silent throw 방지. 로그 + 진행 (지침 없이 send).
-          console.warn("[App] 폴더 지침 로드 실패:", err);
-        }
-      }
+      // Phase 145 (v0.7.22) — 결정 로직은 buildFolderContext 한 곳에만 있다.
+      // 여기(사람 입력)만 지침을 받고 자동 주입 경로는 못 받던 배선 누락을 구조로 막는다.
+      const folderCtx = await buildFolderContext(convId, { allowAttachments: true });
+      const folderSystemPrompt = folderCtx.folderSystemPrompt;
+      const folderAttachmentPaths = folderCtx.folderAttachmentPaths;
+      const projectProfile = folderCtx.projectProfile;
 
       // Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 opt-in.
       // Settings 의 "멀티 엔진" 토글 ON + 엔진 2개 이상 선택 시에만 orchestrateEngines 전달
@@ -2724,19 +2702,9 @@ export default function App() {
       // Phase 109 (v0.6.58) — 폴더 첨부 박은 직후 DB + in-memory state 갱신.
       // 이렇게 해야 같은 conv 의 다음 send 가 last === current 로 인식해서 skip.
       // 폴더 이동 시엔 conv.folderId 가 새 폴더로 update 된 상태이므로 다음 send 에서 다시 mismatch → 박음.
-      if (convId && didAttachFolderId) {
-        try {
-          await updateConversationLastAttachedFolder(convId, didAttachFolderId);
-          setConversations((prev) =>
-            prev.map((c) =>
-              c.id === convId ? { ...c, lastAttachedFolderId: didAttachFolderId } : c,
-            ),
-          );
-        } catch (err) {
-          // DB update 실패해도 sidecar 는 이미 받았으므로 모델은 정상 응답. 다음 send 에 첨부 재박힘 (중복) 정도가 부작용.
-          console.warn("[App] lastAttachedFolderId 갱신 실패:", err);
-        }
-      }
+      // DB update 실패해도 sidecar 는 이미 받았으므로 모델은 정상 응답.
+      // 다음 send 에 첨부가 다시 박히는 (중복) 정도가 부작용.
+      if (convId) await commitFolderAttachment(convId, folderCtx);
     } catch (err) {
       setIsStreaming(false);
       setCurrentTurnId(null);
@@ -2801,6 +2769,53 @@ export default function App() {
       providerSource: resolved.source,
     };
   });
+
+  /**
+   * Phase 145 (v0.7.22) — 폴더 프로젝트 지침을 **모든 send 경로**에 싣는 단일 배선.
+   *
+   * 종전엔 handleSendMessage 안에만 인라인으로 있어, 자동 주입 turn(task-watch / 텔레그램 /
+   * 예약 / resume)은 폴더 지침을 전혀 못 받았다 — 에러 없이 조용히. 폴더 지침에 권한 경계가
+   * 들어 있는 프로젝트에선 그 turn 이 무권한 상태로 실행된다(2026-08-18 cae-automation 사고).
+   *
+   * allowAttachments=false 인 경로(자동 주입)는 지침/프로필만 싣는다. 첨부는 파일 읽기라
+   * 실패 가능성이 있고 sentinel 갱신까지 필요해서, 사람이 시작한 turn 에서만 박는다.
+   */
+  const buildFolderContext = useStableCallback(
+    async (
+      convId?: string | null,
+      options?: { allowAttachments?: boolean },
+    ): Promise<ResolvedFolderContext> => {
+      const id = (convId || "").trim();
+      if (!id || !dbReadyRef.current) return { ...EMPTY_FOLDER_CONTEXT };
+      try {
+        const convState = await getConversationFolderState(id);
+        if (!convState?.folderId) return { ...EMPTY_FOLDER_CONTEXT };
+        const folder = await getFolderById(convState.folderId);
+        return resolveFolderContext(convState, folder, options);
+      } catch (err) {
+        // pitfall_js_arg_type_silent_throw — 지침 로드 실패로 turn 을 죽이지 않는다.
+        console.warn("[App] 폴더 지침 로드 실패:", err);
+        return { ...EMPTY_FOLDER_CONTEXT };
+      }
+    },
+  );
+
+  /** 폴더 첨부를 박은 직후 sentinel 갱신 (같은 폴더 재send 는 skip 되도록). */
+  const commitFolderAttachment = useStableCallback(
+    async (convId: string, ctx: ResolvedFolderContext) => {
+      if (!convId || !ctx.didAttachFolderId) return;
+      try {
+        await updateConversationLastAttachedFolder(convId, ctx.didAttachFolderId);
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === convId ? { ...c, lastAttachedFolderId: ctx.didAttachFolderId } : c,
+          ),
+        );
+      } catch (err) {
+        console.warn("[App] lastAttachedFolderId 갱신 실패:", err);
+      }
+    },
+  );
 
   // 텔레그램 응답 회신 — [PC이름] 라벨 + 4096자 분할. done/error 핸들러가 ref 로 호출.
   const deliverTelegramReply = useStableCallback(async (chatId: string, text: string) => {
@@ -2868,6 +2883,8 @@ export default function App() {
 
       // Phase 144 (v0.7.20) — W1: 텔레그램 conv 에 고정된 provider 로 실행 (전역 토글 무관).
       const s = await buildSendSettings(convId);
+      // Phase 145 (v0.7.22) — 폴더 지침(권한 경계 포함)을 이 경로에도 싣는다.
+      const folderCtx = await buildFolderContext(convId);
 
       // resume 용 agentId — W2: 확정된 provider 의 세션 id 만 넘긴다.
       let agentId: string | undefined;
@@ -2909,6 +2926,8 @@ export default function App() {
         permissions: s.permissions,
         lockedTools: s.lockedTools,
         safeMode: s.safeMode,
+        folderSystemPrompt: folderCtx.folderSystemPrompt,
+        projectProfile: folderCtx.projectProfile,
       });
     } catch (err) {
       console.error("[Telegram] turn 주입 실패:", err);
@@ -3025,6 +3044,8 @@ export default function App() {
 
         // Phase 144 (v0.7.20) — W1: 예약이 지정한 대화의 provider 로 실행 (전역 토글 무관).
         const s = await buildSendSettings(convId);
+        // Phase 145 (v0.7.22) — 폴더 지침(권한 경계 포함)을 이 경로에도 싣는다.
+        const folderCtx = await buildFolderContext(convId);
 
         // W2: 확정된 provider 의 세션 id 만 넘긴다.
         let agentId: string | undefined;
@@ -3059,6 +3080,8 @@ export default function App() {
           apiKey: s.apiKey, provider: s.provider, model: s.model,
           reasoningEffort: s.reasoningEffort, permissions: s.permissions,
           lockedTools: s.lockedTools, safeMode: s.safeMode,
+          folderSystemPrompt: folderCtx.folderSystemPrompt,
+          projectProfile: folderCtx.projectProfile,
         });
         schedLog(`FIRE schedule#${row.id} "${row.title}" overdue=${overdueMin}m turn=${turnId}`);
 
@@ -3193,6 +3216,11 @@ export default function App() {
         // 라우팅(conversationId)은 이미 대화별인데 provider 만 전역이던 불일치를 여기서 닫는다.
         const s = await buildSendSettings(convId);
 
+        // Phase 145 (v0.7.22) — 이 경로가 폴더 지침을 통째로 빠뜨리던 결함의 수정 지점.
+        // 마커가 지정한 대화가 프로젝트 폴더에 속하면 그 지침(권한 경계 포함)을 반드시 싣는다.
+        // 종전엔 지침 없이 나가서, 주입된 turn 만 무권한으로 굴러갔다(에러/경고 없음).
+        const folderCtx = await buildFolderContext(convId);
+
         // W2: 확정된 provider 의 세션 id 만 넘긴다 (Claude session id → Codex resume 크래시 차단).
         let agentId: string | undefined;
         try { const aid = await getConversationAgentIdFor(convId, s.provider); if (aid) agentId = aid; } catch { /* ignore */ }
@@ -3233,8 +3261,10 @@ export default function App() {
           apiKey: s.apiKey, provider: s.provider, model: s.model,
           reasoningEffort: s.reasoningEffort, permissions: s.permissions,
           lockedTools: s.lockedTools, safeMode: s.safeMode,
+          folderSystemPrompt: folderCtx.folderSystemPrompt,
+          projectProfile: folderCtx.projectProfile,
         });
-        taskWatchLog(`FIRE task-watch "${w.id}" (${w.title}) status=${w.status} conv=${convId.slice(0, 8)} turn=${turnId} provider=${s.provider}(${s.providerSource})`);
+        taskWatchLog(`FIRE task-watch "${w.id}" (${w.title}) status=${w.status} conv=${convId.slice(0, 8)} turn=${turnId} provider=${s.provider}(${s.providerSource}) folderInstructions=${folderCtx.folderSystemPrompt ? "yes" : "no"}`);
       } catch (err) {
         // turn 이 시작 안 됐으면 done/error 이벤트가 안 오므로 busy gate 를 여기서 직접 원복.
         if (turnId) {
@@ -3970,6 +4000,10 @@ export default function App() {
         /* ignore */
       }
 
+      // Phase 145 (v0.7.22) — 재시도 turn 도 폴더 지침을 그대로 싣는다.
+      // (같은 질문인데 재시도만 무권한으로 나가면 결과가 달라진다.)
+      const folderCtx = await buildFolderContext(activeConversationIdRef.current);
+
       pushSystem("↻ 같은 질문 재시도 중... (이전 도구 결과를 컨텍스트에 포함)", "info");
       logger.log(`[Resume] 재전송: turnId=${turnId}, agentId=${agentId ?? "(신규)"}`);
 
@@ -3988,6 +4022,8 @@ export default function App() {
         permissions,
         lockedTools,
         safeMode,
+        folderSystemPrompt: folderCtx.folderSystemPrompt,
+        projectProfile: folderCtx.projectProfile,
       });
     } catch (err) {
       setIsStreaming(false);

@@ -14,6 +14,7 @@ const root = path.join(__dirname, "..");
 const src = readFileSync(path.join(__dirname, "src", "index.ts"), "utf-8");
 const db = readFileSync(path.join(root, "src", "db.ts"), "utf-8");
 const app = readFileSync(path.join(root, "src", "App.tsx"), "utf-8");
+const folderCtx = readFileSync(path.join(root, "src", "folderContext.ts"), "utf-8");
 const lib = readFileSync(path.join(root, "src-tauri", "src", "lib.rs"), "utf-8");
 const dialog = readFileSync(
   path.join(root, "src", "components", "FolderInstructionsDialog.tsx"),
@@ -98,7 +99,13 @@ check("updateFolderProjectProfile 갱신 함수", /export async function updateF
 
 // ── 8. App.tsx + Rust 플러밍 ─────────────────────────────────────────────
 console.log("\n[8] App.tsx → Rust 플러밍");
-check("App 이 folder.projectProfile 읽음", /projectProfile = folder\.projectProfile;/.test(app));
+// Phase 145 (v0.7.22) — 읽는 주체가 App 인라인 → 순수 모듈 folderContext.ts 로 이동했다.
+// 검사 강도는 유지: 모듈이 folder.projectProfile 을 실제로 읽고, App 이 그 결과를 쓰는지 둘 다 본다.
+check(
+  "folderContext 가 folder.projectProfile 읽음 + App 이 그 결과를 씀",
+  /const projectProfile = folder\.projectProfile \?\? undefined;/.test(folderCtx) &&
+    /const projectProfile = folderCtx\.projectProfile;/.test(app),
+);
 check("App send_message 가 projectProfile 전달", /folderAttachmentPaths,\s*projectProfile,/.test(app));
 check("App 저장 핸들러가 updateFolderProjectProfile 호출", /await updateFolderProjectProfile\(folderId, projectProfile\)/.test(app));
 check("Rust send_message 가 project_profile 파라미터", /project_profile: Option<serde_json::Value>,/.test(lib));

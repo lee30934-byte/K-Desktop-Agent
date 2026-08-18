@@ -411,6 +411,32 @@ export async function updateConversationLastAttachedFolder(
   );
 }
 
+/**
+ * Phase 145 (v0.7.22) — 대화의 폴더 소속 상태만 DB 에서 직접 읽는다.
+ *
+ * 왜 in-memory conversations state 를 안 쓰는가:
+ *   자동 주입 경로(task-watch/텔레그램/예약)는 지금 화면에 없는 대화를 대상으로 돌 수 있고,
+ *   그 대화가 state 배열에 없으면 폴더 지침이 조용히 빠진다. 지침 누락은 권한 경계 누락이라
+ *   "없으면 그냥 없는 대로" 가 허용되지 않는다 → 항상 DB 를 1회 조회한다.
+ */
+export async function getConversationFolderState(
+  id: string,
+): Promise<{ folderId: string | null; lastAttachedFolderId: string | null } | null> {
+  const database = await initDB();
+  const rows = await database.select<
+    { folder_id: string | null; last_attached_folder_id: string | null }[]
+  >(
+    `SELECT folder_id, last_attached_folder_id FROM conversations WHERE id = ?`,
+    [id],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    folderId: row.folder_id ?? null,
+    lastAttachedFolderId: row.last_attached_folder_id ?? null,
+  };
+}
+
 // Phase 110 (v0.6.59) — 폴더 지침 저장 시 호출. 그 폴더 안의 모든 conv 의
 // last_attached_folder_id 를 null 로 reset → 다음 send 에 새 첨부 박힘.
 // K 의 함정 #3 회피: "지침 첨부 수정해도 옛 conv 는 옛 첨부만 기억" 문제 해결.

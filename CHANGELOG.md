@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [0.7.22] - 2026-08-18
+
+### Fixed
+- **자동 주입 turn 이 폴더 프로젝트 지침(권한 경계)을 통째로 못 받던 결함**: 폴더 지침(`folderSystemPrompt`)·프로젝트 프로필·폴더 첨부 결정 로직이 `handleSendMessage` 안에만 인라인으로 있었다. 그래서 **사람이 직접 입력한 turn 만** 지침을 받았고, 자동 주입 4경로(task-watch·텔레그램·예약/remote trigger·resume 재시도)는 지침 없이 실행됐다 — 에러도 경고도 없이 조용히. 실제 피해(2026-08-18, cae-automation): task-watch 로 주입한 실행자 turn 이 폴더의 권한 경계(수정 금지 경로, git 금지 목록, 판정 권한 없음)를 못 받아 그 turn 이 무권한 상태로 굴러갔다. 회피책은 "프롬프트에 경계를 손으로 매번 동봉" 이었고 한 번만 빠뜨려도 재발하는 구조였다. 이제 결정 로직을 DOM/React/Tauri/DB 비의존 순수 모듈 `src/folderContext.ts` 한 곳으로 모으고, 5개 send 경로가 전부 `buildFolderContext(convId)` 를 거치게 배선했다. 지침과 프로필은 **경로를 가리지 않고 매 turn** 실린다.
+- **주입 turn 이 화면에 없는 대화를 겨냥해도 지침을 찾는다**: 폴더 상태를 in-memory `conversations` state 가 아니라 DB(`getConversationFolderState`)에서 읽는다. 자동 주입은 열려 있지 않은 대화로도 나가므로 state 조회로는 폴더를 못 찾는 경우가 있었다.
+- **지침 로드 실패가 turn 자체를 죽이지 않는다**: 폴더/DB 조회가 어떤 이유로 실패해도 빈 컨텍스트로 폴백하고 turn 은 계속 나간다(경고 로그만). 첨부는 파일 읽기라 비용·실패 위험이 있어, sentinel 을 갱신할 수 없는 자동 주입 경로는 지침만 싣고 첨부는 싣지 않는다(토큰 절약, 기존 동작 보존).
+
+### Changed
+- task-watch FIRE 로그에 `folderInstructions=yes|no` 를 기록한다. 같은 결함이 재발하면 증상이 아니라 로그 한 줄로 즉시 판별된다.
+
+### Tests
+- `sidecar/test-folder-instructions.mjs` 추가 (48 assertions). 정적 배선 검사에 더해 **행위 테스트**(`sidecar/folderContextBehavior.mjs`, 21 assertions)를 spawn 해 `src/folderContext.ts` 를 실제 import 하고, 사고를 그대로 재현한 픽스처(지침 안에 권한 경계 문구)로 **첨부 비허용(=자동 주입) 옵션에서도 권한 경계가 실리는지**를 확인한다. 5개 send 경로 개별 확인, `getFolderById` 인라인 재유입 감시, `[A0]` 로더 런타임 비의존 잠금(node 20 CI 대응)을 포함한다. 실제로 task-watch 경로에서 `folderSystemPrompt` 한 줄을 빼는 뮤테이션으로 ❌ 가 뜨는 것을 확인했다(47/48).
+
 ## [0.7.21] - 2026-08-18
 
 ### Added
