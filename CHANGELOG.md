@@ -5,7 +5,7 @@
 
 ## [Unreleased]
 
-## [0.7.20] - 2026-08-18
+## [0.7.21] - 2026-08-18
 
 ### Added
 - **대화별 엔진(provider) 고정 — Claude 와 Codex 동시 사용**: 종전엔 provider 가 전역 토글(`localStorage.kda_active_provider`) 하나뿐이라 "대화 A 는 Claude, 대화 B 는 Codex" 가 원천적으로 불가능했다. 동시에 두 대화를 돌리려면 매 turn 마다 토글을 바꿔야 했고, 텔레그램·예약·task-watch 처럼 **사람이 없는 시점에 나가는 turn** 은 "그 순간 전역에 켜져 있던" 엔진으로 실행되는 오배송이 났다. 이제 `conversations` 테이블에 `provider`/`model` 컬럼을 두고, 대화 목록의 컨텍스트 메뉴 `🤖 엔진: …` 에서 대화별로 엔진을 고정한다. **NULL 은 "전역 따름"** 으로 기존 동작을 100% 보존하며, 고정된 대화에만 배지가 표시돼 폴백 상태가 눈에 보인다. 결정 로직은 DOM/React 비의존 순수 모듈 `src/providerResolve.ts` 한 곳으로 모아, 5개 send 경로(직접 입력·텔레그램·예약·task-watch·resume 재시도)가 전부 `buildSendSettings(convId)` 를 거치게 배선했다. 확정 provider 와 전역 provider 가 다르면 전역 model 을 상속하지 않는다(Claude 모델명이 Codex turn 에 실려 죽는 것을 차단). API 키도 전역이 아니라 **확정된 provider** 기준으로 읽는다.
@@ -17,6 +17,10 @@
 
 ### Tests
 - `sidecar/test-conversation-provider.mjs` 추가 (59 assertions). 정적 배선 검사뿐 아니라 **행위 테스트**를 포함한다 — `providerResolveBehavior.mjs` 를 `node --experimental-strip-types` 로 spawn 해 `src/providerResolve.ts` 를 실제 import 하고, **전역 provider 를 대화별 값과 정반대로 세팅한 상태**에서 대화별 값이 이기는지 확인한다(둘이 같으면 no-op 테스트가 되므로). 인자 없는 `buildSendSettings()` 호출 0건, send 경로별 개별 확인, 전역 localStorage 직접 읽기 재유입 감시로 "한 경로만 조용히 전역으로 되돌아가는" 회귀를 잠근다.
+## [0.7.20] - 2026-07-27
+
+### Added
+- **Claude Opus 5 모델 선택 추가**: 신규 공개된 Opus 5 를 KDA 에이전트 모델로 선택 가능하게 했다. 모델 slug `claude-opus-5` 는 추측하지 않고 실제 Claude Code CLI 호출(`claude --model claude-opus-5 -p` → OK/EXIT 0)로 유효성을 검증했다(`codex_gpt56_model_slug_cli_version` 함정 회피). Claude(Max OAuth) provider 와 Claude API(직접) provider 양쪽 model picker 최상단에 추가하고, context 미터 분모(1M)·상태바 표시명("Opus 5")도 함께 반영. sidecar 는 `--model` 로 값을 그대로 전달(화이트리스트 없음)하므로 별도 변경 불필요. 기본 선택 모델은 기존(Fable 5) 유지 — K 가 Settings 에서 직접 선택.
 
 ## [0.7.19] - 2026-07-21
 

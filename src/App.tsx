@@ -890,6 +890,7 @@ export default function App() {
   // claude-opus-4-8 명시 선택은 그대로 4.8 표시.
   const currentModelLabel = useMemo(() => {
     if (activeProvider === "claude") {
+      if (activeModelId === "claude-opus-5") return "Opus 5";
       if (activeModelId === "claude-fable-5") return "Fable 5";
       if (activeModelId === "claude-opus-4-8") return "Opus 4.8";
       if (!activeModelId || activeModelId === "default") return "Claude CLI auto";
@@ -938,17 +939,20 @@ export default function App() {
 
     // Phase 111.2 (v0.6.62) — K 정정: "Opus 5.7 같은건 없어". 기본 모델 = Opus 4.8.
     // Claude (Max OAuth) — default, Fable 5, Opus 4.8 모두 1M ctx.
-    if (activeProvider === "claude" && (!activeModelId || id === "default" || id === "claude-fable-5" || id === "claude-opus-4-8")) {
+    if (activeProvider === "claude" && (!activeModelId || id === "default" || id === "claude-opus-5" || id === "claude-fable-5" || id === "claude-opus-4-8")) {
       return {
         tokens: 1_000_000,
-        source: id === "claude-fable-5"
-          ? "Fable 5 (1M)"
-          : id === "claude-opus-4-8"
-            ? "Opus 4.8 (1M)"
-            : "Claude Max default (1M)",
+        source: id === "claude-opus-5"
+          ? "Opus 5 (1M)"
+          : id === "claude-fable-5"
+            ? "Fable 5 (1M)"
+            : id === "claude-opus-4-8"
+              ? "Opus 4.8 (1M)"
+              : "Claude Max default (1M)",
       };
     }
 
+    if (id === "claude-opus-5") return { tokens: 1_000_000, source: "Opus 5 (1M)" };
     if (id === "claude-fable-5") return { tokens: 1_000_000, source: "Fable 5 (1M)" };
 
     if (id === "gpt-5.6" || id.startsWith("gpt-5.6-")) {
