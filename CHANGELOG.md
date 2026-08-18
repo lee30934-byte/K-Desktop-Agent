@@ -16,8 +16,8 @@
 - **task-watch 오배송 가드 (W3)**: 마커의 `conversationId` 가 지정한 대화의 provider 로 turn 이 나가도록 잠갔다. 라우팅은 이미 대화별이었는데 provider 만 전역이던 불일치를 닫은 것.
 
 ### Tests
-- **CI Node 를 22 로 정렬 + 행위 테스트 런타임 감지**: 릴리스 워크플로가 Node 20 을 쓰는 바람에 위 행위 테스트(`.ts` 직접 import = 타입 스트리핑, Node ≥22.6 필요)가 CI 에서만 실패해 릴리스가 게이트에서 차단됐다(로컬 59/59 ↔ CI 36/37). `release.yml` 의 `node-version` 을 22 로 올리고, 테스트는 런타임이 타입 스트리핑을 지원하지 않으면 **FAIL 이 아니라 SKIP** 하도록 바꿨다. SKIP 이 커버리지 구멍이 되지 않도록 `[A0]` 잠금 검사가 `release.yml` 의 `node-version >= 22` 를 강제한다(20 으로 되돌리면 게이트 FAIL). 앱에 동봉되는 런타임 Node 20.18.0 과는 무관하다.
-- `sidecar/test-conversation-provider.mjs` 추가 (60 assertions). 정적 배선 검사뿐 아니라 **행위 테스트**를 포함한다 — `providerResolveBehavior.mjs` 를 `node --experimental-strip-types` 로 spawn 해 `src/providerResolve.ts` 를 실제 import 하고, **전역 provider 를 대화별 값과 정반대로 세팅한 상태**에서 대화별 값이 이기는지 확인한다(둘이 같으면 no-op 테스트가 되므로). 인자 없는 `buildSendSettings()` 호출 0건, send 경로별 개별 확인, 전역 localStorage 직접 읽기 재유입 감시로 "한 경로만 조용히 전역으로 되돌아가는" 회귀를 잠근다.
+- **행위 테스트를 런타임 비의존으로 (CI 전용 실패 근본 수정)**: 행위 테스트가 `src/providerResolve.ts` 를 정적 import 했는데, TS 직접 import(타입 스트리핑)는 Node ≥22.6 에만 있다. 로컬(22.x)은 59/59 통과인데 CI(Node 20.18)에선 이 테스트만 죽어 36/37 이 되고 릴리스가 게이트에서 차단됐다. 이제 로더가 2단계다 — ①타입 스트리핑을 지원하면 `.ts` 를 그대로 import, ②미지원 런타임이면 `typescript` 로 transpile 후 import. 어느 쪽이든 검사 대상은 원본 `.ts` 하나뿐이라 사본이 생기지 않으며, Node 20/22 양쪽에서 행위 22개가 **실제로 실행**된다(SKIP 아님). `[A0]` 잠금 검사가 이 폴백 제거와 정적 import 재유입을 차단한다.
+- `sidecar/test-conversation-provider.mjs` 추가 (61 assertions). 정적 배선 검사뿐 아니라 **행위 테스트**를 포함한다 — `providerResolveBehavior.mjs` 를 `node --experimental-strip-types` 로 spawn 해 `src/providerResolve.ts` 를 실제 import 하고, **전역 provider 를 대화별 값과 정반대로 세팅한 상태**에서 대화별 값이 이기는지 확인한다(둘이 같으면 no-op 테스트가 되므로). 인자 없는 `buildSendSettings()` 호출 0건, send 경로별 개별 확인, 전역 localStorage 직접 읽기 재유입 감시로 "한 경로만 조용히 전역으로 되돌아가는" 회귀를 잠근다.
 ## [0.7.20] - 2026-07-27
 
 ### Added

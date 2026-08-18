@@ -6,7 +6,46 @@
 //
 // 핵심 원칙 (작업지시서 5절): 전역 provider 를 **대화별 값과 반대로** 세팅한 상태에서
 // 통과해야 유효한 테스트다. 둘이 우연히 같으면 no-op 테스트가 된다.
-import { resolveProviderSettings, providerLabel } from "../src/providerResolve.ts";
+//
+// [함정 2026-08-18 / v0.7.21] 종전엔 `import ... from "../src/providerResolve.ts"` 정적
+// import 였다. TS 직접 import(타입 스트리핑)는 node >=22.6 에만 있어, 로컬(22.x)에선 통과하고
+// CI(node 20.18)에선 이 테스트만 조용히 죽어 59/59 → 36/37 로 갈렸고 릴리스가 게이트에서
+// 차단됐다(run 32093301024). 런타임 버전에 기대지 않도록 **로더를 2단계로** 만든다:
+//   1) 타입 스트리핑을 지원하면 .ts 를 그대로 import (가장 원본에 가까움)
+//   2) 미지원 런타임이면 root devDependency 인 typescript 로 transpile 후 import
+// 어느 쪽이든 검사 대상은 항상 src/providerResolve.ts **원본 1개**다(사본 유지보수 없음).
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as nodePath from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const __srcTs = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), "../src/providerResolve.ts");
+
+async function loadProviderResolve() {
+  try {
+    return await import(pathToFileURL(__srcTs).href);
+  } catch (e) {
+    // 타입 스트리핑 미지원 런타임만 폴백한다. 그 외 에러(문법/실행 오류)는 감추지 않고 던진다.
+    if (e?.code !== "ERR_UNKNOWN_FILE_EXTENSION") throw e;
+  }
+  const ts = (await import("typescript")).default;
+  const js = ts.transpileModule(readFileSync(__srcTs, "utf-8"), {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const tmp = nodePath.join(tmpdir(), `kda-providerResolve-${process.pid}-${Date.now()}.mjs`);
+  writeFileSync(tmp, js, "utf-8");
+  try {
+    return await import(pathToFileURL(tmp).href);
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* 정리 실패는 테스트 결과에 영향 없음 */
+    }
+  }
+}
+
+const { resolveProviderSettings, providerLabel } = await loadProviderResolve();
 
 let pass = 0;
 let fail = 0;

@@ -94,39 +94,30 @@ function check(name, cond, detail) {
 
 console.log("Phase 144 — 대화별 provider (W1/W2/W3) 회귀 테스트\n");
 
-/**
- * 현재 런타임이 TS 타입 스트리핑(.ts 직접 import)을 지원하는가.
- * node >=22.6 --experimental-strip-types, >=22.18 기본 활성. node 20 엔 아예 없음.
- * [함정 2026-08-18] CI(node 20)에서 [A] 만 조용히 FAIL 해 36/37 이 되고 릴리스가
- * 게이트에서 차단됐다(run 32093301024). 런타임을 감지해 "미지원 = SKIP",
- * "지원하는데 실패 = FAIL" 로 분리한다. 커버리지 손실은 아래 [A0] 잠금 검사가 막는다.
- */
-const [NODE_MAJOR, NODE_MINOR] = process.versions.node.split(".").map(Number);
-const STRIP_TYPES_SUPPORTED = NODE_MAJOR > 22 || (NODE_MAJOR === 22 && NODE_MINOR >= 6);
-
-// ── [A0] CI Node 버전 잠금 ───────────────────────────────────────────────
-// [A] 를 SKIP 가능하게 만든 대가로, CI 가 실제로 [A] 를 "돌리는" Node 를 쓰는지 잠근다.
-// 누가 release.yml 의 node-version 을 20 으로 되돌리면 여기서 FAIL 한다.
-console.log("[A0] CI Node 버전 — 행위 테스트가 실제로 실행되는 런타임인가");
+// ── [A0] 행위 테스트의 런타임 비의존성 잠금 ──────────────────────────────
+// [함정 2026-08-18] 행위 테스트가 .ts 정적 import 였을 때, TS 타입 스트리핑이 없는
+// node 20(=CI)에서만 죽어 로컬 59/59 ↔ CI 36/37 로 갈렸다(run 32093301024).
+// "로컬에서만 도는 테스트"는 커버리지가 아니라 착시다 → 폴백 로더가 살아 있는지 잠근다.
+console.log("[A0] 행위 테스트 로더 — 런타임(node 버전) 비의존인가");
 {
-  const wf = read(".github/workflows/release.yml");
-  const m = /node-version:\s*'?"?(\d+)/.exec(wf);
-  const major = m ? Number(m[1]) : 0;
+  const behaviorSrc = read("sidecar/providerResolveBehavior.mjs");
   check(
-    "release.yml node-version >= 22 (TS 타입 스트리핑 필요)",
-    major >= 22,
-    `현재 node-version: ${m ? m[1] : "미검출"} — 20 이면 [A] 행위 22개가 CI 에서 SKIP 되어 무방비`,
+    "타입 스트리핑 미지원 런타임용 transpile 폴백 존재",
+    /ERR_UNKNOWN_FILE_EXTENSION/.test(behaviorSrc) &&
+      /import\("typescript"\)/.test(behaviorSrc) &&
+      /transpileModule/.test(behaviorSrc),
+    "폴백이 사라지면 node<22.6(CI) 에서 행위 22개가 통째로 죽는다",
+  );
+  check(
+    ".ts 정적 import 재유입 없음",
+    !/^import\s+\{[^}]*\}\s+from\s+"\.\.\/src\/providerResolve\.ts"/m.test(behaviorSrc),
+    "정적 import 로 되돌리면 구버전 런타임에서 모듈 로드 자체가 실패한다",
   );
 }
 
 // ── [A] 행위 테스트 (전역 ↔ 대화별 반대 세팅) ────────────────────────────
 console.log("\n[A] 행위 — 전역을 반대값으로 세팅해도 대화별 provider 가 이긴다");
-if (!STRIP_TYPES_SUPPORTED) {
-  console.log(
-    `  ⏭️  SKIP — node ${process.versions.node} 는 TS 타입 스트리핑 미지원(>=22.6 필요). ` +
-      `CI 런타임은 [A0] 가 잠근다.`,
-  );
-} else {
+{
   const behaviorFile = path.join(__dirname, "providerResolveBehavior.mjs");
   // TS 순수 모듈을 실제로 import 해 실행한다 (소스 문자열 검사 아님).
   let r = spawnSync(process.execPath, ["--experimental-strip-types", behaviorFile], {
