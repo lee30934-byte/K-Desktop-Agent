@@ -23,7 +23,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # v0.7.21 — CI Node 를 로컬 개발환경(22.x)과 정렬한다.
+          # 왜: 회귀테스트 test-conversation-provider.mjs 의 [A] 행위 테스트가 TS 모듈을
+          # 타입 스트리핑으로 직접 import 한다. Node 20 엔 그 기능이 아예 없어(>=22.6 필요)
+          # 로컬 59/59 → CI 36/37 로 갈려 릴리스가 게이트에서 차단됐다(run 32093301024).
+          # 아래 "Bundle Node.js" 스텝이 앱에 동봉하는 런타임(20.18.0)과는 무관한 빌드 툴체인이다.
+          # ⚠ 이 값을 22 미만으로 내리면 test-conversation-provider.mjs 의 잠금 검사가 FAIL 한다.
+          node-version: 22
           cache: 'npm'
 
       - name: Install Rust stable

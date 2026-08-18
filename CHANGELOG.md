@@ -16,7 +16,8 @@
 - **task-watch 오배송 가드 (W3)**: 마커의 `conversationId` 가 지정한 대화의 provider 로 turn 이 나가도록 잠갔다. 라우팅은 이미 대화별이었는데 provider 만 전역이던 불일치를 닫은 것.
 
 ### Tests
-- `sidecar/test-conversation-provider.mjs` 추가 (59 assertions). 정적 배선 검사뿐 아니라 **행위 테스트**를 포함한다 — `providerResolveBehavior.mjs` 를 `node --experimental-strip-types` 로 spawn 해 `src/providerResolve.ts` 를 실제 import 하고, **전역 provider 를 대화별 값과 정반대로 세팅한 상태**에서 대화별 값이 이기는지 확인한다(둘이 같으면 no-op 테스트가 되므로). 인자 없는 `buildSendSettings()` 호출 0건, send 경로별 개별 확인, 전역 localStorage 직접 읽기 재유입 감시로 "한 경로만 조용히 전역으로 되돌아가는" 회귀를 잠근다.
+- **CI Node 를 22 로 정렬 + 행위 테스트 런타임 감지**: 릴리스 워크플로가 Node 20 을 쓰는 바람에 위 행위 테스트(`.ts` 직접 import = 타입 스트리핑, Node ≥22.6 필요)가 CI 에서만 실패해 릴리스가 게이트에서 차단됐다(로컬 59/59 ↔ CI 36/37). `release.yml` 의 `node-version` 을 22 로 올리고, 테스트는 런타임이 타입 스트리핑을 지원하지 않으면 **FAIL 이 아니라 SKIP** 하도록 바꿨다. SKIP 이 커버리지 구멍이 되지 않도록 `[A0]` 잠금 검사가 `release.yml` 의 `node-version >= 22` 를 강제한다(20 으로 되돌리면 게이트 FAIL). 앱에 동봉되는 런타임 Node 20.18.0 과는 무관하다.
+- `sidecar/test-conversation-provider.mjs` 추가 (60 assertions). 정적 배선 검사뿐 아니라 **행위 테스트**를 포함한다 — `providerResolveBehavior.mjs` 를 `node --experimental-strip-types` 로 spawn 해 `src/providerResolve.ts` 를 실제 import 하고, **전역 provider 를 대화별 값과 정반대로 세팅한 상태**에서 대화별 값이 이기는지 확인한다(둘이 같으면 no-op 테스트가 되므로). 인자 없는 `buildSendSettings()` 호출 0건, send 경로별 개별 확인, 전역 localStorage 직접 읽기 재유입 감시로 "한 경로만 조용히 전역으로 되돌아가는" 회귀를 잠근다.
 ## [0.7.20] - 2026-07-27
 
 ### Added

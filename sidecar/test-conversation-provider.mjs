@@ -94,9 +94,39 @@ function check(name, cond, detail) {
 
 console.log("Phase 144 — 대화별 provider (W1/W2/W3) 회귀 테스트\n");
 
-// ── [A] 행위 테스트 (전역 ↔ 대화별 반대 세팅) ────────────────────────────
-console.log("[A] 행위 — 전역을 반대값으로 세팅해도 대화별 provider 가 이긴다");
+/**
+ * 현재 런타임이 TS 타입 스트리핑(.ts 직접 import)을 지원하는가.
+ * node >=22.6 --experimental-strip-types, >=22.18 기본 활성. node 20 엔 아예 없음.
+ * [함정 2026-08-18] CI(node 20)에서 [A] 만 조용히 FAIL 해 36/37 이 되고 릴리스가
+ * 게이트에서 차단됐다(run 32093301024). 런타임을 감지해 "미지원 = SKIP",
+ * "지원하는데 실패 = FAIL" 로 분리한다. 커버리지 손실은 아래 [A0] 잠금 검사가 막는다.
+ */
+const [NODE_MAJOR, NODE_MINOR] = process.versions.node.split(".").map(Number);
+const STRIP_TYPES_SUPPORTED = NODE_MAJOR > 22 || (NODE_MAJOR === 22 && NODE_MINOR >= 6);
+
+// ── [A0] CI Node 버전 잠금 ───────────────────────────────────────────────
+// [A] 를 SKIP 가능하게 만든 대가로, CI 가 실제로 [A] 를 "돌리는" Node 를 쓰는지 잠근다.
+// 누가 release.yml 의 node-version 을 20 으로 되돌리면 여기서 FAIL 한다.
+console.log("[A0] CI Node 버전 — 행위 테스트가 실제로 실행되는 런타임인가");
 {
+  const wf = read(".github/workflows/release.yml");
+  const m = /node-version:\s*'?"?(\d+)/.exec(wf);
+  const major = m ? Number(m[1]) : 0;
+  check(
+    "release.yml node-version >= 22 (TS 타입 스트리핑 필요)",
+    major >= 22,
+    `현재 node-version: ${m ? m[1] : "미검출"} — 20 이면 [A] 행위 22개가 CI 에서 SKIP 되어 무방비`,
+  );
+}
+
+// ── [A] 행위 테스트 (전역 ↔ 대화별 반대 세팅) ────────────────────────────
+console.log("\n[A] 행위 — 전역을 반대값으로 세팅해도 대화별 provider 가 이긴다");
+if (!STRIP_TYPES_SUPPORTED) {
+  console.log(
+    `  ⏭️  SKIP — node ${process.versions.node} 는 TS 타입 스트리핑 미지원(>=22.6 필요). ` +
+      `CI 런타임은 [A0] 가 잠근다.`,
+  );
+} else {
   const behaviorFile = path.join(__dirname, "providerResolveBehavior.mjs");
   // TS 순수 모듈을 실제로 import 해 실행한다 (소스 문자열 검사 아님).
   let r = spawnSync(process.execPath, ["--experimental-strip-types", behaviorFile], {
