@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+## [0.7.23] - 2026-08-20
+
+### Fixed
+- **Claude Code 로그인 버튼이 OAuth 브라우저를 열지 못하던 결함**: 구 서브커맨드 `claude login` 은 최신 CLI 에서 브라우저를 띄우지 않는다 → `claude auth login` 으로 교정. 또한 `claude` 가 PATH 에 없는 실제 환경이 존재해, `%APPDATA%\npm\claude.cmd` 와 `@anthropic-ai/claude-code/bin/claude.exe` 를 절대경로로 먼저 해석한 뒤 PATH 로 폴백하도록 했다. 경로에 공백이 있으면 `cmd` 인자가 쪼개지므로 `raw_arg` 로 커맨드라인을 직접 구성한다. (`src-tauri/src/lib.rs`, `src/components/Settings.tsx`)
+- **task-watch 가 sidecar 재시작 뒤 영구히 멈추던 결함**: sidecar node 가 turn 도중 재시작하면 `done`/`error` 이벤트가 유실되고, `taskWatchTurnsRef` 에 남은 좀비 항목이 하트비트를 영구히 busy 로 만들어 이후 모든 마커가 로그조차 남기지 않고 발화하지 않았다. turn 별 `lastActivityAt` 을 기록하고 완전 무음이 15분을 넘긴 항목만 좀비로 판정해 `task_watch_release` 로 마커를 반환한다(다음 틱에 재시도). 경과시간이 아닌 **무음 지속시간** 기준이라 정상적인 장기 turn 은 회수되지 않는다. (`src/App.tsx`)
+
+---
+
 ## [0.7.22] - 2026-08-18
 
 ### Fixed
