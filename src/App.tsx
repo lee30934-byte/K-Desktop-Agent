@@ -262,6 +262,12 @@ const LS_AUTO_RESUME_LONG_TASKS = "kda_auto_resume_long_tasks";
 const LS_AUTO_RESUME_UNTIL_MANUAL_STOP = "kda_auto_resume_until_manual_stop";
 const LS_AUTO_RESUME_MANUAL_STOPPED = "kda_auto_resume_manual_stopped";
 
+// 2026-08-19 — task-watch busy gate 를 영구히 잠그던 결함의 수정 지점 (3/3).
+// task-watch turn 이 이 시간만큼 "sidecar 이벤트가 단 하나도" 안 들어오면 좀비로 간주한다.
+// 15분: 정상 Codex 빌드/OCR turn 도 reasoning·tool 이벤트를 훨씬 촘촘히 뱉으므로 오탐이 아니고,
+// 반대로 sidecar 가 죽은 경우에는 영원히 무음이라 반드시 걸린다.
+const TASK_WATCH_STALE_MS = 15 * 60 * 1000;
+
 function readLocalBool(key: string, defaultValue: boolean): boolean {
   try {
     const value = localStorage.getItem(key);
@@ -651,7 +657,12 @@ export default function App() {
   // v0.7.17 — task-watch: 장기 분리작업 완료 자동 이어가기. ~/.kda/task-watch/*.json 마커를
   // 20s 폴링(Rust task_watch_scan)해 발화분을 대상 conv 로 turn 주입. turnId → {watchId,title} 매핑.
   // 주입 전 durable claim, done ACK 뒤 삭제, error/backoff 재시도로 완료 전달을 보장한다.
-  const taskWatchTurnsRef = useRef<Map<string, { watchId: string; watchFile: string; title: string; lastText?: string }>>(new Map());
+  // lastActivityAt: 2026-08-19 좀비 busy gate 대책. 이 turn 으로 마지막 sidecar 이벤트가 들어온
+  // 시각. 하트비트가 이 값만 보고 "sidecar 가 통째로 사라져 done/error 가 영영 안 오는" 항목을
+  // 판별한다 (경과시간이 아니라 무음 지속시간 기준 — 정상적인 장기 turn 을 죽이지 않는다).
+  const taskWatchTurnsRef = useRef<
+    Map<string, { watchId: string; watchFile: string; title: string; lastText?: string; startedAt: number; lastActivityAt: number }>
+  >(new Map());
   // 텔레그램 회신 함수 ref — handleSidecarEvent(상단 정의)가 하단 정의된 deliverTelegramReply 를
   // 호출하기 위한 우회 (source 순서 디커플). 브리지 섹션에서 .current 할당.
   const deliverTelegramReplyRef = useRef<(chatId: string, text: string) => void>(() => {});
@@ -1333,6 +1344,15 @@ export default function App() {
   }, []);
 
   const handleSidecarEvent = (ev: SidecarEvent) => {
+    // 2026-08-19 — task-watch busy gate 를 영구히 잠그던 결함의 수정 지점 (1/3).
+    // taskWatchTurnsRef 는 done/error 이벤트에서만 비워진다. sidecar 가 turn 도중 재시작하면
+    // 그 두 이벤트가 영영 안 와서 Map 에 좀비 항목이 남고, 하트비트가 계속 busy 로 return 해
+    // 이후 모든 마커가 발화하지 않는다. 여기서 turn 별 마지막 활동 시각을 찍어두고,
+    // 하트비트가 "완전 무음 상태가 오래 지속된" 항목만 골라 해제한다.
+    if ((ev as { id?: string }).id) {
+      const tw = taskWatchTurnsRef.current.get((ev as { id: string }).id);
+      if (tw) tw.lastActivityAt = Date.now();
+    }
     switch (ev.type) {
       case "ready": {
         setStatus("connected");
@@ -3247,7 +3267,13 @@ export default function App() {
         });
         turnToConvMap.current.set(turnId, convId);
         turnProviderMap.current.set(turnId, s.provider); // W2
-        taskWatchTurnsRef.current.set(turnId, { watchId: w.id, watchFile, title: w.title });
+        taskWatchTurnsRef.current.set(turnId, {
+          watchId: w.id,
+          watchFile,
+          title: w.title,
+          startedAt: Date.now(),
+          lastActivityAt: Date.now(),
+        });
         await saveMessage(convId, userMsg);
         setStreamingConvIds((prev) => {
           if (prev.has(convId)) return prev;
@@ -3292,6 +3318,29 @@ export default function App() {
     const tick = async () => {
       if (cancelled || !dbReadyRef.current) return;
       if (taskWatchTickBusyRef.current) return;
+      // 2026-08-19 — task-watch busy gate 를 영구히 잠그던 결함의 수정 지점 (2/3).
+      // 실제 사고: sidecar node 가 turn 도중 재시작 → done/error 이벤트 소실 → 아래 busy gate 가
+      // 앱을 재시작할 때까지 모든 후속 마커를 조용히 막았다 (로그조차 안 남음).
+      // 대책: "완전 무음" 이 TASK_WATCH_STALE_MS 이상 지속된 항목만 좀비로 보고 해제한다.
+      // 정상적인 장기 turn 은 reasoning/tool/delta 이벤트가 계속 들어와 lastActivityAt 이 갱신되므로
+      // 여기 걸리지 않는다. 해제 시 durable marker 는 release 되어 다음 틱에 재시도된다.
+      if (taskWatchTurnsRef.current.size > 0) {
+        const now = Date.now();
+        for (const [turnId, tw] of Array.from(taskWatchTurnsRef.current.entries())) {
+          if (now - tw.lastActivityAt < TASK_WATCH_STALE_MS) continue;
+          const silentMin = Math.round((now - tw.lastActivityAt) / 60000);
+          taskWatchTurnsRef.current.delete(turnId);
+          turnToConvMap.current.delete(turnId);
+          void invoke("task_watch_release", {
+            file: tw.watchFile,
+            turnId,
+            error: `stale turn reclaimed after ${silentMin}m of sidecar silence`,
+          }).catch(() => {});
+          taskWatchLog(
+            `STALE task-watch "${tw.watchId}" (${tw.title}) turn=${turnId} silent=${silentMin}m — busy gate 해제, 마커 재시도`,
+          );
+        }
+      }
       if (taskWatchTurnsRef.current.size > 0) return; // busy — 진행 중 turn 있음
       taskWatchTickBusyRef.current = true;
       try {

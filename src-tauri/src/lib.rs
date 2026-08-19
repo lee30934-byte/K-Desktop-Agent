@@ -625,24 +625,60 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Claude Code CLI 실행 파일의 절대경로를 해석한다.
+/// K 의 PC 처럼 `claude` 가 PATH 에 없는 환경이 실재하므로 npm 글로벌 설치 위치를
+/// 먼저 탐색하고, 전부 없을 때만 PATH 이름으로 fallback 한다.
+fn claude_cli_path() -> String {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let candidates = [
+            format!("{}\\npm\\claude.cmd", appdata),
+            format!(
+                "{}\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe",
+                appdata
+            ),
+        ];
+        for c in candidates {
+            if std::path::Path::new(&c).exists() {
+                return c;
+            }
+        }
+    }
+    "claude.cmd".to_string()
+}
+
 /// Claude Code CLI 의 OAuth 로그인 흐름을 별도 콘솔 창에서 실행한다.
-/// `cmd /k claude login` 을 새 콘솔 창에 붙여 띄워서, K 가 브라우저 OAuth 를 끝낸 뒤
+/// 새 콘솔에 `"<claude 절대경로>" auth login` 을 띄워서, K 가 브라우저 OAuth 를 끝낸 뒤
 /// 결과 메시지를 직접 확인하고 닫을 수 있도록 한다.
 /// Windows 한정 — 다른 OS 에서는 단순 에러 반환.
+///
+/// 2026-08-19 수정 (K 실사용 장애: "브라우저가 안 뜨고 실행창만 뜬다"):
+///   - 구식 서브커맨드 `claude login` 은 최신 CLI 에서 브라우저를 열지 않는다 → `auth login`.
+///   - `claude` 가 PATH 에 없는 환경이 실재한다 → 절대경로를 해석해서 넘긴다.
+///   - 경로에 공백이 있어도 깨지지 않도록 cmd 인자를 raw 로 직접 구성한다.
 #[tauri::command]
 fn run_claude_login() -> Result<(), String> {
-    log_lifecycle("runtime.log", "run_claude_login invoked");
-    if cfg!(target_os = "windows") {
-        // `cmd /c start "Claude Login" cmd /k claude login`
-        // - `start "..."` 는 새 콘솔 창을 띄우고, 첫 인자를 창 제목으로 소비함
-        // - `cmd /k` 는 명령 실행 후 창을 유지 (K 가 결과 보고 직접 닫음)
-        // claude.cmd 가 PATH 에 있다고 가정 (있어야 sidecar 도 동작 중일 것).
+    let cli = claude_cli_path();
+    log_lifecycle(
+        "runtime.log",
+        &format!("run_claude_login invoked cli={}", cli),
+    );
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // 최종 커맨드라인:
+        //   cmd /c start "Claude Login" cmd /k ""<cli>" auth login"
+        // - `start "..."` 의 첫 인자는 창 제목으로 소비됨
+        // - `cmd /k` 는 실행 후 창을 유지 (K 가 결과 확인 후 직접 닫음)
+        // - 바깥 따옴표로 한 번 더 감싸야 경로에 공백이 있어도 cmd 가 통째로 파싱한다
+        let raw = format!("/c start \"Claude Login\" cmd /k \"\"{}\" auth login\"", cli);
         std::process::Command::new("cmd")
-            .args(["/c", "start", "Claude Login", "cmd", "/k", "claude", "login"])
+            .raw_arg(raw)
             .spawn()
-            .map_err(|e| format!("claude login 콘솔 기동 실패: {}", e))?;
+            .map_err(|e| format!("claude auth login 콘솔 기동 실패: {}", e))?;
         Ok(())
-    } else {
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
         Err("Windows 전용 기능입니다".to_string())
     }
 }

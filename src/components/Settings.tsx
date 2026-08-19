@@ -204,10 +204,10 @@ const API_PROVIDERS: APIProvider[] = [
     name: "Claude Code (Max OAuth)",
     icon: "💠",
     keyName: "(none)",
-    placeholder: "Max 구독 OAuth — claude login",
+    placeholder: "Max 구독 OAuth — claude auth login",
     docsUrl: "https://docs.claude.com/en/docs/claude-code/quickstart",
     noKeyRequired: true,
-    note: "Max 구독을 Claude Code CLI 로 인증해 사용 — K-Personal MCP 도구 (스크린샷·마우스·키보드·앱 실행 등) 풀 사용 가능. API 키 불필요. 아래 [claude login] 버튼으로 터미널에서 OAuth 진행.",
+    note: "Max 구독을 Claude Code CLI 로 인증해 사용 — K-Personal MCP 도구 (스크린샷·마우스·키보드·앱 실행 등) 풀 사용 가능. API 키 불필요. 아래 [claude auth login] 버튼으로 터미널에서 OAuth 진행.",
     // Phase 111.2 (v0.6.62) — K 정정: "Opus 5.7 같은건 없어".
     // 옛 default label 의 "Opus 5.7 / 1M ctx" 는 잘못된 표기였음 (실재하지 않는 모델).
     // 새 default = Opus 4.8 (첫 옵션이라 신규 K 가 보는 selected = Opus 4.8).
@@ -4080,7 +4080,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                         }}
                       >
                         Max 구독을 처음 인증하거나 토큰이 만료됐을 때 아래 버튼을 누르면
-                        새 콘솔 창에서 <span className="mono">claude login</span> 이
+                        새 콘솔 창에서 <span className="mono">claude auth login</span> 이
                         실행됩니다. 안내에 따라 브라우저 OAuth 를 완료하세요.
                       </div>
                       <div className="api-key-actions">
@@ -4091,7 +4091,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                         >
                           {loginStatus === "running"
                             ? "콘솔 창 확인…"
-                            : "🔑 claude login 실행"}
+                            : "🔑 claude auth login 실행"}
                         </button>
                         {loginStatus === "running" && (
                           <span
