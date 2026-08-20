@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+## [0.7.24] - 2026-08-20
+
+### Fixed
+- **업데이트 버튼이 두 번째 설치본을 만들고 관리자 권한을 요구하던 결함**: `bundle.targets` 가 `["msi","nsis"]` 라 릴리즈마다 설치본이 두 종류 나왔다. MSI 는 항상 per-machine(`C:\Program Files`), NSIS 는 `installMode=currentUser`(`%LOCALAPPDATA%`) 라 설치 위치 자체가 다르다. 그런데 tauri-action 이 만드는 `latest.json` 의 기본 플랫폼 키 `windows-x86_64` 는 MSI 를 가리키고, `Settings.tsx` / `UpdateChecker.tsx` 는 `check()` 를 타깃 인자 없이 호출한다. 그 결과 `setup.exe` 로 설치한 PC 에서 업데이트를 누르면 기존 per-user 설치본은 구버전 그대로 남고, `C:\Program Files` 에 두 번째 설치본이 새로 깔리며, per-machine 이라 UAC 까지 떴다(2026-08-20 실제 재현). `bundle.targets` 에서 `"msi"` 를 제거해 `windows-x86_64` 가 `setup.exe` 로 해석되게 했다 — per-user 제자리 갱신, 관리자 권한 불필요. `windows.wix` 블록은 향후 복구 대비로 남겨뒀다(targets 에 없으면 미사용). (`src-tauri/tauri.conf.json`)
+
+### Notes
+- 설치본이 갈라졌던 PC 는 이번 버전으로 올린 뒤 `C:\Program Files` 쪽 MSI 설치본을 제거하면 된다. 대화 DB 는 설치 경로가 아니라 `data-pointer.txt`(없으면 `~/.kda`)가 결정하므로 설치본 정리로 유실되지 않는다.
+
+---
+
 ## [0.7.23] - 2026-08-20
 
 ### Fixed
