@@ -1270,33 +1270,75 @@ function readMemoryFileCached(filePath: string): string {
  * Lee 의 학습효과 패치 #2 (Pitfall Guard) 의 LLM-native 구현 — 별도 detection layer 없이
  * 강조된 anti-pattern 리스트만으로 LLM 의 self-check 유도.
  */
-function extractPitfallSummary(memoryDir: string): { count: number; lines: string[] } {
-  if (!existsSync(memoryDir)) return { count: 0, lines: [] };
+/**
+ * Phase 147 (v0.7.25) — pitfall 인덱스 sub-cap.
+ *
+ * 기존 문제: 이 인덱스는 "절대 drop 되지 않는 fixed 블록"인데 길이 제한이 없어서,
+ * pitfall 파일이 177개까지 늘자 인덱스만 26.5K 를 먹고 lee-profile(4K)과 합쳐
+ * 32K cap 의 93% 를 점유 → 나머지 전 섹션(Phase 142 triggered 본문 포함)이 매 턴 drop.
+ * 회피: 인덱스에 자체 예산을 주고, 초과하면 description 길이를 단계적으로 줄인다.
+ * slug 목록은 마지막까지 보존한다 (slug 를 알아야 LLM 이 해당 파일을 직접 read 할 수 있음).
+ */
+const PITFALL_SUMMARY_DESC_STEPS = [110, 90, 70, 55, 40, 30];
+const PITFALL_INDEX_MAX_CHARS = 14 * 1024;
+const PITFALL_INDEX_MIN_CHARS = 4 * 1024;
+const PITFALL_INDEX_HEADER_CHARS = 300; // 인덱스 블록의 머리말 여유
+
+function extractPitfallSummary(
+  memoryDir: string,
+  budget: number = PITFALL_INDEX_MAX_CHARS,
+): { count: number; lines: string[]; descLimit: number; omitted: number } {
+  const empty = { count: 0, lines: [] as string[], descLimit: 0, omitted: 0 };
+  if (!existsSync(memoryDir)) return empty;
   try {
     const files = readdirSync(memoryDir)
       .filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"))
       .sort();
-    const lines: string[] = [];
+    const raw: { slug: string; desc: string | null; file: string }[] = [];
     for (const f of files) {
       try {
         const body = readMemoryFileCached(path.join(memoryDir, f));
-        // frontmatter 의 `description: ` 한 줄 추출. 첫 줄만, 최대 200자.
+        // frontmatter 의 `description: ` 한 줄 추출 (첫 줄만).
         const descMatch = body.match(/^description:\s*(.+?)(?:\r?\n|$)/m);
-        const desc = descMatch ? descMatch[1].trim().slice(0, 200) : null;
-        const slug = f.replace(/^pitfall_/, "").replace(/\.md$/, "");
-        if (desc) {
-          lines.push(`- **[${slug}]** ${desc}`);
-        } else {
-          // description 없으면 name 만이라도
-          lines.push(`- **[${slug}]** (자세한 내용은 memory 의 ${f} 참조)`);
-        }
+        raw.push({
+          slug: f.replace(/^pitfall_/, "").replace(/\.md$/, ""),
+          desc: descMatch ? descMatch[1].trim() : null,
+          file: f,
+        });
       } catch {
         // skip
       }
     }
-    return { count: lines.length, lines };
+    if (raw.length === 0) return empty;
+
+    const render = (limit: number) =>
+      raw.map((r) =>
+        r.desc
+          ? `- **[${r.slug}]** ${r.desc.slice(0, limit)}`
+          : // description 없으면 name 만이라도
+            `- **[${r.slug}]** (자세한 내용은 memory 의 ${r.file} 참조)`,
+      );
+
+    let descLimit = PITFALL_SUMMARY_DESC_STEPS[0];
+    let lines = render(descLimit);
+    for (const limit of PITFALL_SUMMARY_DESC_STEPS) {
+      descLimit = limit;
+      lines = render(limit);
+      if (lines.join("\n").length <= budget) break;
+    }
+
+    // 최소 축약으로도 예산 초과 → slug 만 남기고, 그래도 넘치면 뒤에서부터 생략.
+    let omitted = 0;
+    if (lines.join("\n").length > budget) {
+      lines = raw.map((r) => `- **[${r.slug}]**`);
+      while (lines.length > 1 && lines.join("\n").length > budget) {
+        lines.pop();
+        omitted++;
+      }
+    }
+    return { count: lines.length, lines, descLimit, omitted };
   } catch {
-    return { count: 0, lines: [] };
+    return empty;
   }
 }
 
@@ -1318,6 +1360,12 @@ function extractPitfallSummary(memoryDir: string): { count: number; lines: strin
  */
 const MAX_TRIGGERED_PITFALLS = 8;
 const PITFALL_TRIGGER_MIN_TOKEN_LEN = 4;
+/**
+ * Phase 147 (v0.7.25) — triggered 본문 길이 상한.
+ * 통합 MASTER 파일이 43KB 까지 자라면 32K cap 을 단독으로 초과해 "매치됐는데도 통째 drop" 된다.
+ * 잘라서라도 주입하는 편이 0 보다 낫다. 전체는 파일을 직접 read 하도록 꼬리에 안내를 붙인다.
+ */
+const TRIGGERED_BODY_MAX_CHARS = 6000;
 // slug/tags 에서 흔히 나오는 과도하게 일반적인 토큰 → 오매치 방지 (explicit triggers 는 면제).
 // windows/powershell 은 의도적으로 제외(=매칭 허용): K 가 그 단어를 쓰면 해당 도메인 함정이 정확히 필요.
 const PITFALL_TRIGGER_STOPWORDS = new Set<string>([
@@ -1409,14 +1457,20 @@ function buildTriggeredPitfallEntries(memoryDir: string, currentMsg: string): Me
     }
   }
   scored.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
-  return scored.slice(0, MAX_TRIGGERED_PITFALLS).map((s) => ({
-    group: "memory" as const,
-    priority: MEMORY_PRIORITY_TRIGGERED,
-    file: s.file,
-    text: `### ${s.file} (관련 함정 — 본문 로딩됨, 회피책 반드시 적용)\n${s.body
-      .replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
-      .trim()}`,
-  }));
+  return scored.slice(0, MAX_TRIGGERED_PITFALLS).map((s) => {
+    const stripped = s.body.replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+    const body =
+      stripped.length > TRIGGERED_BODY_MAX_CHARS
+        ? stripped.slice(0, TRIGGERED_BODY_MAX_CHARS) +
+          `\n\n[… 본문이 길어 ${TRIGGERED_BODY_MAX_CHARS}자에서 잘렸습니다. 전체는 memory/${s.file} 를 직접 read 하세요.]`
+        : stripped;
+    return {
+      group: "memory" as const,
+      priority: MEMORY_PRIORITY_TRIGGERED,
+      file: s.file,
+      text: `### ${s.file} (관련 함정 — 본문 로딩됨, 회피책 반드시 적용)\n${body}`,
+    };
+  });
 }
 
 /**
@@ -1464,6 +1518,13 @@ const MEMORY_PRIORITY_TRIGGERED = 3; // 조건부인데 현재 메시지에 매�
 const MEMORY_PRIORITY_ALWAYS = 4; // 기타 항상 로딩 full body
 const MEMORY_PRIORITY_TEAM = 5; // 팀 공유
 const MEMORY_PRIORITY_SUMMARY = 6; // 조건부 미매치 → 한 줄 요약 (작아서 사실상 보존)
+
+// Phase 147 (v0.7.25) — fixed 블록(lee-profile + pitfall 인덱스)이 cap 을 전부 먹어
+// droppable 섹션이 매 턴 0 개가 되던 예산 버그의 하한선.
+// MEMORY_ENTRIES_MIN_BUDGET: fixed 블록이 아무리 커도 entries 에 반드시 남겨줄 최소 예산.
+// MEMORY_TRIGGERED_RESERVE_MAX: 그중 TRIGGERED(현재 메시지 관련 본문) 몫으로 선점할 상한.
+const MEMORY_ENTRIES_MIN_BUDGET = 12 * 1024;
+const MEMORY_TRIGGERED_RESERVE_MAX = 10 * 1024;
 
 /**
  * Phase 106 — 현재 사용자 메시지(userMessage)를 받아 조건부 메모리를 선택 로딩.
@@ -1586,8 +1647,24 @@ function loadMemoryContext(
         ].join("\n")
       : "";
 
+    const HEADER_RESERVE = 700; // 그룹 헤더 + drop 경고 여유
+
+    // Phase 147 (v0.7.25) — pitfall 인덱스는 fixed(절대 drop X) 이므로 자체 예산 안에서만 커야 한다.
+    // 인덱스가 cap 을 다 먹으면 Phase 142 의 triggered 본문이 구조적으로 영영 주입되지 못한다.
+    const pitfallIndexBudget = Math.max(
+      PITFALL_INDEX_MIN_CHARS,
+      Math.min(
+        PITFALL_INDEX_MAX_CHARS,
+        MEMORY_CONTEXT_HARD_CAP_BYTES -
+          HEADER_RESERVE -
+          leeBlock.length -
+          MEMORY_ENTRIES_MIN_BUDGET -
+          PITFALL_INDEX_HEADER_CHARS,
+      ),
+    );
+
     // Phase 82 (v0.6.26) — Pitfall Guard 압축 섹션. memory 보다 먼저, lee-profile 보다 뒤.
-    const pitfallSummary = extractPitfallSummary(dir);
+    const pitfallSummary = extractPitfallSummary(dir, pitfallIndexBudget);
     const pitfallBlock = pitfallSummary.count > 0
       ? [
           "",
@@ -1599,14 +1676,30 @@ function loadMemoryContext(
           "그 외 항목의 자세한 진단/회피책이 필요하면 같은 이름의 pitfall_*.md 를 직접 read 하세요.",
           "",
           ...pitfallSummary.lines,
+          ...(pitfallSummary.omitted > 0
+            ? ["", `[ℹ 인덱스 예산 초과로 ${pitfallSummary.omitted}개 항목명이 생략됨. memory/ 정리 필요.]`]
+            : []),
         ].join("\n")
       : "";
+    if (pitfallSummary.omitted > 0 || pitfallSummary.descLimit < PITFALL_SUMMARY_DESC_STEPS[0]) {
+      logToFile(
+        "warn",
+        `loadMemoryContext: pitfall 인덱스 축약 (desc ${pitfallSummary.descLimit}자, 항목 생략 ${pitfallSummary.omitted}개, 예산 ${pitfallIndexBudget})`,
+      );
+    }
 
     // Phase 106 — priority-section drop. lee-profile + pitfall summary 는 fixed (절대 drop X).
     // 나머지 entries 를 priority asc(중요 먼저)로 greedy 포함, cap 초과분만 통째 drop.
     const fixedTopLen = leeBlock.length + pitfallBlock.length;
-    const HEADER_RESERVE = 700; // 그룹 헤더 + drop 경고 여유
     const sorted = [...entries].sort((a, b) => a.priority - b.priority);
+    // Phase 147 — TRIGGERED 예산 하한. priority asc 이므로 CORE 가 먼저 먹는데, CORE 가 커지면
+    // "현재 메시지와 관련된 함정 본문"이 밀려난다. TRIGGERED 몫을 미리 떼어두고 그 밖에만 배분.
+    let triggeredReserve = Math.min(
+      MEMORY_TRIGGERED_RESERVE_MAX,
+      sorted
+        .filter((e) => e.priority === MEMORY_PRIORITY_TRIGGERED)
+        .reduce((n, e) => n + e.text.length + 2, 0),
+    );
     let used = fixedTopLen;
     const memSecs: string[] = [];
     const teamSecs: string[] = [];
@@ -1614,7 +1707,11 @@ function loadMemoryContext(
     const droppedFiles: string[] = [];
     for (const e of sorted) {
       const cost = e.text.length + 2;
-      if (used + cost + HEADER_RESERVE > MEMORY_CONTEXT_HARD_CAP_BYTES) {
+      const isTriggered = e.priority === MEMORY_PRIORITY_TRIGGERED;
+      // 자기 몫은 예약에서 먼저 차감 (드롭되든 아니든 — 남기면 뒤 항목을 과도하게 막는다).
+      if (isTriggered) triggeredReserve = Math.max(0, triggeredReserve - cost);
+      const reserve = isTriggered ? 0 : triggeredReserve;
+      if (used + cost + HEADER_RESERVE + reserve > MEMORY_CONTEXT_HARD_CAP_BYTES) {
         droppedFiles.push(e.file);
         continue;
       }
