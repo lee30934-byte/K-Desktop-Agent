@@ -121,7 +121,7 @@ jobs:
             새 버전이 출시되었습니다!
 
             ## 설치 방법
-            - Windows: `.exe` 또는 `.msi` 파일 다운로드 후 실행
+            - Windows: `K.Desktop.Agent_<버전>_x64-setup.exe` 다운로드 후 실행 (per-user 설치, 관리자 권한 불필요)
 
             ## 변경사항
             [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) 참조
