@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+## [0.7.25] - 2026-08-20
+
+### Fixed
+- **메모리 주입 예산 버그 — 매 턴 33~37개 메모리 섹션이 통째로 생략되던 결함**: `<memory_context>` 는 32KB(`MEMORY_CONTEXT_HARD_CAP_BYTES`) 안에서 조립되는데, `lee-profile` 과 `pitfall summary` 인덱스는 "절대 drop 되지 않는 fixed 블록"이면서 길이 제한이 없었다. `pitfall_*.md` 가 177개로 늘자 인덱스만 26,507자를 먹고 lee-profile(3,999자)과 합쳐 cap 의 93%를 점유했고, 나머지 droppable 섹션 전부가 쓸 수 있는 예산은 **1,562자**뿐이었다. 그 결과 Phase 142 가 도입한 "현재 메시지와 매치된 함정의 **본문(회피책)** 주입"(본문 하나가 2~16KB)이 **구조적으로 단 한 번도 발동하지 못했다** — 회상을 강화하려고 만든 기능이, 기록이 늘어날수록 더 확실히 죽는 역설이었다. 네 가지로 막았다. ① pitfall 요약 트림을 200자 → 110자로 줄이고, 예산 초과 시 90/70/55/40/30 단계로 자동 축약한다(축약해도 slug 목록은 끝까지 보존 — LLM 이 해당 파일을 직접 read 할 수 있어야 하므로). ② pitfall 인덱스에 자체 예산(`PITFALL_INDEX_MAX_CHARS`)을 주고, 그 값을 `MEMORY_ENTRIES_MIN_BUDGET`(12KB)에서 역산해 droppable 섹션 몫을 구조적으로 보장한다. ③ greedy 배분 루프가 `MEMORY_TRIGGERED_RESERVE_MAX`(10KB)만큼 TRIGGERED 몫을 선점해, CORE 섹션이 커져도 관련 함정 본문이 밀려나지 않는다. ④ triggered 본문에 6,000자 상한을 둬, 43KB 짜리 통합 MASTER 가 매치돼도 통째 drop 되는 대신 잘려서라도 주입되고 꼬리에 원문 read 안내가 붙는다. (`sidecar/src/index.ts`)
+
+### Added
+- **`sidecar/test-memory-budget.mjs` 회귀 테스트**: 예산 상수를 `src/index.ts` 에서 파싱해(중복 정의 없음) 산술 불변식을 검증하고, 실제 `~/.kda/memory` 데이터로 fixed 블록 이후 남는 예산이 최소치 이상인지 확인한다. fixed 블록이 다시 cap 을 잠식하면 FAIL 로 릴리즈를 막는다. `release-gate.mjs` 가 자동 수집한다.
+
+### Notes
+- 코드 수정과 별개로 데이터도 정리했다. 기존 MASTER 를 보유한 9개 family 의 개별 pitfall 67개를 MASTER 인덱스로 흡수하고 원문은 `~/.kda/memory/archive/` 로 옮겼다(파일 177 → 110개). description 이 없어 안내문만 차지하던 5개 파일에도 요약을 채웠다. 결과적으로 fixed 블록 30,506자 → 18,785자, 나머지 섹션 예산 1,562자 → 13,322자.
+
 ## [0.7.24] - 2026-08-20
 
 ### Fixed
