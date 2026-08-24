@@ -1,7 +1,7 @@
 {
   "name": "k-desktop-agent",
   "private": true,
-  "version": "0.7.25",
+  "version": "0.7.26",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,7 @@
     "release:guard": "node scripts/release-version-guard.mjs release",
     "release:gate": "node scripts/release-gate.mjs",
     "release:gate:fast": "node scripts/release-gate.mjs --fast",
+    "test:single-flight": "node sidecar/test-single-flight.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

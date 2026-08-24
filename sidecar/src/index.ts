@@ -1921,6 +1921,29 @@ function buildMCPConfig(health: MCPStatus): Record<string, any> {
 const orchestrationCollectors = new Map<string, OrchCollector>();
 // interrupt 된 오케스트레이션 main id — fan-in 후 종합 skip 용.
 const cancelledOrchestrations = new Set<string>();
+// Defense-in-depth: frontend 상태 race가 생겨도 같은 conversation의 두 번째 root turn은
+// 자식 프로세스를 만들지 않는다. turn owner 일치 시에만 해제해 늦은 done/error도 안전하다.
+const activeConversationTurns = new Map<string, string>();
+const turnConversationIds = new Map<string, string>();
+
+function claimConversationTurn(conversationId: unknown, turnId: unknown): boolean {
+  if (typeof conversationId !== "string" || !conversationId.trim() || typeof turnId !== "string" || !turnId) {
+    return true; // 옛 frontend/내부 sub-turn 호환: conversation id가 없으면 기존 동작 유지.
+  }
+  const convId = conversationId.trim();
+  if (activeConversationTurns.has(convId)) return false;
+  activeConversationTurns.set(convId, turnId);
+  turnConversationIds.set(turnId, convId);
+  return true;
+}
+
+function releaseConversationTurnById(turnId: unknown): void {
+  if (typeof turnId !== "string") return;
+  const convId = turnConversationIds.get(turnId);
+  if (!convId) return;
+  turnConversationIds.delete(turnId);
+  if (activeConversationTurns.get(convId) === turnId) activeConversationTurns.delete(convId);
+}
 
 function rawEmit(obj: Record<string, unknown>): void {
   try {
@@ -1934,6 +1957,9 @@ function rawEmit(obj: Record<string, unknown>): void {
 }
 
 function emit(obj: Record<string, unknown>): void {
+  if (obj.type === "done" || obj.type === "error") {
+    releaseConversationTurnById(obj.id);
+  }
   // Phase 137 — 오케스트레이션 sub-turn 이벤트 인터셉트.
   // sub-turn id (`{mainId}#{engine}`) 로 등록된 collector 가 있으면:
   //   assistant_delta → 텍스트 수집 + orchestrate_delta 로 재태깅 (frontend 엔진별 카드)
@@ -6588,6 +6614,25 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
 
 // ─── stdin 라인 리더 ───────────────────────────────────
 
+function dispatchRootTurn<T extends { id: string; conversation_id?: string }>(
+  msg: T,
+  handler: (value: T) => Promise<void>,
+): void {
+  if (!claimConversationTurn(msg.conversation_id, msg.id)) {
+    const conv = String(msg.conversation_id ?? "").slice(0, 8);
+    logToFile("warn", `single-flight reject id=${msg.id} conv=${conv} reason=conversation-busy`);
+    emit({ type: "error", id: msg.id, message: "같은 대화의 이전 작업이 아직 진행 중입니다." });
+    emit({ type: "done", id: msg.id, agentId: null });
+    return;
+  }
+  void handler(msg).catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    logToFile("error", `root turn dispatch failed id=${msg.id}: ${message}`);
+    emit({ type: "error", id: msg.id, message });
+    emit({ type: "done", id: msg.id, agentId: null });
+  });
+}
+
 const rl = readline.createInterface({
   input: process.stdin,
   crlfDelay: Infinity,
@@ -6620,11 +6665,11 @@ rl.on("line", (line) => {
 
   switch (msg.type) {
     case "user_message":
-      void handleUserMessage(msg as UserMessage);
+      dispatchRootTurn(msg as UserMessage, handleUserMessage);
       break;
     // Phase 137 — 멀티 에이전트 오케스트레이션 (fan-out → 메인 엔진 종합).
     case "orchestrate_message":
-      void handleOrchestrateMessage(msg as OrchestrateMessage);
+      dispatchRootTurn(msg as OrchestrateMessage, handleOrchestrateMessage);
       break;
     // Phase 135 — Gemini CLI 구독 OAuth 내장 로그인. Settings 의 [Google 계정으로 로그인]
     // 버튼 → Rust gemini_login → 이 메시지. 진행 상황은 gemini_oauth_event 로 중계,
@@ -6633,6 +6678,7 @@ rl.on("line", (line) => {
       void handleGeminiOauthLogin();
       break;
     case "interrupt": {
+      releaseConversationTurnById(msg.id);
       const proc = activeTurns.get(msg.id);
       if (proc) {
         // Phase 46 (v0.5.34): Windows 의 child.kill("SIGTERM") 은 손자 process 안 죽음.

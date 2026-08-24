@@ -24,6 +24,7 @@ import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
 import SidebarResizer from "./components/SidebarResizer";
 import SidePanel, { type SidePanelItem } from "./components/SidePanel";
+import { ConversationTurnGate } from "./conversationTurnGate";
 // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
 import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
 // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid)
@@ -669,6 +670,24 @@ export default function App() {
   // Phase 111 — 어느 conv 들이 streaming 중인지. Sidebar spinner 배지 + 같은 conv 의
   // 중복 send 방지에 사용. send 시점에 add, done 시점에 delete.
   const [streamingConvIds, setStreamingConvIds] = useState<Set<string>>(() => new Set());
+  // UI state(Set)는 React 배치 갱신 때문에 같은 tick의 중복 send를 막지 못한다.
+  // ref 기반 owner gate가 conversationId → turnId를 즉시 점유하고, 정확한 owner만 해제한다.
+  const conversationTurnGateRef = useRef(new ConversationTurnGate());
+  const claimConversationTurn = useCallback((conversationId: string, turnId: string) => {
+    if (!conversationTurnGateRef.current.claim(conversationId, turnId)) return false;
+    setStreamingConvIds(conversationTurnGateRef.current.activeConversationIds());
+    return true;
+  }, []);
+  const releaseConversationTurn = useCallback((conversationId: string, turnId: string) => {
+    if (!conversationTurnGateRef.current.release(conversationId, turnId)) return false;
+    setStreamingConvIds(conversationTurnGateRef.current.activeConversationIds());
+    return true;
+  }, []);
+  const releaseAnyConversationTurn = useCallback((conversationId: string) => {
+    if (!conversationTurnGateRef.current.releaseAny(conversationId)) return false;
+    setStreamingConvIds(conversationTurnGateRef.current.activeConversationIds());
+    return true;
+  }, []);
   // Phase 121 (v0.6.76) — 프론트 dead-stream 워치독.
   // sidecar 가 죽거나 IPC 가 끊겨 done/error 이벤트 자체가 안 오면(= sidecar idle 워치독으로도
   // 못 잡는 케이스) UI 가 무한 "진행중" 으로 남는다. 모든 sidecar 이벤트 수신 시각을 기록하고,
@@ -1250,6 +1269,7 @@ export default function App() {
         // 12분 전역 무이벤트 = sidecar 가 죽었거나 멈춘 상태 — 특정 conv 만이 아니라
         // 모든 streaming 표시/턴 매핑을 일괄 정리해야 다른 대화가 영원히 "응답 중" 으로 남지 않음.
         turnToConvMap.current.clear();
+        conversationTurnGateRef.current.clear();
         setStreamingConvIds(new Set());
         currentTurnIdRef.current = null;
         currentTurnStartedAtRef.current = 0;
@@ -1301,6 +1321,7 @@ export default function App() {
           // critical 복구는 "멈춘 stream 으로 인한 입력 잠금 해제" 가 목적 —
           // 현재 turn 만이 아니라 전체 streaming 표시/턴 매핑을 일괄 정리.
           turnToConvMap.current.clear();
+          conversationTurnGateRef.current.clear();
           setStreamingConvIds(new Set());
           currentTurnIdRef.current = null;
           currentTurnStartedAtRef.current = 0;
@@ -1702,13 +1723,16 @@ export default function App() {
         const isActiveConv = convForTurn === activeConversationIdRef.current;
         // turnToConvMap / streamingConvIds 정리 — 항상.
         turnToConvMap.current.delete(ev.id);
+        let staleCompletion = false;
         if (convForTurn) {
-          setStreamingConvIds((prev) => {
-            if (!prev.has(convForTurn)) return prev;
-            const next = new Set(prev);
-            next.delete(convForTurn);
-            return next;
-          });
+          const hadOwner = conversationTurnGateRef.current.isActive(convForTurn);
+          const released = releaseConversationTurn(convForTurn, ev.id);
+          staleCompletion = hadOwner && !released;
+        }
+       if (staleCompletion) {
+          turnProviderMap.current.delete(ev.id);
+         logger.warn(`[SingleFlight] stale done 무시 conv=${convForTurn?.slice(0, 8)} turn=${ev.id}`);
+         break;
         }
         if (!isActiveConv) {
           // Background turn 완료 — DB 의 agentId 만 갱신 + 사이드바 메타 refresh.
@@ -1908,16 +1932,21 @@ export default function App() {
         // Phase 111 (v0.6.60) — background turn 의 error 도 routing.
         const convForErr = (ev.id && turnToConvMap.current.get(ev.id)) ?? activeConversationIdRef.current;
         const isActiveConvErr = convForErr === activeConversationIdRef.current;
-        if (ev.id) {
-          turnToConvMap.current.delete(ev.id);
-        }
-        if (convForErr) {
-          setStreamingConvIds((prev) => {
-            if (!prev.has(convForErr)) return prev;
-            const next = new Set(prev);
-            next.delete(convForErr);
-            return next;
-          });
+       if (ev.id) {
+         turnToConvMap.current.delete(ev.id);
+       }
+        let staleError = false;
+       if (convForErr) {
+          const hadOwner = conversationTurnGateRef.current.isActive(convForErr);
+          const released = ev.id
+            ? releaseConversationTurn(convForErr, ev.id)
+            : releaseAnyConversationTurn(convForErr);
+          staleError = hadOwner && !released;
+       }
+       if (staleError) {
+          if (ev.id) turnProviderMap.current.delete(ev.id);
+         logger.warn(`[SingleFlight] stale error 무시 conv=${convForErr?.slice(0, 8)} turn=${ev.id ?? "?"}`);
+         break;
         }
         // Phase 17 / Phase 144 (v0.7.20) — --resume target 이 없어진 경우 자동 회복:
         // 그 대화·그 provider 의 세션 id 만 클리어해 다음 메시지부터 신규 session 으로 시작.
@@ -2455,6 +2484,16 @@ export default function App() {
       attachments: messageAttachments,
     };
 
+    if (convId && !claimConversationTurn(convId, turnId)) {
+      const slot: QueuedSend = { text, files, queuedAt: Date.now() };
+      queuedSendRef.current = slot;
+      setQueuedSend(slot);
+      // owner turn의 done/error가 false로 내릴 때 queue flush가 실행되도록 UI 상태도 맞춘다.
+      setIsStreaming(true);
+      logger.warn(`[SingleFlight] 같은 대화 중복 send 차단 conv=${convId.slice(0, 8)} turn=${turnId}`);
+      return;
+    }
+
     setMessages((prev) => [...prev, userMsg]);
     setCurrentTurnId(turnId);
     currentTurnIdRef.current = turnId;
@@ -2465,12 +2504,6 @@ export default function App() {
     // K 가 다른 conv 로 이동해도 이 turn 의 chunks 는 원래 conv 에만 박힘.
     if (convId) {
       turnToConvMap.current.set(turnId, convId);
-      setStreamingConvIds((prev) => {
-        if (prev.has(convId)) return prev;
-        const next = new Set(prev);
-        next.add(convId);
-        return next;
-      });
     }
 
     // DB에 사용자 메시지 저장
@@ -2724,9 +2757,14 @@ export default function App() {
       // 폴더 이동 시엔 conv.folderId 가 새 폴더로 update 된 상태이므로 다음 send 에서 다시 mismatch → 박음.
       // DB update 실패해도 sidecar 는 이미 받았으므로 모델은 정상 응답.
       // 다음 send 에 첨부가 다시 박히는 (중복) 정도가 부작용.
-      if (convId) await commitFolderAttachment(convId, folderCtx);
-    } catch (err) {
-      setIsStreaming(false);
+     if (convId) await commitFolderAttachment(convId, folderCtx);
+   } catch (err) {
+     if (convId) {
+       turnToConvMap.current.delete(turnId);
+        turnProviderMap.current.delete(turnId);
+       releaseConversationTurn(convId, turnId);
+      }
+     setIsStreaming(false);
       setCurrentTurnId(null);
       pushSystem(`전송 실패: ${String(err)}`, "error");
     }
@@ -2870,9 +2908,11 @@ export default function App() {
       void deliverTelegramReply(chatId, "⏳ 이전 작업을 처리 중이에요. 끝나면 다시 보내주세요.");
       return;
     }
+    let convId = "";
+    let turnId = "";
     try {
       // 전용 텔레그램 conv 확보 (없으면 생성). id 는 localStorage 에 영속.
-      let convId = localStorage.getItem("kda_telegram_conv_id") || "";
+      convId = localStorage.getItem("kda_telegram_conv_id") || "";
       const exists = convId && conversations.some((c) => c.id === convId);
       if (!convId || !exists) {
         // DB 에 실제 존재하는지 확인 (state 미반영 케이스). 없으면 새로 생성.
@@ -2914,24 +2954,22 @@ export default function App() {
       } catch { /* ignore */ }
 
       // 유저 메시지 DB 저장 (history 빌드 후 — debounce 라 위 getMessages 엔 안 잡힘).
-      const userMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "user",
-        content: text,
-        timestamp: Date.now(),
-      };
-      queueMessageSave(userMsg, convId);
+     const userMsg: ChatMessage = {
+       id: crypto.randomUUID(),
+       role: "user",
+       content: text,
+       timestamp: Date.now(),
+     };
+      turnId = crypto.randomUUID();
+      if (!claimConversationTurn(convId, turnId)) {
+        void deliverTelegramReply(chatId, "⏳ 이 대화의 이전 작업을 처리 중이에요. 끝나면 다시 보내주세요.");
+        return;
+      }
+     queueMessageSave(userMsg, convId);
 
-      const turnId = crypto.randomUUID();
-      turnToConvMap.current.set(turnId, convId);
-      turnProviderMap.current.set(turnId, s.provider); // W2 — 세션 id 저장 대상 컬럼 결정용
-      telegramTurnsRef.current.set(turnId, { chatId, text: "" });
-      setStreamingConvIds((prev) => {
-        if (prev.has(convId)) return prev;
-        const next = new Set(prev);
-        next.add(convId);
-        return next;
-      });
+     turnToConvMap.current.set(turnId, convId);
+     turnProviderMap.current.set(turnId, s.provider); // W2 — 세션 id 저장 대상 컬럼 결정용
+     telegramTurnsRef.current.set(turnId, { chatId, text: "" });
 
       await invoke("send_message", {
         message: text,
@@ -2948,9 +2986,15 @@ export default function App() {
         safeMode: s.safeMode,
         folderSystemPrompt: folderCtx.folderSystemPrompt,
         projectProfile: folderCtx.projectProfile,
-      });
-    } catch (err) {
-      console.error("[Telegram] turn 주입 실패:", err);
+     });
+   } catch (err) {
+      if (turnId && convId) {
+        turnToConvMap.current.delete(turnId);
+        turnProviderMap.current.delete(turnId);
+        telegramTurnsRef.current.delete(turnId);
+        releaseConversationTurn(convId, turnId);
+      }
+     console.error("[Telegram] turn 주입 실패:", err);
       void deliverTelegramReply(chatId, `⚠ 처리 시작 실패: ${String(err)}`);
     }
   });
@@ -3034,9 +3078,11 @@ export default function App() {
       if (!dbReadyRef.current) return;
       // busy gate — 동시 1 스케줄 turn (resume agentId 충돌·자원 폭주 회피).
       if (scheduleTurnsRef.current.size > 0) return;
+      let convId = "";
+      let turnId = "";
       try {
         // 전용 ⏰ 예약 conv 확보 (없으면 생성). id 는 localStorage 영속.
-        let convId = localStorage.getItem("kda_schedule_conv_id") || "";
+        convId = localStorage.getItem("kda_schedule_conv_id") || "";
         const exists = convId && conversations.some((c) => c.id === convId);
         if (!convId || !exists) {
           let inDb = false;
@@ -3078,20 +3124,20 @@ export default function App() {
           `이 예약 작업을 지금 수행하세요. 완료하면 반드시 db_schedule_done(id=${row.id}) 를 호출해 ` +
           `처리 완료로 표시하세요(미호출 시 다음 틱에 재발화됩니다).`;
 
-        const userMsg: ChatMessage = {
-          id: crypto.randomUUID(), role: "user", content: text, timestamp: Date.now(),
-        };
-        queueMessageSave(userMsg, convId);
+       const userMsg: ChatMessage = {
+         id: crypto.randomUUID(), role: "user", content: text, timestamp: Date.now(),
+       };
+        turnId = crypto.randomUUID();
+        if (!claimConversationTurn(convId, turnId)) {
+          schedLog(`DEFER schedule#${row.id} conv=${convId.slice(0, 8)} reason=conversation-busy`);
+          return;
+        }
+       queueMessageSave(userMsg, convId);
 
-        const turnId = crypto.randomUUID();
-        turnToConvMap.current.set(turnId, convId);
-        turnProviderMap.current.set(turnId, s.provider); // W2
-        scheduleTurnsRef.current.set(turnId, { scheduleId: row.id, title: row.title });
-        scheduleFiredAtRef.current.set(row.id, Date.now());
-        setStreamingConvIds((prev) => {
-          if (prev.has(convId)) return prev;
-          const next = new Set(prev); next.add(convId); return next;
-        });
+       turnToConvMap.current.set(turnId, convId);
+       turnProviderMap.current.set(turnId, s.provider); // W2
+       scheduleTurnsRef.current.set(turnId, { scheduleId: row.id, title: row.title });
+       scheduleFiredAtRef.current.set(row.id, Date.now());
 
         await invoke("send_message", {
           message: text, id: turnId, agentId,
@@ -3119,6 +3165,12 @@ export default function App() {
           schedLog(`OVERDUE-ALERT schedule#${row.id} delay=${overdueMin}m`);
         }
       } catch (err) {
+       if (turnId && convId) {
+         turnToConvMap.current.delete(turnId);
+          turnProviderMap.current.delete(turnId);
+         scheduleTurnsRef.current.delete(turnId);
+         releaseConversationTurn(convId, turnId);
+        }
         schedLog(`FIRE-FAIL schedule#${row.id} err=${String(err)}`);
         console.error("[Schedule] turn 주입 실패:", err);
       }
@@ -3194,10 +3246,11 @@ export default function App() {
       if (!dbReadyRef.current) return;
       if (taskWatchTurnsRef.current.size > 0) return; // busy — 다음 틱
       let turnId: string | undefined;
+      let convId = "";
       try {
         // 대상 conv 확보: 마커의 conversationId 가 실제 존재하면 그 conv(맥락 보존),
         // 아니면 전용 ⏳ 작업감시 conv (localStorage 영속).
-        let convId = (w.conversationId || "").trim();
+        convId = (w.conversationId || "").trim();
         let convValid = false;
         if (convId) {
           try { convValid = (await getConversationMetrics(convId)) !== null; } catch { convValid = false; }
@@ -3259,6 +3312,10 @@ export default function App() {
         };
 
         turnId = crypto.randomUUID();
+        if (!claimConversationTurn(convId, turnId)) {
+          taskWatchLog(`DEFER task-watch "${w.id}" conv=${convId.slice(0, 8)} reason=conversation-busy`);
+          return;
+        }
         const watchFile = w.file || w.id;
         await invoke("task_watch_claim", {
           file: watchFile,
@@ -3273,14 +3330,10 @@ export default function App() {
           title: w.title,
           startedAt: Date.now(),
           lastActivityAt: Date.now(),
-        });
-        await saveMessage(convId, userMsg);
-        setStreamingConvIds((prev) => {
-          if (prev.has(convId)) return prev;
-          const next = new Set(prev); next.add(convId); return next;
-        });
+       });
+       await saveMessage(convId, userMsg);
 
-        await invoke("send_message", {
+       await invoke("send_message", {
           message: text, id: turnId, agentId,
           conversationId: convId, // v0.7.18 — 이어가는 turn 도 같은 창 유지
           history: history.length > 0 ? history : undefined,
@@ -3302,8 +3355,10 @@ export default function App() {
               error: String(err),
             }).catch(() => {});
           }
-          taskWatchTurnsRef.current.delete(turnId);
-          turnToConvMap.current.delete(turnId);
+         taskWatchTurnsRef.current.delete(turnId);
+         turnToConvMap.current.delete(turnId);
+          turnProviderMap.current.delete(turnId);
+         if (convId) releaseConversationTurn(convId, turnId);
         }
         taskWatchLog(`FIRE-FAIL task-watch "${w.id}" err=${String(err)}`);
         console.error("[task-watch] turn 주입 실패:", err);
@@ -3425,12 +3480,8 @@ export default function App() {
       (turnIdToClear ? turnToConvMap.current.get(turnIdToClear) : null) ?? activeConversationIdRef.current;
     if (turnIdToClear) turnToConvMap.current.delete(turnIdToClear);
     if (convIdToClear) {
-      setStreamingConvIds((prev) => {
-        if (!prev.has(convIdToClear)) return prev;
-        const next = new Set(prev);
-        next.delete(convIdToClear);
-        return next;
-      });
+      if (turnIdToClear) releaseConversationTurn(convIdToClear, turnIdToClear);
+      else releaseAnyConversationTurn(convIdToClear);
     }
     currentTurnIdRef.current = null;
     currentTurnStartedAtRef.current = 0;
@@ -3946,6 +3997,11 @@ export default function App() {
     setPendingResume(null);
 
     const turnId = crypto.randomUUID();
+    if (!claimConversationTurn(convId, turnId)) {
+      logger.warn(`[SingleFlight] resume 차단 conv=${convId.slice(0, 8)} turn=${turnId}`);
+      return;
+    }
+    turnToConvMap.current.set(turnId, convId);
     setCurrentTurnId(turnId);
     currentTurnIdRef.current = turnId;
     currentTurnStartedAtRef.current = Date.now();
@@ -3953,11 +4009,10 @@ export default function App() {
 
     try {
       // Phase 144 (v0.7.20) — W1: 끊긴 턴 재시도도 그 대화의 provider 로 (전역 토글 무관).
-      const resumeSettings = await buildSendSettings(convId);
-      turnProviderMap.current.set(turnId, resumeSettings.provider); // W2
-      turnToConvMap.current.set(turnId, convId);
+     const resumeSettings = await buildSendSettings(convId);
+     turnProviderMap.current.set(turnId, resumeSettings.provider); // W2
 
-      // resume agentId — 마지막 완료된 턴의 것 (DB 에 저장됨). 없으면 신규 세션.
+     // resume agentId — 마지막 완료된 턴의 것 (DB 에 저장됨). 없으면 신규 세션.
       // W2: 확정된 provider 의 세션 id 만 (다른 엔진의 id 를 넘기면 resume 이 죽는다).
       let agentId: string | undefined;
       if (dbReady) {
@@ -4073,9 +4128,12 @@ export default function App() {
         safeMode,
         folderSystemPrompt: folderCtx.folderSystemPrompt,
         projectProfile: folderCtx.projectProfile,
-      });
-    } catch (err) {
-      setIsStreaming(false);
+     });
+   } catch (err) {
+      turnToConvMap.current.delete(turnId);
+      turnProviderMap.current.delete(turnId);
+      releaseConversationTurn(convId, turnId);
+     setIsStreaming(false);
       setCurrentTurnId(null);
       pushSystem(`재시도 실패: ${String(err)}`, "error");
     }
@@ -4245,12 +4303,18 @@ export default function App() {
     setIsCompressing(true);
     pushSystem("📦 대화 압축 중... 잠시만 기다려주세요.", "info");
 
+    let summaryTurnId = "";
     try {
       // 1. 요약 프롬프트 생성
       const summaryPrompt = generateSummaryPrompt(messages);
 
       // 2. Claude에게 요약 요청 (특별한 턴으로 처리)
-      const summaryTurnId = crypto.randomUUID();
+      summaryTurnId = crypto.randomUUID();
+      if (!claimConversationTurn(activeConversationId, summaryTurnId)) {
+        pushSystem("현재 대화의 작업이 끝난 뒤 다시 압축해 주세요.", "info");
+        return;
+      }
+      turnToConvMap.current.set(summaryTurnId, activeConversationId);
 
       // 요약 요청을 보내고 응답 받기
       await invoke("send_message", {
@@ -4307,6 +4371,10 @@ export default function App() {
 
       logger.log(`[Compress] 대화 압축 완료: ${activeConversationId} → ${newConvId}`);
     } catch (err) {
+      if (summaryTurnId) {
+        turnToConvMap.current.delete(summaryTurnId);
+        releaseConversationTurn(activeConversationId, summaryTurnId);
+      }
       console.error("[Compress] 대화 압축 실패:", err);
       pushSystem("대화 압축에 실패했습니다: " + (err as Error).message, "error");
     } finally {

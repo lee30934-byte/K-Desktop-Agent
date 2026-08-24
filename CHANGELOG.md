@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [0.7.26] - 2026-08-24
+
+### Fixed
+- **같은 대화의 작업창이 두 개씩 실행되던 race condition**: React state 갱신 전에 연속 입력·자동 주입이 겹치면 동일 `conversationId`에서 root turn 두 개가 시작될 수 있던 문제를 수정했다. frontend에 동기식 `conversationId → turnId owner` gate를 두고 직접 입력, 텔레그램, 예약, task-watch, 중단 재시도, 대화 압축 경로를 모두 통과시키며, 늦게 도착한 이전 turn의 `done/error`가 새 owner를 해제하지 못하게 했다.
+- **sidecar 방어 계층 추가**: frontend race가 다시 생겨도 sidecar가 동일 대화의 두 번째 root turn 자식 프로세스를 생성하지 않도록 차단한다. `done`, `error`, `interrupt`에서 정확한 turn owner만 해제한다.
+
+### Added
+- **single-flight 회귀 테스트**: 같은 대화 중복 차단, 다른 대화 병렬 허용, stale completion owner 보존, frontend 6개 진입 경로 및 sidecar root dispatch 배선을 검증한다.
+
 ## [0.7.25] - 2026-08-20
 
 ### Fixed
