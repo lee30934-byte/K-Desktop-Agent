@@ -65,6 +65,15 @@ jobs:
           Write-Host ("sidecar node_modules: {0:N1}MB -> {1:N1}MB (prune --omit=dev)" -f ($before/1MB), ($after/1MB))
           Pop-Location
 
+      - name: Release gate (post-build — 런타임 실측 그룹 포함)
+        # 0.7.28 — 회귀테스트 일부(test-conv-routing.mjs A그룹)는 빌드된
+        # sidecar/dist/index.js 를 실제로 spawn 해서 conversation_id 스탬프를 왕복 측정한다.
+        # 위의 fast 게이트는 빌드 전이라 그 그룹을 SKIP 하므로, 빌드가 끝난 여기서
+        # 한 번 더 돌려 CI 에서도 런타임 경로를 실측한다. --fast 라 cargo/프론트 빌드는
+        # 여전히 생략(그건 아래 tauri-action 이 담당).
+        shell: pwsh
+        run: npm run release:gate:fast
+
       - name: Fetch K-Personal-MCP source
         # Phase 26 (v0.5.13): K-Personal MCP 도구 서버 코드를 매 빌드마다 fetch.
         # data/, __pycache__/ 는 source repo 의 .gitignore 로 이미 제외됨 — code 만 옴.

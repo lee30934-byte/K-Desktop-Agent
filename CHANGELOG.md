@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+## [0.7.28] - 2026-08-31
+
+### Fixed
+- **v0.7.27 릴리스 빌드가 CI 에서 실패하던 문제**: 0.7.27 태그의 GitHub Actions Release 워크플로가 `Release gate (fast)` 단계에서 53초 만에 중단돼 서명 빌드와 릴리스 에셋이 전혀 생성되지 않았다. 원인은 0.7.27 에서 추가한 `sidecar/test-conv-routing.mjs` 였다. 이 테스트의 A그룹 6건은 **빌드된 `sidecar/dist/index.js` 를 실제로 spawn** 해 `conversation_id` 스탬프를 왕복 측정하는 환경 의존 검사인데, 워크플로에서 fast 게이트는 `Build sidecar` 보다 **먼저** 돌기 때문에 깨끗한 체크아웃에는 dist 가 없어 하드 FAIL 이 됐다(로컬은 dist 가 이미 있어 29/29 통과했으므로 드러나지 않았다). `release-gate.mjs` 는 이미 같은 함정을 `ENV_DEPENDENT_TESTS`(test-headless-mcp.mjs)로 다루고 있었는데, 새 테스트가 그 분류를 선언하지 않은 것이 실수였다. dist 가 없으면 A그룹만 **SKIP** 하도록 바꿔 정적 검사 23건은 CI 에서 그대로 유지한다(`sidecar/test-conv-routing.mjs`).
+
+### Changed
+- **CI 에서 런타임 검사 그룹도 실제로 측정하도록 게이트를 2회 실행**: SKIP 만 하면 A그룹이 CI 에서 영영 돌지 않아 "통과했지만 아무것도 재지 않은" 게이트가 된다(`pitfall_vacuous_gates_and_substring_state_checks` 계열). `Build sidecar` 직후에 `release:gate:fast` 를 한 번 더 실행해, 빌드 전에는 정적 검사로 빠르게 실패하고 빌드 후에는 런타임 왕복까지 실측한다. `--fast` 라 cargo/프론트 빌드는 여전히 tauri-action 이 담당한다(`.github/workflows/release.yml`).
+
 ## [0.7.27] - 2026-08-31
 
 ### Fixed
