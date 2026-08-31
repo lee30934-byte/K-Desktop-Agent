@@ -212,6 +212,76 @@ check("E① SidecarEvent 에 conversation_id 필드",
   /SidecarEvent = SidecarEventPayload & \{ conversation_id\?: string \}/.test(typesTs));
 check("E② optional 유지 (구버전 sidecar 호환)", /conversation_id\?: string/.test(typesTs));
 
+// ─── F. done 후 다른 대화의 행이 재기록되지 않음 (Phase 146) ───────────────
+// 2026-08-31 실측: Phase 145 를 넣고 v0.7.29 로 올린 뒤에도, 외부에서 재귀속한 214행 중
+// 27행이 되돌아갔다. 되돌아간 건 전부 "그때 화면에 열려 있던 대화에서 빼낸" 행이었다.
+// 원인은 done 핸들러의 일괄 재저장:
+//     const toSave = updated.filter(m => m.role === "assistant" || m.role === "tool");
+//     toSave.forEach(m => queueMessageSave(m));      // ← convId 미지정 = 활성 대화 폴백
+// `updated` 는 이번 턴이 아니라 **화면에 떠 있는 대화의 스크롤백 전체**다. saveMessage 가
+// `INSERT OR REPLACE INTO messages (id, conversation_id, …)` 라, 턴이 끝날 때마다 화면의
+// 모든 옛 행의 conversation_id 가 현재 대화로 덮어써졌다 = 남의 대화 행 강탈.
+console.log("\nF. done 재저장이 남의 대화를 덮어쓰지 않음 (Phase 146)");
+
+// F① 저장 대상이 이번 턴 소유 메시지로 한정됐는가 (스크롤백 전체 금지)
+const doneSave = (appTsx.match(/setMessages\(\(prev\) => \{[\s\S]{0,2600}?toSave\.forEach\([\s\S]{0,120}?\}, 0\);/) || [""])[0];
+check("F① done 저장 대상이 turn 소유 메시지로 한정",
+  /const ownsTurn = \(id: string\) =>/.test(doneSave)
+  && /toSave = updated\.filter\([\s\S]{0,200}ownsTurn\(m\.id\)/.test(doneSave),
+  doneSave ? "ownsTurn 필터 없음 — 스크롤백 전체를 재저장 중" : "done 저장 블록 추출 실패");
+
+// F② 그 저장이 활성 대화가 아니라 turn 의 대화를 명시하는가
+check("F② done 일괄 저장이 convForTurn 을 명시",
+  /toSave\.forEach\(\(m\) => queueMessageSave\(m, convForTurn\)\);/.test(appTsx),
+  "queueMessageSave(m) — 인자 없이 호출되면 activeConversationIdRef 로 폴백한다");
+
+// F③ 구조적 불변식 — queueMessageSave 호출은 예외 없이 대화 id 를 넘긴다.
+// (한 곳만 빠져도 그 경로로 오염이 재발한다. 실제로 1882/2306/4549 세 곳이 빠져 있었다.)
+const bareCalls = [...appTsx.matchAll(/queueMessageSave\(([^;]*?)\);/g)]
+  .map((m) => m[1])
+  .filter((args) => !args.includes(","));
+check(`F③ 인자 없는 queueMessageSave 호출 0곳 (실제 ${bareCalls.length})`,
+  bareCalls.length === 0, bareCalls.map((a) => `queueMessageSave(${a})`).join(" | "));
+
+// F④ AskUserQuestion — 질문이 난 대화를 질문 시점에 굳혀둔다.
+// K 가 답할 때쯤이면 그 턴은 이미 done 이라 turnToConvMap 에서 지워졌고, 그 사이 K 가
+// 다른 대화창으로 옮겨 있을 수 있다. 그때 폴백하면 답이 엉뚱한 대화에 박힌다.
+check("F④ ask 상태가 대화 id 를 보관", /convId: string \| null;/.test(appTsx)
+  && /convId: convForAsk,/.test(appTsx));
+check("F⑤ ask placeholder 저장이 convForAsk 명시",
+  /queueMessageSave\(askToolMsg, convForAsk\);/.test(appTsx));
+check("F⑥ ask 답 patch 가 convId 를 인자로 받음",
+  /\(turnId: string, toolUseId: string, kAnswer: string, convId: string \| null\) =>/.test(appTsx)
+  && /queueMessageSave\(updated, convId\);/.test(appTsx));
+
+// F⑦ 런타임 — 소스에서 뽑은 **실제** 술어를 그대로 실행해 소유 판정을 확인한다.
+//     (정규식은 "필터가 있다" 만 증명한다. 판정이 맞는지는 돌려봐야 안다.)
+{
+  // 종결은 첫 `;` — 본문에 다른 세미콜론이 없다. (CRLF 환경을 타지 않도록 개행에 의존 안 함)
+  const src = (doneSave.match(/const ownsTurn = \(id: string\) =>[\s\S]*?;/) || [""])[0]
+    .replace(/: string/g, "");
+  let ok = false, detail = "ownsTurn 추출 실패";
+  if (src) {
+    try {
+      const ev = { id: "11111111-2222-3333-4444-555555555555" };
+      // eslint-disable-next-line no-new-func
+      const ownsTurn = new Function("ev", `${src} return ownsTurn;`)(ev);
+      const mine = [ev.id, `${ev.id}-tool-toolu_01`, `${ev.id}-orch-codex`, `${ev.id}#codex-orch-codex`];
+      const theirs = ["99999999-2222-3333-4444-555555555555",
+        "99999999-2222-3333-4444-555555555555-tool-toolu_02",
+        "11111111-2222-3333-4444-55555555555", // 접두사만 겹치는 짧은 id
+        "prefix-" + ev.id];
+      const badMine = mine.filter((id) => ownsTurn(id) !== true);
+      const badTheirs = theirs.filter((id) => ownsTurn(id) !== false);
+      ok = badMine.length === 0 && badTheirs.length === 0;
+      detail = `내 턴인데 false: [${badMine}] / 남의 턴인데 true: [${badTheirs}]`;
+    } catch (e) {
+      detail = String(e);
+    }
+  }
+  check("F⑦ (런타임) ownsTurn 이 내 턴 4종 채택 / 남의 턴 4종 거부", ok, detail);
+}
+
 await runtimeStampTest();
 
 // 0.7.29 — "결과: N/N 통과" 형식으로 낸다. release-gate.mjs 는 이 형식일 때만 건수를

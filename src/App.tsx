@@ -443,6 +443,10 @@ export default function App() {
     // 다음 user message 가 handleSendMessage 로 들어오면 진입부에서 이 플래그 보고 prefix 자동 박음.
     // 한 번 박힌 후 null 처리.
     awaitingFreeForm?: boolean;
+    // Phase 146 — 질문이 발생한 turn 의 대화 id 를 질문 시점에 고정한다.
+    // K 가 답할 때쯤엔 그 turn 이 이미 done 이라 turnToConvMap 에서 지워졌고,
+    // 그 사이 K 가 다른 대화창으로 옮겼을 수도 있다. 여기 굳혀둬야 답이 원래 대화에 저장된다.
+    convId: string | null;
   } | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
@@ -1873,13 +1877,30 @@ export default function App() {
               : m
           );
 
-          // 이번 턴의 메시지들 DB에 저장 (user 제외 - 이미 저장됨)
+          // Phase 146 — 이번 turn 의 메시지만 저장한다.
+          //
+          //   결함(2026-08-31 실측): 종전 필터는 `prev` 전체, 즉 **지금 보고 있는 대화의
+          //   스크롤백 전부**를 대상으로 했고 queueMessageSave 를 convId 없이 불러
+          //   activeConversationIdRef 로 폴백했다. saveMessage 는
+          //   `INSERT OR REPLACE INTO messages (id, conversation_id, ...)` 라 매 turn 끝마다
+          //   화면에 떠 있던 모든 옛 행의 conversation_id 가 현재 대화로 통째로 덮어쓰였다.
+          //   → 다른 대화에 속한 행을 이 대화가 강탈. (오염 복구 214행 중 27행이 이 경로로
+          //     되돌아간 것으로 확인됨.)
+          //
+          //   turn 소유 id 규칙: assistant=`{turnId}`, tool=`{turnId}-tool-{id}`,
+          //   orch 카드=`{turnId}-orch-{engine}`, 오케스트레이션 sub-turn=`{turnId}#...`.
+          //   여기서 빠지는 메시지가 있어도 손실은 없다 — 스트리밍 경로(1548/1592/1628/
+          //   1644/1676/1738)가 이미 convForTurn 을 명시해 저장했고, 이 블록은 재저장 안전망이다.
+          const ownsTurn = (id: string) =>
+            id === ev.id || id.startsWith(`${ev.id}-`) || id.startsWith(`${ev.id}#`);
           const toSave = updated.filter(
-            (m) => m.role === "assistant" || m.role === "tool"
+            (m) => (m.role === "assistant" || m.role === "tool") && ownsTurn(m.id)
           );
           // 비동기로 저장 (상태 업데이트 콜백 내에서 직접 호출 불가하므로 setTimeout 사용)
           setTimeout(() => {
-            toSave.forEach((m) => queueMessageSave(m));
+            // convForTurn 명시 — 폴백 금지(Phase 145 원칙). 이 분기는 isActiveConv 라
+            // convForTurn 은 non-null 이지만, 값의 출처를 turn 으로 못박는 게 요점이다.
+            toSave.forEach((m) => queueMessageSave(m, convForTurn));
             refreshConversations();
           }, 0);
 
@@ -2273,12 +2294,16 @@ export default function App() {
         const evAny = ev as any;
         if (!evAny.questions || evAny.questions.length === 0) break;
 
+        // Phase 146 — 이 turn 의 대화 id. 폴백 없음(Phase 145 원칙).
+        const convForAsk = resolveEventConv(ev);
+
         askUserQuestionStateRef.current = {
           turnId: evAny.id,
           toolUseId: evAny.tool_use_id,
           questions: evAny.questions,
           currentIndex: 0,
           collectedAnswers: [],
+          convId: convForAsk,
         };
 
         // Phase 95 — placeholder ToolMessage 즉시 박음. id 는 sidecar 가 tool_msg_id 로 명시
@@ -2303,7 +2328,7 @@ export default function App() {
             if (prev.some((m) => m.id === tmId)) return prev;
             return [...prev, askToolMsg];
           });
-          queueMessageSave(askToolMsg);
+          queueMessageSave(askToolMsg, convForAsk);
           logger.log(
             `[ask_user_question] placeholder ToolMessage 박음 (id=${tmId}, tool_use_id=${evAny.tool_use_id})`,
           );
@@ -2494,6 +2519,7 @@ export default function App() {
           `답:`,
           text,
         ].filter(Boolean).join("\n"),
+        askPending.convId ?? null,
       );
 
       // v0.6.3 prefix 보강 — 이중 안전망 유지
@@ -4498,8 +4524,11 @@ export default function App() {
   // 안전:
   //   - 대상 ToolMessage 못 찾으면 silent skip (회귀 위험 0) — text-prefix 보강이 fallback
   //   - DB 영속화로 다음 turn / resume 에도 보존
+  // Phase 146 — convId 를 인자로 받는다. 종전엔 queueMessageSave 가 인자 없이 불려
+  //   activeConversationIdRef 로 폴백했고, K 가 답하기 전에 다른 대화창으로 옮겨 있으면
+  //   그 ToolMessage 행이 엉뚱한 대화로 재기록됐다(= conversation_id 덮어쓰기).
   const patchAskToolMessageOutput = useStableCallback(
-    (turnId: string, toolUseId: string, kAnswer: string) => {
+    (turnId: string, toolUseId: string, kAnswer: string, convId: string | null) => {
       // Phase 68 (v0.6.4) — primary 매칭: `${turnId}-tool-${toolUseId}` 정확 일치.
       // Phase 95 (v0.6.37) — fallback: primary 매칭 fail 시 `toolId === toolUseId` 인 가장 최근
       //   ToolMessage 매칭. sidecar 의 tool_msg_id 가 다른 포맷으로 박혔거나 id 일부 mismatch 시도
@@ -4546,7 +4575,7 @@ export default function App() {
         return prev; // 둘 다 실패
       });
       if (updated) {
-        queueMessageSave(updated);
+        queueMessageSave(updated, convId);
         logger.log(
           `[ask_user_question] ToolMessage.toolOutput patched (tool_use_id=${toolUseId}, via=${matchedBy})`,
         );
@@ -4652,6 +4681,7 @@ export default function App() {
           `K 가 옵션에서 선택한 답변:`,
           summary,
         ].join("\n"),
+        askState.convId ?? null,
       );
 
       const replyText = [

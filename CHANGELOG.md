@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+## [0.7.30] - 2026-08-31
+
+### Fixed
+- **턴이 끝날 때마다 화면에 떠 있던 옛 메시지들의 소속 대화가 통째로 덮어써지던 결함 (Phase 146)**: Phase 145(0.7.27)로 "새 오염"은 막혔지만, 그 뒤 v0.7.29 로 올려 실측하니 **외부에서 원래 대화로 되돌려 놓은 214행 중 27행이 다시 틀어져 있었다**. 되돌아간 27행은 예외 없이 "그 시점에 KDA 에서 열려 있던 대화에서 빼낸" 행이었고, 반대로 그 대화로 **넣은** 행은 한 건도 틀어지지 않았다 — 이 비대칭이 원인을 지목했다. `App.tsx` 의 `done` 핸들러가 턴 종료 시 `setMessages` 콜백 안에서 `const toSave = updated.filter(m => m.role === "assistant" || m.role === "tool")` 로 **이번 턴이 아니라 화면에 렌더된 대화의 스크롤백 전체**를 골라 `queueMessageSave(m)` 를 `convId` 인자 **없이** 불렀다. 인자가 없으면 `activeConversationIdRef.current` 로 폴백하고(Phase 145 가 다른 6곳에서 제거한 바로 그 폴백), `db.ts` 의 `saveMessage` 는 `INSERT OR REPLACE INTO messages (id, conversation_id, …)` 라 **행의 `conversation_id` 를 통째로 다시 쓴다**. 결과적으로 턴이 하나 끝날 때마다 그 화면의 모든 옛 행이 현재 대화 소유로 재선언됐다 — 오래 열어둔 대화창이 다른 대화의 행을 계속 흡수하는 구조였다. 세 가지를 고쳤다. ⓐ 저장 대상을 **이번 턴이 소유한 메시지**로 한정한다(`{turnId}` / `{turnId}-tool-*` / `{turnId}-orch-*` / `{turnId}#*`). 스트리밍 경로가 이미 `convForTurn` 을 명시해 저장하므로 이 블록은 안전망일 뿐, 좁혀도 손실이 없다. ⓑ 그 저장이 `queueMessageSave(m, convForTurn)` 으로 턴의 대화를 **명시**한다. ⓒ 남아 있던 폴백 2곳(`ask_user_question` placeholder 저장, K 답을 ToolMessage 에 박는 `patchAskToolMessageOutput`)도 정리했다 — 후자는 K 가 답할 때쯤이면 그 턴이 이미 `done` 이라 매핑이 지워져 있으므로, **질문이 뜬 시점의 대화 id 를 `askUserQuestionStateRef` 에 굳혀** 두고 넘긴다(`src/App.tsx`).
+
+### Added
+- **`test-conv-routing.mjs` F그룹 7건 — "턴 종료 후 남의 대화 행이 재기록되지 않음"**: `queueMessageSave` 호출 중 대화 id 를 넘기지 않는 곳이 **0곳**인지 세는 구조적 불변식(한 곳만 빠져도 그 경로로 오염이 재발한다), `done` 저장 대상이 턴 소유로 한정됐는지, ask 경로가 대화 id 를 보관·전달하는지를 못박는다. F⑦ 은 정적 검사에 그치지 않고 `App.tsx` 소스에서 **실제 소유 판정식을 추출해 실행**한다 — 내 턴 4종(앵커·tool·orch·sub-turn)을 채택하고 남의 턴 4종(다른 UUID, 접두사만 겹치는 짧은 id 등)을 거부하는지 확인. 수정을 되돌리면 F① ~ F⑦ 7건이 전부 실패하는 것으로 탐지력을 확인했다(변이 검증). 회귀 총계 269/269, 게이트 9 PASS/0 FAIL.
+
 ## [0.7.29] - 2026-08-31
 
 ### Fixed
