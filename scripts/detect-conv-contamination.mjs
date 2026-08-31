@@ -63,13 +63,34 @@ function die(msg) {
 if (!existsSync(dbPath)) die(`DB 없음: ${dbPath}`);
 
 // 읽기 전용 보장: 사본에서만 조회.
+//
+// ★ 사본은 반드시 `VACUUM INTO` 로 뜬다. conversations.db 는 WAL 모드라
+//   `.db` 만 파일복사하면 아직 체크포인트되지 않은 -wal 의 최신 행이 통째로 빠진다.
+//   2026-08-31 실측: 오염 214행을 실제로 복구한 직후에도 이 스캐너는 계속 13건을
+//   보고했다(사본이 복구 전 상태였음). 최신 오염을 놓치는 방향으로도 똑같이 틀린다.
+//   VACUUM INTO 는 원본에 쓰지 않으므로 읽기 전용 보장은 그대로 유지된다.
 const tmpDir = mkdtempSync(path.join(os.tmpdir(), "kda-convscan-"));
 const roDb = path.join(tmpDir, "ro.db");
 try {
-  copyFileSync(dbPath, roDb);
+  const src = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    src.exec(`VACUUM INTO '${roDb.replace(/'/g, "''")}'`);
+  } finally {
+    src.close();
+  }
 } catch (e) {
-  rmSync(tmpDir, { recursive: true, force: true });
-  die(`DB 사본 생성 실패: ${e}`);
+  // VACUUM INTO 가 막힌 환경(락 경합 등)에서는 파일복사로 폴백하되,
+  // WAL 이 남아 있으면 결과가 낡을 수 있음을 알린다.
+  try {
+    rmSync(roDb, { force: true });
+    copyFileSync(dbPath, roDb);
+    if (!asJson && existsSync(`${dbPath}-wal`)) {
+      console.error(`경고: VACUUM INTO 실패(${e}) — 파일복사로 폴백. -wal 미반영으로 결과가 낡을 수 있음.`);
+    }
+  } catch (e2) {
+    rmSync(tmpDir, { recursive: true, force: true });
+    die(`DB 사본 생성 실패: ${e2}`);
+  }
 }
 
 const sinceMs = scanAll ? 0 : Date.now() - days * 24 * 60 * 60 * 1000;
