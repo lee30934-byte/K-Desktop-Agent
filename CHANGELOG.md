@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [0.7.27] - 2026-08-31
+
+### Fixed
+- **대화창 오염 — 긴 턴의 응답이 다른 대화창에 저장되던 결함 (Phase 145)**: 대화창 2개를 번갈아 쓰면 한쪽에서 시작한 턴의 답변이 다른 쪽에 나타났다. `conversations.db` 3,679턴 전수 스캔에서 **11건**을 확인했고 **전부 12분 이상 걸린 턴**이었다(81/68/63/62/61/42/40/17/15/14/12분, 최근 사례 2026-08-31). 인과는 3단이었다. ① 라우팅 진실이 프론트엔드 휘발성 메모리(`App.tsx` 의 `turnToConvMap` useRef)에만 있었다 — sidecar 는 `msg.conversation_id` 를 알고 자식 프로세스 env 로 넘기기까지 하면서 정작 되돌아오는 이벤트에는 싣지 않았다. ② dead-stream 워치독이 `turnToConvMap.current.clear()` 로 매핑을 **통째로** 지웠다. 판단 기준인 `idleMs` 는 "sidecar 이벤트가 없던 시간"이라, 도구 하나에 12분 넘게 머문 **정상 턴**(영상 렌더링 21분 32초, CAE 빌드, OCR 등)도 무이벤트로 보여 살아 있는 턴의 매핑까지 삭제됐다. ③ 맵 miss 시 7곳이 `?? activeConversationIdRef.current` 로 폴백했고, `queueMessageSave(msg, convForTurn)` 이 **K 가 그때 보고 있던 대화에 영구 저장**했다 — 화면만의 문제가 아니라 재시작 후에도 남는 DB 오염이었다. 세 고리를 각각 끊었다. ⓐ sidecar 의 `rawEmit()` 단일 지점에서 **모든 이벤트에 `conversation_id` 를 스탬프**한다(등록은 `handleUserMessage`/`handleOrchestrateMessage` 초입, 해제는 provider 4경로 `finally` 에서 5분 유예 — 늦게 도착하는 이벤트를 보호하고 타이머는 `unref`). 오케스트레이션 sub-turn(`{mainId}#{engine}`)은 main turn 의 대화로 귀속한다. 추가 필드라 프로토콜 호환은 유지된다. ⓑ 프론트는 `resolveEventConv(ev)` = `ev.conversation_id` → `turnToConvMap` → **null** 순으로 해석하고, **활성 대화 폴백을 전부 제거**했다 — 귀속을 모르면 저장하지 않고 경고 후 drop 한다(done/error 는 입력 잠금만 해제해 안전한 방향으로 실패). ⓒ 워치독 2곳의 일괄 `clear()` 를 삭제하고 500개 상한으로 증가만 억제했다(12분 강제 잠금해제 기능 자체는 유지). (`sidecar/src/index.ts`, `src/App.tsx`, `src/types.ts`)
+
+### Added
+- **`sidecar/test-conv-routing.mjs` 회귀 테스트 (29건)**: 소스 패턴 검사만으로는 "코드가 있다"까지만 증명되므로, 스탬프 검증 6건은 **실제로 sidecar 프로세스를 띄워 stdin/stdout 을 왕복**시켜 측정한다(API 키 없는 REST provider 로 턴을 보내면 외부 CLI 없이 즉시 error+done 이 나오는 성질을 이용). 턴의 모든 이벤트에 스탬프가 찍히는지, `done`/`error` 에도 찍히는지, `conversation_id` 가 없는 턴에는 **지어내지 않는지**, 턴 간 누수가 없는지를 확인한다. 나머지는 폴백 잔존 0곳·워치독 `clear()` 잔존 0곳 등 회귀 불변식.
+- **`scripts/detect-conv-contamination.mjs` 상시 탐지기**: 한 turn 에서 나온 행(`{turnId}`, `{turnId}-tool-*`, `{turnId}-orch-*`)이 2개 이상 대화에 걸쳐 있으면 오염으로 판정한다. 정상 동작에서는 나올 수 없는 신호라 오탐이 거의 없다. **읽기 전용** — 원본 DB 를 열지 않고 임시 사본을 떠서 조회하며 절대 수정하지 않는다. `--days N` / `--all` / `--json`, 종료 코드 0=정상 / 3=검출 / 1=실패. 이 PC 에 `sqlite3` CLI 가 없어 Node 22 내장 `node:sqlite` 를 쓴다. 이미 오염된 과거 행의 재귀속은 자동으로 하지 않는다.
+
 ## [0.7.26] - 2026-08-24
 
 ### Fixed

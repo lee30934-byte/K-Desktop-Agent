@@ -638,6 +638,64 @@ export default function App() {
   // K 가 다른 conv 로 이동해도 emit handler 가 이 map 으로 그 turn 의 원래 conv 를 찾아
   // setMessages 분기 (active conv 면 UI 갱신) + DB save 는 항상 원래 conv 에 박음.
   const turnToConvMap = useRef<Map<string, string>>(new Map());
+
+  // Phase 145 — 대화창 오염 근본 대책 (2026-08-31).
+  //
+  // 사고: 12분 이상 도구 하나에 머문 긴 턴이 끝나면 그 답변이 K 가 그때 보고 있던
+  // *다른* 대화창에 저장됐다. 3,679 턴 실측에서 10건 확인 (61/66/42/41/40/19/12/12분 등).
+  // 인과 3단:
+  //   ① 라우팅 진실이 프론트 휘발성 메모리(turnToConvMap)에만 있었다.
+  //   ② 12분 무이벤트 워치독이 turnToConvMap 을 통째로 clear 했다 — 살아 있는 턴까지.
+  //   ③ 맵 miss 시 7곳이 activeConversationIdRef 로 폴백해 queueMessageSave 가
+  //      "지금 보고 있는 대화"에 영구 저장했다.
+  //
+  // 대책: ①은 sidecar 가 이벤트마다 conversation_id 를 찍어 해결(진실이 이벤트에 실려 옴),
+  //       ②는 워치독이 죽은 턴만 선별 제거, ③은 폴백 제거 — 모르면 저장하지 않고 경고.
+  //
+  // 반환값이 null 이면 "이 이벤트가 어느 대화 것인지 알 수 없음" 이라는 뜻이다.
+  // 그 경우 절대 활성 대화로 추측해 쓰지 말 것 (그게 오염의 원인이었다).
+  const resolveEventConv = useStableCallback((ev: SidecarEvent): string | null => {
+    const stamped = (ev as { conversation_id?: string }).conversation_id;
+    if (stamped) return stamped;                       // sidecar 스탬프 = 1순위 진실
+    const id = (ev as { id?: string }).id;
+    if (id) {
+      const mapped = turnToConvMap.current.get(id);    // 구버전 sidecar 폴백
+      if (mapped) return mapped;
+      const hash = id.indexOf("#");                    // 오케스트레이션 sub-turn
+      if (hash > 0) {
+        const main = turnToConvMap.current.get(id.slice(0, hash));
+        if (main) return main;
+      }
+    }
+    return null;
+  });
+
+  // Phase 145 — 워치독의 일괄 clear 를 없앤 대신, 매핑이 무한히 쌓이지 않도록 상한만 둔다.
+  // (done/error 가 영영 안 오는 고아 턴이 있어도 오래된 것부터 밀려난다. Map 은 삽입 순서 보존.)
+  const TURN_CONV_MAP_MAX = 500;
+  const rememberTurnConv = useStableCallback((turnId: string, convId: string) => {
+    turnToConvMap.current.set(turnId, convId);
+    while (turnToConvMap.current.size > TURN_CONV_MAP_MAX) {
+      const oldest = turnToConvMap.current.keys().next();
+      if (oldest.done) break;
+      turnToConvMap.current.delete(oldest.value);
+    }
+  });
+
+  // 목적지를 모르는 이벤트를 만났을 때의 기록 (조용히 버리면 회귀를 못 잡는다).
+  const warnUnroutableRef = useRef<Map<string, number>>(new Map());
+  const warnUnroutable = useStableCallback((ev: SidecarEvent) => {
+    const id = (ev as { id?: string }).id ?? "(no-id)";
+    const key = `${ev.type}:${id}`;
+    const last = warnUnroutableRef.current.get(key) ?? 0;
+    if (Date.now() - last < 30_000) return;            // 델타 폭주 억제
+    warnUnroutableRef.current.set(key, Date.now());
+    console.warn(
+      `[Phase145] 대화 귀속 불명 이벤트 drop: type=${ev.type} id=${id} ` +
+        `(활성 대화로 폴백하지 않음 — 오염 방지)`,
+    );
+  });
+
   // Phase 144 (v0.7.20) — W2: turn id → 그 turn 을 실행한 provider.
   // done 이벤트가 돌려주는 agentId 는 "어느 엔진의 세션 id 인지" 정보가 없다(sidecar 프로토콜에
   // provider 필드가 없음). 이걸 모른 채 단일 agent_id 컬럼에 덮어쓰면, 다음 turn 에서 다른
@@ -1266,10 +1324,20 @@ export default function App() {
         setStreamStalled(true);
       }
       if (idleMs > STREAM_FORCE_UNLOCK_MS) {
-        // 12분 전역 무이벤트 = sidecar 가 죽었거나 멈춘 상태 — 특정 conv 만이 아니라
-        // 모든 streaming 표시/턴 매핑을 일괄 정리해야 다른 대화가 영원히 "응답 중" 으로 남지 않음.
-        turnToConvMap.current.clear();
+        // 12분 전역 무이벤트 = sidecar 가 죽었거나 멈춘 상태 — 입력 잠금과
+        // single-flight 게이트는 풀되, turn→conv 매핑은 건드리지 않는다.
         conversationTurnGateRef.current.clear();
+        //
+        // Phase 145 (2026-08-31) — 여기 있던 `turnToConvMap.current.clear()` 가
+        // 대화창 오염의 방아쇠였다. idleMs 는 "sidecar 이벤트가 없었던 시간" 이라
+        // **도구 하나에 12분 넘게 머문 정상 턴**(예: 21분짜리 영상 렌더링)도 무이벤트로 보인다.
+        // 그 살아 있는 턴의 매핑까지 지워버리면, 나중에 도착한 done 이 맵 miss →
+        // 활성 대화로 폴백 → K 가 그때 보고 있던 *다른* 대화에 답변이 영구 저장됐다.
+        // 실측 10건(61/66/42/41/40/19/12/12분) 전부 이 경로.
+        //
+        // 매핑을 남겨두는 비용은 Map 항목 몇 개(수십 바이트)뿐이고, done/error 가 오면
+        // 그 시점에 정상 삭제된다. sidecar 가 정말 죽어 done 이 영영 안 와도 다음
+        // sidecar 재시작까지 남는 고아 항목일 뿐 — 오답 배달보다 훨씬 싼 실패다.
         setStreamingConvIds(new Set());
         currentTurnIdRef.current = null;
         currentTurnStartedAtRef.current = 0;
@@ -1319,8 +1387,9 @@ export default function App() {
         if (level === "critical" && isStreamingRef.current && Date.now() - lastCriticalUnlockAt > 60_000) {
           lastCriticalUnlockAt = Date.now();
           // critical 복구는 "멈춘 stream 으로 인한 입력 잠금 해제" 가 목적 —
-          // 현재 turn 만이 아니라 전체 streaming 표시/턴 매핑을 일괄 정리.
-          turnToConvMap.current.clear();
+          // 전체 streaming 표시와 single-flight 게이트는 정리하되, turn→conv 매핑은 남긴다.
+          // Phase 145 — 매핑을 지우면 살아 있는 턴의 done 이 활성 대화로 폴백해
+          // 다른 대화창에 답변이 저장된다(오염). 잠금 해제와 라우팅 진실은 별개 문제다.
           conversationTurnGateRef.current.clear();
           setStreamingConvIds(new Set());
           currentTurnIdRef.current = null;
@@ -1431,7 +1500,9 @@ export default function App() {
         // 매 chunk 마다 DB write 부담은 없음 (같은 id 로 upsert).
         // Phase 111 (v0.6.60) — turn 의 원래 conv 로 routing. K 가 다른 conv 로 이동하면
         // setMessages skip (UI 갱신 X) + DB save 는 원래 conv 에 박음.
-        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        // Phase 145 — 귀속 불명이면 활성 대화로 폴백하지 않고 drop (오염 방지).
+        const convForTurn = resolveEventConv(ev);
+        if (!convForTurn) { warnUnroutable(ev); break; }
         const isActiveConv = convForTurn === activeConversationIdRef.current;
         let savedMsg: ChatMessage | null = null;
         if (isActiveConv) {
@@ -1482,7 +1553,8 @@ export default function App() {
       // sub-turn 의 누적 텍스트를 별도 assistant 버블 (`{turnId}-orch-{engine}`) 로 표시.
       // 종합 답변은 메인 turn id 의 일반 assistant_delta/done 으로 따로 흐름.
       case "orchestrate_delta": {
-        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        const convForTurn = resolveEventConv(ev); // Phase 145 — 폴백 없음
+        if (!convForTurn) { warnUnroutable(ev); break; }
         const isActiveConv = convForTurn === activeConversationIdRef.current;
         const cardId = `${ev.id}-orch-${ev.engine}`;
         const label =
@@ -1522,7 +1594,8 @@ export default function App() {
       }
 
       case "orchestrate_status": {
-        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        const convForTurn = resolveEventConv(ev); // Phase 145 — 폴백 없음
+        if (!convForTurn) { warnUnroutable(ev); break; }
         const isActiveConv = convForTurn === activeConversationIdRef.current;
         if (ev.phase === "fanout") {
           if (isActiveConv) {
@@ -1582,7 +1655,9 @@ export default function App() {
         // history 에 남도록 (Resume 시 재호출 방지).
         // Phase 85 (v0.6.28) — sidecar 가 박은 risk 메타를 ToolMessage 에 저장 (UI 배지용).
         // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
-        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        // Phase 145 — 폴백 없음. 귀속 불명이면 저장하지 않는다.
+        const convForTurn = resolveEventConv(ev);
+        if (!convForTurn) { warnUnroutable(ev); break; }
         const isActiveConv = convForTurn === activeConversationIdRef.current;
         const toolMsg: ChatMessage = {
           id: `${ev.id}-tool-${ev.tool_id}`,
@@ -1625,7 +1700,9 @@ export default function App() {
         // Phase 98 — sidecar 가 image content part 를 분리해 images 로 emit 하면
         // ToolMessage 에 그대로 박음. Message.tsx 가 썸네일 그리드로 렌더링.
         // Phase 111 (v0.6.60) — turn 의 원래 conv routing.
-        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        // Phase 145 — 폴백 없음.
+        const convForTurn = resolveEventConv(ev);
+        if (!convForTurn) { warnUnroutable(ev); break; }
         const isActiveConv = convForTurn === activeConversationIdRef.current;
         let updatedToolMsg: ChatMessage | null = null;
         if (isActiveConv) {
@@ -1681,7 +1758,11 @@ export default function App() {
             void invoke("append_schedule_log", { line }).catch(() => {});
           }
         }
-        const convForTurn = turnToConvMap.current.get(ev.id) ?? activeConversationIdRef.current;
+        // Phase 145 — 귀속 불명이면 활성 대화로 폴백하지 않는다 (여기가 오염의 핵심 지점이었다:
+        // 12분 넘게 도구 하나에 머문 턴의 최종 답변이 K 가 보고 있던 대화에 영구 저장됐다).
+        // null 이면 아래 저장 경로는 전부 skip 되고, UI 잠금 해제만 안전하게 수행한다.
+        const convForTurn = resolveEventConv(ev);
+        if (!convForTurn) warnUnroutable(ev);
         // task-watch turn: persist the final assistant message first, then ACK.
         // If persistence or ACK fails, release the durable marker for retry.
         {
@@ -1720,7 +1801,9 @@ export default function App() {
         // Background turn (다른 conv) 면 early return + agentId/DB 만 갱신.
         // Active conv 면 기존 로직 그대로 (isStreaming reset, setMessages, setMetrics, 세션 임계치 등).
         // v1 엔 background turn 의 메트릭 갱신은 skip — 다음 phase 에서 정밀화.
-        const isActiveConv = convForTurn === activeConversationIdRef.current;
+        // Phase 145 — convForTurn 이 null 일 때 activeConversationIdRef 도 null 이면
+        // `null === null` 로 우연히 active 취급되는 것을 막는다.
+        const isActiveConv = !!convForTurn && convForTurn === activeConversationIdRef.current;
         // turnToConvMap / streamingConvIds 정리 — 항상.
         turnToConvMap.current.delete(ev.id);
         let staleCompletion = false;
@@ -1751,6 +1834,12 @@ export default function App() {
               );
           }
           turnProviderMap.current.delete(ev.id);
+          // Phase 145 — 귀속 불명 turn 이 하필 지금 보고 있는 창의 turn 이었다면 입력이
+          // 영구히 잠긴다. 저장은 안 하되(오염 방지) UI 잠금만 푼다 — 안전한 방향의 실패.
+          if (!convForTurn && ev.id && ev.id === currentTurnIdRef.current) {
+            setIsStreaming(false);
+            setCurrentTurnId(null);
+          }
           // 사이드바 메타 (메시지 카운트, lastActive) refresh — turn 완료 반영.
           setTimeout(() => refreshConversations(), 100);
           break;
@@ -1930,8 +2019,13 @@ export default function App() {
           }
         }
         // Phase 111 (v0.6.60) — background turn 의 error 도 routing.
-        const convForErr = (ev.id && turnToConvMap.current.get(ev.id)) ?? activeConversationIdRef.current;
-        const isActiveConvErr = convForErr === activeConversationIdRef.current;
+        // Phase 145 — turn id 가 있는 error 는 폴백 금지 (남의 대화에 남의 에러를 박지 않는다).
+        // id 없는 전역 error(sidecar 자체 오류 등)는 turn 귀속 개념이 없으므로 지금 보는 창에 표시.
+        const convForErr = ev.id ? resolveEventConv(ev) : activeConversationIdRef.current;
+        if (ev.id && !convForErr) warnUnroutable(ev);
+        const isActiveConvErr = ev.id
+          ? !!convForErr && convForErr === activeConversationIdRef.current
+          : true;
        if (ev.id) {
          turnToConvMap.current.delete(ev.id);
        }
@@ -1978,6 +2072,11 @@ export default function App() {
           // Background turn error — 사이드바 메타 refresh 만. UI 상단 알림 X (K 가 그 conv 보고 있지 않음).
           // 다음 phase 에서 conv 별 토스트 알림 박을 수 있음.
           console.warn(`[App] background turn error (conv=${convForErr}): ${ev.message}`);
+          // Phase 145 — 귀속 불명 error 가 지금 보는 창의 turn 이었다면 입력 잠금만 해제.
+          if (!convForErr && ev.id && ev.id === currentTurnIdRef.current) {
+            setIsStreaming(false);
+            setCurrentTurnId(null);
+          }
           break;
         }
         setIsStreaming(false);
@@ -2503,7 +2602,7 @@ export default function App() {
     // Phase 111 (v0.6.60) — turn → conv 매핑 박음. emit handler 들이 이 map 으로 routing.
     // K 가 다른 conv 로 이동해도 이 turn 의 chunks 는 원래 conv 에만 박힘.
     if (convId) {
-      turnToConvMap.current.set(turnId, convId);
+      rememberTurnConv(turnId, convId);
     }
 
     // DB에 사용자 메시지 저장
@@ -2967,7 +3066,7 @@ export default function App() {
       }
      queueMessageSave(userMsg, convId);
 
-     turnToConvMap.current.set(turnId, convId);
+     rememberTurnConv(turnId, convId);
      turnProviderMap.current.set(turnId, s.provider); // W2 — 세션 id 저장 대상 컬럼 결정용
      telegramTurnsRef.current.set(turnId, { chatId, text: "" });
 
@@ -3134,7 +3233,7 @@ export default function App() {
         }
        queueMessageSave(userMsg, convId);
 
-       turnToConvMap.current.set(turnId, convId);
+       rememberTurnConv(turnId, convId);
        turnProviderMap.current.set(turnId, s.provider); // W2
        scheduleTurnsRef.current.set(turnId, { scheduleId: row.id, title: row.title });
        scheduleFiredAtRef.current.set(row.id, Date.now());
@@ -3322,7 +3421,7 @@ export default function App() {
           turnId,
           conversationId: convId,
         });
-        turnToConvMap.current.set(turnId, convId);
+        rememberTurnConv(turnId, convId);
         turnProviderMap.current.set(turnId, s.provider); // W2
         taskWatchTurnsRef.current.set(turnId, {
           watchId: w.id,
@@ -4001,7 +4100,7 @@ export default function App() {
       logger.warn(`[SingleFlight] resume 차단 conv=${convId.slice(0, 8)} turn=${turnId}`);
       return;
     }
-    turnToConvMap.current.set(turnId, convId);
+    rememberTurnConv(turnId, convId);
     setCurrentTurnId(turnId);
     currentTurnIdRef.current = turnId;
     currentTurnStartedAtRef.current = Date.now();
@@ -4314,7 +4413,7 @@ export default function App() {
         pushSystem("현재 대화의 작업이 끝난 뒤 다시 압축해 주세요.", "info");
         return;
       }
-      turnToConvMap.current.set(summaryTurnId, activeConversationId);
+      rememberTurnConv(summaryTurnId, activeConversationId); // Phase 145 — 6번째 send 경로
 
       // 요약 요청을 보내고 응답 받기
       await invoke("send_message", {

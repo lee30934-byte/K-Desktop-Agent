@@ -64,7 +64,14 @@ export type ChatMessage =
 
 // ─── Sidecar 이벤트 (Rust → Frontend) ─────────────────────────
 
-export type SidecarEvent =
+// Phase 145 — 대화창 오염 근본 대책.
+// sidecar 가 모든 이벤트에 그 turn 이 속한 conversation_id 를 찍는다 (rawEmit 단일 지점).
+// 라우팅 진실이 프론트 휘발성 메모리(turnToConvMap)가 아니라 이벤트 자체에 실려 오므로,
+// 워치독이 맵을 지우든 새로고침을 하든 응답이 다른 대화창으로 새지 않는다.
+// 구버전 sidecar 와의 호환을 위해 optional — 없으면 turnToConvMap 으로 폴백.
+export type SidecarEvent = SidecarEventPayload & { conversation_id?: string };
+
+type SidecarEventPayload =
   | { type: "ready"; version: string }
   | { type: "assistant_delta"; id: string; text: string }
   | {

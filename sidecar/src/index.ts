@@ -1945,7 +1945,54 @@ function releaseConversationTurnById(turnId: unknown): void {
   if (activeConversationTurns.get(convId) === turnId) activeConversationTurns.delete(convId);
 }
 
+// Phase 145 — 대화창 오염 근본 대책. turn id → conversation id.
+// rawEmit 이 이 맵으로 모든 이벤트에 conversation_id 를 찍는다 →
+// 라우팅 진실이 프론트엔드 휘발성 메모리(turnToConvMap)가 아니라 이벤트 자체에 실려 간다.
+// 프론트 맵이 watchdog 으로 날아가든 창을 새로고침하든 목적지가 흔들리지 않음.
+// emit/rawEmit 이 참조하므로 그보다 먼저 선언 (TDZ 회피).
+const turnConversations = new Map<string, string>();
+
+// 턴 종료 후에도 잠시 유지 — finally 이후 늦게 나가는 이벤트(late done/error/log)도
+// 목적지를 잃지 않게. 무한 증가 방지용 상한도 둔다.
+const TURN_CONV_RETAIN_MS = 5 * 60_000;
+const TURN_CONV_MAX = 500;
+
+function rememberTurnConversation(id: unknown, conversationId: unknown): void {
+  if (typeof id !== "string" || !id) return;
+  if (typeof conversationId !== "string" || !conversationId) return;
+  turnConversations.set(id, conversationId);
+  // Map 은 삽입 순서 보존 → 가장 오래된 것부터 제거.
+  while (turnConversations.size > TURN_CONV_MAX) {
+    const oldest = turnConversations.keys().next();
+    if (oldest.done) break;
+    turnConversations.delete(oldest.value);
+  }
+}
+
+function releaseTurnConversation(id: unknown): void {
+  if (typeof id !== "string" || !id) return;
+  const t = setTimeout(() => turnConversations.delete(id), TURN_CONV_RETAIN_MS);
+  // 유예 타이머가 프로세스 종료를 막지 않게.
+  (t as unknown as { unref?: () => void }).unref?.();
+}
+
+function conversationIdForTurn(id: unknown): string | undefined {
+  if (typeof id !== "string" || !id) return undefined;
+  const direct = turnConversations.get(id);
+  if (direct) return direct;
+  // 오케스트레이션 sub-turn id = `{mainId}#{engine}` → main turn 의 대화로 귀속.
+  const hash = id.indexOf("#");
+  if (hash > 0) return turnConversations.get(id.slice(0, hash));
+  return undefined;
+}
+
 function rawEmit(obj: Record<string, unknown>): void {
+  // Phase 145 — 모든 stdout 이벤트에 conversation_id 스탬프 (단일 choke point).
+  // 이미 명시된 값이 있으면 존중, 없고 알 수 있으면 채운다. 추가 필드라 프로토콜 호환 유지.
+  if (obj.conversation_id === undefined) {
+    const conv = conversationIdForTurn(obj.id);
+    if (conv) obj = { ...obj, conversation_id: conv };
+  }
   try {
     process.stdout.write(JSON.stringify(obj) + "\n");
   } catch (err) {
@@ -2846,6 +2893,8 @@ async function emitMcpToolsListing(
 
 // ─── Provider 라우터 ──────────────────────────────────
 async function handleUserMessage(msg: UserMessage): Promise<void> {
+  // Phase 145 — 어떤 emit 보다 먼저 turn→conversation 을 못박는다.
+  rememberTurnConversation(msg.id, msg.conversation_id);
   const provider: Provider = msg.provider ?? "claude";
   if (provider === "claude") {
     return handleViaClaudeCLI(msg);
@@ -3017,6 +3066,9 @@ function runOrchSubTurn(raw: OrchestrateMessage, engine: Provider): Promise<Orch
 }
 
 async function handleOrchestrateMessage(raw: OrchestrateMessage): Promise<void> {
+  // Phase 145 — main turn 의 대화 귀속을 orchestrate_status/delta 보다 먼저 등록.
+  // sub-turn(`{mainId}#{engine}`) 은 conversationIdForTurn 이 mainId 로 폴백해 해결한다.
+  rememberTurnConversation(raw.id, raw.conversation_id);
   const engines = Array.from(
     new Set((raw.engines ?? []).filter((e) => ORCH_VALID_ENGINES.has(e))),
   ) as Provider[];
@@ -4024,6 +4076,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     clearInterval(turnKeepalive);
     logToFile("info", `CLI query end id=${msg.id}`);
     activeTurns.delete(msg.id);
+    releaseTurnConversation(msg.id); // Phase 145 — 유예 후 turn→conv 매핑 해제
     // Phase 122 (mem leak fix): 정상 종료 경로엔 tree-kill 이 없어, claude CLI 가 띄운
     // subagent claude.exe / MCP 서버 손자들이 Windows 에서 reap 안 되고 고아로 누적됐다
     // (06-18 진단: 한 세션의 9-proc claude 트리가 40h+ 잔존 → 호스트 메모리 단조 증가).
@@ -5387,6 +5440,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     clearInterval(turnKeepalive);
     logToFile("info", `Codex query end id=${msg.id}`);
     activeTurns.delete(msg.id);
+    releaseTurnConversation(msg.id); // Phase 145
     // Phase 122 (mem leak fix): 정상 종료 경로 tree reap — Codex CLI 가 띄운 손자(MCP 서버 등)가
     // Windows 에서 reap 안 되고 고아로 누적되는 것 방지. await proc close 이후라 main 은 종료됨.
     if (turnPid) {
@@ -6068,6 +6122,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
     clearInterval(turnKeepalive);
     logToFile("info", `Gemini CLI query end id=${msg.id}`);
     activeTurns.delete(msg.id);
+    releaseTurnConversation(msg.id); // Phase 145
     // Phase 122 (mem leak fix): 정상 종료 경로 tree reap — Gemini CLI 손자 reap.
     if (turnPid) {
       treeKill(turnPid, "SIGKILL", (err) => {
@@ -6605,6 +6660,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     }
   } finally {
     activeRestTurns.delete(msg.id);
+    releaseTurnConversation(msg.id); // Phase 145
     logToFile(
       "info",
       `REST query end id=${msg.id} aborted=${aborted} rounds=${roundsRun} toolCalls=${totalToolCalls} in=${totalInputTokens} out=${totalOutputTokens}`
