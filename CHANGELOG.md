@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+## [0.7.29] - 2026-08-31
+
+### Fixed
+- **v0.7.28 릴리스 빌드가 CI 에서 실패하던 문제 — 게이트 스텝 배치 오류**: 0.7.28 에서 새로 넣은 `Release gate (post-build)` 단계가 실패해(run 33349195969) 서명 빌드 이하가 전부 skipped 됐다. 0.7.28 의 수정 자체는 의도대로 동작했다 — 빌드 전 게이트는 A그룹을 SKIP 하고 0.08초, 빌드 후 게이트는 sidecar 를 실제 spawn 해 10.0초가 걸렸다. 문제는 **다른 테스트**였다: `test-single-flight.mjs` 는 `sidecar/node_modules/tsx/dist/cli.mjs`(devDependency)를 spawn 하는데, 새 게이트를 `Build sidecar` 스텝 **뒤**에 붙이는 바람에 그 스텝 마지막의 `npm prune --omit=dev` 가 tsx 를 지운 뒤에 실행돼 `MODULE_NOT_FOUND` 로 죽었다. 즉 이 게이트는 "dist 있음(빌드 후) **그리고** dev 의존성 있음(prune 전)" 구간에서만 성립하는데 그 구간 밖에 배치했다. `Build sidecar` 를 **빌드 / 게이트 / prune 3개 스텝으로 분리**해 게이트를 prune 앞으로 옮겼다. 커버리지 손실 0, 번들 다이어트(Phase 120)도 그대로 유지된다. 스텝이 쪼개져 `npm ci` 실패가 pwsh 블록 안에서 묻히던 위험도 줄었다(`.github/workflows/release.yml`).
+
+### Changed
+- **`test-conv-routing.mjs` 결과 출력을 `결과: N/N 통과` 형식으로 변경**: `release-gate.mjs` 는 이 형식일 때만 로그에 건수를 찍고 아니면 "통과"로만 접는다. 그 탓에 0.7.28 CI 로그만 봐서는 A그룹이 SKIP 됐는지 실측됐는지 숫자로 확인할 수 없었다(수행 시간 10.0초로 간접 추정해야 했다). 이제 SKIP 이면 23/23, 런타임 실측이면 29/29 가 로그에 그대로 남는다(`sidecar/test-conv-routing.mjs`).
+
 ## [0.7.28] - 2026-08-31
 
 ### Fixed

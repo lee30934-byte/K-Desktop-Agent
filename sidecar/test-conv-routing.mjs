@@ -214,5 +214,8 @@ check("E② optional 유지 (구버전 sidecar 호환)", /conversation_id\?: str
 
 await runtimeStampTest();
 
-console.log(`\n${pass}/${pass + fail} 통과${skipped ? ` (${skipped}건 SKIP — 환경 의존)` : ""}`);
+// 0.7.29 — "결과: N/N 통과" 형식으로 낸다. release-gate.mjs 는 이 형식일 때만 건수를
+// 로그에 찍는다(아니면 "통과"로만 접힘). 0.7.28 CI 로그에선 A그룹이 실제로 돌았는지
+// 숫자로 확인할 수 없었다 → 이제 SKIP(23/23)과 런타임 실측(29/29)이 로그에서 구분된다.
+console.log(`\n결과: ${pass}/${pass + fail} 통과${skipped ? ` (${skipped}건 SKIP — 환경 의존)` : ""}`);
 process.exit(fail > 0 ? 1 : 0);
