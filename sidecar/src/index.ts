@@ -1013,10 +1013,12 @@ function buildEngineSystemText(
   return SYSTEM_PROMPT + soulBlock + folderBlock + projectProfileBlock + featureGuidance + gatedNotice;
 }
 
-// Phase 81 (v0.6.25) — system prompt 폭발 방지: lee-profile + memory 합쳐 32KB 초과 시 trim.
+// Phase 81 (v0.6.25) — system prompt 폭발 방지: lee-profile + memory 합쳐 hard-cap 초과 시 trim.
 // K 의 다른 PC 진단 (pitfall_codex_model_context_window_dynamic) 에서 memory_context 18.6KB →
 // 매 turn 마다 stdin 으로 박혀 context 자연 증가. cap 으로 단일 turn 폭발 차단.
-const MEMORY_CONTEXT_HARD_CAP_BYTES = 32 * 1024;
+// Phase 148 (2026-09-08) — 32→40KB. pitfall summary 인덱스 압축(prefix 그룹핑 + bare slug)이
+// 매 항목 오버헤드를 44→~14 bytes 로 줄여, 오히려 cap 증량 후에도 총 토큰이 감소한다.
+const MEMORY_CONTEXT_HARD_CAP_BYTES = 40 * 1024;
 
 /**
  * Phase 106 (v0.7.00) — 메모리 선택 로딩 (frontmatter triggers).
@@ -1280,10 +1282,18 @@ function readMemoryFileCached(filePath: string): string {
  * slug 목록은 마지막까지 보존한다 (slug 를 알아야 LLM 이 해당 파일을 직접 read 할 수 있음).
  */
 const PITFALL_SUMMARY_DESC_STEPS = [110, 90, 70, 55, 40, 30];
-const PITFALL_INDEX_MAX_CHARS = 14 * 1024;
+const PITFALL_INDEX_MAX_CHARS = 22 * 1024;
 const PITFALL_INDEX_MIN_CHARS = 4 * 1024;
 const PITFALL_INDEX_HEADER_CHARS = 300; // 인덱스 블록의 머리말 여유
 
+// Phase 148 (2026-09-08) — 인덱스 렌더 재설계 (memory_injection_cap_dilutes_pitfall_recall 근본 대책).
+// 기존: `- **[slug]** desc` × N (item 당 44 bytes 오버헤드) → 369 항목이 예산 초과 → 뒤 51개 잘림.
+// 신규:
+//   1) prefix 그룹핑 — `cae_*`, `powershell_*` 등 공통 접두사 반복 제거 → 그룹 한 줄에 콤마 나열.
+//   2) bare slug — markdown bullet/bold/bracket 제거 (LLM 은 헤더 문맥으로 인식, 시각용 markdown 불필요).
+//   3) mtime 기반 정렬 — 최근 수정된 파일 우선 (그룹 안에서 desc). 재발한 함정이 자동으로 상단.
+//   4) fallback — 예산 초과 시 desc 단계 축약 → bare 형식 → misc/그룹 tail 삭제.
+// 결과: item 당 ~14 bytes (68% 감소), 매 턴 토큰 -1500. 그룹핑으로 400+개 담을 여유.
 function extractPitfallSummary(
   memoryDir: string,
   budget: number = PITFALL_INDEX_MAX_CHARS,
@@ -1292,18 +1302,20 @@ function extractPitfallSummary(
   if (!existsSync(memoryDir)) return empty;
   try {
     const files = readdirSync(memoryDir)
-      .filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"))
-      .sort();
-    const raw: { slug: string; desc: string | null; file: string }[] = [];
+      .filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"));
+    type Row = { slug: string; desc: string | null; file: string; mtime: number };
+    const raw: Row[] = [];
     for (const f of files) {
       try {
-        const body = readMemoryFileCached(path.join(memoryDir, f));
-        // frontmatter 의 `description: ` 한 줄 추출 (첫 줄만).
+        const filePath = path.join(memoryDir, f);
+        const body = readMemoryFileCached(filePath);
         const descMatch = body.match(/^description:\s*(.+?)(?:\r?\n|$)/m);
+        const st = statSync(filePath);
         raw.push({
           slug: f.replace(/^pitfall_/, "").replace(/\.md$/, ""),
           desc: descMatch ? descMatch[1].trim() : null,
           file: f,
+          mtime: st.mtimeMs,
         });
       } catch {
         // skip
@@ -1311,32 +1323,89 @@ function extractPitfallSummary(
     }
     if (raw.length === 0) return empty;
 
-    const render = (limit: number) =>
-      raw.map((r) =>
-        r.desc
-          ? `- **[${r.slug}]** ${r.desc.slice(0, limit)}`
-          : // description 없으면 name 만이라도
-            `- **[${r.slug}]** (자세한 내용은 memory 의 ${r.file} 참조)`,
-      );
-
-    let descLimit = PITFALL_SUMMARY_DESC_STEPS[0];
-    let lines = render(descLimit);
-    for (const limit of PITFALL_SUMMARY_DESC_STEPS) {
-      descLimit = limit;
-      lines = render(limit);
-      if (lines.join("\n").length <= budget) break;
+    // 1) prefix 그룹핑 — slug 의 첫 `_` 앞 토큰을 카테고리로. 같은 접두사 2개 이상 = 그룹.
+    const byPrefix = new Map<string, Row[]>();
+    for (const r of raw) {
+      const idx = r.slug.indexOf("_");
+      const prefix = idx > 0 ? r.slug.slice(0, idx) : "";
+      const key = prefix || "(misc)";
+      if (!byPrefix.has(key)) byPrefix.set(key, []);
+      byPrefix.get(key)!.push(r);
     }
-
-    // 최소 축약으로도 예산 초과 → slug 만 남기고, 그래도 넘치면 뒤에서부터 생략.
-    let omitted = 0;
-    if (lines.join("\n").length > budget) {
-      lines = raw.map((r) => `- **[${r.slug}]**`);
-      while (lines.length > 1 && lines.join("\n").length > budget) {
-        lines.pop();
-        omitted++;
+    const groups: [string, Row[]][] = [];
+    const misc: Row[] = [];
+    for (const [prefix, items] of byPrefix) {
+      if (prefix === "(misc)" || items.length < 2) {
+        misc.push(...items);
+      } else {
+        groups.push([prefix, items]);
       }
     }
-    return { count: lines.length, lines, descLimit, omitted };
+    // 3) mtime 정렬 — 그룹 자체는 max(mtime) desc (최근 활성 카테고리 위), 그룹 내 항목도 mtime desc.
+    groups.sort(
+      (a, b) => Math.max(...b[1].map((r) => r.mtime)) - Math.max(...a[1].map((r) => r.mtime)),
+    );
+    for (const [, items] of groups) items.sort((a, b) => b.mtime - a.mtime);
+    misc.sort((a, b) => b.mtime - a.mtime);
+
+    // 2) 렌더러 — descLimit>0 이면 slug + " — " + desc, descLimit=0 이면 bare slug.
+    // 그룹 형식: `## prefix_ (N)\n<slug1>, <slug2>, ...`
+    // misc 형식: `## (misc, N)\n<slug1>\n<slug2>\n...` (한 줄에 몰면 지나치게 길어져 개행 유지)
+    const renderGroup = (prefix: string, items: Row[], limit: number): string[] => {
+      const tails = items.map((r) => {
+        const tail = r.slug.slice(prefix.length + 1); // strip "prefix_"
+        if (limit > 0 && r.desc) return `${tail} — ${r.desc.slice(0, limit)}`;
+        return tail;
+      });
+      return [`## ${prefix}_ (${items.length})`, tails.join(", "), ""];
+    };
+    const renderMisc = (items: Row[], limit: number): string[] => {
+      if (items.length === 0) return [];
+      const out = [`## (misc, ${items.length})`];
+      for (const r of items) {
+        if (limit > 0 && r.desc) out.push(`${r.slug} — ${r.desc.slice(0, limit)}`);
+        else out.push(r.slug);
+      }
+      out.push("");
+      return out;
+    };
+    const render = (limit: number, groupList: [string, Row[]][], miscList: Row[]): string[] => {
+      const out: string[] = [];
+      for (const [prefix, items] of groupList) out.push(...renderGroup(prefix, items, limit));
+      out.push(...renderMisc(miscList, limit));
+      // trim trailing blank
+      while (out.length > 0 && out[out.length - 1] === "") out.pop();
+      return out;
+    };
+
+    // 4) 예산 fitting — desc 단계 축약 → bare (limit=0) → misc/그룹 tail 삭제.
+    let descLimit = PITFALL_SUMMARY_DESC_STEPS[0];
+    let lines = render(descLimit, groups, misc);
+    for (const limit of PITFALL_SUMMARY_DESC_STEPS) {
+      descLimit = limit;
+      lines = render(limit, groups, misc);
+      if (lines.join("\n").length <= budget) break;
+    }
+    let omitted = 0;
+    if (lines.join("\n").length > budget) {
+      descLimit = 0;
+      lines = render(0, groups, misc);
+      // misc 뒤에서부터 삭제 (mtime 정렬이므로 오래된 것 먼저 삭제)
+      while (misc.length > 1 && lines.join("\n").length > budget) {
+        misc.pop();
+        omitted++;
+        lines = render(0, groups, misc);
+      }
+      // 그래도 초과면 그룹 자체를 pop (오래된 카테고리부터 통째로)
+      while (groups.length > 0 && lines.join("\n").length > budget) {
+        const [, popped] = groups.pop()!;
+        omitted += popped.length;
+        lines = render(0, groups, misc);
+      }
+    }
+
+    const totalKept = misc.length + groups.reduce((s, [, it]) => s + it.length, 0);
+    return { count: totalKept, lines, descLimit, omitted };
   } catch {
     return empty;
   }

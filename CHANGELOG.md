@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+## [0.7.31] - 2026-09-08
+
+### Changed
+- **pitfall summary 인덱스 렌더링 재설계 — 매 항목 오버헤드 44 → ~14 bytes (Phase 148, `memory_injection_cap_dilutes_pitfall_recall` 근본 대책)**: 기존 `- **[slug]** desc` × N 형식이 항목당 44 bytes 오버헤드였고, 369 항목이 예산 32KB 를 넘겨 매 세션 51개 항목명이 뒤에서부터 잘려나갔다. 이번 세션에서 pitfall summary 인덱스에 슬러그는 있었지만 뒤로 잘려 회피책이 로드되지 않은 함정(`git_archive_autocrlf_changes_frozen_source_hash`) 을 실제로 재발생시켜 20-30분을 낭비한 사례로 문제가 드러났다. 세 가지 재설계: ① prefix 그룹핑 — `cae_*`, `powershell_*` 등 공통 접두사 반복 제거, 그룹 한 줄에 tail 콤마 나열. ② bare slug — markdown bullet/bold/bracket 제거, LLM 은 헤더 문맥으로 인식(시각용 markdown 불필요). ③ mtime 기반 정렬 — 최근 수정된 파일 우선(그룹은 max mtime desc, 그룹 안은 mtime desc), 재발한 함정이 append 되면 자동으로 상단. 예산 fitting 은 desc 축약 단계 후 bare 형식 → misc/그룹 tail 삭제 순으로 개선. 결과 실측(current memory/, 369개): 담김 369/369 (0 잘림), descLimit 40자 유지, 렌더 22,299/22,528 bytes. 매 턴 토큰 ~7,000 → ~5,600 (-20%). 함께 `MEMORY_CONTEXT_HARD_CAP_BYTES = 32 * 1024` → `40 * 1024`, `PITFALL_INDEX_MAX_CHARS = 14 * 1024` → `22 * 1024` 로 앞으로 100+개 함정이 더 늘어도 여유 확보(`sidecar/src/index.ts`).
+
+### Added
+- **`sidecar/preview-pitfall-index.mjs` — pitfall 인덱스 렌더 dry-run 도구**: 사이드카를 재시작하지 않고 현재 memory/ 를 실 renderer 와 동일한 로직으로 스캔해 grouped/misc 개수, descLimit, rendered bytes, top preview 를 출력한다. 렌더 최적화 실측 및 미래 인덱스 예산 튜닝 시 재사용(`sidecar/preview-pitfall-index.mjs`).
+
+### Fixed
+- **회귀 테스트 재작성 — 새 렌더 형식 검증**: `test-memory-budget.mjs` 의 "② 축약 시 slug 목록은 보존" 검사가 `- **[slug]**` 정규식으로 old 형식만 강제하던 것을 `descLimit = 0; lines = render(0, groups, misc)` 로 갱신. 축약 fallback 시에도 slug 목록이 보존되는지(desc 만 버림) 확인한다. 상수 파싱 (SSOT) 은 그대로라 40KB / 22KB 승격은 산술 불변식으로 자동 재검증됨. 22/22 pass, 실제 인덱스 크기 warn 2건(디스크 정리 유도 목적) 유지(`sidecar/test-memory-budget.mjs`).
+
 ## [0.7.30] - 2026-08-31
 
 ### Fixed

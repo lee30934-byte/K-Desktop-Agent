@@ -127,8 +127,10 @@ check(
   /pitfallIndexBudget = Math\.max\([\s\S]*?MEMORY_ENTRIES_MIN_BUDGET/.test(src),
 );
 check(
-  "② 축약 시 slug 목록은 보존 (desc 만 버림)",
-  /lines = raw\.map\(\(r\) => `- \*\*\[\$\{r\.slug\}\]\*\*`\)/.test(src),
+  "② 축약 시 slug 목록은 보존 (desc 만 버림, prefix 그룹 + bare slug 형식)",
+  // Phase 148: 렌더러가 desc 축약 후에도 예산 초과 시 descLimit=0 로 bare slug 재렌더.
+  // 새 형식은 prefix 그룹 + misc 나열이라 old `- **[slug]**` 정규식 대체.
+  /descLimit = 0;\s*lines = render\(0, groups, misc\)/.test(src),
 );
 check(
   "③ greedy 루프가 TRIGGERED 몫을 선점한다",
