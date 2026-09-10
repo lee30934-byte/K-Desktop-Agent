@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+## [0.7.32] - 2026-09-10
+
+### Added
+- **Codex GPT-6 Astra 지원**: Codex(ChatGPT Plus/Pro OAuth) 모델 선택기에 공식 모델 ID `gpt-6-astra`를 추가했다. Codex CLI를 최신 `0.154.0`으로 갱신했으며, K 계정에서 실제 비대화형 호출이 `ASTRA_OK`로 완료되는 것을 확인했다.
+
+### Tests
+- 모델 ID가 Codex 선택기에 존재하고 OpenAI REST 선택기에 잘못 노출되지 않으며, sidecar의 기존 model passthrough가 그대로 적용되는 회귀 검사를 추가했다.
+
 ## [0.7.31] - 2026-09-08
 
 ### Changed

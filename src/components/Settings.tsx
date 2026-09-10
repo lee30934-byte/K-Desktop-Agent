@@ -302,6 +302,7 @@ const API_PROVIDERS: APIProvider[] = [
     note: "OpenAI Codex CLI 를 ChatGPT Plus/Pro 구독 OAuth 로 인증해 사용. K-Personal MCP 도구도 그대로 통합 (codex mcp add 한 번 등록 필요). 아래 [codex login] 버튼으로 시스템 브라우저 OAuth 진행 — 외부 PowerShell 안 거침.",
     models: [
       { id: "default", label: "ChatGPT 구독 기본 모델 (자동 최신)" },
+      { id: "gpt-6-astra", label: "GPT-6 Astra (최강 · 복합 작업)" },
       { id: "gpt-5.6", label: "GPT-5.6 (alias -> Sol)" },
       { id: "gpt-5.6-sol", label: "GPT-5.6 Sol (flagship)" },
       { id: "gpt-5.6-terra", label: "GPT-5.6 Terra (balanced)" },
