@@ -20,11 +20,11 @@
  * error + done 을 뱉으므로, 네트워크·구독 없이 스탬프 경로를 통과시킬 수 있다.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -80,11 +80,20 @@ async function runtimeStampTest() {
   }
 
   const events = [];
-  const child = spawn(process.execPath, [dist], {
+  mkdirSync(path.join(root, "evidence"), { recursive: true });
+  const home = mkdtempSync(path.join(root, "evidence", "routing-home-"));
+  mkdirSync(path.join(home, ".kda", "memory"), { recursive: true });
+  mkdirSync(path.join(home, "tmp"));
+  writeFileSync(path.join(home, ".kda", "sidecar-config.json"), JSON.stringify({ anthropicRatePollingEnabled: false, gitSync: { enabled: false }, gitSyncTeam: { enabled: false } }));
+  const preload = path.join(home, "preload.mjs");
+  writeFileSync(preload, `import os from 'node:os';\nimport {syncBuiltinESMExports} from 'node:module';\nos.homedir = () => ${JSON.stringify(home)};\nos.tmpdir = () => ${JSON.stringify(path.join(home, "tmp"))};\nsyncBuiltinESMExports();\n`);
+  const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href, dist], {
     cwd: path.resolve(root, "sidecar"),
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, KDA_HEADLESS: "1" },
+    windowsHide: true,
+    env: { ...process.env, KDA_HEADLESS: "1", APPDATA: path.join(home, "appdata"), K_PERSONAL_MCP_PATH: path.join(home, "no-mcp"), KDA_MEMORY_DIR: path.join(home, ".kda", "memory") },
   });
+  child.stderr.resume();
 
   const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
   const done = new Promise((resolve) => {
@@ -95,8 +104,8 @@ async function runtimeStampTest() {
       let ev;
       try { ev = JSON.parse(t); } catch { return; }
       events.push(ev);
-      // 두 턴의 done 을 모두 받으면 종료
-      const doneIds = events.filter((e) => e.type === "done").map((e) => e.id);
+      // 실행 완료 후 실패는 error 한 번으로 종결된다. 중복 done을 요구하지 않는다.
+      const doneIds = events.filter((e) => e.type === "done" || e.type === "error").map((e) => e.id);
       if (doneIds.includes(TURN) && doneIds.includes(OTHER_TURN)) {
         clearTimeout(timer);
         resolve();
@@ -127,10 +136,10 @@ async function runtimeStampTest() {
   check("A② 그 턴의 *모든* 이벤트에 conversation_id 스탬프", stampedAll,
     JSON.stringify(mine.map((e) => [e.type, e.conversation_id])));
 
-  const doneEv = mine.find((e) => e.type === "done");
-  check("A③ done 이벤트에 스탬프 (오염의 핵심 지점)",
-    !!doneEv && doneEv.conversation_id === CONV,
-    doneEv ? JSON.stringify(doneEv) : "done 없음");
+  const terminalEvents = mine.filter((e) => e.type === "done" || e.type === "error");
+  check("A③ 실패 terminal은 error 한 번이며 원래 대화 스탬프 유지",
+    terminalEvents.length === 1 && terminalEvents[0].type === "error" && terminalEvents[0].conversation_id === CONV,
+    JSON.stringify(terminalEvents));
 
   const errEv = mine.find((e) => e.type === "error");
   check("A④ error 이벤트에 스탬프",

@@ -173,6 +173,7 @@ function runRegressionTests() {
     } else {
       failed++;
       console.log(`     · ${f}: ❌ exit ${r.status} ${m ? "(" + m[1] + "/" + m[2] + ")" : ""}`);
+      console.log(out.split(/\r?\n/).filter((line) => /❌|AssertionError|Error:/.test(line)).slice(0, 8).join("\n"));
     }
   }
   const ran = files.length - skipped;
@@ -303,9 +304,10 @@ console.log(`릴리스 전 자동 게이트 (#8)${FAST ? " [--fast]" : ""}\n`);
 checkVersionSync();
 checkWebviewCacheMeta();
 checkForbidden();
-runRegressionTests();
 checkChangelog();
 runHeavyBuilds();
+// 전체 게이트는 이번 소스로 생성한 dist를 검사한다. 빌드 전 SKIP을 성공으로 오인하지 않는다.
+runRegressionTests();
 if (WANT_DRAFT) generateChangelogDraft();
 
 // ─── 요약 ─────────────────────────────────────────────────────────────────
