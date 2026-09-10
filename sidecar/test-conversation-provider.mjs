@@ -180,11 +180,11 @@ check("buildSendSettings 가 resolveProviderSettings 사용",
 const bareCalls = appCode.match(/buildSendSettings\(\s*\)/g) || [];
 check("인자 없는 buildSendSettings() 호출 0건", bareCalls.length === 0, `${bareCalls.length}건 발견`);
 
-const withConv = appCode.match(/buildSendSettings\(convId[^)]*\)/g) || [];
+const withConv = appCode.match(/buildSendSettings\((?:convId|targetId)[^)]*\)/g) || [];
 check("convId 를 넘기는 호출 5곳 이상", withConv.length >= 5, `${withConv.length}곳`);
 
 // 각 경로별 개별 확인 (한 곳만 빠져도 잡히게). 전부 주석 제거본 기준.
-check("① 직접 입력 경로", /const convSettings = await buildSendSettings\(convId \|\| undefined\);/.test(appCode));
+check("① 직접 입력 경로", /await buildSendSettings\(targetId \?\? undefined\)/.test(appCode) && /const convSettings = settingsSnapshot;/.test(appCode));
 const telegramBody = appCode.slice(appCode.indexOf("const sendTelegramTurn"), appCode.indexOf("const sendTelegramTurn") + 6000);
 check("② 텔레그램 경로", /await buildSendSettings\(convId\)/.test(telegramBody));
 const schedIdx = appCode.indexOf("scheduleTurnsRef.current.set");

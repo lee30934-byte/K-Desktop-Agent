@@ -118,7 +118,7 @@ await test("실제 앱 배선: 현재 대화 폴백·타이머 정지·전역 �
   const sidecar = readFileSync(new URL("../sidecar/src/index.ts", import.meta.url), "utf8");
   assert.doesNotMatch(app, /turnToConvMap\.current\.get\(ev\.id\) \?\? activeConversationIdRef/);
   assert.doesNotMatch(app, /type QueuedSend|queuedSendRef|flushTimerRef|conversationTurnGateRef\.current\.clear\(\)/);
-  assert.match(app, /sendOwnedMessage/); assert.match(app, /event\.conversationId !== eventConversationId/);
+  assert.match(app, /sendOwnedMessage/); assert.match(app, /\(event\.conversation_id \?\? event\.conversationId\) !== eventConversationId/);
   assert.doesNotMatch(sidecar, /let _currentTurnSafeMode|releaseConversationTurnById/);
   assert.match(sidecar, /await Promise\.allSettled\(orchestrationExecutions/);
 });

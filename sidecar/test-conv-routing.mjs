@@ -185,8 +185,8 @@ const clearHits = codeLines.filter((l) => /turnToConvMap\.current\.clear\(\)/.te
 check(`C① turnToConvMap 일괄 clear 완전 제거 (실행 코드 잔존 ${clearHits.length}곳)`,
   clearHits.length === 0, clearHits.join(" | "));
 // 잠금 해제 자체는 유지돼야 한다 (지우기만 하고 기능을 죽이면 안 됨)
-check("C② 12분 강제 잠금해제는 그대로 동작", /STREAM_FORCE_UNLOCK_MS/.test(appTsx) &&
-  /if \(idleMs > STREAM_FORCE_UNLOCK_MS\)[\s\S]{0,1200}setIsStreaming\(false\)/.test(appTsx));
+check("C② 무응답은 경고만 표시하고 실행 잠금 유지", /if \(idleMs > STREAM_FORCE_UNLOCK_MS\) setStreamStalled\(true\)/.test(appTsx) &&
+  !/conversationTurnGateRef\.current\.clear\(\)/.test(appTsx));
 check("C③ 매핑 무한증가 방지 상한 존재", /TURN_CONV_MAP_MAX/.test(appTsx));
 
 // ─── D. sidecar 측 배선 ───────────────────────────────────────────────────

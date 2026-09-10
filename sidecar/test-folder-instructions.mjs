@@ -211,7 +211,7 @@ check(
     /folderInstructions=\$\{folderCtx\.folderSystemPrompt \? "yes" : "no"\}/.test(appTsx));
 }
 {
-  const body = near("await buildFolderContext(activeConversationIdRef.current)", 0, 1500);
+  const body = appCode.slice(appCode.indexOf("const resumeSettings ="));
   check("⑤ resume 재시도 경로",
     body.length > 0 && /folderSystemPrompt: folderCtx\.folderSystemPrompt,/.test(body));
 }

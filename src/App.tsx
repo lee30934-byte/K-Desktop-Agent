@@ -37,7 +37,6 @@ import {
   createConversation,
   deleteConversation,
   updateConversationTitle,
-  updateConversationAgentId,
   getMessages,
   saveMessage,
   generateTitleFromMessage,
@@ -1428,6 +1427,8 @@ export default function App() {
     const event = ev as any;
     const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window"]);
     const eventTurnId = event.turn_id ?? event.taskId ?? event.id;
+    const taskWatchActivity = taskWatchTurnsRef.current.get(eventTurnId);
+    if (taskWatchActivity) taskWatchActivity.lastActivityAt = Date.now();
     const eventConversationId = typeof eventTurnId === "string" ? turnToConvMap.current.get(eventTurnId) : undefined;
     if (routedTypes.has(ev.type) && eventTurnId) {
       if (!eventConversationId || !conversationTurnGateRef.current.accepts(eventConversationId, eventTurnId) ||
@@ -2430,6 +2431,7 @@ export default function App() {
     scheduleTurnsRef.current.delete(turnId);
     if (!conversationTurnGateRef.current.finish(conversationId, turnId, "stopped")) return;
     turnToConvMap.current.delete(turnId);
+    turnProviderMap.current.delete(turnId);
     if (activeConversationIdRef.current === conversationId) {
       setMessages((prev) => prev.map((m) => m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m));
       setPendingResume(null);
@@ -3481,6 +3483,8 @@ export default function App() {
       if (taskWatchTurnsRef.current.size > 0) {
         const now = Date.now();
         for (const [turnId, tw] of Array.from(taskWatchTurnsRef.current.entries())) {
+          const ownerConv = turnToConvMap.current.get(turnId);
+          if (ownerConv && conversationTurnGateRef.current.accepts(ownerConv, turnId)) continue;
           if (now - tw.lastActivityAt < TASK_WATCH_STALE_MS) continue;
           const silentMin = Math.round((now - tw.lastActivityAt) / 60000);
           taskWatchTurnsRef.current.delete(turnId);
@@ -4273,7 +4277,8 @@ export default function App() {
 
       // 2. agentId 리셋 (새 세션 시작)
       sessionIdsRef.current.set(convId, null);
-      await updateConversationAgentId(convId, null);
+      const resetSettings = await buildSendSettings(convId);
+      await updateConversationAgentIdFor(convId, resetSettings.provider, null);
       setConversations((prev) =>
         prev.map((c) =>
           c.id === convId ? { ...c, agentId: null } : c
