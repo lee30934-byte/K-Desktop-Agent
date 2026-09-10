@@ -1,16 +1,23 @@
-import { useRef, useState, useCallback, useMemo, memo } from "react";
+import { useRef, useState, useCallback, useMemo, memo, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
+import type { SendMode } from "../conversationControl";
 import type { ChatMessage, ConnectionStatus, FileAttachment } from "../types";
 import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFilters";
 
 interface MainChatProps {
+  activityPanel?: ReactNode;
+  conversationId: string;
+  isStopping?: boolean;
+  queuedCount?: number;
+  queuePaused?: boolean;
+  onResumeQueue?: () => void;
   messages: ChatMessage[];
   status: ConnectionStatus;
   isStreaming: boolean;
-  onSendMessage: (text: string, files?: FileAttachment[]) => void;
+  onSendMessage: (text: string, files?: FileAttachment[], mode?: SendMode) => Promise<void>;
   onInterrupt: () => void;
   // Phase 46 (v0.5.34) — "모두 중단" 강한 stop
   onHardStop?: () => void;
@@ -63,6 +70,12 @@ function formatToolName(name: string): string {
 }
 
 function MainChat({
+  activityPanel,
+  conversationId,
+  isStopping,
+  queuedCount,
+  queuePaused,
+  onResumeQueue,
   messages,
   status,
   isStreaming,
@@ -148,6 +161,7 @@ function MainChat({
           <div className="main-title display">SIGNAL ROUTING HUB</div>
         </div>
         <div className="main-header-right">
+          {activityPanel}
           <button
             className={`copy-chat-btn ${copyStatus === "copied" ? "copied" : ""}`}
             onClick={handleCopyChat}
@@ -334,6 +348,12 @@ function MainChat({
 
         {/* 입력창 */}
         <Composer
+          key={conversationId}
+          conversationId={conversationId}
+          isStopping={isStopping}
+          queuedCount={queuedCount}
+          queuePaused={queuePaused}
+          onResumeQueue={onResumeQueue}
           disabled={status !== "connected"}
           isStreaming={isStreaming}
           onSubmit={onSendMessage}

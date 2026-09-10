@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import Database from "@tauri-apps/plugin-sql";
+import { MESSAGE_UPSERT_SQL } from "./messagePersistence";
 import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage, Conversation, ToolMessage } from "./types";
 import logger from "./utils/logger";
@@ -1130,13 +1131,11 @@ export async function saveMessage(
 
   const params = messageToDbParams(conversationId, message);
 
-  await database.execute(
-    `INSERT OR REPLACE INTO messages
-     (id, conversation_id, role, content, timestamp, streaming, level,
-      tool_id, tool_name, tool_input, tool_output, tool_status, tool_risk)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  const result = await database.execute(
+    MESSAGE_UPSERT_SQL,
     params
   );
+  if (result.rowsAffected !== 1) throw new Error("메시지의 원래 대화와 저장 대상이 달라 저장을 차단했습니다.");
 
   // 대화 updated_at 갱신
   await touchConversation(conversationId);
@@ -1149,20 +1148,7 @@ export async function saveMessages(
   conversationId: string,
   messages: ChatMessage[]
 ): Promise<void> {
-  const database = await initDB();
-
-  for (const message of messages) {
-    const params = messageToDbParams(conversationId, message);
-    await database.execute(
-      `INSERT OR REPLACE INTO messages
-       (id, conversation_id, role, content, timestamp, streaming, level,
-        tool_id, tool_name, tool_input, tool_output, tool_status, tool_risk)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params
-    );
-  }
-
-  await touchConversation(conversationId);
+  for (const message of messages) await saveMessage(conversationId, message);
 }
 
 /**

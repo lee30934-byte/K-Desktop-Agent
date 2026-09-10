@@ -1,11 +1,18 @@
 import { useState, useRef, useEffect, memo, FormEvent, KeyboardEvent, DragEvent, ChangeEvent, ClipboardEvent } from "react";
 import type { FileAttachment, PromptTemplate } from "../types";
 import PromptPicker from "./PromptPicker";
+import type { SendMode } from "../conversationControl";
+const attachmentDrafts = new Map<string, FileAttachment[]>();
 
 interface ComposerProps {
+  conversationId: string;
+  isStopping?: boolean;
+  queuedCount?: number;
+  queuePaused?: boolean;
+  onResumeQueue?: () => void;
   disabled?: boolean;
   isStreaming: boolean;
-  onSubmit: (text: string, files?: FileAttachment[]) => void;
+  onSubmit: (text: string, files?: FileAttachment[], mode?: SendMode) => Promise<void>;
   onInterrupt: () => void;
   // Phase 46 (v0.5.34) — "모두 중단" 강한 stop (현재 turn + 큐 + 자동 갱신 abort)
   onHardStop?: () => void;
@@ -44,6 +51,11 @@ function generateId(): string {
 }
 
 function Composer({
+  conversationId,
+  isStopping = false,
+  queuedCount = 0,
+  queuePaused = false,
+  onResumeQueue,
   disabled = false,
   isStreaming,
   onSubmit,
@@ -54,8 +66,12 @@ function Composer({
   onCancelQueuedSend,
   onFlushQueueNow,
 }: ComposerProps) {
-  const [input, setInput] = useState("");
-  const [files, setFiles] = useState<FileAttachment[]>([]);
+  const [input, setInput] = useState(() => { try { return sessionStorage.getItem("kda_draft_" + conversationId) ?? ""; } catch { return ""; } });
+  const [sendMode, setSendMode] = useState<SendMode>("steer");
+  const [submitting, setSubmitting] = useState(false);
+  useEffect(() => { try { sessionStorage.setItem("kda_draft_" + conversationId, input); } catch {} }, [input, conversationId]);
+  const [files, setFiles] = useState<FileAttachment[]>(() => attachmentDrafts.get(conversationId) ?? []);
+  useEffect(() => { attachmentDrafts.set(conversationId, files); }, [files, conversationId]);
   const [isDragging, setIsDragging] = useState(false);
   const [showPromptPicker, setShowPromptPicker] = useState(false);
   const [promptQuery, setPromptQuery] = useState("");
@@ -223,18 +239,25 @@ function Composer({
   // 제출 핸들러
   // Phase 30 (v0.5.18): isStreaming 중에도 onSubmit 호출 — App 이 큐로 처리.
   // K 가 답변 받는 동안 Enter 치면 streaming 끝난 직후 자동 전송.
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if ((!input.trim() && files.length === 0) || disabled) return;
 
-    onSubmit(input.trim(), files.length > 0 ? files : undefined);
-    setInput("");
+    if (submitting || isStopping) return;
+    const submittedText = input;
+    const submittedIds = new Set(files.map((file) => file.id));
+    setSubmitting(true);
+    try {
+      await onSubmit(input.trim(), files.length > 0 ? files : undefined, isStreaming ? sendMode : "queue");
+    } catch { setSubmitting(false); return; }
+    setSubmitting(false);
+    setInput((current) => current === submittedText ? "" : current);
 
     // 미리보기 URL 해제 — Phase 61: data URL 인 경우 skip
     files.forEach((f) => {
       if (f.preview && f.preview.startsWith("blob:")) URL.revokeObjectURL(f.preview);
     });
-    setFiles([]);
+    setFiles((current) => current.filter((file) => !submittedIds.has(file.id)));
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -352,11 +375,11 @@ function Composer({
       )}
 
       {/* Phase 34 (v0.5.22) — 작업 중 다음 메시지 예약 미리보기 + 취소 */}
-      {isStreaming && queuedSend && (
+      {queuedSend && (
         <div className="queue-chip" role="status" aria-live="polite">
           <span className="queue-chip-icon">📨</span>
           <div className="queue-chip-body">
-            <div className="queue-chip-label mono">작업 후 자동 전송 예약</div>
+            <div className="queue-chip-label mono">{queuePaused ? "예약 보류" : "완료 후 예약"} · {queuedCount}개</div>
             <div className="queue-chip-text">
               {queuedSend.text.slice(0, 200)}
               {queuedSend.text.length > 200 ? "…" : ""}
@@ -365,15 +388,17 @@ function Composer({
               )}
             </div>
           </div>
-          {onFlushQueueNow && (
+          {queuePaused && !isStreaming && <button type="button" className="queue-chip-flush-now" onClick={onResumeQueue}>이어서 전송</button>}
+          {onFlushQueueNow && isStreaming && (
             <button
               type="button"
               className="queue-chip-flush-now"
               onClick={onFlushQueueNow}
-              title="현재 작업 중단 후 이 메시지 즉시 전송 (Claude 가 중간 질문 했을 때 답하기 적합)"
+              disabled={isStopping}
+              title="현재 실행의 종료를 확인한 뒤 기존 맥락에 추가 지시를 전달합니다"
               aria-label="큐 즉시 전송"
             >
-              📤 지금
+              지금 반영
             </button>
           )}
           {onCancelQueuedSend && (
@@ -453,6 +478,13 @@ function Composer({
         <div className="composer-height-grip-bar" />
       </div>
 
+      {isStreaming && <div className="composer-steering-bar">
+        <div className="composer-send-modes" role="group" aria-label="작업 중 메시지 전송 방식">
+          <button type="button" aria-pressed={sendMode === "steer"} onClick={() => setSendMode("steer")}>추가 지시 · 질문</button>
+          <button type="button" aria-pressed={sendMode === "queue"} onClick={() => setSendMode("queue")}>완료 후 예약</button>
+        </div>
+        <span role="status">{isStopping ? "실제 종료를 확인하고 있습니다. 추가 지시는 보관됩니다." : sendMode === "steer" ? "종료 확인 후 기존 맥락을 이어서 반영합니다." : "이 대화의 작업이 완료되면 순서대로 전송합니다."}</span>
+      </div>}
       <form className="composer" onSubmit={handleSubmit}>
         <div className="composer-corner composer-corner-tl" />
         <div className="composer-corner composer-corner-tr" />
@@ -464,7 +496,7 @@ function Composer({
           type="button"
           className="composer-attach-btn"
           onClick={() => fileInputRef.current?.click()}
-          disabled={disabled || isStreaming}
+          disabled={disabled || submitting || isStopping}
           title="파일 첨부 (이미지, 비디오, 오디오, 문서, 압축파일 등)"
         >
           📎
@@ -490,7 +522,7 @@ function Composer({
             disabled
               ? "연결 대기 중..."
               : isStreaming
-                ? "응답 생성 중... Enter 시 다음 메시지 예약 (답변 끝나면 자동 전송)"
+                ? sendMode === "steer" ? "추가 상황, 방향 변경 또는 질문을 입력하세요." : "완료 후 실행할 메시지를 입력하세요."
                 : placeholder
           }
           disabled={disabled}
@@ -511,19 +543,19 @@ function Composer({
               type="button"
               onClick={onInterrupt}
               className="composer-btn composer-btn-stop"
-              title="현재 진행 중인 메시지만 멈춤 (예약된 메시지는 계속 전송됨)"
+              title="현재 대화의 실행을 정지하고 예약·자동 이어가기를 보류합니다"
             >
               <span className="stop-icon">■</span>
-              STOP
+              {isStopping ? "정지 재요청" : "정지"}
             </button>
             {onHardStop && (
               <button
                 type="button"
                 onClick={onHardStop}
                 className="composer-btn composer-btn-hardstop"
-                title="진행 중 + 예약 메시지 + 자동 세션 갱신까지 전부 정지"
+                title="모든 대화의 실행을 정지하고 자동 실행을 보류합니다"
               >
-                🛑 모두
+                전체 정지
               </button>
             )}
           </div>
@@ -537,6 +569,9 @@ function Composer({
             <span className="send-arrow">→</span>
           </button>
         )}
+        {isStreaming && <button type="submit" className="composer-btn composer-btn-send" disabled={disabled || submitting || isStopping || (!input.trim() && !files.length)}>
+          {sendMode === "steer" ? "지금 반영" : "예약"}
+        </button>}
       </form>
     </div>
   );

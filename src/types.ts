@@ -72,6 +72,9 @@ export type ChatMessage =
 export type SidecarEvent = SidecarEventPayload & { conversation_id?: string };
 
 type SidecarEventPayload =
+  | { type: "turn_waiting"; id: string; conversationId: string; detail: string }
+  | { type: "turn_started" | "turn_stopping" | "turn_stopped"; id: string; conversationId: string; agentId?: string | null }
+  | { type: "interrupt_warning" | "interrupt_rejected"; id: string; conversationId?: string; message: string }
   | { type: "ready"; version: string }
   | { type: "assistant_delta"; id: string; text: string }
   | {

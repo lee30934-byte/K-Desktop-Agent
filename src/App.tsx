@@ -24,7 +24,9 @@ import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
 import SidebarResizer from "./components/SidebarResizer";
 import SidePanel, { type SidePanelItem } from "./components/SidePanel";
-import { ConversationTurnGate } from "./conversationTurnGate";
+import { ConversationControl, buildSteeringMessage, type PendingSend, type SendMode } from "./conversationControl";
+import TaskActivityPanel from "./components/TaskActivityPanel";
+import { ConversationMessageWriter } from "./messagePersistence";
 // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
 import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
 // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid)
@@ -430,6 +432,7 @@ export default function App() {
   // 케이스에 큐 박힘. 첫 질문만 dialog 에 띄우고 나머지는 K 답 시 자동 다음 turn 의 prefix 로.
   const askUserQuestionStateRef = useRef<{
     turnId: string;
+    conversationId?: string;
     toolUseId: string;
     questions: Array<{
       question: string;
@@ -624,6 +627,11 @@ export default function App() {
   // Phase 111 (v0.6.60) — convId 별 분리 위해 entry 가 { convId, msg }. 키는 "convId|msgId".
   const pendingSaveRef = useRef<Map<string, { convId: string; msg: ChatMessage }>>(new Map());
   const saveTimerRef = useRef<number | null>(null);
+  const messageWriterRef = useRef(new ConversationMessageWriter<ChatMessage>(saveMessage));
+  const messageCacheRef = useRef(new Map<string, Map<string, ChatMessage>>());
+  const draftSendSettingsRef = useRef(new Map<string, Awaited<ReturnType<typeof buildSendSettings>>>());
+  const sessionIdsRef = useRef(new Map<string, string | null>());
+  const creatingConversationRef = useRef<Promise<unknown> | null>(null);
 
   // state를 안정된 콜백 안에서 읽기 위한 latest-ref
   const activeConversationIdRef = useRef<string | null>(null);
@@ -734,20 +742,43 @@ export default function App() {
   const [streamingConvIds, setStreamingConvIds] = useState<Set<string>>(() => new Set());
   // UI state(Set)는 React 배치 갱신 때문에 같은 tick의 중복 send를 막지 못한다.
   // ref 기반 owner gate가 conversationId → turnId를 즉시 점유하고, 정확한 owner만 해제한다.
-  const conversationTurnGateRef = useRef(new ConversationTurnGate());
+  const conversationTurnGateRef = useRef(new ConversationControl());
+  const lastControlPaintRef = useRef(0);
+  const [controlVersion, setControlVersion] = useState(0);
+  const stopWaitersRef = useRef(new Map<string, { resolve: () => void; reject: (e: Error) => void; timer: number }[]>());
+  const steeringBusyRef = useRef(new Set<string>());
+  const stopGenerationRef = useRef(new Map<string, number>());
+  const allStopGenerationRef = useRef(0);
+  const dispatchedTurnIdsRef = useRef(new Set<string>());
+  const syncControl = useCallback(() => {
+    const control = conversationTurnGateRef.current;
+    setStreamingConvIds(control.activeConversationIds());
+    setControlVersion((v) => v + 1);
+    const visible = activeConversationIdRef.current;
+    if (visible) {
+      const owner = control.owner(visible);
+      setIsStreaming(!!owner);
+      setCurrentTurnId(owner ?? null);
+      currentTurnIdRef.current = owner ?? null;
+    }
+    try { localStorage.setItem("kda_paused_conversations_v1", JSON.stringify([...control.paused])); } catch {}
+  }, []);
+  useEffect(() => {
+    try {
+      const paused = JSON.parse(localStorage.getItem("kda_paused_conversations_v1") || "[]");
+      if (Array.isArray(paused)) for (const id of paused) if (typeof id === "string") conversationTurnGateRef.current.pause(id);
+      conversationTurnGateRef.current.allPaused = localStorage.getItem(LS_AUTO_RESUME_MANUAL_STOPPED) === "1";
+    } catch {}
+    syncControl();
+  }, [syncControl]);
   const claimConversationTurn = useCallback((conversationId: string, turnId: string) => {
     if (!conversationTurnGateRef.current.claim(conversationId, turnId)) return false;
-    setStreamingConvIds(conversationTurnGateRef.current.activeConversationIds());
+    syncControl();
     return true;
   }, []);
   const releaseConversationTurn = useCallback((conversationId: string, turnId: string) => {
     if (!conversationTurnGateRef.current.release(conversationId, turnId)) return false;
-    setStreamingConvIds(conversationTurnGateRef.current.activeConversationIds());
-    return true;
-  }, []);
-  const releaseAnyConversationTurn = useCallback((conversationId: string) => {
-    if (!conversationTurnGateRef.current.releaseAny(conversationId)) return false;
-    setStreamingConvIds(conversationTurnGateRef.current.activeConversationIds());
+    syncControl();
     return true;
   }, []);
   // Phase 121 (v0.6.76) — 프론트 dead-stream 워치독.
@@ -802,6 +833,7 @@ export default function App() {
   }, []);
 
   const queueLongTaskAutoResume = useStableCallback((task: DBLongTask, reason: string) => {
+    if (task.conversation_id && conversationTurnGateRef.current.paused.has(task.conversation_id)) return;
     if (!readLocalBool(LS_AUTO_RESUME_LONG_TASKS, true)) {
       logger.log(`[AutoResume] disabled by localStorage; task=${task.id}`);
       return;
@@ -1327,36 +1359,7 @@ export default function App() {
       if (idleMs > STREAM_STALL_MS) {
         setStreamStalled(true);
       }
-      if (idleMs > STREAM_FORCE_UNLOCK_MS) {
-        // 12분 전역 무이벤트 = sidecar 가 죽었거나 멈춘 상태 — 입력 잠금과
-        // single-flight 게이트는 풀되, turn→conv 매핑은 건드리지 않는다.
-        conversationTurnGateRef.current.clear();
-        //
-        // Phase 145 (2026-08-31) — 여기 있던 `turnToConvMap.current.clear()` 가
-        // 대화창 오염의 방아쇠였다. idleMs 는 "sidecar 이벤트가 없었던 시간" 이라
-        // **도구 하나에 12분 넘게 머문 정상 턴**(예: 21분짜리 영상 렌더링)도 무이벤트로 보인다.
-        // 그 살아 있는 턴의 매핑까지 지워버리면, 나중에 도착한 done 이 맵 miss →
-        // 활성 대화로 폴백 → K 가 그때 보고 있던 *다른* 대화에 답변이 영구 저장됐다.
-        // 실측 10건(61/66/42/41/40/19/12/12분) 전부 이 경로.
-        //
-        // 매핑을 남겨두는 비용은 Map 항목 몇 개(수십 바이트)뿐이고, done/error 가 오면
-        // 그 시점에 정상 삭제된다. sidecar 가 정말 죽어 done 이 영영 안 와도 다음
-        // sidecar 재시작까지 남는 고아 항목일 뿐 — 오답 배달보다 훨씬 싼 실패다.
-        setStreamingConvIds(new Set());
-        currentTurnIdRef.current = null;
-        currentTurnStartedAtRef.current = 0;
-        setIsStreaming(false);
-        setCurrentTurnId(null);
-        setStreamStalled(false);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.role === "assistant" && (m as any).streaming
-              ? { ...m, streaming: false }
-              : m
-          )
-        );
-        pushSystem("응답 스트림이 12분 동안 멈춰 채팅 입력 잠금을 자동 해제했습니다. 필요한 경우 같은 요청을 새 turn으로 다시 보내세요.", "warn");
-      }
+      if (idleMs > STREAM_FORCE_UNLOCK_MS) setStreamStalled(true);
     }, 5_000);
     return () => clearInterval(t);
   }, [isStreaming]);
@@ -1384,30 +1387,14 @@ export default function App() {
           } else if (level === "block") {
             pushSystem(`시스템 메모리 사용률이 ${status.used_percent.toFixed(1)}%입니다. KDA가 새 turn 전송을 차단합니다. 불필요한 앱을 먼저 종료하세요.`, "warn");
           } else if (level === "critical") {
-            pushSystem(`시스템 메모리 사용률이 ${status.used_percent.toFixed(1)}%입니다. KDA 입력 잠금 방지를 위해 멈춘 stream 상태를 자동 복구합니다.`, "error");
+            pushSystem(`시스템 메모리 사용률이 ${status.used_percent.toFixed(1)}%입니다. 작업 상태를 확인한 뒤 필요하면 정지 버튼을 사용하세요.`, "error");
           }
         }
 
         if (level === "critical" && isStreamingRef.current && Date.now() - lastCriticalUnlockAt > 60_000) {
           lastCriticalUnlockAt = Date.now();
-          // critical 복구는 "멈춘 stream 으로 인한 입력 잠금 해제" 가 목적 —
-          // 전체 streaming 표시와 single-flight 게이트는 정리하되, turn→conv 매핑은 남긴다.
-          // Phase 145 — 매핑을 지우면 살아 있는 턴의 done 이 활성 대화로 폴백해
-          // 다른 대화창에 답변이 저장된다(오염). 잠금 해제와 라우팅 진실은 별개 문제다.
-          conversationTurnGateRef.current.clear();
-          setStreamingConvIds(new Set());
-          currentTurnIdRef.current = null;
-          currentTurnStartedAtRef.current = 0;
-          setIsStreaming(false);
-          setCurrentTurnId(null);
-          setStreamStalled(false);
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.role === "assistant" && (m as any).streaming
-                ? { ...m, streaming: false }
-                : m
-            )
-          );
+          // 메모리 압력만으로 실행 소유권을 해제하면 살아 있는 작업과 새 작업이 겹친다.
+          setStreamStalled(true);
         }
       } catch (err) {
         logger.warn(`[MemoryWatchdog] get_system_memory_status failed: ${err}`);
@@ -1438,14 +1425,59 @@ export default function App() {
   }, []);
 
   const handleSidecarEvent = (ev: SidecarEvent) => {
-    // 2026-08-19 — task-watch busy gate 를 영구히 잠그던 결함의 수정 지점 (1/3).
-    // taskWatchTurnsRef 는 done/error 이벤트에서만 비워진다. sidecar 가 turn 도중 재시작하면
-    // 그 두 이벤트가 영영 안 와서 Map 에 좀비 항목이 남고, 하트비트가 계속 busy 로 return 해
-    // 이후 모든 마커가 발화하지 않는다. 여기서 turn 별 마지막 활동 시각을 찍어두고,
-    // 하트비트가 "완전 무음 상태가 오래 지속된" 항목만 골라 해제한다.
-    if ((ev as { id?: string }).id) {
-      const tw = taskWatchTurnsRef.current.get((ev as { id: string }).id);
-      if (tw) tw.lastActivityAt = Date.now();
+    const event = ev as any;
+    const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window"]);
+    const eventTurnId = event.turn_id ?? event.taskId ?? event.id;
+    const eventConversationId = typeof eventTurnId === "string" ? turnToConvMap.current.get(eventTurnId) : undefined;
+    if (routedTypes.has(ev.type) && eventTurnId) {
+      if (!eventConversationId || !conversationTurnGateRef.current.accepts(eventConversationId, eventTurnId) ||
+          ((event.conversation_id ?? event.conversationId) && (event.conversation_id ?? event.conversationId) !== eventConversationId)) {
+        logger.warn("[Routing] rejected event type=" + ev.type + " turn=" + eventTurnId);
+        return;
+      }
+      if (ev.type === "tool_use" || ev.type === "assistant_delta" || ev.type === "turn_heartbeat") {
+        conversationTurnGateRef.current.touch(eventConversationId, eventTurnId,
+          ev.type === "tool_use" ? event.name + " 실행 중" : ev.type === "turn_heartbeat" ? "작업 진행 확인" : "응답 작성 중");
+        if (Date.now() - lastControlPaintRef.current > 1000) { lastControlPaintRef.current = Date.now(); setControlVersion((v) => v + 1); }
+      }
+    }
+    if (["turn_stopped", "turn_stopping", "turn_started", "turn_waiting", "interrupt_warning", "interrupt_rejected"].includes(ev.type)) {
+      if (!eventConversationId) return;
+      if (ev.type === "turn_stopped") {
+        void finishStoppedTurn(eventConversationId, eventTurnId, event.agentId).catch((err) => {
+          logger.error("[Stop] 상태 보존 실패", err);
+          rejectStopWaiters(eventTurnId, new Error("정지 후 대화 저장에 실패했습니다. 추가 지시를 보류합니다."));
+        });
+      } else if (ev.type === "turn_waiting") {
+        conversationTurnGateRef.current.touch(eventConversationId, eventTurnId, event.detail);
+        syncControl();
+      } else if (ev.type === "turn_stopping") {
+        conversationTurnGateRef.current.stopping(eventConversationId);
+        syncControl();
+      } else if (ev.type === "interrupt_warning" || ev.type === "interrupt_rejected") {
+        if (eventConversationId === activeConversationIdRef.current) pushSystem(event.message, "warn");
+        if (ev.type === "interrupt_rejected") rejectStopWaiters(eventTurnId, new Error(event.message));
+      }
+      return;
+    }
+    if ((ev.type === "done" || ev.type === "error") && eventConversationId) {
+      if (typeof event.agentId === "string" && event.agentId) sessionIdsRef.current.set(eventConversationId, event.agentId);
+      for (const message of messageCacheRef.current.get(eventConversationId)?.values() ?? []) {
+        if (message.role === "assistant" && message.streaming) queueMessageSave({ ...message, streaming: false }, eventConversationId);
+      }
+      if (ev.type === "error") saveControlNotice(eventConversationId, "작업 실패: " + event.message);
+    }
+    // A stopped run may finish naturally while cancellation is in transit.
+    if ((ev.type === "done" || ev.type === "error") && eventConversationId &&
+        conversationTurnGateRef.current.runs.get(eventConversationId)?.state === "stopping") {
+      void finishStoppedTurn(eventConversationId, eventTurnId, event.agentId).catch((err) => rejectStopWaiters(eventTurnId, new Error(String(err))));
+      return;
+    }
+    if (eventConversationId && eventConversationId !== activeConversationIdRef.current &&
+        ["model_context_window", "ask_user_question", "elicitation_request"].includes(ev.type)) {
+      // Never show another conversation's interactive prompt over the visible chat.
+      saveControlNotice(eventConversationId, "작업에서 확인을 요청했습니다. 해당 대화에서 추가 지시를 보내주세요.");
+      return;
     }
     switch (ev.type) {
       case "ready": {
@@ -1508,48 +1540,12 @@ export default function App() {
         const convForTurn = resolveEventConv(ev);
         if (!convForTurn) { warnUnroutable(ev); break; }
         const isActiveConv = convForTurn === activeConversationIdRef.current;
-        let savedMsg: ChatMessage | null = null;
-        if (isActiveConv) {
-          setMessages((prev) => {
-            const existingIdx = prev.findIndex(
-              (m) => m.id === ev.id && m.role === "assistant"
-            );
-            if (existingIdx >= 0) {
-              const next = [...prev];
-              const msg = next[existingIdx];
-              if (msg.role === "assistant") {
-                const updated = {
-                  ...msg,
-                  content: ev.text,
-                  streaming: true,
-                };
-                next[existingIdx] = updated;
-                savedMsg = updated;
-              }
-              return next;
-            }
-            const created: ChatMessage = {
-              id: ev.id,
-              role: "assistant",
-              content: ev.text,
-              timestamp: Date.now(),
-              streaming: true,
-            };
-            savedMsg = created;
-            return [...prev, created];
-          });
-        } else {
-          // 다른 conv 의 streaming chunks — UI 갱신 안 하지만 DB save 는 진행.
-          // K 가 그 conv 로 돌아오면 DB load 으로 보임 (turn 완료 후).
-          savedMsg = {
-            id: ev.id,
-            role: "assistant",
-            content: ev.text,
-            timestamp: Date.now(),
-            streaming: true,
-          };
-        }
-        if (savedMsg) queueMessageSave(savedMsg, convForTurn);
+        const savedMsg: ChatMessage = { id: ev.id, role: "assistant", content: ev.text, timestamp: Date.now(), streaming: true };
+        if (isActiveConv) setMessages((prev) => {
+          const index = prev.findIndex((m) => m.id === ev.id);
+          return index < 0 ? [...prev, savedMsg] : prev.map((m) => m.id === ev.id ? { ...savedMsg, timestamp: m.timestamp } : m);
+        });
+        queueMessageSave(savedMsg, convForTurn);
         break;
       }
 
@@ -1682,8 +1678,8 @@ export default function App() {
         if (isActiveConv) {
           setMetrics((m) => {
             const updated = { ...m, toolCallCount: m.toolCallCount + 1 };
-            // DB에도 저장
-            const convId = activeConversationIdRef.current;
+            // DB에도 이벤트의 원래 대화로 저장
+            const convId = convForTurn;
             if (convId && dbReadyRef.current) {
               updateConversationMetrics(convId, {
                 totalInputTokens: updated.totalInputTokens,
@@ -1708,38 +1704,16 @@ export default function App() {
         const convForTurn = resolveEventConv(ev);
         if (!convForTurn) { warnUnroutable(ev); break; }
         const isActiveConv = convForTurn === activeConversationIdRef.current;
-        let updatedToolMsg: ChatMessage | null = null;
-        if (isActiveConv) {
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.role === "tool" && m.id === `${ev.id}-tool-${ev.tool_id}`) {
-                const next: ChatMessage = {
-                  ...m,
-                  toolOutput: ev.output,
-                  images: ev.images && ev.images.length > 0 ? ev.images : undefined,
-                  status: "success" as const,
-                };
-                updatedToolMsg = next;
-                return next;
-              }
-              return m;
-            })
-          );
-        } else {
-          // 다른 conv — UI 안 갱신하지만 DB save 는 진행 (toolId 명시적 message id).
-          updatedToolMsg = {
-            id: `${ev.id}-tool-${ev.tool_id}`,
-            role: "tool",
-            toolId: ev.tool_id,
-            toolName: "",
-            content: "",
-            toolOutput: ev.output,
-            images: ev.images && ev.images.length > 0 ? ev.images : undefined,
-            status: "success" as const,
-            timestamp: Date.now(),
-          };
-        }
-        if (updatedToolMsg) queueMessageSave(updatedToolMsg, convForTurn);
+        const toolMessageId = ev.id + "-tool-" + ev.tool_id;
+        const previous = convForTurn ? messageCacheRef.current.get(convForTurn)?.get(toolMessageId) : undefined;
+        const updatedToolMsg: ChatMessage = {
+          ...(previous?.role === "tool" ? previous : { id: toolMessageId, role: "tool", toolId: ev.tool_id, toolName: "", content: "", timestamp: Date.now() }),
+          role: "tool", toolOutput: ev.output,
+          images: ev.images?.length ? ev.images : undefined, status: "success",
+        };
+        queueMessageSave(updatedToolMsg, convForTurn);
+        if (isActiveConv) setMessages((prev) => prev.some((m) => m.id === toolMessageId)
+          ? prev.map((m) => m.id === toolMessageId ? updatedToolMsg : m) : [...prev, updatedToolMsg]);
         break;
       }
 
@@ -2050,18 +2024,9 @@ export default function App() {
        if (ev.id) {
          turnToConvMap.current.delete(ev.id);
        }
-        let staleError = false;
-       if (convForErr) {
-          const hadOwner = conversationTurnGateRef.current.isActive(convForErr);
-          const released = ev.id
-            ? releaseConversationTurn(convForErr, ev.id)
-            : releaseAnyConversationTurn(convForErr);
-          staleError = hadOwner && !released;
-       }
-       if (staleError) {
-          if (ev.id) turnProviderMap.current.delete(ev.id);
-         logger.warn(`[SingleFlight] stale error 무시 conv=${convForErr?.slice(0, 8)} turn=${ev.id ?? "?"}`);
-         break;
+        if (convForErr && ev.id) {
+          conversationTurnGateRef.current.finish(convForErr, ev.id, "failed");
+          syncControl();
         }
         // Phase 17 / Phase 144 (v0.7.20) — --resume target 이 없어진 경우 자동 회복:
         // 그 대화·그 provider 의 세션 id 만 클리어해 다음 메시지부터 신규 session 으로 시작.
@@ -2173,7 +2138,7 @@ export default function App() {
         insertLongTask({
           id: String(e.taskId),
           kind: String(e.kind),
-          conversationId: activeConversationId ?? null,
+          conversationId: turnToConvMap.current.get(String(e.taskId)) ?? null,
           title: e.title ? String(e.title) : null,
           manifest: e.manifest ?? null,
         }).catch((err) => logger.warn(`[long_task_started] insert 실패: ${err}`));
@@ -2250,7 +2215,7 @@ export default function App() {
         const txt = `${emoji} ${e.level.toUpperCase()} 도구 호출 — ${e.tool_name}\n` +
           `· source=${e.source} · category=${e.category_id ?? "?"} · SafeMode=${e.safe_mode}\n` +
           `· ${e.summary}`;
-        pushSystem(txt, e.level === "critical" ? "error" : "warn");
+        if (eventConversationId) saveControlNotice(eventConversationId, txt);
         logger.warn(`[ToolSafety] ${e.level.toUpperCase()} alert — ${e.tool_name} (${e.source})`);
         break;
       }
@@ -2299,6 +2264,7 @@ export default function App() {
 
         askUserQuestionStateRef.current = {
           turnId: evAny.id,
+          conversationId: eventConversationId,
           toolUseId: evAny.tool_use_id,
           questions: evAny.questions,
           currentIndex: 0,
@@ -2389,34 +2355,34 @@ export default function App() {
   // Phase 111 (v0.6.60) — convIdOverride 추가. emit handler 가 turn 의 원래 conv 를 명시.
   // 미지정이면 activeConversationIdRef (옛 동작 — 사용자가 직접 send 한 경우).
   // pendingSaveRef 의 키를 "convId|msgId" 로 박아 다른 conv 의 save 가 섞이지 않음.
-  const queueMessageSave = useCallback((msg: ChatMessage, convIdOverride?: string | null) => {
-    const convId = convIdOverride ?? activeConversationIdRef.current;
-    if (!convId || !dbReadyRef.current) return;
-
-    pendingSaveRef.current.set(`${convId}|${msg.id}`, { convId, msg });
-
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
+  const flushMessageSaves = useStableCallback(async (conversationId?: string) => {
+    const writes: Promise<void>[] = [];
+    for (const [key, value] of pendingSaveRef.current) {
+      const entry = value as { convId: string; msg: ChatMessage };
+      if (conversationId && entry.convId !== conversationId) continue;
+      pendingSaveRef.current.delete(key);
+      writes.push(messageWriterRef.current.write(entry.convId, entry.msg).catch((err) => {
+        if (!pendingSaveRef.current.has(key)) pendingSaveRef.current.set(key, entry);
+        throw err;
+      }));
     }
-
-    saveTimerRef.current = window.setTimeout(async () => {
-      const toSave = Array.from(pendingSaveRef.current.values());
-      pendingSaveRef.current.clear();
-
-      for (const entry of toSave) {
-        // Phase 111 — entry 가 객체 ({convId, msg}) 인 경우 (신규) 와 ChatMessage 인 경우 (구버전 호환)
-        // 둘 다 처리. 한 release 안에 마이그레이션이라 양쪽 다 안전.
-        const convForSave = (entry as any).convId ?? activeConversationIdRef.current;
-        const msgForSave = (entry as any).msg ?? entry;
-        if (!convForSave) continue;
-        try {
-          await saveMessage(convForSave, msgForSave);
-        } catch (err) {
-          console.error("[DB] 메시지 저장 실패:", err);
-        }
-      }
+    const results = await Promise.allSettled(writes);
+    const failed = results.find((r) => r.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    if (conversationId) await messageWriterRef.current.drain(conversationId);
+  });
+  const queueMessageSave = useCallback((msg: ChatMessage, convId: string | null | undefined) => {
+    if (!convId || !dbReadyRef.current) return;
+    const cache = messageCacheRef.current.get(convId) ?? new Map<string, ChatMessage>();
+    cache.set(msg.id, msg);
+    if (cache.size > 200) cache.delete(cache.keys().next().value!);
+    messageCacheRef.current.set(convId, cache);
+    pendingSaveRef.current.set(convId + "|" + msg.id, { convId, msg });
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      void flushMessageSaves().catch((err) => logger.error("[DB] 대화 저장 실패 · 재시도할 내용을 보존했습니다", err));
     }, 300);
-  }, []);
+  }, [flushMessageSaves]);
 
   // 대화 목록 새로고침
   const refreshConversations = useCallback(async () => {
@@ -2433,58 +2399,119 @@ export default function App() {
   // Phase 30 (v0.5.18): 메시지 큐 — streaming 중 K 가 Enter 치면 한 슬롯 보관.
   // streaming false 로 전환되면 useEffect 가 자동 비움. 두 번째 Enter 치면 마지막 입력으로 덮어씀.
   // Phase 34 (v0.5.22): UI 노출 + ref 동기화 + 진단 로그.
-  type QueuedSend = { text: string; files?: FileAttachment[]; queuedAt: number };
-  const [queuedSend, setQueuedSend] = useState<QueuedSend | null>(null);
-  // Phase 34: useEffect race 진단용 ref. setQueuedSend 와 항상 동기 — flush 직전 ref 도 비움.
-  const queuedSendRef = useRef<QueuedSend | null>(null);
-  // Phase 128 (v0.6.83) — flush 타이머를 effect cleanup 과 분리.
-  // 종전엔 flush effect 가 setQueuedSend(null) 로 self re-render → cleanup 이 자기 flush
-  // 타이머를 clearTimeout 해서 큐 메시지가 "한번씩" 증발(드롭)했음. 타이머를 ref 로 들고
-  // 언마운트 시에만 정리 → 의존성 변경 cleanup 이 in-flight flush 를 취소 못 함.
-  const flushTimerRef = useRef<number | null>(null);
-
-  const handleCancelQueuedSend = useStableCallback(() => {
-    logger.log("[Phase34] 큐 취소 — K 가 ✕ 클릭");
-    queuedSendRef.current = null;
-    setQueuedSend(null);
+  const queuedSend = activeConversationId ? conversationTurnGateRef.current.peek(activeConversationId) : undefined;
+  const saveControlNotice = useStableCallback((conversationId: string, text: string) => {
+    const message: ChatMessage = { id: crypto.randomUUID(), role: "system", content: text, level: "info", timestamp: Date.now() };
+    if (activeConversationIdRef.current === conversationId) setMessages((prev) => [...prev, message]);
+    queueMessageSave(message, conversationId);
   });
-
-  // Phase 49 (v0.5.37): "지금 전송" — 현재 작업 중단 + 큐 메시지 즉시 새 turn 으로.
-  // K 요청: Claude 가 중간 질문 던질 때 답을 바로 보내고 싶음. 큐 자동 flush 는
-  // 작업 끝나야 작동하므로 너무 늦음. flush 가 mid-stream 에 강제 발화.
-  const handleFlushQueueNow = useStableCallback(async () => {
-    const pending = queuedSendRef.current ?? queuedSend;
-    if (!pending) return;
-    logger.log("[Phase49] 큐 즉시 전송 — STOP + 새 turn 강제 시작");
-    // 1. 현재 turn interrupt (작업 중단)
-    if (currentTurnId) {
-      try {
-        await invoke("interrupt", { id: currentTurnId });
-      } catch (err) {
-        console.error("[FlushNow] interrupt failed:", err);
-      }
+  const rejectStopWaiters = useStableCallback((turnId: string, error: Error) => {
+    const waiters = stopWaitersRef.current.get(turnId) ?? [];
+    stopWaitersRef.current.delete(turnId);
+    for (const waiter of waiters) { window.clearTimeout(waiter.timer); waiter.reject(error); }
+  });
+  const finishStoppedTurn = useStableCallback(async (conversationId: string, turnId: string, agentId?: string | null) => {
+    const cached = messageCacheRef.current.get(conversationId);
+    for (const message of cached?.values() ?? []) {
+      if (message.role === "assistant" && message.streaming) queueMessageSave({ ...message, streaming: false }, conversationId);
     }
-    // 2. 큐 비우기 (자동 flush 안 발화)
-    queuedSendRef.current = null;
-    setQueuedSend(null);
-    // 3. UI 정리 (isStreaming false 로) — useEffect 의 자동 flush 도 비활성
-    setIsStreaming(false);
-    setCurrentTurnId(null);
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.role === "assistant" && (m as any).streaming
-          ? { ...m, streaming: false }
-          : m
-      )
-    );
-    // 4. 짧은 지연 후 send — interrupt 가 sidecar 에 도달 + state 정리 보장
-    setTimeout(() => {
-      void handleSendMessage(pending.text, pending.files);
-    }, 200);
-    pushSystem("📤 큐 즉시 전송 — 진행 중 작업 중단 후 새 메시지 시작.", "info");
+    await flushMessageSaves(conversationId);
+    if (typeof agentId === "string" && agentId) {
+      sessionIdsRef.current.set(conversationId, agentId);
+      await updateConversationAgentIdFor(conversationId, turnProviderMap.current.get(turnId) ?? "claude", agentId);
+    }
+    const tw = taskWatchTurnsRef.current.get(turnId);
+    if (tw) {
+      taskWatchTurnsRef.current.delete(turnId);
+      await invoke("task_watch_release", { file: tw.watchFile, turnId, error: "사용자가 정지함 — 대화 자동 실행 보류" });
+    }
+    await finalizeLongTask(turnId, "abandoned", "사용자가 정지했습니다. 자동 재개하지 않습니다.");
+    telegramTurnsRef.current.delete(turnId);
+    scheduleTurnsRef.current.delete(turnId);
+    if (!conversationTurnGateRef.current.finish(conversationId, turnId, "stopped")) return;
+    turnToConvMap.current.delete(turnId);
+    if (activeConversationIdRef.current === conversationId) {
+      setMessages((prev) => prev.map((m) => m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m));
+      setPendingResume(null);
+    }
+    syncControl();
+    const waiters = stopWaitersRef.current.get(turnId) ?? [];
+    stopWaitersRef.current.delete(turnId);
+    for (const waiter of waiters) { window.clearTimeout(waiter.timer); waiter.resolve(); }
+  });
+  const requestConversationStop = useStableCallback(async (conversationId: string) => {
+    const control = conversationTurnGateRef.current;
+    control.pause(conversationId);
+    const turnId = control.stopping(conversationId);
+    syncControl();
+    if (!turnId) return;
+    await new Promise<void>((resolve, reject) => {
+      const waiter = { resolve, reject, timer: 0 };
+      waiter.timer = window.setTimeout(() => {
+        const remaining = stopWaitersRef.current.get(turnId)?.filter((w) => w !== waiter) ?? [];
+        if (remaining.length) stopWaitersRef.current.set(turnId, remaining); else stopWaitersRef.current.delete(turnId);
+        reject(new Error("종료 확인이 지연되고 있습니다. 작업 잠금과 추가 지시는 유지됩니다."));
+      }, 30_000);
+      stopWaitersRef.current.set(turnId, [...(stopWaitersRef.current.get(turnId) ?? []), waiter]);
+      // A locally preparing request has not reached the sidecar yet. Its final
+      // owner check will acknowledge cancellation without ever spawning a process.
+      if (dispatchedTurnIdsRef.current.has(turnId)) {
+        void invoke("interrupt", { id: turnId }).catch((err) => rejectStopWaiters(turnId, new Error(String(err))));
+      }
+    });
+  });
+  const handleCancelQueuedSend = useStableCallback(() => {
+    const id = activeConversationIdRef.current;
+    const next = id ? conversationTurnGateRef.current.peek(id) : undefined;
+    if (id && next) { conversationTurnGateRef.current.remove(id, next.id); syncControl(); }
+  });
+  const applySteering = useStableCallback(async (pending: PendingSend) => {
+    const id = pending.conversationId;
+    const generation = stopGenerationRef.current.get(id) ?? 0;
+    if (steeringBusyRef.current.has(id)) return;
+    steeringBusyRef.current.add(id);
+    saveControlNotice(id, "추가 지시 접수 · 기존 실행의 종료를 확인한 뒤 이어서 전달합니다.");
+    try {
+      await requestConversationStop(id);
+      if ((stopGenerationRef.current.get(id) ?? 0) !== generation) return;
+      // A subsequent manual Stop cancels the pending replacement.
+      if (!conversationTurnGateRef.current.queues.get(id)?.some((q) => q.id === pending.id)) return;
+      await handleSendMessage(pending.text, pending.files, { conversationId: id, fromQueue: pending.id, mode: "steer" });
+    } catch (err) { saveControlNotice(id, String(err)); }
+    finally { steeringBusyRef.current.delete(id); syncControl(); }
+  });
+  const handleFlushQueueNow = useStableCallback(() => {
+    const id = activeConversationIdRef.current;
+    const pending = id ? conversationTurnGateRef.current.peek(id) : undefined;
+    if (pending) void applySteering(pending);
   });
 
-  const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[]) => {
+  const sendOwnedMessage = useStableCallback(async (payload: Record<string, any>) => {
+    const id = payload.id as string;
+    const conversationId = turnToConvMap.current.get(id);
+    if (!conversationId || payload.conversationId !== conversationId) throw new Error("대화 소유권이 일치하지 않아 전송을 차단했습니다.");
+    const conversation = conversations.find((c) => c.id === conversationId);
+    const folder = conversation?.folderId ? await getFolderById(conversation.folderId) : null;
+    const control = conversationTurnGateRef.current;
+    if (!control.accepts(conversationId, id)) throw new Error("이미 종료된 실행의 전송을 차단했습니다.");
+    if (control.runs.get(conversationId)?.state === "stopping") { await finishStoppedTurn(conversationId, id); return; }
+    await flushMessageSaves(conversationId);
+    if (control.runs.get(conversationId)?.state === "stopping") { await finishStoppedTurn(conversationId, id); return; }
+    dispatchedTurnIdsRef.current.add(id);
+    await invoke("send_message", {
+      ...payload,
+      folderSystemPrompt: payload.folderSystemPrompt ?? folder?.systemPrompt,
+      projectProfile: payload.projectProfile ?? folder?.projectProfile,
+    });
+  });
+
+  const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[], options?: { conversationId?: string; fromQueue?: string; mode?: SendMode }) => {
+    const targetId = options?.conversationId ?? activeConversationIdRef.current;
+    const sendGeneration = targetId ? stopGenerationRef.current.get(targetId) ?? 0 : 0;
+    const allStopGeneration = allStopGenerationRef.current;
+    const mode = options?.mode ?? "queue";
+    const sourceMessages = !options?.fromQueue && targetId === activeConversationIdRef.current ? [...messagesRef.current] : null;
+    const settingsSnapshot = options?.fromQueue ? draftSendSettingsRef.current.get(options.fromQueue) ?? await buildSendSettings(targetId ?? undefined) : await buildSendSettings(targetId ?? undefined);
     if (!text && (!files || files.length === 0)) return;
 
     // 메모리 92%+ 차단 — streaming 여부와 무관하게 입구에서 차단.
@@ -2495,7 +2522,7 @@ export default function App() {
         `시스템 메모리 사용률이 ${memoryPressure.used_percent.toFixed(1)}%라 새 turn을 시작하지 않았습니다. HyperX/브라우저 등 메모리 점유 앱을 먼저 종료하세요.`,
         "warn",
       );
-      return;
+      throw new Error("시스템 메모리 사용률 때문에 전송을 보류했습니다.");
     }
 
     // Phase 67.1 (v0.6.3) + Phase 68 (v0.6.4) — AskUserQuestion cancel path.
@@ -2507,7 +2534,7 @@ export default function App() {
     // 단일 frontend fix 로 CLI / Codex / REST 모든 path 영향 — sidecar 의 summarizeToolItem
     // 이 세 path 공통 함수라.
     const askPending = askUserQuestionStateRef.current;
-    if (askPending?.awaitingFreeForm) {
+    if (askPending?.awaitingFreeForm && targetId === activeConversationIdRef.current && askPending.conversationId === targetId) {
       const currentQ = askPending.questions[askPending.currentIndex];
       // Phase 68: ToolMessage.toolOutput 박기 (history 합성의 진짜 path)
       patchAskToolMessageOutput(
@@ -2537,38 +2564,36 @@ export default function App() {
       logger.log(`[ask_user_question] free-form answer synthesized into tool_use_id=${askPending.toolUseId}`);
     }
 
-    // Phase 30: streaming 중이면 큐에 보관 후 return — useEffect 가 streaming 종료 시 자동 send
-    if (isStreaming) {
-      const slot: QueuedSend = { text, files, queuedAt: Date.now() };
-      queuedSendRef.current = slot;
-      setQueuedSend(slot);
-      logger.log(`[Phase34] 큐 적재 — text 길이=${text.length}, files=${files?.length ?? 0}`);
+    const control = conversationTurnGateRef.current;
+    if (targetId && control.isActive(targetId)) {
+      if (options?.fromQueue) return;
+      const item: PendingSend = { id: crypto.randomUUID(), conversationId: targetId, text, files, queuedAt: Date.now(), mode };
+      control.enqueue(item);
+      draftSendSettingsRef.current.set(item.id, settingsSnapshot);
+      syncControl();
+      if (mode === "steer") void applySteering(item);
       return;
     }
-
-    // 새 메시지 시작 → 미완 턴 이어받기 배너는 더 이상 의미 없음
-    autoResumeManualStoppedRef.current = false;
-    try {
-      localStorage.removeItem(LS_AUTO_RESUME_MANUAL_STOPPED);
-    } catch {}
-
-    setPendingResume(null);
-
-    // 활성 대화가 없으면 자동 생성
-    let convId = activeConversationId;
+    let convId = targetId;
     if (!convId && dbReady) {
       convId = crypto.randomUUID();
-      const title = generateTitleFromMessage(text);
+      // Pin before awaiting DB creation so a second send cannot create another chat.
+      activeConversationIdRef.current = convId;
+      setActiveConversationId(convId);
       try {
-        const newConv = await createConversation(convId, title);
+        const creation = createConversation(convId, generateTitleFromMessage(text));
+        creatingConversationRef.current = creation;
+        const newConv = await creation;
+        creatingConversationRef.current = null;
         setConversations((prev) => [newConv, ...prev]);
-        setActiveConversationId(convId);
-        // ref도 즉시 갱신 — 이 턴의 queueMessageSave가 바로 집어가게
-        activeConversationIdRef.current = convId;
-      } catch (err) {
-        console.error("[App] 대화 생성 실패:", err);
-      }
+      } catch (err) { creatingConversationRef.current = null; pushSystem("대화 생성 실패: " + String(err), "error"); throw err; }
     }
+    if (!convId || !dbReady) { pushSystem("대화 저장소 준비 후 다시 전송해주세요.", "warn"); throw new Error("대화 저장소 준비 중"); }
+    const visibleAtSend = convId === activeConversationIdRef.current;
+    if (visibleAtSend) setPendingResume(null);
+    if (creatingConversationRef.current) await creatingConversationRef.current;
+    await flushMessageSaves(convId);
+    const sendHistory = sourceMessages ?? await getMessages(convId);
 
     const turnId = crypto.randomUUID();
 
@@ -2609,21 +2634,22 @@ export default function App() {
       attachments: messageAttachments,
     };
 
-    if (convId && !claimConversationTurn(convId, turnId)) {
-      const slot: QueuedSend = { text, files, queuedAt: Date.now() };
-      queuedSendRef.current = slot;
-      setQueuedSend(slot);
-      // owner turn의 done/error가 false로 내릴 때 queue flush가 실행되도록 UI 상태도 맞춘다.
-      setIsStreaming(true);
-      logger.warn(`[SingleFlight] 같은 대화 중복 send 차단 conv=${convId.slice(0, 8)} turn=${turnId}`);
+    if (allStopGenerationRef.current !== allStopGeneration || (stopGenerationRef.current.get(convId) ?? 0) !== sendGeneration) return;
+    if (!claimConversationTurn(convId, turnId)) {
+      if (!options?.fromQueue) control.enqueue({ id: crypto.randomUUID(), conversationId: convId, text, files, queuedAt: Date.now(), mode });
+      syncControl();
       return;
     }
-
-    setMessages((prev) => [...prev, userMsg]);
-    setCurrentTurnId(turnId);
-    currentTurnIdRef.current = turnId;
-    currentTurnStartedAtRef.current = Date.now();
-    setIsStreaming(true);
+    if (!control.allPaused) control.resume(convId);
+    if (options?.fromQueue) control.remove(convId, options.fromQueue);
+    if (convId === activeConversationIdRef.current) {
+      setMessages((prev) => [...prev, userMsg]);
+      setCurrentTurnId(turnId);
+      currentTurnIdRef.current = turnId;
+      currentTurnStartedAtRef.current = Date.now();
+      setIsStreaming(true);
+    }
+    syncControl();
 
     // Phase 111 (v0.6.60) — turn → conv 매핑 박음. emit handler 들이 이 map 으로 routing.
     // K 가 다른 conv 로 이동해도 이 turn 의 chunks 는 원래 conv 에만 박힘.
@@ -2653,7 +2679,7 @@ export default function App() {
       // Phase 144 (v0.7.20) — W1: 종전엔 아래쪽에서 localStorage 전역값을 직접 읽어
       // 대화별 provider 가 불가능했다. 이제 대화 고정값 우선 → 미지정이면 전역 폴백.
       // agent_id 조회보다 먼저 확정해야 한다 (W2: provider 별 세션 id 를 골라야 하므로).
-      const convSettings = await buildSendSettings(convId || undefined);
+      const convSettings = settingsSnapshot;
       // W2: 이 turn 이 어느 엔진으로 나갔는지 기록 → done/error 가 그 provider 컬럼에만 저장.
       turnProviderMap.current.set(turnId, convSettings.provider);
 
@@ -2674,8 +2700,8 @@ export default function App() {
       // 만 박는다. 종전엔 summary + 최근 20 메시지를 함께 박아서 갱신해도 context 가 거의 안 줄어
       // 두 turn 만에 또 90%+ 도달 → 갱신 loop. K 의 다른 PC 진단 ("새 thread + 짧은 handoff 만")
       // 을 정확히 반영. tool history 는 어차피 sidecar 측에서 별도 path 라 영향 없음.
-      let history: Array<{ role: "user" | "assistant"; content: string }>;
-      if (sessionSummary) {
+      let history: Array<Record<string, unknown>>;
+      if (sessionSummary && convId === activeConversationIdRef.current && !options?.fromQueue) {
         // 갱신 직후 — handoff 만. 기존 20 messages 전부 버림.
         history = [
           { role: "user" as const, content: sessionSummary },
@@ -2731,7 +2757,7 @@ export default function App() {
           trimStat.trimmedMessages++;
           return out;
         }
-        history = messages
+        history = sendHistory
           .filter((m) => m.role === "user" || m.role === "assistant")
           .slice(-HISTORY_SLICE)
           .map((m) => ({ role: m.role, content: trimContent(m.content) }));
@@ -2745,6 +2771,11 @@ export default function App() {
         void appendTrimLog(trimStat);
       }
 
+      if (mode === "steer") {
+        history = sendHistory.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool").slice(-30).map((m) => m.role === "tool"
+          ? { role: "tool", toolName: m.toolName, toolInput: m.toolInput, toolOutput: m.toolOutput }
+          : { role: m.role, content: m.content });
+      }
       // 파일 첨부가 있으면 base64 데이터 포함
       const attachments = files?.map((f) => ({
         name: f.name,
@@ -2752,68 +2783,6 @@ export default function App() {
         size: f.size,
         base64: f.base64,
       }));
-
-      // provider/model/apiKey 는 위(agent_id 조회 전)에서 이미 확정됨.
-      const provider: string | undefined = convSettings.provider;
-      const model: string | undefined = convSettings.model;
-      const apiKey: string | undefined = convSettings.apiKey;
-
-      // Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort). Settings 의 kda_reasoning_effort.
-      // codex provider 에서만 의미. "default"/미설정 → undefined → sidecar 가 config.toml 기본값.
-      const reasoningEffort = loadReasoningEffort();
-
-      // 에이전트 권한 (Settings UI 의 8개 토글 — id → level)
-      // Settings.tsx 가 [{id, level, ...}] 배열로 저장하므로 sidecar 의 map 형태 { id: level } 로 변환.
-      // 변환 실패 시 undefined 로 두면 sidecar 가 DEFAULT_PERMISSIONS 사용.
-      let permissions: Record<string, string> | undefined;
-      try {
-        const storedPerms = localStorage.getItem("kda_permissions");
-        if (storedPerms) {
-          const arr = JSON.parse(storedPerms);
-          if (Array.isArray(arr)) {
-            permissions = {};
-            for (const p of arr) {
-              if (
-                p &&
-                typeof p.id === "string" &&
-                (p.level === "auto" || p.level === "ask" || p.level === "manual")
-              ) {
-                permissions[p.id] = p.level;
-              }
-            }
-          }
-        }
-      } catch (e) {
-        console.warn("[App] permissions 로드 실패:", e);
-      }
-
-      // 개별 잠금된 도구 (Settings UI "정밀 잠금" 섹션 — 도구 풀네임 배열)
-      // 카테고리 토글과 독립적으로 sidecar 의 --disallowed-tools 에 추가됨.
-      let lockedTools: string[] | undefined;
-      try {
-        const storedLocked = localStorage.getItem("kda_locked_tools");
-        if (storedLocked) {
-          const arr = JSON.parse(storedLocked);
-          if (Array.isArray(arr)) {
-            lockedTools = arr.filter(
-              (t): t is string => typeof t === "string" && t.trim().length > 0
-            );
-            if (lockedTools.length === 0) lockedTools = undefined;
-          }
-        }
-      } catch (e) {
-        console.warn("[App] lockedTools 로드 실패:", e);
-      }
-
-      // Phase 84 (v0.6.27) — Connector/Tool Safety Layer SafeMode 토글.
-      // localStorage key "kda_safe_mode" = "off" | "balanced" | "strict". 미존재 = off.
-      let safeMode: "off" | "balanced" | "strict" = "off";
-      try {
-        const s = localStorage.getItem("kda_safe_mode");
-        if (s === "balanced" || s === "strict") safeMode = s;
-      } catch {
-        /* ignore */
-      }
 
       // Phase 107 (v0.6.56) / Phase 109 (v0.6.58) — 폴더 프로젝트 지침 + 첨부 자동 inject.
       // - systemPrompt: 매 turn 박음 (Claude CLI 가 --resume 시 system prompt 새로 박음)
@@ -2856,26 +2825,26 @@ export default function App() {
         console.warn("[App] 오케스트레이션 설정 로드 실패:", e);
       }
 
-      await invoke("send_message", {
-        message: text || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
+      if (!control.accepts(convId, turnId) || control.runs.get(convId)?.state === "stopping") {
+        await finishStoppedTurn(convId, turnId);
+        return;
+      }
+      await sendOwnedMessage({
+        message: (mode === "steer" ? buildSteeringMessage(text) : text) || `[파일 첨부: ${files?.map((f) => f.name).join(", ")}]`,
         id: turnId,
         agentId,
         conversationId: convId, // v0.7.18 — task-watch 원래 창 라우팅용
         history: history.length > 0 ? history : undefined,
         attachments,
-        apiKey,
-        provider,
-        model,
-        reasoningEffort,
-        permissions,
-        lockedTools,
-        safeMode,
         folderSystemPrompt,
         folderAttachmentPaths,
         projectProfile,
         orchestrateEngines,
         engineApiKeys,
+        ...settingsSnapshot,
       });
+
+      if (mode === "steer") saveControlNotice(convId, "추가 지시 전달됨 · 기존 작업 맥락을 이어서 검토합니다.");
 
       // Phase 109 (v0.6.58) — 폴더 첨부 박은 직후 DB + in-memory state 갱신.
       // 이렇게 해야 같은 conv 의 다음 send 가 last === current 로 인식해서 skip.
@@ -2883,15 +2852,17 @@ export default function App() {
       // DB update 실패해도 sidecar 는 이미 받았으므로 모델은 정상 응답.
       // 다음 send 에 첨부가 다시 박히는 (중복) 정도가 부작용.
      if (convId) await commitFolderAttachment(convId, folderCtx);
-   } catch (err) {
-     if (convId) {
-       turnToConvMap.current.delete(turnId);
-        turnProviderMap.current.delete(turnId);
-       releaseConversationTurn(convId, turnId);
+    } catch (err) {
+      if (convId) {
+        turnToConvMap.current.delete(turnId);
+        releaseConversationTurn(convId, turnId);
       }
-     setIsStreaming(false);
-      setCurrentTurnId(null);
-      pushSystem(`전송 실패: ${String(err)}`, "error");
+      if (convId === activeConversationIdRef.current) { setIsStreaming(false); setCurrentTurnId(null); }
+      control.pause(convId);
+      if (options?.fromQueue) control.enqueue({ id: options.fromQueue, conversationId: convId, text, files, mode, queuedAt: Date.now() });
+      syncControl();
+      saveControlNotice(convId, "전송 실패: " + String(err));
+      if (!options?.fromQueue) throw err;
     }
   });
 
@@ -3079,24 +3050,24 @@ export default function App() {
       } catch { /* ignore */ }
 
       // 유저 메시지 DB 저장 (history 빌드 후 — debounce 라 위 getMessages 엔 안 잡힘).
-     const userMsg: ChatMessage = {
-       id: crypto.randomUUID(),
-       role: "user",
-       content: text,
-       timestamp: Date.now(),
-     };
+      const userMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: text,
+        timestamp: Date.now(),
+      };
       turnId = crypto.randomUUID();
-      if (!claimConversationTurn(convId, turnId)) {
+      if (conversationTurnGateRef.current.allPaused || conversationTurnGateRef.current.paused.has(convId) || !claimConversationTurn(convId, turnId)) {
         void deliverTelegramReply(chatId, "⏳ 이 대화의 이전 작업을 처리 중이에요. 끝나면 다시 보내주세요.");
         return;
       }
-     queueMessageSave(userMsg, convId);
+      queueMessageSave(userMsg, convId);
 
-     rememberTurnConv(turnId, convId);
-     turnProviderMap.current.set(turnId, s.provider); // W2 — 세션 id 저장 대상 컬럼 결정용
-     telegramTurnsRef.current.set(turnId, { chatId, text: "" });
+      rememberTurnConv(turnId, convId);
+      turnProviderMap.current.set(turnId, s.provider);
+      telegramTurnsRef.current.set(turnId, { chatId, text: "" });
 
-      await invoke("send_message", {
+      await sendOwnedMessage({
         message: text,
         id: turnId,
         agentId,
@@ -3111,15 +3082,14 @@ export default function App() {
         safeMode: s.safeMode,
         folderSystemPrompt: folderCtx.folderSystemPrompt,
         projectProfile: folderCtx.projectProfile,
-     });
-   } catch (err) {
+      });
+    } catch (err) {
       if (turnId && convId) {
         turnToConvMap.current.delete(turnId);
-        turnProviderMap.current.delete(turnId);
         telegramTurnsRef.current.delete(turnId);
         releaseConversationTurn(convId, turnId);
       }
-     console.error("[Telegram] turn 주입 실패:", err);
+      console.error("[Telegram] turn 주입 실패:", err);
       void deliverTelegramReply(chatId, `⚠ 처리 시작 실패: ${String(err)}`);
     }
   });
@@ -3249,22 +3219,22 @@ export default function App() {
           `이 예약 작업을 지금 수행하세요. 완료하면 반드시 db_schedule_done(id=${row.id}) 를 호출해 ` +
           `처리 완료로 표시하세요(미호출 시 다음 틱에 재발화됩니다).`;
 
-       const userMsg: ChatMessage = {
-         id: crypto.randomUUID(), role: "user", content: text, timestamp: Date.now(),
-       };
+        const userMsg: ChatMessage = {
+          id: crypto.randomUUID(), role: "user", content: text, timestamp: Date.now(),
+        };
         turnId = crypto.randomUUID();
-        if (!claimConversationTurn(convId, turnId)) {
+        if (conversationTurnGateRef.current.allPaused || conversationTurnGateRef.current.paused.has(convId) || !claimConversationTurn(convId, turnId)) {
           schedLog(`DEFER schedule#${row.id} conv=${convId.slice(0, 8)} reason=conversation-busy`);
           return;
         }
-       queueMessageSave(userMsg, convId);
+        queueMessageSave(userMsg, convId);
 
-       rememberTurnConv(turnId, convId);
-       turnProviderMap.current.set(turnId, s.provider); // W2
-       scheduleTurnsRef.current.set(turnId, { scheduleId: row.id, title: row.title });
-       scheduleFiredAtRef.current.set(row.id, Date.now());
+        rememberTurnConv(turnId, convId);
+      turnProviderMap.current.set(turnId, s.provider);
+        scheduleTurnsRef.current.set(turnId, { scheduleId: row.id, title: row.title });
+        scheduleFiredAtRef.current.set(row.id, Date.now());
 
-        await invoke("send_message", {
+          await sendOwnedMessage({
           message: text, id: turnId, agentId,
           conversationId: convId, // v0.7.18 — task-watch 원래 창 라우팅용
           history: history.length > 0 ? history : undefined,
@@ -3380,6 +3350,10 @@ export default function App() {
         if (convId) {
           try { convValid = (await getConversationMetrics(convId)) !== null; } catch { convValid = false; }
         }
+        if (!convValid && w.conversationId?.trim()) {
+          taskWatchLog("DEFER task-watch " + w.id + " reason=missing-original-conversation");
+          return;
+        }
         if (!convValid) {
           convId = localStorage.getItem("kda_taskwatch_conv_id") || "";
           const exists = convId && conversations.some((c) => c.id === convId);
@@ -3437,7 +3411,7 @@ export default function App() {
         };
 
         turnId = crypto.randomUUID();
-        if (!claimConversationTurn(convId, turnId)) {
+        if (conversationTurnGateRef.current.allPaused || conversationTurnGateRef.current.paused.has(convId) || !claimConversationTurn(convId, turnId)) {
           taskWatchLog(`DEFER task-watch "${w.id}" conv=${convId.slice(0, 8)} reason=conversation-busy`);
           return;
         }
@@ -3458,7 +3432,7 @@ export default function App() {
        });
        await saveMessage(convId, userMsg);
 
-       await invoke("send_message", {
+       await sendOwnedMessage({
           message: text, id: turnId, agentId,
           conversationId: convId, // v0.7.18 — 이어가는 turn 도 같은 창 유지
           history: history.length > 0 ? history : undefined,
@@ -3550,83 +3524,40 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleInterrupt = useStableCallback(async () => {
-    if (!currentTurnId) return;
-    try {
-      await invoke("interrupt", { id: currentTurnId });
-
-      // 🔧 FIX: interrupt 후 UI 상태 즉시 정리 (done 이벤트가 안 올 수 있음)
-      // 짧은 딜레이 후 강제 정리 (sidecar가 done을 보내면 중복 호출되어도 무해)
-      setTimeout(() => {
-        setIsStreaming(false);
-        setCurrentTurnId(null);
-        // 스트리밍 중인 메시지의 커서 제거
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.role === "assistant" && (m as any).streaming
-              ? { ...m, streaming: false }
-              : m
-          )
-        );
-      }, 500);
-    } catch (err) {
-      console.error("interrupt failed:", err);
-      // 에러 시에도 UI 상태 정리
-      setIsStreaming(false);
-      setCurrentTurnId(null);
-    }
+  const stopConversation = useStableCallback(async (id: string) => {
+    stopGenerationRef.current.set(id, (stopGenerationRef.current.get(id) ?? 0) + 1);
+    const control = conversationTurnGateRef.current;
+    // Preserve ordinary reservations for explicit resume; cancel replacement instructions.
+    for (const item of control.queues.get(id) ?? []) if (item.mode === "steer") control.remove(id, item.id);
+    try { await requestConversationStop(id); saveControlNotice(id, "현재 대화 정지 확인 · 예약과 자동 이어가기는 보류합니다. 분리된 백그라운드 작업은 별도 확인이 필요합니다."); }
+    catch (err) { saveControlNotice(id, String(err)); }
   });
-
-  // Phase 46 (v0.5.34): "모두 중단" — 현재 turn 뿐 아니라 큐, 자동 세션 갱신, pending resume 까지 abort.
-  // K 보고: STOP 눌러도 큐가 다음 메시지 자동 전송해서 "계속 진행" 으로 보임 → 진짜 멈추는 버튼 추가.
+  const handleInterrupt = useStableCallback(() => {
+    const id = activeConversationIdRef.current;
+    if (id) void stopConversation(id);
+  });
   const handleHardStop = useStableCallback(async () => {
+    allStopGenerationRef.current++;
+    const control = conversationTurnGateRef.current;
+    control.allPaused = true;
     autoResumeManualStoppedRef.current = true;
     autoResumeQueuedTaskIdsRef.current.clear();
     setPendingLongTaskAutoResume(null);
-    try {
-      localStorage.setItem(LS_AUTO_RESUME_MANUAL_STOPPED, "1");
-    } catch {}
-    logger.log("[HardStop] 모두 중단 — turn + 큐 + 자동갱신 abort");
-    // 1. 현재 turn interrupt
-    if (currentTurnId) {
-      try {
-        await invoke("interrupt", { id: currentTurnId });
-      } catch (err) {
-        console.error("[HardStop] interrupt failed:", err);
-      }
-    }
-    // 2. 큐 비우기 (다음 자동 전송 차단)
-    queuedSendRef.current = null;
-    setQueuedSend(null);
-    // 3. 자동 세션 갱신 차단
-    const turnIdToClear = currentTurnIdRef.current ?? currentTurnId;
-    // map miss (orphan turn) 여도 활성 대화로 폴백해 streaming 표시가 영구히 남는 것 방지.
-    const convIdToClear =
-      (turnIdToClear ? turnToConvMap.current.get(turnIdToClear) : null) ?? activeConversationIdRef.current;
-    if (turnIdToClear) turnToConvMap.current.delete(turnIdToClear);
-    if (convIdToClear) {
-      if (turnIdToClear) releaseConversationTurn(convIdToClear, turnIdToClear);
-      else releaseAnyConversationTurn(convIdToClear);
-    }
-    currentTurnIdRef.current = null;
-    currentTurnStartedAtRef.current = 0;
-    isRefreshingSessionRef.current = false;
-    // 4. pending resume (중단된 turn 같은 질문 재시도) 차단
     setPendingResume(null);
-    // 5. UI 정리
-    setTimeout(() => {
-      setIsStreaming(false);
-      setCurrentTurnId(null);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.role === "assistant" && (m as any).streaming
-            ? { ...m, streaming: false }
-            : m
-        )
-      );
-    }, 300);
-    pushSystem("🛑 모두 중단 — 진행 중 작업 + 예약 메시지 + 자동 갱신 전부 정지.", "info");
+    try { localStorage.setItem(LS_AUTO_RESUME_MANUAL_STOPPED, "1"); } catch {}
+    const ids = new Set([...control.activeConversationIds(), ...control.queues.keys()]);
+    for (const id of ids) control.pause(id);
+    syncControl();
+    await Promise.allSettled([...ids].map((id) => stopConversation(id)));
   });
+  const resumeConversationQueue = useStableCallback((id: string) => {
+    const control = conversationTurnGateRef.current;
+    const next = control.peek(id);
+    control.resume(id);
+    syncControl();
+    if (next && !control.isActive(id)) void handleSendMessage(next.text, next.files, { conversationId: id, fromQueue: next.id, mode: next.mode }).catch((err) => saveControlNotice(id, String(err)));
+  });
+  const handleComposerSend = useStableCallback((text: string, files?: FileAttachment[], mode?: SendMode) => handleSendMessage(text, files, { mode }));
 
   const handleNewConversation = useStableCallback(async (folderId?: string | null) => {
     // Phase 111 (v0.6.60) — 작업 중에도 새 대화 생성 가능. K 명시 요청.
@@ -3688,10 +3619,12 @@ export default function App() {
     // Phase 111 — 새 conv 로 이동 시 isStreaming/currentTurnId 를 그 conv 의 실제 상태로 동기화.
     const newConvStreaming = streamingConvIds.has(id);
     setIsStreaming(newConvStreaming);
-    setCurrentTurnId(null); // turn id 는 turnToConvMap 으로 trace, currentTurnId 는 UI 표시용
+    setCurrentTurnId(conversationTurnGateRef.current.owner(id) ?? null);
 
     setActiveConversationId(id);
     activeConversationIdRef.current = id;
+    setSessionSummary(null);
+    setElicitationRequest(null);
     // 대화 전환 시 baseline 리셋 — 다른 대화는 별개의 누적 컨텍스트
     refreshBaselineRef.current = 0;
     // 다른 대화로 넘어가면 이전 대화의 이어받기 배너는 숨김
@@ -3703,7 +3636,10 @@ export default function App() {
         getMessages(id),
         getConversationMetrics(id),
       ]);
-      setMessages(msgs);
+      if (activeConversationIdRef.current !== id) return;
+      const merged = new Map(msgs.map((m) => [m.id, m]));
+      for (const [key, message] of messageCacheRef.current.get(id) ?? []) merged.set(key, message);
+      setMessages([...merged.values()].sort((a, b) => a.timestamp - b.timestamp));
 
       // 마지막 메시지가 user 면 → 이전 턴이 미완 (assistant 응답이 저장된 적 없음)
       // = release rebuild / 프로세스 강제 종료로 끊긴 턴. 배너로 이어받기 제안.
@@ -3762,6 +3698,7 @@ export default function App() {
       }
     } catch (err) {
       console.error("[App] 메시지 로드 실패:", err);
+      if (activeConversationIdRef.current !== id) return;
       setMessages([]);
       setMetrics({
         totalInputTokens: 0,
@@ -3777,6 +3714,12 @@ export default function App() {
 
   const handleDeleteConversation = useStableCallback(async (id: string) => {
     try {
+      const control = conversationTurnGateRef.current;
+      if (control.isActive(id) || control.queues.has(id)) {
+        pushSystem("실행과 예약이 남아 있는 대화는 삭제할 수 없습니다. 먼저 정지하고 예약을 취소해 주세요.", "warn");
+        return;
+      }
+      await flushMessageSaves(id);
       await deleteConversation(id);
       setConversations((prev) => prev.filter((c) => c.id !== id));
 
@@ -3929,6 +3872,10 @@ export default function App() {
   const handleMoveConversationToFolder = useStableCallback(
     async (convId: string, folderId: string | null, position: number = 0) => {
       try {
+        if (conversationTurnGateRef.current.isActive(convId) || conversationTurnGateRef.current.queues.has(convId)) {
+          pushSystem("실행 또는 예약이 남아 있어 프로젝트 폴더 변경을 보류했습니다.", "warn");
+          return;
+        }
         await moveConversationToFolder(convId, folderId, position);
         setConversations((prev) =>
           prev.map((c) => (c.id === convId ? { ...c, folderId, position } : c)),
@@ -4010,60 +3957,24 @@ export default function App() {
     },
   );
 
-  // ─── Phase 30 (v0.5.18) / Phase 34 (v0.5.22) — 메시지 큐 자동 비우기 ───────────────
-  // streaming false 로 전환되는 순간 큐에 보관된 메시지 하나를 자동 send.
-  // K 가 답변 받는 동안 Enter 친 것이 있으면 답변 끝난 직후 즉시 다음 turn 시작.
-  // Phase 34: ref 동기화 + 진단 로그 + 빈 시점 robustness (state vs ref 불일치 발견 시 ref 우선).
   useEffect(() => {
-    logger.log(
-      `[Phase34] flush effect fire — isStreaming=${isStreaming}, queuedSend=${queuedSend ? `len=${queuedSend.text.length}` : "null"}, ref=${queuedSendRef.current ? "set" : "null"}`,
-    );
-    if (isStreaming) return;
-    // state 와 ref 둘 다 확인 — 어느 한쪽만 set 이라면 그게 진짜 큐
-    const next = queuedSend ?? queuedSendRef.current;
-    if (!next) return;
-    // Phase 128 (v0.6.83) — 이미 flush 타이머가 떠 있으면 재진입 무시.
-    // 아래 setQueuedSend(null) 가 일으키는 re-render 로 이 effect 가 다시 도는데,
-    // 그때 next 는 null 이라 위에서 걸러지지만, 만약을 위한 이중 방어.
-    if (flushTimerRef.current !== null) return;
-    logger.log(`[Phase34] flush 시작 — text 첫50자="${next.text.slice(0, 50)}"`);
-    queuedSendRef.current = null;
-    setQueuedSend(null);
-    // setTimeout(0) — setState batch 끝난 후 send (race 방어).
-    // Phase 128: 타이머를 ref 로 보관 + cleanup 에서 clearTimeout 하지 않음.
-    //   종전엔 setQueuedSend(null) re-render → 의존성(queuedSend) 변경 → React 가
-    //   이 effect 의 cleanup(clearTimeout) 을 먼저 실행해 자기 flush 타이머를 죽여서
-    //   큐 메시지가 간헐적으로 증발했음. 타이머 정리는 언마운트 effect 에서만.
-    flushTimerRef.current = window.setTimeout(() => {
-      flushTimerRef.current = null;
-      logger.log(`[Phase34] flush 실행 — handleSendMessage 호출`);
-      void handleSendMessage(next.text, next.files);
-    }, 0);
-  }, [isStreaming, queuedSend, handleSendMessage]);
-
-  // Phase 128 (v0.6.83) — flush 타이머는 언마운트 시에만 정리 (의존성 cleanup 과 분리).
-  useEffect(() => {
-    return () => {
-      if (flushTimerRef.current !== null) {
-        window.clearTimeout(flushTimerRef.current);
-        flushTimerRef.current = null;
-      }
-    };
-  }, []);
+    const control = conversationTurnGateRef.current;
+    for (const [id] of control.queues) {
+      if (!control.canAutoRun(id) || steeringBusyRef.current.has(id)) continue;
+      const next = control.peek(id);
+      if (next) void handleSendMessage(next.text, next.files, { conversationId: id, fromQueue: next.id, mode: next.mode }).catch((err) => { control.pause(id); syncControl(); saveControlNotice(id, String(err)); });
+    }
+  }, [controlVersion, handleSendMessage]);
 
   useEffect(() => {
     if (!pendingLongTaskAutoResume || isStreaming || !dbReady) return;
 
     const { task, reason } = pendingLongTaskAutoResume;
-    const targetConvId = task.conversation_id ?? activeConversationId;
-
-    if (targetConvId && targetConvId !== activeConversationId) {
-      void handleSelectConversation(targetConvId);
-      return;
-    }
+    const targetConvId = task.conversation_id;
+    if (!targetConvId || conversationTurnGateRef.current.paused.has(targetConvId)) return;
 
     const timer = window.setTimeout(async () => {
-      if (isStreamingRef.current) return;
+      if (!conversationTurnGateRef.current.canAutoRun(targetConvId)) return;
       const current = pendingLongTaskAutoResume;
       if (!current || current.task.id !== task.id) return;
       if (!readLocalBool(LS_AUTO_RESUME_LONG_TASKS, true) || readLocalBool(LS_AUTO_RESUME_MANUAL_STOPPED, false)) {
@@ -4088,7 +3999,7 @@ export default function App() {
       const prompt = buildLongTaskAutoResumePrompt(task, reason);
       pushSystem(`KDA auto-resume: interrupted ${task.kind} task will continue from checkpoint.`, "warn");
       logger.warn(`[AutoResume] sending resume prompt for task=${task.id}`);
-      void handleSendMessage(prompt, []);
+      void handleSendMessage(prompt, [], { conversationId: targetConvId }).catch((err) => saveControlNotice(targetConvId, String(err)));
     }, 1500);
 
     return () => window.clearTimeout(timer);
@@ -4231,16 +4142,16 @@ export default function App() {
 
       // Phase 145 (v0.7.22) — 재시도 turn 도 폴더 지침을 그대로 싣는다.
       // (같은 질문인데 재시도만 무권한으로 나가면 결과가 달라진다.)
-      const folderCtx = await buildFolderContext(activeConversationIdRef.current);
+      const folderCtx = await buildFolderContext(convId);
 
       pushSystem("↻ 같은 질문 재시도 중... (이전 도구 결과를 컨텍스트에 포함)", "info");
       logger.log(`[Resume] 재전송: turnId=${turnId}, agentId=${agentId ?? "(신규)"}`);
 
-      await invoke("send_message", {
+      await sendOwnedMessage({
         message: userMessage.content,
         id: turnId,
         agentId,
-        conversationId: activeConversationIdRef.current ?? undefined, // v0.7.18
+        conversationId: convId, // 실행 시작 시 고정한 대화
         history: history.length > 0 ? history : undefined,
         // 첨부파일은 DB 에 base64 저장 안 함 → 재기동 후 복원 불가 (텍스트만 재전송)
         attachments: undefined,
@@ -4253,12 +4164,11 @@ export default function App() {
         safeMode,
         folderSystemPrompt: folderCtx.folderSystemPrompt,
         projectProfile: folderCtx.projectProfile,
-     });
-   } catch (err) {
+      });
+    } catch (err) {
       turnToConvMap.current.delete(turnId);
-      turnProviderMap.current.delete(turnId);
       releaseConversationTurn(convId, turnId);
-     setIsStreaming(false);
+      setIsStreaming(false);
       setCurrentTurnId(null);
       pushSystem(`재시도 실패: ${String(err)}`, "error");
     }
@@ -4358,10 +4268,11 @@ export default function App() {
     try {
       // 1. 현재 대화 요약 생성
       const summary = generateConversationSummary(messages);
-      setSessionSummary(summary);
+      if (activeConversationIdRef.current === convId) setSessionSummary(summary);
       logger.log("[Session] 대화 요약 생성 완료");
 
       // 2. agentId 리셋 (새 세션 시작)
+      sessionIdsRef.current.set(convId, null);
       await updateConversationAgentId(convId, null);
       setConversations((prev) =>
         prev.map((c) =>
@@ -4370,6 +4281,7 @@ export default function App() {
       );
       logger.log("[Session] agentId 리셋 완료");
 
+      if (activeConversationIdRef.current !== convId) return;
       // 3. 메트릭 초기화 (새 세션)
       setMetrics({
         totalInputTokens: 0,
@@ -4442,7 +4354,7 @@ export default function App() {
       rememberTurnConv(summaryTurnId, activeConversationId); // Phase 145 — 6번째 send 경로
 
       // 요약 요청을 보내고 응답 받기
-      await invoke("send_message", {
+      await sendOwnedMessage({
         message: summaryPrompt,
         id: summaryTurnId,
         agentId: null, // 새 세션으로 요약 요청
@@ -4696,7 +4608,7 @@ export default function App() {
       askUserQuestionStateRef.current = null;
       pushSystem(`📨 답변 ${askState.collectedAnswers.length}개 전송: ${askState.collectedAnswers.map((a) => a.answer).join(" / ")}`, "info");
       // 즉시 새 turn 으로 보냄 — Claude 가 답 받고 continuation
-      handleSendMessage(replyText, []);
+      if (askState.conversationId) void handleSendMessage(replyText, [], { conversationId: askState.conversationId, mode: "steer" }).catch((err) => saveControlNotice(askState.conversationId!, String(err)));
 
       if (elicitationResolveRef.current) {
         elicitationResolveRef.current(response);
@@ -4953,10 +4865,27 @@ export default function App() {
       )}
 
       <MainChat
+        activityPanel={<TaskActivityPanel
+        runs={[...conversationTurnGateRef.current.runs.values()]}
+        queues={conversationTurnGateRef.current.queues}
+        paused={conversationTurnGateRef.current.paused}
+        allPaused={conversationTurnGateRef.current.allPaused}
+        conversations={conversations}
+        onSelect={handleSelectConversation}
+        onStop={stopConversation}
+        onStopAll={handleHardStop}
+        onResume={resumeConversationQueue}
+        onResumeAutomation={() => { conversationTurnGateRef.current.allPaused = false; autoResumeManualStoppedRef.current = false; localStorage.removeItem(LS_AUTO_RESUME_MANUAL_STOPPED); syncControl(); }}
+        />}
+        conversationId={activeConversationId ?? "new"}
+        isStopping={!!activeConversationId && conversationTurnGateRef.current.runs.get(activeConversationId)?.state === "stopping"}
+        queuedCount={activeConversationId ? conversationTurnGateRef.current.queues.get(activeConversationId)?.length ?? 0 : 0}
+        queuePaused={!!activeConversationId && (conversationTurnGateRef.current.paused.has(activeConversationId) || conversationTurnGateRef.current.allPaused)}
+        onResumeQueue={() => { if (activeConversationId) resumeConversationQueue(activeConversationId); }}
         messages={messages}
         status={status}
         isStreaming={isStreaming}
-        onSendMessage={handleSendMessage}
+        onSendMessage={handleComposerSend}
         onInterrupt={handleInterrupt}
         onHardStop={handleHardStop}
         // Phase 34 (v0.5.22) — 큐 미리보기 + 취소

@@ -7,6 +7,10 @@
 
 import process from "node:process";
 import readline from "node:readline";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { TurnLifecycle } from "./turnLifecycle.js";
+import { observeProcessClose } from "./processCompletion.js";
+import { ExecutionLeases, workspaceLeaseKey } from "./executionLeases.js";
 import {
   existsSync,
   createWriteStream,
@@ -1992,28 +1996,12 @@ const orchestrationCollectors = new Map<string, OrchCollector>();
 const cancelledOrchestrations = new Set<string>();
 // Defense-in-depth: frontend 상태 race가 생겨도 같은 conversation의 두 번째 root turn은
 // 자식 프로세스를 만들지 않는다. turn owner 일치 시에만 해제해 늦은 done/error도 안전하다.
-const activeConversationTurns = new Map<string, string>();
-const turnConversationIds = new Map<string, string>();
-
-function claimConversationTurn(conversationId: unknown, turnId: unknown): boolean {
-  if (typeof conversationId !== "string" || !conversationId.trim() || typeof turnId !== "string" || !turnId) {
-    return true; // 옛 frontend/내부 sub-turn 호환: conversation id가 없으면 기존 동작 유지.
-  }
-  const convId = conversationId.trim();
-  if (activeConversationTurns.has(convId)) return false;
-  activeConversationTurns.set(convId, turnId);
-  turnConversationIds.set(turnId, convId);
-  return true;
-}
-
-function releaseConversationTurnById(turnId: unknown): void {
-  if (typeof turnId !== "string") return;
-  const convId = turnConversationIds.get(turnId);
-  if (!convId) return;
-  turnConversationIds.delete(turnId);
-  if (activeConversationTurns.get(convId) === turnId) activeConversationTurns.delete(convId);
-}
-
+const turnLifecycle = new TurnLifecycle();
+const executionLeases = new ExecutionLeases();
+const turnSafetyContext = new AsyncLocalStorage<{ id: string; safeMode: SafeMode }>();
+const stoppingProcesses = new Map<string, Promise<void>[]>();
+const stoppingKillInFlight = new Set<string>();
+const orchestrationExecutions = new Map<string, Promise<void>[]>();
 // Phase 145 — 대화창 오염 근본 대책. turn id → conversation id.
 // rawEmit 이 이 맵으로 모든 이벤트에 conversation_id 를 찍는다 →
 // 라우팅 진실이 프론트엔드 휘발성 메모리(turnToConvMap)가 아니라 이벤트 자체에 실려 간다.
@@ -2073,9 +2061,10 @@ function rawEmit(obj: Record<string, unknown>): void {
 }
 
 function emit(obj: Record<string, unknown>): void {
-  if (obj.type === "done" || obj.type === "error") {
-    releaseConversationTurnById(obj.id);
-  }
+  const eventTurnId = typeof obj.id === "string" ? obj.id : typeof obj.taskId === "string" ? obj.taskId : undefined;
+  if (eventTurnId && (obj.type === "done" || obj.type === "error") && turnLifecycle.terminal(eventTurnId, obj)) return;
+  // Late output and automatic recovery must never escape a cancelled execution.
+  if (eventTurnId && turnLifecycle.isStopping(eventTurnId)) return;
   // Phase 137 — 오케스트레이션 sub-turn 이벤트 인터셉트.
   // sub-turn id (`{mainId}#{engine}`) 로 등록된 collector 가 있으면:
   //   assistant_delta → 텍스트 수집 + orchestrate_delta 로 재태깅 (frontend 엔진별 카드)
@@ -2090,7 +2079,7 @@ function emit(obj: Record<string, unknown>): void {
         case "assistant_delta": {
           // CLI 3종(claude/codex/gemini-cli)은 누적 텍스트(text=currentText)를 보냄 → 교체.
           col.text = String(obj.text ?? "");
-          rawEmit({
+          emit({
             type: "orchestrate_delta",
             id: col.mainId,
             engine: col.engine,
@@ -2121,7 +2110,8 @@ function emit(obj: Record<string, unknown>): void {
       }
     }
   }
-  rawEmit(obj);
+  const owner = eventTurnId ? turnLifecycle.get(turnLifecycle.rootId(eventTurnId)) : undefined;
+  rawEmit(owner ? { ...obj, conversationId: owner.conversationId } : obj);
 }
 
 function log(level: "info" | "warn" | "error", message: string): void {
@@ -2392,8 +2382,7 @@ function toolToCategory(namespacedName: string): string | undefined {
  * buildRiskMeta 가 critical/high 도구 호출 시 알림을 박을지 결정에 사용.
  * 동시 turn 은 K 가 안 함 — race 안전 가정.
  */
-let _currentTurnSafeMode: SafeMode = "off";
-let _currentTurnId: string | null = null;
+// Safety policy belongs to the asynchronous execution, not the most recent chat.
 
 /**
  * Phase 86 (v0.6.29) — Blocking Elicitation 인프라.
@@ -2480,23 +2469,23 @@ function buildRiskMeta(toolName: string, sourceTag: string): {
   // off 면 emit 안 함 (백 호환 + 매 high 도구마다 알림 박으면 시끄러움 — SafeMode 가 K 의 의식적
   // 보호 선언일 때만 알림).
   if (
-    _currentTurnSafeMode !== "off" &&
+    (turnSafetyContext.getStore()?.safeMode ?? "off") !== "off" &&
     (info.level === "high" || info.level === "critical")
   ) {
     emit({
       type: "safety_alert",
-      id: _currentTurnId ?? "unknown",
+      id: turnSafetyContext.getStore()?.id ?? "unknown",
       tool_name: toolName,
       source: sourceTag,
       level: info.level,
       category_id: cat ?? null,
       summary: info.summary,
-      safe_mode: _currentTurnSafeMode,
+      safe_mode: (turnSafetyContext.getStore()?.safeMode ?? "off"),
     });
     // Phase 90 — alert 통계 누적 (~/.kda/safety-stats.json)
     // Phase 91 — toolName 함께 박음 (byTool 분포)
     try {
-      recordAlert(_currentTurnSafeMode, toolName);
+      recordAlert((turnSafetyContext.getStore()?.safeMode ?? "off"), toolName);
     } catch (e) {
       logToFile("warn", `safety stats recordAlert failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -2964,6 +2953,9 @@ async function emitMcpToolsListing(
 async function handleUserMessage(msg: UserMessage): Promise<void> {
   // Phase 145 — 어떤 emit 보다 먼저 turn→conversation 을 못박는다.
   rememberTurnConversation(msg.id, msg.conversation_id);
+  turnLifecycle.assertRunning(msg.id);
+  const context = turnSafetyContext.getStore();
+  if (context) context.safeMode = msg.safeMode ?? "off";
   const provider: Provider = msg.provider ?? "claude";
   if (provider === "claude") {
     return handleViaClaudeCLI(msg);
@@ -3122,7 +3114,7 @@ function runOrchSubTurn(raw: OrchestrateMessage, engine: Provider): Promise<Orch
       _authRetried: undefined,
       api_key: raw.engineApiKeys?.[engine],
     };
-    void handleUserMessage(subMsg).catch((e) => {
+    const execution = turnSafetyContext.run({ id: subId, safeMode: "off" }, () => handleUserMessage(subMsg)).catch((e) => {
       col.resolve({
         engine,
         ok: false,
@@ -3130,6 +3122,7 @@ function runOrchSubTurn(raw: OrchestrateMessage, engine: Provider): Promise<Orch
         error: e instanceof Error ? e.message : String(e),
       });
     });
+    orchestrationExecutions.set(raw.id, [...(orchestrationExecutions.get(raw.id) ?? []), execution]);
     // 정상 종료는 emit() 인터셉트의 done/error 가 col.resolve 호출.
   });
 }
@@ -3144,7 +3137,7 @@ async function handleOrchestrateMessage(raw: OrchestrateMessage): Promise<void> 
   if (engines.length < 2) {
     // 화이트리스트 미통과 / 1개 이하 → 일반 턴 강등 (백 호환 — 실패 대신 응답은 나감).
     logToFile("warn", `Orchestration 강등 id=${raw.id} engines=${JSON.stringify(raw.engines)} → 일반 턴`);
-    void handleUserMessage({ ...(raw as unknown as UserMessage), type: "user_message" });
+    await handleUserMessage({ ...(raw as unknown as UserMessage), type: "user_message" });
     return;
   }
   const mainEngine: Provider = engines.includes("claude" as Provider)
@@ -3361,8 +3354,8 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     );
   }
   // Phase 85 — 현재 turn 의 SafeMode + id 를 buildRiskMeta 가 볼 수 있도록 set
-  _currentTurnSafeMode = toolFlags.safeMode ?? "off";
-  _currentTurnId = msg.id;
+  const safetyContext = turnSafetyContext.getStore();
+  if (safetyContext) safetyContext.safeMode = toolFlags.safeMode ?? "off";
   if (toolFlags.safeMode && toolFlags.safeMode !== "off" && toolFlags.safeModeImpact) {
     log("info", `[ToolSafety] SafeMode=${toolFlags.safeMode} — ${toolFlags.safeModeImpact.summary}`);
   }
@@ -3656,6 +3649,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     // Claude CLI 실행
     // hook 스크립트(preToolUse-overwriteGuard.mjs) 가 자식 자식 프로세스로 실행되므로
     // 권한 정책 정보는 환경변수로 전파한다 (Claude CLI → hook 으로 자동 상속됨).
+    turnLifecycle.assertRunning(msg.id);
     const proc = spawn(CLAUDE_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
@@ -3676,6 +3670,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
       },
     });
 
+    const processClosed = observeProcessClose(proc);
     activeTurns.set(msg.id, proc);
     turnPid = proc.pid;
 
@@ -4075,7 +4070,8 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     // Phase 143 (v0.7.16) — 스트림 끊김/401 은 reject 대신 1회 자동 재시도로 회복.
     let retryReason: "stream" | "auth" | null = null;
     await new Promise<void>((resolve, reject) => {
-      proc.on("close", (code) => {
+      void processClosed.then(({ code, error }) => {
+        if (error) { reject(error); return; }
         if (code === 0 || sawResult) {
           resolve();
         } else if (streamDisconnected && !msg._streamRetried) {
@@ -4092,7 +4088,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
           reject(new Error(`Claude CLI exited with code ${code}${detail}`));
         }
       });
-      proc.on("error", reject);
+
     });
 
     // Phase 143 — 같은 세션 그대로 1회 자동 재시도. 세션은 멀쩡하므로(서버측 일시 장애 /
@@ -4676,6 +4672,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   let turnPid: number | undefined;
 
   try {
+    turnLifecycle.assertRunning(msg.id);
     const proc = spawn(CODEX_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
@@ -4687,6 +4684,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       },
     });
 
+    const processClosed = observeProcessClose(proc);
     activeTurns.set(msg.id, proc);
     turnPid = proc.pid;
 
@@ -4899,6 +4897,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               lastSeenModelContextWindow = ctxWin;
               emit({
                 type: "model_context_window",
+                id: msg.id,
                 provider: "codex",
                 contextWindow: ctxWin,
                 source: "codex token_count",
@@ -5402,7 +5401,8 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     let willRetryNewSession = false;
     let retryReason: "stream" | "auth" | null = null;
     await new Promise<void>((resolve, reject) => {
-      proc.on("close", (code) => {
+      void processClosed.then(({ code, error }) => {
+        if (error) { reject(error); return; }
         if (code === 0 || sawCompletion) {
           resolve();
         } else if (
@@ -5427,7 +5427,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
           reject(new Error(`Codex CLI exited with code ${code}${detail}`));
         }
       });
-      proc.on("error", reject);
+
     });
 
     // Phase 126 (v0.6.81) — resume 실패 → agent_id 비우고 새 세션으로 자동 재시도.
@@ -5913,6 +5913,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
   let turnPid: number | undefined;
 
   try {
+    turnLifecycle.assertRunning(msg.id);
     const proc = spawn(GEMINI_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
@@ -5931,6 +5932,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
       },
     });
 
+    const processClosed = observeProcessClose(proc);
     activeTurns.set(msg.id, proc);
     turnPid = proc.pid;
 
@@ -6116,7 +6118,8 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
     }
 
     await new Promise<void>((resolve, reject) => {
-      proc.on("close", (code) => {
+      void processClosed.then(({ code, error }) => {
+        if (error) { reject(error); return; }
         if (code === 0 || sawResult) {
           resolve();
         } else {
@@ -6136,7 +6139,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
           }
         }
       });
-      proc.on("error", reject);
+
     });
 
     // usage 매핑 — result.stats 의 input_tokens 는 cached 포함 raw prompt 크기.
@@ -6383,8 +6386,8 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     restProjectForbidden,
   );
   // Phase 85 — REST path 도 buildRiskMeta 가 알람 박을 수 있게 set
-  _currentTurnSafeMode = permFlags.safeMode ?? "off";
-  _currentTurnId = msg.id;
+  const safetyContext = turnSafetyContext.getStore();
+  if (safetyContext) safetyContext.safeMode = permFlags.safeMode ?? "off";
   if (permFlags.safeMode && permFlags.safeMode !== "off" && permFlags.safeModeImpact) {
     log("info", `[ToolSafety][REST] SafeMode=${permFlags.safeMode} — ${permFlags.safeModeImpact.summary}`);
   }
@@ -6438,6 +6441,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     { role: "user", parts: [{ text: msg.content }] },
   ];
 
+  turnLifecycle.assertRunning(msg.id);
   const controller = new AbortController();
   activeRestTurns.set(msg.id, controller);
 
@@ -6456,6 +6460,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   // re-call the model. Anthropic stays at round 0 only.
   try {
     while (roundsRun < MAX_TOOL_ROUNDS) {
+      turnLifecycle.assertRunning(msg.id);
       roundsRun++;
 
       // Build per-provider request, then dispatch to the correct round runner.
@@ -6625,7 +6630,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
         // Phase 86 — strict + critical 일 때 K confirm 받기 전엔 dispatch 안 함.
         // K 가 cancel/timeout 누르면 tool_result 로 [BLOCKED by user] 박고 다음 도구로 넘어감.
         if (
-          _currentTurnSafeMode === "strict" &&
+          (turnSafetyContext.getStore()?.safeMode ?? "off") === "strict" &&
           _restRisk.level === "critical"
         ) {
           const ok = await requestUserConfirmForCriticalTool(
@@ -6655,6 +6660,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
           log("info", `[ToolSafety][elicit] K approved tool=${tc.name} — dispatching`);
         }
 
+        turnLifecycle.assertRunning(msg.id);
         const result = await dispatchModelToolCall({
           client: mcp.client,
           namespacedName: tc.name,
@@ -6739,22 +6745,73 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
 
 // ─── stdin 라인 리더 ───────────────────────────────────
 
-function dispatchRootTurn<T extends { id: string; conversation_id?: string }>(
-  msg: T,
-  handler: (value: T) => Promise<void>,
-): void {
-  if (!claimConversationTurn(msg.conversation_id, msg.id)) {
-    const conv = String(msg.conversation_id ?? "").slice(0, 8);
-    logToFile("warn", `single-flight reject id=${msg.id} conv=${conv} reason=conversation-busy`);
-    emit({ type: "error", id: msg.id, message: "같은 대화의 이전 작업이 아직 진행 중입니다." });
-    emit({ type: "done", id: msg.id, agentId: null });
+function stopRootTurn(id: string): void {
+  if (!turnLifecycle.stop(id)) {
+    rawEmit({ type: "interrupt_rejected", id, message: "실행 소유자를 찾지 못했습니다. 종료 여부를 확인한 뒤 다시 시도하세요." });
     return;
   }
-  void handler(msg).catch((err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    logToFile("error", `root turn dispatch failed id=${msg.id}: ${message}`);
-    emit({ type: "error", id: msg.id, message });
-    emit({ type: "done", id: msg.id, agentId: null });
+  const owner = turnLifecycle.get(id)!;
+  executionLeases.cancel(id);
+  rawEmit({ type: "turn_stopping", id, conversationId: owner.conversationId });
+  if (stoppingKillInFlight.has(id)) return;
+  stoppingKillInFlight.add(id);
+  const kills: Promise<void>[] = stoppingProcesses.get(id) ?? [];
+  stoppingProcesses.set(id, kills);
+  for (const [turnId, proc] of activeTurns) {
+    if (turnId !== id && !turnId.startsWith(id + "#")) continue;
+    if (!proc.pid || proc.exitCode !== null || proc.signalCode !== null) continue;
+    kills.push(new Promise<void>((resolve) => {
+      treeKill(proc.pid!, "SIGKILL", (err) => {
+        if (err && proc.exitCode === null && proc.signalCode === null) {
+          rawEmit({ type: "interrupt_warning", id, conversationId: owner.conversationId, message: "프로세스 종료를 확인하지 못했습니다. 종료 확인까지 새 작업을 보류합니다." });
+          logToFile("warn", "stop tree-kill failed turn=" + turnId + ": " + err.message);
+        }
+        resolve();
+      });
+    }));
+  }
+  for (const [turnId, controller] of activeRestTurns) {
+    if (turnId === id || turnId.startsWith(id + "#")) controller.abort();
+  }
+  for (const [, col] of orchestrationCollectors) {
+    if (col.mainId !== id) continue;
+    cancelledOrchestrations.add(id);
+    col.resolve({ engine: col.engine, ok: false, text: col.text, error: "interrupted" });
+  }
+  void Promise.allSettled(kills).then(() => stoppingKillInFlight.delete(id));
+}
+
+function dispatchRootTurn<T extends { id: string; conversation_id?: string; agent_id?: string; projectProfile?: ProjectProfile }>(msg: T, handler: (value: T) => Promise<void>): void {
+  rememberTurnConversation(msg.id, msg.conversation_id);
+  const conversationId = msg.conversation_id?.trim() || "legacy:" + msg.id;
+  if (!turnLifecycle.claim(msg.id, conversationId)) {
+    rawEmit({ type: "error", id: msg.id, conversationId, message: "같은 대화의 이전 작업이 아직 진행 중이거나 중복 요청입니다." });
+    return;
+  }
+  rawEmit({ type: "turn_started", id: msg.id, conversationId });
+  void turnSafetyContext.run({ id: msg.id, safeMode: "off" }, async () => {
+    try {
+      const keys: string[] = [];
+      if (msg.agent_id) keys.push("session:" + msg.agent_id);
+      if (msg.projectProfile?.defaultPath) keys.push(workspaceLeaseKey(path.resolve(msg.projectProfile.defaultPath)));
+      const lease = executionLeases.acquire(msg.id, keys);
+      if (executionLeases.isWaiting(msg.id)) rawEmit({ type: "turn_waiting", id: msg.id, conversationId, detail: "같은 작업 폴더 또는 엔진 세션을 사용 중인 대화가 끝나기를 기다립니다." });
+      await lease;
+      turnLifecycle.assertRunning(msg.id);
+      await handler(msg);
+    } catch (err) {
+      turnLifecycle.terminal(msg.id, { type: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      // Handler completion includes CLI close / in-flight REST tool completion.
+      await Promise.allSettled(orchestrationExecutions.get(msg.id) ?? []);
+      orchestrationExecutions.delete(msg.id);
+      await Promise.allSettled(stoppingProcesses.get(msg.id) ?? []);
+      stoppingProcesses.delete(msg.id);
+      executionLeases.release(msg.id);
+      const terminal = turnLifecycle.finish(msg.id);
+      if (terminal) rawEmit(terminal);
+      releaseTurnConversation(msg.id);
+    }
   });
 }
 
@@ -6803,55 +6860,7 @@ rl.on("line", (line) => {
       void handleGeminiOauthLogin();
       break;
     case "interrupt": {
-      releaseConversationTurnById(msg.id);
-      const proc = activeTurns.get(msg.id);
-      if (proc) {
-        // Phase 46 (v0.5.34): Windows 의 child.kill("SIGTERM") 은 손자 process 안 죽음.
-        // claude/codex CLI 가 또 다른 subprocess (MCP 서버 등) spawn 했으면 그게 계속 살아있음.
-        // tree-kill 로 process tree 전체 SIGKILL.
-        const pid = proc.pid;
-        if (pid) {
-          treeKill(pid, "SIGKILL", (err) => {
-            if (err) {
-              log("warn", `tree-kill 실패 PID=${pid}: ${err.message} — fallback proc.kill`);
-              try {
-                proc.kill("SIGKILL");
-              } catch (e2) {
-                log("warn", `proc.kill fallback 도 실패: ${e2}`);
-              }
-            } else {
-              log("info", `tree-kill 성공 PID=${pid} turn=${msg.id}`);
-            }
-          });
-        } else {
-          proc.kill("SIGKILL");
-        }
-        // activeTurns 에서 즉시 제거 — 다음 interrupt 가 같은 PID 재공격 안 함
-        activeTurns.delete(msg.id);
-        log("info", `interrupted CLI turn ${msg.id}`);
-      }
-      const controller = activeRestTurns.get(msg.id);
-      if (controller) {
-        controller.abort();
-        activeRestTurns.delete(msg.id);
-        log("info", `interrupted REST turn ${msg.id}`);
-      }
-      // Phase 137 — 오케스트레이션 sub-turn 정리. main id 로 interrupt 가 오면
-      // 진행 중인 모든 sub-turn 프로세스를 죽이고 cancelled 마킹 → 종합 skip.
-      for (const [subId, col] of orchestrationCollectors) {
-        if (col.mainId !== msg.id) continue;
-        cancelledOrchestrations.add(msg.id);
-        const subProc = activeTurns.get(subId);
-        if (subProc?.pid) treeKill(subProc.pid, "SIGKILL", () => {});
-        activeTurns.delete(subId);
-        const subCtrl = activeRestTurns.get(subId);
-        if (subCtrl) {
-          subCtrl.abort();
-          activeRestTurns.delete(subId);
-        }
-        col.resolve({ engine: col.engine, ok: false, text: col.text, error: "interrupted" });
-        log("info", `interrupted orchestration sub-turn ${subId}`);
-      }
+      stopRootTurn(msg.id);
       break;
     }
     case "ping":

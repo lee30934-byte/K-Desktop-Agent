@@ -5049,3 +5049,32 @@
   background: rgba(79, 232, 225, 0.22);
   transform: translateY(-1px);
 }
+/* 대화별 작업 제어 — 기존 레이아웃을 밀지 않는 상단 작업 현황 */
+.task-activity { position: relative; z-index: 80; color: var(--text-primary, #e5eef6); font-size: 12px; }
+.task-activity button { font: inherit; color: inherit; cursor: pointer; }
+.task-activity button:disabled { opacity: .45; cursor: default; }
+.task-activity-toggle { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border-subtle, #334155); border-radius: 18px; background: var(--bg-panel, #15202d); padding: 7px 12px; box-shadow: 0 4px 14px #0003; }
+.task-live-dot, .task-idle-dot { width: 6px; height: 6px; border-radius: 50%; background: #54d5c2; }
+.task-idle-dot { background: #8793a3; }
+.task-activity-popover { position: absolute; right: 0; top: 100%; width: min(390px, calc(100vw - 32px)); margin-top: 9px; padding: 16px; border: 1px solid var(--border-subtle, #334155); border-radius: 12px; background: var(--bg-panel, #15202d); box-shadow: 0 14px 44px #0006; }
+.main-header-right { flex-wrap: wrap; justify-content: flex-end; }
+.task-activity-heading, .task-activity-meta, .task-automation-paused { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.task-activity-heading { margin-bottom: 12px; font-size: 14px; }
+.task-activity-heading button, .task-activity-actions button, .task-automation-paused button { padding: 5px 8px; border: 1px solid #60758a66; border-radius: 5px; background: transparent; font-size: 11px; }
+.task-activity-list { max-height: min(60vh, 440px); overflow-y: auto; }
+.task-activity-row { padding: 12px 0; border-top: 1px solid #60758a33; }
+.task-conversation-link { display: block; max-width: 100%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; border: 0; background: transparent; padding: 0; text-align: left; font-weight: 600 !important; }
+.task-run-state { display: block; margin-top: 6px; color: #9cafbd; }
+.state-stopping { color: #f2bf71; }
+.state-running { color: #6addcb; }
+.state-failed { color: #f7a3a3; }
+.task-activity-meta { font-size: 10px; color: #9cafbd; margin-top: 6px; }
+.task-activity-actions { display: flex; gap: 6px; margin-top: 8px; }
+.task-activity-footnote, .task-empty { color: #9cafbd; line-height: 1.6; font-size: 11px; margin: 12px 0 0; }
+.task-automation-paused { color: #f2bf71; margin-bottom: 10px; font-size: 11px; }
+.composer-steering-bar { padding: 9px 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border-subtle, #334155); background: #8793a308; }
+.composer-steering-bar > span { color: var(--text-secondary, #9cafbd); font-size: 11px; line-height: 1.5; }
+.composer-send-modes { display: flex; gap: 3px; border: 1px solid var(--border-subtle, #334155); padding: 3px; border-radius: 7px; }
+.composer-send-modes button { border: 0; border-radius: 4px; padding: 5px 9px; background: transparent; color: var(--text-secondary, #9cafbd); font: inherit; font-size: 12px; cursor: pointer; }
+.composer-send-modes button[aria-pressed="true"] { background: #54d5c21c; color: var(--text-primary, #e5eef6); }
+.task-activity button:focus-visible, .composer-send-modes button:focus-visible { outline: 2px solid #54d5c2; outline-offset: 3px; }

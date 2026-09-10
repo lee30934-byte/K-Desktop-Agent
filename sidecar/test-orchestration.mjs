@@ -51,7 +51,10 @@ check("orchestrate_status emit (started/done/error/fanout/synthesis)",
 // ── 3. interrupt 연동 ────────────────────────────────────────────────────
 console.log("\n[3] sidecar — interrupt 연동");
 check("interrupt 시 sub-turn tree-kill + cancelled 마킹",
-  /col\.mainId !== msg\.id\) continue;/.test(src) && /cancelledOrchestrations\.add\(msg\.id\);/.test(src));
+  /stopRootTurn\(msg\.id\)/.test(src) &&
+  /col\.mainId !== id\) continue;/.test(src) && /cancelledOrchestrations\.add\(id\);/.test(src) &&
+  /turnId\.startsWith\(id \+ "#"\)/.test(src) && /treeKill\(proc\.pid!, "SIGKILL"/.test(src) &&
+  /await Promise\.allSettled\(orchestrationExecutions\.get\(msg\.id\)/.test(src));
 check("cancelled 면 종합 skip", /cancelledOrchestrations\.delete\(raw\.id\)/.test(src));
 
 // ── 4. Rust 브리지 ───────────────────────────────────────────────────────
