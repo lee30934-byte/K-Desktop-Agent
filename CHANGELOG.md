@@ -12,6 +12,7 @@
 
 ### Tests
 - 모델 ID가 Codex 선택기에 존재하고 OpenAI REST 선택기에 잘못 노출되지 않으며, sidecar의 기존 model passthrough가 그대로 적용되는 회귀 검사를 추가했다.
+- Clean checkout의 release gate에서 아직 생성 전인 `sidecar/dist/index.js`를 선행 요구하지 않도록 수정했다. source 불변식은 회귀 단계에서, dist 생성과 TypeScript 컴파일은 뒤의 sidecar build 단계에서 각각 검증한다.
 
 ## [0.7.31] - 2026-09-08
 

@@ -241,7 +241,9 @@ for (const p of requiredPatterns) {
 // dist/index.js 도 같은 패턴인지 (npm run build 가 src 와 sync 됐는지)
 const distPath = path.join(sidecarRoot, "dist", "index.js");
 if (!existsSync(distPath)) {
-  ng(`sidecar/dist/index.js 없음 — npm run build 필요`);
+  // Clean checkout 에서는 release gate 의 회귀테스트가 sidecar build 보다 먼저 실행된다.
+  // source 불변식은 위에서 검증했고, dist 생성/컴파일은 뒤의 sidecar-build 단계가 강제한다.
+  console.log("ℹ️ sidecar/dist/index.js 없음 — clean checkout, sidecar-build 단계에서 생성 검증");
 } else {
   const distSrc = readFileSync(distPath, "utf-8");
   // dist 는 minify 되지 않고 거의 같은 텍스트라 same patterns OK.
