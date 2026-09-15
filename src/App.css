@@ -1142,6 +1142,10 @@
 .drag-overlay {
   position: absolute;
   inset: 0;
+  /* 2026-09-16 깜빡임 수정 — 이 줄이 없으면 오버레이가 뜨는 순간 자기가 drag 타깃이 되어
+     부모(.composer-wrapper)에 dragleave 를 일으키고, 표시가 켜졌다 꺼졌다를 반복한다.
+     오버레이는 순수 표시물이므로 포인터/드래그 이벤트를 절대 받지 않는다. */
+  pointer-events: none;
   background: rgba(79, 232, 225, 0.1);
   border: 2px dashed var(--accent);
   border-radius: var(--radius-md);

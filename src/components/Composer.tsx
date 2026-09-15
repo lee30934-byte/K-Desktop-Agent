@@ -206,27 +206,85 @@ function Composer({
   }
 
   // 드래그 앤 드롭 핸들러
-  function handleDragOver(e: DragEvent) {
+  // ─── 파일 드래그 오버레이 (2026-09-16 깜빡임 수정) ────────────────────────
+  //
+  // 증상: 컴포저에 파일을 끌어오면 "파일을 여기에 놓으세요" 표시가 빠르게 점멸했다.
+  // 원인 두 가지가 겹쳐 있었다 (둘 다 고쳐야 멈춘다).
+  //  ① 오버레이가 drag 대상을 가로챘다. `.drag-overlay` 에 pointer-events 가 없어서
+  //     isDragging=true 로 오버레이가 뜨는 순간 그게 새 drag 타깃이 된다 → wrapper 에
+  //     dragleave 발생 → false → 오버레이 제거 → 다시 dragover → true … 무한 진동.
+  //     (CSS 에서 pointer-events:none 으로 차단)
+  //  ② dragleave 가 자식으로 이동할 때도 발생한다. textarea·버튼 위를 지날 때마다
+  //     wrapper 의 dragleave 가 떠서 표시가 꺼졌다. → enter/leave 깊이를 세서
+  //     실제로 wrapper 밖으로 나갔을 때(0)만 끈다.
+  //
+  // 부수 효과 방지: 파일이 아닌 드래그(예: 입력창 안의 텍스트 선택 끌기)에는 반응하지 않는다.
+  const dragDepth = useRef(0);
+
+  /** 이 드래그가 "파일" 드래그인가. 텍스트 드래그에 오버레이를 띄우지 않는다. */
+  function isFileDrag(e: DragEvent): boolean {
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    return Array.from(types).includes("Files");
+  }
+
+  function endDrag() {
+    dragDepth.current = 0;
+    setIsDragging(false);
+  }
+
+  function handleDragEnter(e: DragEvent) {
+    if (!isFileDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
+    dragDepth.current += 1;
+    setIsDragging(true);
+  }
+
+  function handleDragOver(e: DragEvent) {
+    if (!isFileDrag(e)) return;
+    // preventDefault 를 해야 브라우저가 이 영역을 드롭 대상으로 인정한다(안 하면 드롭 자체가 안 됨).
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    // dragenter 를 놓친 경우(창 밖에서 바로 진입 등)에도 표시는 유지한다.
+    if (dragDepth.current === 0) dragDepth.current = 1;
     setIsDragging(true);
   }
 
   function handleDragLeave(e: DragEvent) {
+    // 이미 표시 중이면 types 를 못 읽는 경우에도 leave 를 반드시 처리한다.
+    // (여기서 빠져나가면 depth 가 안 줄어 오버레이가 영영 남는다.)
+    if (!isDragging && !isFileDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
+    dragDepth.current -= 1;
+    // 자식으로 들어가며 난 leave 면 depth 가 아직 남아 있다 — 그때는 끄지 않는다.
+    if (dragDepth.current <= 0) endDrag();
   }
 
   function handleDrop(e: DragEvent) {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
+    endDrag();
 
     if (e.dataTransfer.files.length > 0) {
       addFiles(e.dataTransfer.files);
     }
   }
+
+  // 드래그가 컴포저 밖(창 밖, ESC 취소, 다른 영역 드롭)에서 끝나면 wrapper 는
+  // dragleave 를 못 받아 오버레이가 남는다. 문서 레벨에서 확실히 끈다.
+  useEffect(() => {
+    if (!isDragging) return;
+    const reset = () => endDrag();
+    window.addEventListener("dragend", reset);
+    window.addEventListener("drop", reset);
+    return () => {
+      window.removeEventListener("dragend", reset);
+      window.removeEventListener("drop", reset);
+    };
+  }, [isDragging]);
 
   // 파일 선택 핸들러
   function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
@@ -360,6 +418,7 @@ function Composer({
   return (
     <div
       className={`composer-wrapper ${isDragging ? "dragging" : ""}`}
+      onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
