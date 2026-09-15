@@ -136,6 +136,72 @@ function checkForbidden() {
   }
 }
 
+// ─── 3b. Tauri npm ↔ Rust 크레이트 버전 정합성 ────────────────────────────
+//
+// 왜 필요한가 (2026-09-16 실측): Rust 쪽 tauri 를 `=2.11.5` 로 핀했는데 npm 의
+// `@tauri-apps/api` 는 ^2.1.1 → 2.10.1 로 남아 있었다. 그 상태로
+//   cargo check ✅ / cargo test ✅ / vite build ✅ / 이 게이트 10 PASS ✅
+// 가 전부 통과했는데도 `tauri build` 는 시작 5초 만에 거부했다:
+//   "Found version mismatched Tauri packages. tauri (v2.11.5) : @tauri-apps/api (v2.10.1)"
+// 즉 게이트 통과가 "빌드 가능"을 보장하지 못했다. CLI 가 major.minor 일치를
+// 요구하므로, 릴리스 CI 의 실제 빌드 단계에서 터졌을 결함이다. 여기서 먼저 막는다.
+//
+// 비교 대상은 **실제로 해석된 버전**이다. package.json 의 range(^2.11.1)만 보면
+// 설치된 것이 2.10.x 여도 통과해버린다(공허한 검사). node_modules 의 설치본을 읽고,
+// 없으면 통과시키지 않고 WARN 으로 남겨 "검사하지 못했음"을 드러낸다.
+function checkTauriVersionParity() {
+  console.log("\n[3b] Tauri npm ↔ Rust 크레이트 버전 정합성");
+  const cargoToml = exists("src-tauri/Cargo.toml") ? readText("src-tauri/Cargo.toml") : "";
+  // `tauri = { version = "=2.11.5", ... }` 또는 `tauri = "2.11.5"` 둘 다 받는다.
+  const crateLine = /^\s*tauri\s*=\s*(?:\{[^}]*?version\s*=\s*"([^"]+)"|"([^"]+)")/m.exec(cargoToml);
+  const crateRaw = crateLine ? (crateLine[1] ?? crateLine[2]) : null;
+  if (!crateRaw) {
+    record("tauri-version-parity", "WARN", "Cargo.toml 에서 tauri 크레이트 버전을 읽지 못함");
+    return;
+  }
+  const minorOf = (v) => {
+    const m = /(\d+)\.(\d+)\./.exec(String(v).replace(/^[=^~><\s]+/, ""));
+    return m ? `${m[1]}.${m[2]}` : null;
+  };
+  const crateMinor = minorOf(crateRaw);
+
+  const npmPkgs = ["@tauri-apps/api", "@tauri-apps/cli"];
+  const mismatched = [];
+  const unresolved = [];
+  const seen = [];
+  for (const name of npmPkgs) {
+    const rel = `node_modules/${name}/package.json`;
+    if (!exists(rel)) {
+      unresolved.push(name);
+      continue;
+    }
+    let installed;
+    try {
+      installed = readJson(rel).version;
+    } catch {
+      unresolved.push(name);
+      continue;
+    }
+    seen.push(`${name}@${installed}`);
+    if (minorOf(installed) !== crateMinor) {
+      mismatched.push(`${name} ${installed} ≠ crate ${crateRaw}`);
+    }
+  }
+
+  if (mismatched.length > 0) {
+    record("tauri-version-parity", "FAIL",
+      `major.minor 불일치 — ${mismatched.join(" / ")} · tauri build 가 거부한다`);
+    return;
+  }
+  if (unresolved.length > 0) {
+    // 설치본을 못 읽었으면 "통과"라고 말하지 않는다 — 검사하지 못한 것이다.
+    record("tauri-version-parity", "WARN",
+      `설치본 미확인(${unresolved.join(", ")}) — npm install 후 재실행해야 실제 검증됨`);
+    return;
+  }
+  record("tauri-version-parity", "PASS", `crate ${crateRaw} ↔ ${seen.join(", ")}`);
+}
+
 // ─── 4. 회귀테스트 일괄 실행 + 집계 ───────────────────────────────────────
 function runRegressionTests() {
   console.log("\n[4] 회귀테스트 (sidecar/test-*.mjs 전부)");
@@ -356,6 +422,7 @@ console.log(`릴리스 전 자동 게이트 (#8)${FAST ? " [--fast]" : ""}\n`);
 checkVersionSync();
 checkWebviewCacheMeta();
 checkForbidden();
+checkTauriVersionParity();
 checkChangelog();
 runHeavyBuilds();
 // 전체 게이트는 이번 소스로 생성한 dist를 검사한다. 빌드 전 SKIP을 성공으로 오인하지 않는다.
