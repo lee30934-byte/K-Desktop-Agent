@@ -1,3 +1,5 @@
+mod browser_host;
+mod browser_host_bridge;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -3828,6 +3830,8 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
 
     // stdout → Tauri 이벤트. 루프 종료 시 의도적 종료가 아니면 자동 재시작 시도.
     let app_for_stdout = app.clone();
+    let browser_reply_tx = tx.clone();
+    let sidecar_browser_host = browser_host::BrowserHost::default();
     tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -3844,7 +3848,9 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
                             RESTART_ATTEMPTS.store(0, Ordering::SeqCst);
                             log_lifecycle("sidecar.log", "sidecar first message received (healthy)");
                         }
-                        let _ = app_for_stdout.emit("sidecar-event", v);
+                        if !browser_host_bridge::route(&sidecar_browser_host, &app_for_stdout, &browser_reply_tx, &v) {
+                            let _ = app_for_stdout.emit("sidecar-event", v);
+                        }
                     }
                     Err(e) => {
                         let m = format!("[sidecar] stdout JSON parse 실패: {} line={}", e, line);
@@ -3865,6 +3871,7 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
             }
         }
 
+        sidecar_browser_host.shutdown(&app_for_stdout).await;
         // 여기까지 왔다 = sidecar 프로세스 종료. 의도적 종료면 아무것도 안 함.
         if INTENTIONAL_SHUTDOWN.load(Ordering::SeqCst) {
             log_lifecycle("sidecar.log", &format!("sidecar stopped intentionally ({})", exit_reason));
@@ -4228,6 +4235,7 @@ pub fn run_with_options(start_minimized: bool) {
     log_lifecycle("shutdown.log", "app starting");
 
     tauri::Builder::default()
+        .manage(browser_host::BrowserHost::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 이미 실행 중일 때 다시 실행되면 기존 창을 포커스
             if let Some(w) = app.get_webview_window("main") {
@@ -4433,6 +4441,7 @@ pub fn run_with_options(start_minimized: bool) {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            browser_host::browser_host_request,
             send_message,
             interrupt,
             reload_sidecar,

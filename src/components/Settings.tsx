@@ -332,6 +332,19 @@ const API_PROVIDERS: APIProvider[] = [
       { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (빠름)" },
     ],
   },
+  {
+    id: "chatgpt-web",
+    name: "ChatGPT (브라우저)",
+    icon: "🪟",
+    keyName: "(none)",
+    placeholder: "ChatGPT 웹 로그인 세션 사용 — 키 입력 없음",
+    docsUrl: "https://chatgpt.com",
+    noKeyRequired: true,
+    note: "KDA 가 직접 소유한 창(WebView2)으로 ChatGPT 웹에 묻고 답을 가져옵니다. API 키도 CLI 도 쓰지 않고 ChatGPT 로그인 세션만 사용합니다. 첫 사용 시 로그인 창이 뜨고, 이후 턴부터는 창이 숨겨진 채 동작합니다. 텍스트 전용 — 도구(MCP)·첨부·모델 선택·추론 강도는 아직 지원하지 않으며, 지원하지 않는 요청은 조용히 무시하지 않고 거부합니다. 대화는 매번 임시 대화(temporary chat)로 열려 ChatGPT 기록에 남지 않고 이어붙지도 않습니다.",
+    models: [
+      { id: "default", label: "ChatGPT 웹 기본 모델 (창에서 선택된 모델)" },
+    ],
+  },
 ];
 
 // ─── Phase 15 — 외부 webview 사용량 페이지 ────────────────────────
@@ -4277,6 +4290,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   {chatProvider === "claude" && " · Max 구독 OAuth · MCP 도구 사용 가능"}
                   {chatProvider === "codex" && " · ChatGPT Plus/Pro OAuth · MCP 도구 통합 가능"}
                   {chatProvider === "gemini-cli" && " · Gemini CLI (구독 OAuth 또는 API 키) · MCP 도구 통합 가능"}
+                  {chatProvider === "chatgpt-web" && " · ChatGPT 웹 로그인 세션 · KDA 소유 창 · 텍스트 전용(도구·첨부 미지원)"}
                   {(chatProvider === "openai" || chatProvider === "openrouter" || chatProvider === "gemini") && " · REST API 직접 호출 · MCP 도구 사용 가능"}
                   {chatProvider === "anthropic" && " · REST API 직접 호출 · 텍스트 전용"}
                 </div>

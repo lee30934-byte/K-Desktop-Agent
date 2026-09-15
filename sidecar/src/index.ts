@@ -1,3 +1,5 @@
+import { BrowserHostClient, type BrowserAction } from "./browserHost.js";
+import { runBrowserTurn } from "./browserProvider.js";
 /**
  * K Desktop Agent — Node Sidecar (Phase 4: Claude Code CLI 연동)
  *
@@ -2146,7 +2148,9 @@ function emitTurnHeartbeat(
 
 // ─── 턴 관리 ───────────────────────────────────────────
 
-type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter" | "codex" | "gemini-cli";
+// "chatgpt-web" = KDA 소유 WebView2 창(BrowserHost)으로 ChatGPT 에 직접 묻는 경로.
+// REST 키도 CLI 도 쓰지 않고, 창은 대화(conversation)별 owner 하나로만 쓴다.
+type Provider = "claude" | "anthropic" | "openai" | "gemini" | "openrouter" | "codex" | "gemini-cli" | "chatgpt-web";
 
 // 권한 레벨 — Settings UI 와 동일.
 //   auto    : 자동 승인 (도구 즉시 사용 가능)
@@ -2966,7 +2970,48 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
   if (provider === "gemini-cli") {
     return handleViaGeminiCLI(msg);
   }
+  if (provider === "chatgpt-web") {
+    return handleViaBrowserHost(msg);
+  }
   return handleViaRestAPI(msg, provider);
+}
+
+/**
+ * Stage 2 — BrowserHost provider.
+ *
+ * 수명주기 전체는 browserProvider.ts 가 갖고, 여기서는 KDA 의 실제 전송/취소/로그만 주입한다.
+ * 도구·권한·첨부·모델 선택은 아직 연결되지 않았고, 미지원 조합은 조용히 무시하지 않고 거부된다.
+ *
+ * 도구 계약(2026-09-15): 이 경로는 텍스트만 오간다. permissions/lockedTools/safeMode 를 **넘기지 않고**,
+ * 대신 열린 권한이 있으면 "도구 0회" 를 고지한다. ChatGPT 가 도구처럼 생긴 텍스트를 뱉어도
+ * provider 의 이벤트 화이트리스트 때문에 tool_use/tool_result 로는 절대 변환되지 않는다.
+ */
+async function handleViaBrowserHost(msg: UserMessage): Promise<void> {
+  const outcome = await runBrowserTurn({
+    id: msg.id,
+    content: msg.content,
+    conversation_id: msg.conversation_id,
+    model: msg.model,
+    reasoningEffort: msg.reasoningEffort,
+    attachments: msg.attachments,
+    permissions: msg.permissions as Record<string, string | undefined> | undefined,
+    lockedTools: msg.lockedTools,
+  }, {
+    request: (owner, action, prompt) =>
+      browserHost.request(owner, action as Exclude<BrowserAction, "diagnostics">, prompt),
+    emit: (event) => emit(event),
+    // 취소는 turn lifecycle 이 단일 진실원 — provider 가 따로 상태를 들지 않는다.
+    isStopping: () => turnLifecycle.isStopping(msg.id),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+    log: (level, message) => logToFile(level, message),
+  });
+  logToFile(
+    "info",
+    `browser provider turn id=${msg.id} owner=${outcome.owner} status=${outcome.status} ` +
+      `reason=${outcome.reason ?? "-"} chars=${outcome.emittedChars} polls=${outcome.pollCount} ` +
+      `leaseReleased=${outcome.leaseReleased} toolNotice=${outcome.toolNoticeSent === true} tools=0`,
+  );
 }
 
 // ─── Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 v1 ─────────────────
@@ -6820,6 +6865,7 @@ const rl = readline.createInterface({
   crlfDelay: Infinity,
 });
 
+const browserHost = new BrowserHostClient(rawEmit);
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -6845,6 +6891,7 @@ rl.on("line", (line) => {
     });
   }
 
+  if (browserHost.receive(msg)) return;
   switch (msg.type) {
     case "user_message":
       dispatchRootTurn(msg as UserMessage, handleUserMessage);
@@ -7132,6 +7179,7 @@ rl.on("line", (line) => {
 });
 
 rl.on("close", () => {
+  browserHost.dispose();
   log("info", "stdin closed, exiting");
   process.exit(0);
 });

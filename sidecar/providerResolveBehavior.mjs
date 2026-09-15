@@ -158,6 +158,23 @@ console.log("W1/W3 — 대화별 provider 행위 테스트\n");
   check("⑨ null → 전역 따름", providerLabel(null) === "전역 따름", providerLabel(null));
   check("⑨ codex → Codex", providerLabel("codex") === "Codex");
   check("⑨ gemini-cli → Gemini CLI", providerLabel("gemini-cli") === "Gemini CLI");
+  check("⑨ chatgpt-web → ChatGPT (브라우저)",
+    providerLabel("chatgpt-web") === "ChatGPT (브라우저)", providerLabel("chatgpt-web"));
+}
+
+// ── ⑩ chatgpt-web — 브라우저 로그인 세션만 쓰므로 키를 절대 싣지 않는다 ────
+// 전역을 openai(키 있음)로 두고 대화만 chatgpt-web 으로 고정 = 반대 세팅.
+{
+  const global = store({
+    kda_active_provider: "openai",
+    kda_active_model: "gpt-4o-mini",
+    kda_api_keys: JSON.stringify({ openai: "sk-oai-XXX", "chatgpt-web": "should-never-be-used" }),
+  });
+  const r = resolveProviderSettings({ provider: "chatgpt-web", model: null }, global);
+  check("⑩ 대화별 chatgpt-web 이 전역 openai 를 이긴다", r.provider === "chatgpt-web", `got ${r.provider}`);
+  check("⑩ apiKey 를 싣지 않는다", r.apiKey === undefined, `got ${r.apiKey}`);
+  check("⑩ 전역 model(gpt-4o-mini) 미상속", r.model === undefined, `got ${r.model}`);
+  check("⑩ source=conversation", r.source === "conversation", `got ${r.source}`);
 }
 
 // 주의: 문구에 "결과: N/M 통과" 를 쓰면 release-gate 가 부모의 최종 집계 대신 이 줄을

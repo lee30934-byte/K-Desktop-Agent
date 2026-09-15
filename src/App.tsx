@@ -1112,6 +1112,12 @@ export default function App() {
     // Gemini CLI 의 default 모델 (Phase 134) — 모델 ID 가 "default" 라 위 gemini 매칭을 못 탐
     if (activeProvider === "gemini-cli") return { tokens: 1_000_000, source: "Gemini CLI default (1M)" };
 
+    // ChatGPT 브라우저 provider — 창에서 어떤 모델이 선택돼 있는지 KDA 가 읽지 않으므로
+    // 실제 문맥 한도를 알 수 없다. 숫자를 지어내 "측정값"처럼 보이게 하지 말 것.
+    if (activeProvider === "chatgpt-web") {
+      return { tokens: 200_000, source: "ChatGPT 브라우저 — 문맥 한도 미확인 (표시는 200K 가정)" };
+    }
+
     // 안전 fallback ⚠ — K 의 다른 PC 가 여기 떨어지면 비정상 부풀음
     return { tokens: 200_000, source: `⚠ 매칭 실패 (model="${activeModelId || "unset"}") → 200K fallback` };
   }, [activeProvider, activeModelId, runtimeModelMaxTokens]);
@@ -2074,6 +2080,16 @@ export default function App() {
         } else {
           pushSystem(`Error: ${ev.message}`, "error");
         }
+        break;
+      }
+
+      // provider 가 "이 경로에서는 못 하는 것"을 알린다. 턴은 계속된다 — 실패로 표시하지 않는다.
+      // 예: chatgpt-web 은 텍스트 전용이라 열린 도구 권한이 있어도 도구 호출이 0회임을 고지한다.
+      case "provider_notice": {
+        const e = ev as { id: string; provider: string; message: string };
+        const txt = `ℹ️ ${e.provider} — ${e.message}`;
+        if (eventConversationId) saveControlNotice(eventConversationId, txt);
+        logger.warn(`[ProviderNotice] ${e.provider}: ${e.message}`);
         break;
       }
 

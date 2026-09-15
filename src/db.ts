@@ -974,6 +974,9 @@ export function agentIdColumnFor(provider: string | null | undefined): string | 
     case "codex": return "agent_id_codex";
     case "gemini":
     case "gemini-cli": return "agent_id_gemini";
+    // chatgpt-web 은 매 턴 임시 대화(temporary-chat)로 열려 이어갈 세션 id 가 없다.
+    // 컬럼을 두면 "이어붙는다"는 잘못된 기대를 만들므로 명시적으로 null 로 둔다.
+    case "chatgpt-web": return null;
     default: return null;
   }
 }

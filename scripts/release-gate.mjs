@@ -185,6 +185,58 @@ function runRegressionTests() {
   }
 }
 
+// ─── 4b. node:test 스위트 (scripts/*.test.ts, *.test.cjs) ─────────────────
+//
+// 왜 별도인가: [4] 는 `sidecar/test-*.mjs` 만 수집한다. BrowserHost / chatgpt-web provider 테스트는
+// node:test 형식이라 그 glob 에 안 잡혀, 게이트는 통과인데 **실행 자체가 안 되는** 구멍이 있었다
+// (2026-09-15 발견 — 게이트 목록에 없는 검사는 존재하지 않는 검사다).
+// 파일이 있는데 못 돌리면 SKIP 이 아니라 **FAIL** 로 막는다. 조용한 누락이 제일 위험하다.
+const NODE_TEST_SUITES = [
+  { file: "scripts/browser-host.test.ts", runner: "tsx" },
+  { file: "scripts/browser-provider.test.ts", runner: "tsx" },
+  { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
+];
+
+function runNodeTestSuites() {
+  console.log("\n[4b] node:test 스위트 (BrowserHost / chatgpt-web provider)");
+  const present = NODE_TEST_SUITES.filter((s) => fs.existsSync(path.join(rootPath, s.file)));
+  if (present.length === 0) {
+    record("browser-host-tests", "WARN", "대상 테스트 파일 없음 (기능 미도입 상태)");
+    return;
+  }
+  const tsxCli = path.join(rootPath, "sidecar/node_modules/tsx/dist/cli.mjs");
+  if (present.some((s) => s.runner === "tsx") && !fs.existsSync(tsxCli)) {
+    record("browser-host-tests", "FAIL", "tsx 없음 — sidecar 의존성 설치 후 재실행 (테스트를 건너뛰지 않는다)");
+    return;
+  }
+  let failed = 0;
+  let pass = 0;
+  let total = 0;
+  for (const suite of present) {
+    const args = suite.runner === "tsx" ? [tsxCli, "--test", suite.file] : ["--test", suite.file];
+    const r = spawnSync(process.execPath, args, { cwd: rootPath, encoding: "utf8" });
+    const out = (r.stdout || "") + (r.stderr || "");
+    // node:test 요약은 리포터에 따라 `# pass N`(tap) 또는 `ℹ pass N`(spec) 로 나온다. 둘 다 받는다.
+    // 숫자를 못 읽으면 0 → 아래 `okCount > 0` 조건에서 FAIL 로 잡힌다(형식 변동을 조용히 통과시키지 않음).
+    const okCount = Number(/^[#ℹ]\s*pass\s+(\d+)/m.exec(out)?.[1] ?? 0);
+    const failCount = Number(/^[#ℹ]\s*fail\s+(\d+)/m.exec(out)?.[1] ?? 0);
+    pass += okCount;
+    total += okCount + failCount;
+    if (r.status === 0 && failCount === 0 && okCount > 0) {
+      console.log(`     · ${suite.file}: ${okCount} 통과`);
+    } else {
+      failed++;
+      console.log(`     · ${suite.file}: ❌ exit ${r.status} (pass ${okCount} / fail ${failCount})`);
+      console.log(out.split(/\r?\n/).filter((line) => /not ok|AssertionError|Error:/.test(line)).slice(0, 8).join("\n"));
+    }
+  }
+  if (failed === 0) {
+    record("browser-host-tests", "PASS", `${present.length}개 파일, ${pass}/${total} 테스트 통과`);
+  } else {
+    record("browser-host-tests", "FAIL", `${failed}/${present.length}개 파일 실패`);
+  }
+}
+
 // ─── 5. changelog 엔트리 / 초안 ───────────────────────────────────────────
 function checkChangelog() {
   console.log("\n[5] CHANGELOG 현재 버전 엔트리");
@@ -308,6 +360,7 @@ checkChangelog();
 runHeavyBuilds();
 // 전체 게이트는 이번 소스로 생성한 dist를 검사한다. 빌드 전 SKIP을 성공으로 오인하지 않는다.
 runRegressionTests();
+runNodeTestSuites();
 if (WANT_DRAFT) generateChangelogDraft();
 
 // ─── 요약 ─────────────────────────────────────────────────────────────────

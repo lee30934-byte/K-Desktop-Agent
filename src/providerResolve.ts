@@ -85,7 +85,9 @@ export function resolveProviderSettings(
   }
 
   let apiKey: string | undefined;
-  if (provider !== "claude") {
+  // claude 는 Max 구독 OAuth, chatgpt-web 은 브라우저 로그인 세션 — 둘 다 API 키를 받지 않는다.
+  // 키를 실어 보내면 sidecar 가 쓰지도 않을 값을 turn 마다 넘기게 되므로 여기서 끊는다.
+  if (provider !== "claude" && provider !== "chatgpt-web") {
     try {
       const raw = store.getItem(LS_API_KEYS);
       if (raw) {
@@ -113,6 +115,7 @@ export function providerLabel(provider: string | null | undefined): string {
     case "codex": return "Codex";
     case "gemini": return "Gemini";
     case "gemini-cli": return "Gemini CLI";
+    case "chatgpt-web": return "ChatGPT (브라우저)";
     case null: return "전역 따름";
     default: return String(provider);
   }
@@ -125,4 +128,5 @@ export const PINNABLE_PROVIDERS: Array<string | null> = [
   "codex",
   "gemini-cli",
   "gemini",
+  "chatgpt-web",
 ];

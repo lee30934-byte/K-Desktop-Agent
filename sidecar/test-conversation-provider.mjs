@@ -148,7 +148,11 @@ console.log("\n[A] 행위 — 전역을 반대값으로 세팅해도 대화별 p
 // ── [B] providerResolve — 폴백 규칙이 소스에 남아 있는지 ──────────────────
 console.log("\n[B] providerResolve — 폴백/키 선택 규칙");
 check("pin 우선 + 전역 폴백", /const provider = pinnedProvider \|\| globalProvider;/.test(resolveTs));
-check("확정 provider 기준 apiKey", /if \(provider !== "claude"\)[\s\S]{0,400}keys\[provider\]/.test(resolveTs));
+// 키를 받지 않는 provider 는 앞으로도 늘어난다. 조건식을 문자 그대로 고정하면 동작이 맞는데도
+// 게이트가 깨져 제품 결함처럼 보인다 — 조건의 "시작"만 고정하고 나머지는 열어 둔다 (2026-09-15).
+check("확정 provider 기준 apiKey", /if \(provider !== "claude"[^)]{0,120}\)[\s\S]{0,400}keys\[provider\]/.test(resolveTs));
+check("키 없는 provider(claude/chatgpt-web) 는 키 조회를 건너뜀",
+  /provider !== "claude" && provider !== "chatgpt-web"/.test(resolveTs));
 check("gemini-cli → gemini 키 재사용", /provider === "gemini-cli" && !apiKey/.test(resolveTs));
 check("source 표기(conversation/global)", /source: "conversation" \| "global"/.test(resolveTs));
 
