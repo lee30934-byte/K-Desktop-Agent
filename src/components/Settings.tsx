@@ -212,8 +212,15 @@ const API_PROVIDERS: APIProvider[] = [
     // 옛 default label 의 "Opus 5.7 / 1M ctx" 는 잘못된 표기였음 (실재하지 않는 모델).
     // 새 default = Opus 4.8 (첫 옵션이라 신규 K 가 보는 selected = Opus 4.8).
     // K 가 명시적으로 "default" (Claude CLI 자동 선택) 원하면 두 번째 옵션.
+    // Opus 5.5 (2026-09-16 추가): 슬러그 `claude-opus-5-5` 는 실제 호출로 확인했다.
+    //   claude -p --model claude-opus-5-5  → 400 "Claude Code 2.1.206 does not support this
+    //   model; version 2.1.280 or newer is required" (= 서버가 모델을 인식함)
+    //   대조군 claude-opus-99-9 → "may not exist or you may not have access" (다른 에러)
+    // 별칭 `opus-5-5` 는 인식되지 않으므로 풀네임만 쓴다.
+    // ⚠ Claude Code CLI 2.1.280 미만에서는 이 모델 선택 시 위 400 이 그대로 채팅에 뜬다.
     models: [
-      { id: "claude-opus-5", label: "Claude Opus 5 (최신)" },
+      { id: "claude-opus-5-5", label: "Claude Opus 5.5 (최신 · CLI 2.1.280+)" },
+      { id: "claude-opus-5", label: "Claude Opus 5" },
       { id: "claude-fable-5", label: "Claude Fable 5 (최강)" },
       { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
       { id: "default", label: "Claude CLI 자동 선택" },
@@ -227,8 +234,12 @@ const API_PROVIDERS: APIProvider[] = [
     placeholder: "sk-ant-api...",
     docsUrl: "https://console.anthropic.com/",
     note: "Anthropic 콘솔에서 발급받은 API 키로 REST 직접 호출. Max 구독과는 별도 결제. 텍스트 전용 — MCP 도구 미지원.",
+    // ⚠ 여기(REST 직접 호출)의 Opus 5.5 는 **미검증**이다. 위 CLI 경로만 실제 호출로 확인했고,
+    // REST 경로는 API 키가 있어야 확인 가능해 이번에 재보지 않았다(기존 claude-opus-5 항목도 같은 상태).
+    // REST 가 다른 표기(날짜 suffix 등)를 요구하면 이 항목만 고치면 된다.
     models: [
-      { id: "claude-opus-5", label: "Claude Opus 5 (최신)" },
+      { id: "claude-opus-5-5", label: "Claude Opus 5.5 (최신 · REST 미검증)" },
+      { id: "claude-opus-5", label: "Claude Opus 5" },
       { id: "claude-fable-5", label: "Claude Fable 5 (최강)" },
       { id: "claude-opus-4-5", label: "Claude Opus 4.5" },
       { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5 (권장)" },

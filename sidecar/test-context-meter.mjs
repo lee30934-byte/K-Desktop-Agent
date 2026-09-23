@@ -66,12 +66,24 @@ function simulateTurn(streamEvents, resultUsage = null) {
 }
 
 // ─── 미러: 클라이언트의 분모 결정 (App.tsx currentModelMaxTokens 와 동기화) ──
+//
+// ⚠ 2026-09-16 드리프트 수정: "App.tsx 와 동기화" 라고 적혀 있었지만 실제로는
+// claude-opus-5 / claude-opus-4-8 이 빠져 있어 200K 를 돌려줬다(App.tsx 는 1M).
+// v0.7.20 에서 Opus 5 를 앱에만 추가하고 이 미러를 안 고친 탓 — 테스트가 앱과 다른 걸 재고 있었다.
+// 모델을 늘릴 때는 App.tsx 와 이 목록을 **함께** 고칠 것.
+const CLAUDE_MAX_1M_MODELS = new Set([
+  "claude-opus-5-5",
+  "claude-opus-5",
+  "claude-fable-5",
+  "claude-opus-4-8",
+]);
+
 function denominatorFor(provider, modelId) {
   if (provider === "claude" && (!modelId || modelId === "default")) return 1_000_000;
   const id = (modelId || "").toLowerCase();
   if (id.includes("1m")) return 1_000_000;
   if (id === "gpt-5.6" || id.startsWith("gpt-5.6-")) return 1_050_000;
-  if (id === "claude-fable-5") return 1_000_000;
+  if (CLAUDE_MAX_1M_MODELS.has(id)) return 1_000_000;
   return 200_000;
 }
 
@@ -191,6 +203,17 @@ const cases = [
       if (d3 !== 1_000_000) errors.push(`claude/null → ${d3}, 기대 1M`);
       const d4 = denominatorFor("claude", "claude-fable-5");
       if (d4 !== 1_000_000) errors.push(`claude/fable-5 → ${d4}, 기대 1M`);
+      // 2026-09-16 — 미러 드리프트 재발 방지: Max 계열 모델을 전부 못박는다.
+      // (opus-5 / opus-4-8 은 App.tsx 에만 있고 미러엔 없어 200K 를 돌려주던 구멍)
+      const d5 = denominatorFor("claude", "claude-opus-5");
+      if (d5 !== 1_000_000) errors.push(`claude/opus-5 → ${d5}, 기대 1M`);
+      const d6 = denominatorFor("claude", "claude-opus-4-8");
+      if (d6 !== 1_000_000) errors.push(`claude/opus-4-8 → ${d6}, 기대 1M`);
+      const d7 = denominatorFor("claude", "claude-opus-5-5");
+      if (d7 !== 1_000_000) errors.push(`claude/opus-5-5 → ${d7}, 기대 1M`);
+      // 5.5 가 5 로 접두사 매칭되어 오인식되지 않는지 (라벨/분모 모두 === 비교여야 함)
+      const d8 = denominatorFor("claude", "claude-opus-5-5-preview-does-not-exist");
+      if (d8 !== 200_000) errors.push(`claude/미지의 5-5 변형 → ${d8}, 기대 200K(폴백)`);
       return errors;
     },
   },

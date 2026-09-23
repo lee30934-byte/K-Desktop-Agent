@@ -1021,6 +1021,9 @@ export default function App() {
   // claude-opus-4-8 명시 선택은 그대로 4.8 표시.
   const currentModelLabel = useMemo(() => {
     if (activeProvider === "claude") {
+      // 주의: 아래는 === 비교라 "claude-opus-5" 가 "claude-opus-5-5" 를 가리지 않는다.
+      // startsWith 로 바꾸면 5.5 가 5 로 오표시되므로 바꾸지 말 것.
+      if (activeModelId === "claude-opus-5-5") return "Opus 5.5";
       if (activeModelId === "claude-opus-5") return "Opus 5";
       if (activeModelId === "claude-fable-5") return "Fable 5";
       if (activeModelId === "claude-opus-4-8") return "Opus 4.8";
@@ -1070,19 +1073,25 @@ export default function App() {
 
     // Phase 111.2 (v0.6.62) — K 정정: "Opus 5.7 같은건 없어". 기본 모델 = Opus 4.8.
     // Claude (Max OAuth) — default, Fable 5, Opus 4.8 모두 1M ctx.
-    if (activeProvider === "claude" && (!activeModelId || id === "default" || id === "claude-opus-5" || id === "claude-fable-5" || id === "claude-opus-4-8")) {
+    // Opus 5.5 의 1M 은 **측정값이 아니라 같은 Max 계열 관례를 따른 값**이다.
+    // 런타임이 model_context_window 를 보고하면(runtimeModelMaxTokens) 그쪽이 우선하므로
+    // 실제 분모가 다르면 자동으로 교정된다.
+    if (activeProvider === "claude" && (!activeModelId || id === "default" || id === "claude-opus-5-5" || id === "claude-opus-5" || id === "claude-fable-5" || id === "claude-opus-4-8")) {
       return {
         tokens: 1_000_000,
-        source: id === "claude-opus-5"
-          ? "Opus 5 (1M)"
-          : id === "claude-fable-5"
-            ? "Fable 5 (1M)"
-            : id === "claude-opus-4-8"
-              ? "Opus 4.8 (1M)"
-              : "Claude Max default (1M)",
+        source: id === "claude-opus-5-5"
+          ? "Opus 5.5 (1M 가정)"
+          : id === "claude-opus-5"
+            ? "Opus 5 (1M)"
+            : id === "claude-fable-5"
+              ? "Fable 5 (1M)"
+              : id === "claude-opus-4-8"
+                ? "Opus 4.8 (1M)"
+                : "Claude Max default (1M)",
       };
     }
 
+    if (id === "claude-opus-5-5") return { tokens: 1_000_000, source: "Opus 5.5 (1M 가정)" };
     if (id === "claude-opus-5") return { tokens: 1_000_000, source: "Opus 5 (1M)" };
     if (id === "claude-fable-5") return { tokens: 1_000_000, source: "Fable 5 (1M)" };
 
