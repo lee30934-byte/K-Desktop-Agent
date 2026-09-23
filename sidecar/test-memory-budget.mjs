@@ -122,8 +122,18 @@ check(
   /function extractPitfallSummary\(\s*memoryDir: string,\s*budget: number/.test(src),
 );
 check(
+  "② (Phase 149) 카탈로그가 Tier A/B 중복을 제외한다",
+  /extractPitfallSummary\(dir, pitfallIndexBudget, triggered\.covered\)/.test(src),
+);
+check(
+  "② (Phase 149) 중복 제외분이 '없어진 게 아님'을 명시한다",
+  /pitfallSummary\.deduped > 0/.test(src) && /없어진 게 아닙니다/.test(src),
+);
+check(
   "② 호출부가 파생 예산을 넘긴다 (인자 없는 호출 금지)",
-  /extractPitfallSummary\(dir, pitfallIndexBudget\)/.test(src) && !/extractPitfallSummary\(dir\)/.test(src),
+  // Phase 149 (2-B) — 뒤에 excludeFiles 인자가 추가됐다. 의도는 "파생 예산을 넘기는가"
+  // 이지 "인자가 정확히 2개인가"가 아니므로 인자 개수를 고정하지 않는다.
+  /extractPitfallSummary\(dir, pitfallIndexBudget[,)]/.test(src) && !/extractPitfallSummary\(dir\)/.test(src),
 );
 check(
   "② 예산이 MEMORY_ENTRIES_MIN_BUDGET 에서 파생된다",

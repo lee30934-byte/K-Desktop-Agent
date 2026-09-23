@@ -483,6 +483,25 @@ export function pitfallOneLiner(body: string, maxLen = 110): string {
 // ⚠ 도구 **출력**은 넣지 않는다. 출력은 길고 잡음이 많아(로그·JSON·에러 스택)
 //   IDF 를 오염시키고 무관 함정을 끌어올린다. 이름과 인자만 쓴다.
 
+/**
+ * 도구 이름 → 함정 본문이 실제로 쓰는 어휘.
+ *
+ * ## 왜 필요한가 (2026-09-23 실측)
+ * KDA 의 탐색 도구 이름은 `Grep` 인데, 해당 함정들은 전부 `rg` 로 적혀 있다:
+ *   pitfall_rg_missing_explicit_path  → 본문에 'rg' 18회, 'grep' **0회**
+ *   pitfall_rg_windows_path_glob      → 본문에 'rg' 10회, 'grep' **0회**
+ * 그래서 작업문맥에 Grep 호출이 그대로 들어가도 어휘가 겹치지 않아 순위 257/296 이었다.
+ * (KDA 의 Grep 은 실제로 ripgrep 이다 — 추측이 아니라 사실 관계다.)
+ *
+ * ⚠ 손으로 관리하는 표는 썩는다. **실측으로 효과가 확인된 항목만** 넣는다.
+ *   "있으면 좋을 것 같은" 별칭은 추가 금지 — 잡음만 늘리고 IDF 를 흐린다.
+ */
+export const TOOL_VOCAB_ALIASES: Record<string, string> = {
+  grep: "rg ripgrep",
+  bash: "shell",
+  powershell: "ps1 pwsh",
+};
+
 /** 작업 문맥으로 훑을 최근 히스토리 항목 수. */
 export const WORK_CONTEXT_MAX_ITEMS = 12;
 /** 항목당 인자에서 가져올 최대 길이. */
@@ -532,7 +551,10 @@ export function buildWorkContextQuery(
     if (!h || h.role !== "tool") continue;
     const name = typeof h.toolName === "string" ? h.toolName : "";
     const args = extractToolArgs(h.toolInput);
-    if (name || args) parts.push(`${name} ${args}`.trim());
+    // 도구명을 함정 본문 어휘로도 확장 (Grep → rg ripgrep)
+    const alias = TOOL_VOCAB_ALIASES[name.toLowerCase()] ?? "";
+    const line = `${name} ${alias} ${args}`.replace(/\s+/g, " ").trim();
+    if (line) parts.push(line);
   }
   return parts.join("\n");
 }

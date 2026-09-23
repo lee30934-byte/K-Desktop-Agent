@@ -1284,12 +1284,21 @@ const PITFALL_INDEX_HEADER_CHARS = 300; // 인덱스 블록의 머리말 여유
 function extractPitfallSummary(
   memoryDir: string,
   budget: number = PITFALL_INDEX_MAX_CHARS,
-): { count: number; lines: string[]; descLimit: number; omitted: number } {
-  const empty = { count: 0, lines: [] as string[], descLimit: 0, omitted: 0 };
+  // Phase 149 (2-B) — 이미 위에서 본문/관련인덱스로 노출된 파일은 카탈로그에서 뺀다.
+  // 카탈로그(539 슬러그, 실측 20,895자)는 v1 시절 recall 0% 를 기록한 저효율 블록이고,
+  // Tier A/B 는 같은 정보를 관련도 순으로 훨씬 적은 바이트에 담는다. 중복을 걷어내
+  // 그 예산을 본문 슬롯으로 돌린다. (K 승인: 2-B, 2026-09-23)
+  excludeFiles?: ReadonlySet<string>,
+): { count: number; lines: string[]; descLimit: number; omitted: number; deduped: number } {
+  const empty = { count: 0, lines: [] as string[], descLimit: 0, omitted: 0, deduped: 0 };
   if (!existsSync(memoryDir)) return empty;
   try {
-    const files = readdirSync(memoryDir)
+    const allFiles = readdirSync(memoryDir)
       .filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"));
+    const files = excludeFiles && excludeFiles.size > 0
+      ? allFiles.filter((f) => !excludeFiles.has(f))
+      : allFiles;
+    const dedupedCount = allFiles.length - files.length;
     type Row = { slug: string; desc: string | null; file: string; mtime: number };
     const raw: Row[] = [];
     for (const f of files) {
@@ -1308,7 +1317,7 @@ function extractPitfallSummary(
         // skip
       }
     }
-    if (raw.length === 0) return empty;
+    if (raw.length === 0) return { ...empty, deduped: dedupedCount };
 
     // 1) prefix 그룹핑 — slug 의 첫 `_` 앞 토큰을 카테고리로. 같은 접두사 2개 이상 = 그룹.
     const byPrefix = new Map<string, Row[]>();
@@ -1392,7 +1401,7 @@ function extractPitfallSummary(
     }
 
     const totalKept = misc.length + groups.reduce((s, [, it]) => s + it.length, 0);
-    return { count: totalKept, lines, descLimit, omitted };
+    return { count: totalKept, lines, descLimit, omitted, deduped: dedupedCount };
   } catch {
     return empty;
   }
@@ -1423,13 +1432,16 @@ function extractPitfallSummary(
  * 현재 메시지에 매치되는 pitfall 들의 full-body MemorySectionEntry 를 반환.
  * 점수 = explicit trigger(가중 2) + derived 영문토큰(1) + 한글토큰(1). 상위 N 개만.
  */
-function buildTriggeredPitfallEntries(memoryDir: string, currentMsg: string): MemorySectionEntry[] {
-  if (!currentMsg || !existsSync(memoryDir)) return [];
+function buildTriggeredPitfallEntries(
+  memoryDir: string,
+  currentMsg: string,
+): { entries: MemorySectionEntry[]; covered: Set<string> } {
+  if (!currentMsg || !existsSync(memoryDir)) return { entries: [], covered: new Set() };
   let files: string[];
   try {
     files = readdirSync(memoryDir).filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"));
   } catch {
-    return [];
+    return { entries: [], covered: new Set() };
   }
   // Phase 149 — 본문 로드와 점수 계산을 분리. 점수 로직은 memoryRelevance 단일 구현.
   const bodies = new Map<string, string>();
@@ -1500,7 +1512,9 @@ function buildTriggeredPitfallEntries(memoryDir: string, currentMsg: string): Me
   }
 
   entries.push(...bodyEntries);
-  return entries;
+  // 본문(Tier A) + 관련 인덱스(Tier B) 에 이미 나온 파일 — 카탈로그에서 중복 제거하라고 알린다.
+  const covered = new Set<string>([...full, ...related].map((s) => s.file));
+  return { entries, covered };
 }
 
 /**
@@ -1682,7 +1696,8 @@ function loadMemoryContext(
     // 종전 그대로 둔다 (그쪽까지 바꾸면 이번 변경의 효과를 분리 측정할 수 없다).
     const pitfallQuery = workContext ? `${currentMsg}
 ${workContext}` : currentMsg;
-    for (const e of buildTriggeredPitfallEntries(dir, pitfallQuery)) entries.push(e);
+    const triggered = buildTriggeredPitfallEntries(dir, pitfallQuery);
+    for (const e of triggered.entries) entries.push(e);
 
     // Phase 81 (v0.6.25): lee-profile.md 가 있으면 memory 보다 먼저 박힘 (K 의 개인 규칙이 최우선)
     const leeBlock = leeProfile.exists && leeProfile.content
@@ -1714,7 +1729,7 @@ ${workContext}` : currentMsg;
     );
 
     // Phase 82 (v0.6.26) — Pitfall Guard 압축 섹션. memory 보다 먼저, lee-profile 보다 뒤.
-    const pitfallSummary = extractPitfallSummary(dir, pitfallIndexBudget);
+    const pitfallSummary = extractPitfallSummary(dir, pitfallIndexBudget, triggered.covered);
     const pitfallBlock = pitfallSummary.count > 0
       ? [
           "",
@@ -1724,6 +1739,13 @@ ${workContext}` : currentMsg;
           `다음 ${pitfallSummary.count}개는 K 와 이미 한 번 겪은 함정입니다. 같은 패턴 반복 금지.`,
           "이번 턴 메시지와 관련된 함정은 위 '누적 메모리'에 **본문(회피책)이 자동 로딩**됩니다.",
           "그 외 항목의 자세한 진단/회피책이 필요하면 같은 이름의 pitfall_*.md 를 직접 read 하세요.",
+          // Phase 149 (2-B) — 중복 제거된 항목이 "사라진" 것으로 오해되지 않게 명시한다.
+          // 목록에 없다 ≠ 존재하지 않는다. 위쪽 관련 블록에 이미 나와 있다는 뜻이다.
+          ...(pitfallSummary.deduped > 0
+            ? [
+                `(관련도 상위 ${pitfallSummary.deduped}개는 위 관련 블록에 이미 나와 있어 이 목록에서는 뺐습니다 — 없어진 게 아닙니다.)`,
+              ]
+            : []),
           "",
           ...pitfallSummary.lines,
           ...(pitfallSummary.omitted > 0
