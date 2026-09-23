@@ -13,6 +13,20 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { TurnLifecycle } from "./turnLifecycle.js";
 import { observeProcessClose } from "./processCompletion.js";
 import { ExecutionLeases, workspaceLeaseKey } from "./executionLeases.js";
+// Phase 149 — 메모리 관련도 스코어링. 앱과 테스트가 **같은 구현**을 쓰도록 단일 모듈로 분리.
+// 여기 있는 함수들을 index.ts 안에 다시 구현하지 말 것 (테스트 미러 드리프트의 원인).
+import {
+  MAX_TRIGGERED_PITFALLS,
+  PITFALL_TRIGGER_MIN_TOKEN_LEN,
+  TRIGGERED_BODY_MAX_CHARS,
+  PITFALL_TRIGGER_STOPWORDS,
+  extractFrontmatterBlock,
+  extractYamlList,
+  extractYamlScalar,
+  extractHangulTokens,
+  derivePitfallTriggers,
+  scorePitfalls,
+} from "./memoryRelevance.js";
 import {
   existsSync,
   createWriteStream,
@@ -1051,44 +1065,8 @@ interface MemoryFileMeta {
   projects: string[];
 }
 
-/** frontmatter block (--- 사이) 만 추출. 없으면 null. */
-function extractFrontmatterBlock(body: string): string | null {
-  const fm = body.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n/);
-  return fm ? fm[1] : null;
-}
-
-/**
- * YAML frontmatter 의 list/scalar 필드를 string[] 로 파싱.
- * 지원 형태: `key: [a, b]`, `key: a, b`, 여러 줄 `key:\n  - a\n  - b`.
- */
-function extractYamlList(block: string, key: string): string[] {
-  const splitCsv = (v: string): string[] =>
-    v
-      .split(",")
-      .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-      .filter(Boolean);
-  const inline = block.match(new RegExp(`^${key}:[ \\t]*(.+?)[ \\t]*$`, "m"));
-  if (inline) {
-    const v = inline[1].trim();
-    return v.startsWith("[") ? splitCsv(v.replace(/^\[|\]$/g, "")) : splitCsv(v);
-  }
-  const listM = block.match(
-    new RegExp(`^${key}:[ \\t]*\\r?\\n((?:[ \\t]*-[ \\t]*.+\\r?\\n?)+)`, "m"),
-  );
-  if (listM) {
-    return listM[1]
-      .split(/\r?\n/)
-      .map((l) => l.replace(/^[ \t]*-[ \t]*/, "").trim().replace(/^["']|["']$/g, ""))
-      .filter(Boolean);
-  }
-  return [];
-}
-
-/** frontmatter scalar 한 줄 추출 (없으면 null). */
-function extractYamlScalar(block: string, key: string): string | null {
-  const m = block.match(new RegExp(`^${key}:[ \\t]*(.+?)[ \\t]*$`, "m"));
-  return m ? m[1].trim().replace(/^["']|["']$/g, "") : null;
-}
+// Phase 149 — extractFrontmatterBlock / extractYamlList / extractYamlScalar 는
+// ./memoryRelevance.ts 로 이동했다 (상단 import). 여기에 다시 정의하지 말 것.
 
 function parseMemoryFrontmatter(body: string): MemoryFileMeta {
   const block = extractFrontmatterBlock(body);
@@ -1433,74 +1411,10 @@ function extractPitfallSummary(
  * 키워드 = explicit `triggers:`(있으면) + `tags:` + slug 토큰(_/- 분리, 길이>=4).
  * 기존 146개 pitfall 이 frontmatter 수정 없이도 즉시 혜택 (slug/tags 자동 파생).
  */
-const MAX_TRIGGERED_PITFALLS = 8;
-const PITFALL_TRIGGER_MIN_TOKEN_LEN = 4;
-/**
- * Phase 147 (v0.7.25) — triggered 본문 길이 상한.
- * 통합 MASTER 파일이 43KB 까지 자라면 32K cap 을 단독으로 초과해 "매치됐는데도 통째 drop" 된다.
- * 잘라서라도 주입하는 편이 0 보다 낫다. 전체는 파일을 직접 read 하도록 꼬리에 안내를 붙인다.
- */
-const TRIGGERED_BODY_MAX_CHARS = 6000;
-// slug/tags 에서 흔히 나오는 과도하게 일반적인 토큰 → 오매치 방지 (explicit triggers 는 면제).
-// windows/powershell 은 의도적으로 제외(=매칭 허용): K 가 그 단어를 쓰면 해당 도메인 함정이 정확히 필요.
-const PITFALL_TRIGGER_STOPWORDS = new Set<string>([
-  "memory", "file", "files", "path", "paths", "data", "code", "tool", "tools",
-  "user", "json", "node", "test", "tests", "name", "list", "mode", "time",
-  "work", "true", "false", "with", "from", "this", "that", "when", "then",
-  "pitfall", "kda",
-]);
-// description/triggers 에서 뽑은 한글 토큰 중 변별력 없는 조사·일반어 → 제외.
-// (K 는 한국어로 명령하는데 slug 는 영문이라, 한글 토큰 매칭이 회상의 핵심 경로다.)
-const PITFALL_TRIGGER_KSTOP = new Set<string>([
-  "없이", "하는", "해서", "에서", "으로", "그리고", "또는", "같은", "경우", "때문",
-  "대신", "직접", "다시", "매번", "항상", "절대", "반복", "사용", "호출", "실행",
-  "파일", "작업", "메모리", "내용", "자세한", "참조", "문제", "발생", "우회", "회피",
-  "확인", "처리", "결과", "상태", "설정", "변경", "추가", "제거", "생성", "적용",
-  "필요", "가능", "시도", "해야", "된다", "안됨", "해도", "하면", "이나", "에는",
-  "에도", "까지", "부터", "보다", "마다", "위해", "통해", "관련", "경로", "스크립트",
-  "명령", "호스트", "사용자", "요청", "동작", "구조", "기존",
-]);
-
-/** 한글 2자+ 토큰만 추출(조사 섞여도 substring 매칭되도록), KSTOP 제외. */
-function extractHangulTokens(text: string | null): string[] {
-  if (!text) return [];
-  const out = new Set<string>();
-  for (const m of text.matchAll(/[가-힣]{2,}/g)) {
-    if (!PITFALL_TRIGGER_KSTOP.has(m[0])) out.add(m[0]);
-  }
-  return [...out];
-}
-
-function derivePitfallTriggers(slug: string, block: string | null): {
-  explicit: string[];
-  derived: string[];
-  korean: string[];
-} {
-  const explicit = new Set<string>();
-  const derived = new Set<string>();
-  const korean = new Set<string>();
-  if (block) {
-    for (const t of extractYamlList(block, "triggers")) {
-      if (t) explicit.add(t.toLowerCase());
-      for (const w of extractHangulTokens(t)) korean.add(w);
-    }
-    for (const t of extractYamlList(block, "tags")) {
-      const lt = t.toLowerCase();
-      if (lt.length >= PITFALL_TRIGGER_MIN_TOKEN_LEN && !PITFALL_TRIGGER_STOPWORDS.has(lt)) {
-        derived.add(lt);
-      }
-    }
-    // K 는 한국어로 쓰므로 description 의 한글 명사 토큰을 매칭 키로 사용 (slug 는 영문).
-    for (const w of extractHangulTokens(extractYamlScalar(block, "description"))) korean.add(w);
-  }
-  for (const tok of slug.split(/[_\-]/)) {
-    const lt = tok.toLowerCase();
-    if (lt.length >= PITFALL_TRIGGER_MIN_TOKEN_LEN && !PITFALL_TRIGGER_STOPWORDS.has(lt)) {
-      derived.add(lt);
-    }
-  }
-  return { explicit: [...explicit], derived: [...derived], korean: [...korean] };
-}
+// Phase 149 — MAX_TRIGGERED_PITFALLS / PITFALL_TRIGGER_MIN_TOKEN_LEN /
+// TRIGGERED_BODY_MAX_CHARS / STOPWORDS / KSTOP / extractHangulTokens /
+// derivePitfallTriggers 는 ./memoryRelevance.ts 로 이동했다 (상단 import).
+// 관련도 로직은 그 파일 한 곳에만 둔다 — 여기에 재구현하면 테스트와 갈라진다.
 
 /**
  * 현재 메시지에 매치되는 pitfall 들의 full-body MemorySectionEntry 를 반환.
@@ -1508,32 +1422,29 @@ function derivePitfallTriggers(slug: string, block: string | null): {
  */
 function buildTriggeredPitfallEntries(memoryDir: string, currentMsg: string): MemorySectionEntry[] {
   if (!currentMsg || !existsSync(memoryDir)) return [];
-  const lc = currentMsg.toLowerCase();
   let files: string[];
   try {
     files = readdirSync(memoryDir).filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"));
   } catch {
     return [];
   }
-  const scored: { file: string; score: number; body: string }[] = [];
+  // Phase 149 — 본문 로드와 점수 계산을 분리. 점수 로직은 memoryRelevance.scorePitfalls 단일 구현.
+  const bodies = new Map<string, string>();
+  const candidates: { file: string; body: string }[] = [];
   for (const f of files) {
     try {
       const body = readMemoryFileCached(path.join(memoryDir, f));
-      const block = extractFrontmatterBlock(body);
-      const slug = f.replace(/^pitfall_/, "").replace(/\.md$/, "");
-      const { explicit, derived, korean } = derivePitfallTriggers(slug, block);
-      let score = 0;
-      for (const t of explicit) if (t && lc.includes(t)) score += 2;
-      for (const t of derived) if (t && lc.includes(t)) score += 1;
-      for (const t of korean) if (currentMsg.includes(t)) score += 1;
-      if (score > 0) scored.push({ file: f, score, body });
+      bodies.set(f, body);
+      candidates.push({ file: f, body });
     } catch {
       /* skip */
     }
   }
-  scored.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+  const scored = scorePitfalls(candidates, currentMsg);
   return scored.slice(0, MAX_TRIGGERED_PITFALLS).map((s) => {
-    const stripped = s.body.replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+    const stripped = (bodies.get(s.file) ?? "")
+      .replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
+      .trim();
     const body =
       stripped.length > TRIGGERED_BODY_MAX_CHARS
         ? stripped.slice(0, TRIGGERED_BODY_MAX_CHARS) +
