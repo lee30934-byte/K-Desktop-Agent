@@ -226,6 +226,29 @@ const V2_EN_MIN_LEN = 4;
 /** IDF 상한 — 희귀 토큰 하나가 순위를 독점하지 않도록 클램프. */
 const V2_IDF_CAP = 6;
 
+/**
+ * IDF 하한 — 이 값 미만의 매치는 **증거로 세지 않는다.**
+ * "확인/작업/대로/해줘" 같은 일반어는 거의 모든 문서에 있어 IDF 가 0.2~0.5 수준인데,
+ * 질의 어절 3~4개가 전부 그런 말이면 합산 0.9 가 되어 정답의 희귀토큰 1개를 눌러버린다
+ * (2026-09-23 케이스1 실측: 정답이 'ripgrep' 을 갖고도 47위).
+ * KSTOP 은 frontmatter 경로에만 적용돼 n-gram 에는 안 먹으므로 IDF 하한으로 막는다.
+ */
+const V2_IDF_FLOOR = Number(process.env.KDA_MEM_IDF_FLOOR ?? 1.2);
+
+/**
+ * 문서 길이 보정 방식.
+ * ⚠ sqrt 는 **짧은 파일을 과도하게 띄운다** — 실측에서 62토큰짜리 단편이 'ripgrep' 1개만
+ *   맞고 1위, 같은 단어를 가진 6.9KB 정본이 47위였다. 정보량이 많은 정본이 벌을 받는 셈.
+ * 기본값은 실측으로 고른다 (knob 로 스윕 후 고정).
+ */
+const V2_LEN_NORM = (process.env.KDA_MEM_LEN_NORM ?? "log") as "none" | "log" | "sqrt";
+
+function lengthNorm(size: number): number {
+  if (V2_LEN_NORM === "none") return 1;
+  if (V2_LEN_NORM === "sqrt") return Math.sqrt(size);
+  return Math.log(size + Math.E); // log: 완만한 보정 (기본)
+}
+
 /** 텍스트 → 토큰 집합 (한글 n-gram + 영문 단어). 인덱스/쿼리 양쪽에 같은 함수를 쓴다. */
 export function tokenizeForIndex(text: string): Set<string> {
   const out = new Set<string>();
@@ -276,9 +299,44 @@ function idf(index: V2Index, token: string): number {
 }
 
 /**
+ * 질의를 **증거 그룹**으로 쪼갠다.
+ *
+ * ⚠ 이게 v2 의 핵심 교정이다. 단순히 n-gram 집합으로 다루면 같은 어절에서 나온
+ *   겹치는 n-gram 이 **독립 증거로 중복 가산**된다:
+ *     "설치본" → 설치, 치본, 본에, 설치본, 치본에  (5배 가산)
+ *   그 결과 "설치" 한 단어만 걸쳐도 무관한 함정이 상위를 점유한다
+ *   (2026-09-23 실측: 케이스 7 정답이 46위로 밀림).
+ *
+ * → 한글은 **어절(연속 한글 구간) 하나당 증거 1개**만 인정한다.
+ *   그룹 안에서는 가장 정보량이 큰(IDF 최대) 매치 하나만 점수로 친다.
+ *   영문 단어는 서로 독립이므로 각각이 자기 그룹이다.
+ */
+export function buildQueryGroups(query: string): { kind: "k" | "e"; toks: string[] }[] {
+  const groups: { kind: "k" | "e"; toks: string[] }[] = [];
+  if (!query) return groups;
+  const src = query.slice(0, V2_BODY_INDEX_MAX_CHARS);
+
+  for (const run of src.match(/[가-힣]+/g) ?? []) {
+    const toks: string[] = [];
+    for (const n of V2_HANGUL_NGRAMS) {
+      for (let i = 0; i + n <= run.length; i++) toks.push("k:" + run.slice(i, i + n));
+    }
+    if (toks.length) groups.push({ kind: "k", toks });
+  }
+  const seenEn = new Set<string>();
+  for (const w of src.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    if (w.length < V2_EN_MIN_LEN || PITFALL_TRIGGER_STOPWORDS.has(w)) continue;
+    if (seenEn.has(w)) continue;
+    seenEn.add(w);
+    groups.push({ kind: "e", toks: ["e:" + w] });
+  }
+  return groups;
+}
+
+/**
  * v2 스코어. query 는 사용자 메시지 + (선택) 도구/경로 등 문맥 신호를 합친 문자열.
  *
- * score = Σ_{t ∈ query∩doc} idf(t) / sqrt(|doc|)   ← 긴 문서 편향 보정 (BM25 정신)
+ * score = Σ_{그룹 g} max_{t ∈ g∩doc} idf(t)  / sqrt(|doc|)   ← 어절당 증거 1개 + 길이 보정
  *       + explicit trigger 정확매칭 가산
  */
 export function scorePitfallsV2(
@@ -288,7 +346,7 @@ export function scorePitfallsV2(
 ): PitfallScore[] {
   if (!query) return [];
   const idx = index ?? buildV2Index(candidates);
-  const qToks = tokenizeForIndex(query);
+  const groups = buildQueryGroups(query);
   const lcQuery = query.toLowerCase();
 
   const scored: PitfallScore[] = [];
@@ -298,15 +356,24 @@ export function scorePitfallsV2(
     let sum = 0;
     const korean: string[] = [];
     const derived: string[] = [];
-    for (const t of qToks) {
-      if (!doc.has(t)) continue;
-      const w = idf(idx, t);
-      if (w <= 0) continue;
-      sum += w;
-      if (t.startsWith("k:")) korean.push(t.slice(2));
-      else derived.push(t.slice(2));
+    for (const g of groups) {
+      // 그룹 내 최대 IDF 매치 1개만 채택 (중복 가산 차단)
+      let best = 0;
+      let bestTok = "";
+      for (const t of g.toks) {
+        if (!doc.has(t)) continue;
+        const w = idf(idx, t);
+        if (w > best) {
+          best = w;
+          bestTok = t;
+        }
+      }
+      if (best < V2_IDF_FLOOR) continue; // 변별력 없는 일반어(확인/작업/대로…) 차단
+      sum += best;
+      if (bestTok.startsWith("k:")) korean.push(bestTok.slice(2));
+      else derived.push(bestTok.slice(2));
     }
-    let score = sum / Math.sqrt(doc.size);
+    let score = sum / lengthNorm(doc.size);
 
     // 정밀도 높은 신호는 가산으로 유지 (v1 계승)
     const block = extractFrontmatterBlock(c.body);
@@ -334,4 +401,79 @@ export function scorePitfallsV2(
   }
   scored.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
   return scored;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 149 Step D — 2단 주입 (full body / 관련 인덱스)
+// ══════════════════════════════════════════════════════════════════════
+//
+// ## 왜 top-8 을 더 짜내지 않는가 (2026-09-23 실측)
+//   길이보정 3종 × IDF하한 4종 = 12조합 스윕 결과 recall@8 이 **38.5% 에서 포화**했다.
+//   튜닝이 병목이 아니다. K 곡선을 보면 답이 나온다:
+//
+//     K=  8 → 30.8%      K= 25 → 61.5%      K= 40 → 84.6%
+//     K= 60 → 92.3%      K=100 → 100%       (v1 은 K=100 에서도 0.0%)
+//
+//   신호는 분명히 있고 40위권 안에 들어온다. 문제는 **본문 8개만 넣는 구조**였다.
+//
+// ## 그래서 2단으로 나눈다
+//   Tier A (full body, ~6KB×N) : 상위 FULL_K 개 — 지금 당장 읽어야 할 회피책
+//   Tier B (한 줄 인덱스, ~120B×N): 상위 INDEX_K 개 — "관련 있을 수 있음" 신호.
+//                                   에이전트가 이름을 보고 필요하면 직접 read 한다.
+//   Tier B 40개 ≈ 5KB 로 recall 30.8% → 84.6%. 예산 대비 효율이 본문보다 훨씬 높다.
+//
+// ⚠ Tier B 는 "읽었다"가 아니라 "있다"를 알리는 것이다. 회피책을 봤다고 착각하면 안 된다.
+
+/** Tier A — 본문 전체를 주입할 개수. */
+// 값은 실측으로 골랐다 (2026-09-23, 골든셋 8케이스/13항목, FULL_K×INDEX_K 12조합 스윕):
+//   3×45 → 92.3% / 17.8KB     4×45 → 92.3% / 21.5KB     4×60 → 100% / 23.5KB
+//   6×30 → 76.9% / 24.7KB     (30 이하는 전부 61~77% 로 급락)
+// 4×45 채택: 실행 가능한 본문 4개 + 이름 45개, 40KB cap 중 21.5KB.
+// ⚠ 골든셋 n=13 이라 92.3% 와 100% 의 차이는 **단 1건**이다. 이 소수점에 과적합하지 말 것.
+export const INJECT_FULL_K = Number(process.env.KDA_MEM_FULL_K ?? 4);
+/** Tier B — 한 줄 인덱스로 알릴 개수 (Tier A 제외하고 이만큼 더). */
+export const INJECT_INDEX_K = Number(process.env.KDA_MEM_INDEX_K ?? 45);
+
+/** pitfall 파일에서 한 줄 요약을 뽑는다. frontmatter description → 첫 서술 줄 순. */
+export function pitfallOneLiner(body: string, maxLen = 110): string {
+  const block = extractFrontmatterBlock(body);
+  const desc = block ? extractYamlScalar(block, "description") : null;
+  let line: string | null = desc;
+  if (!line) {
+    const stripped = body.replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+    for (const raw of stripped.split(/\r?\n/)) {
+      const t = raw.trim();
+      // 제목(#)·구분선·빈줄·코드펜스는 건너뛰고 첫 서술 문장을 쓴다
+      if (!t || t.startsWith("#") || t.startsWith("---") || t.startsWith("```")) continue;
+      line = t.replace(/^[*\-+]\s*/, "").replace(/\*\*/g, "");
+      break;
+    }
+  }
+  if (!line) return "";
+  return line.length > maxLen ? line.slice(0, maxLen) + "…" : line;
+}
+
+export interface PitfallInjection {
+  /** 본문을 넣을 파일들 (점수 내림차순) */
+  full: PitfallScore[];
+  /** 한 줄로만 알릴 파일들 (full 제외, 점수 내림차순) */
+  index: PitfallScore[];
+}
+
+/**
+ * 관련도 순위를 2단으로 나눠 반환.
+ * 호출측은 full 에는 본문을, index 에는 `slug — 한 줄` 만 넣는다.
+ */
+export function selectPitfallInjection(
+  candidates: PitfallCandidate[],
+  query: string,
+  index?: V2Index,
+  fullK: number = INJECT_FULL_K,
+  indexK: number = INJECT_INDEX_K,
+): PitfallInjection {
+  const scored = scorePitfallsV2(candidates, query, index);
+  return {
+    full: scored.slice(0, fullK),
+    index: scored.slice(fullK, fullK + indexK),
+  };
 }

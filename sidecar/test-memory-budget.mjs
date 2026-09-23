@@ -20,6 +20,9 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(__dirname, "src", "index.ts");
 const src = readFileSync(SRC, "utf-8");
+// Phase 149 — TRIGGERED_BODY_MAX_CHARS 는 src/memoryRelevance.ts 로 이동했다.
+// 텍스트를 다시 긁지 않고 **빌드된 실제 값**을 import 한다 (미러 드리프트 방지).
+const { TRIGGERED_BODY_MAX_CHARS: BODY_MAX_REAL } = await import("./dist/memoryRelevance.js");
 
 let pass = 0;
 let fail = 0;
@@ -62,7 +65,7 @@ const TRIG_RESERVE = constOf("MEMORY_TRIGGERED_RESERVE_MAX");
 const IDX_MAX = constOf("PITFALL_INDEX_MAX_CHARS");
 const IDX_MIN = constOf("PITFALL_INDEX_MIN_CHARS");
 const IDX_HDR = constOf("PITFALL_INDEX_HEADER_CHARS");
-const BODY_MAX = constOf("TRIGGERED_BODY_MAX_CHARS");
+const BODY_MAX = BODY_MAX_REAL;
 const HEADER_RESERVE = constOf("HEADER_RESERVE");
 
 for (const [n, v] of Object.entries({

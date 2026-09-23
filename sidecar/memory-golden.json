@@ -1,0 +1,83 @@
+{
+  "_doc": "Phase 149 골든셋. 2026-09-23 실제 세션에서 밟았거나 밟을 뻔한 함정만 라벨링. 사후합리화 금지 — \"있으면 좋은\" 항목을 넣으면 개선폭이 부풀려진다.",
+  "_note": "n=13. 92.3% 와 100% 의 차이는 단 1건이므로 소수점에 과적합하지 말 것.",
+  "cases": [
+    {
+      "id": 1,
+      "note": "2026-09-23 실제: 'grep -r 0건'을 '없음'의 증거로 썼다가 오보",
+      "query": "추천대로",
+      "context": "git 커밋, ripgrep 탐색, 의존성 확인 작업 중",
+      "expect": [
+        "pitfall_rg_missing_explicit_path.md"
+      ]
+    },
+    {
+      "id": 2,
+      "note": "2026-09-23 실제: sidecar 의존성을 안 읽고 sqlite 가 있다고 단정",
+      "query": "kda 에 추가할만한 스킬이나 기능들을 찾아서 알려줄래 고도화 하려고",
+      "context": "설계 문서 작성 중 신규 의존성 제안",
+      "expect": [
+        "pitfall_new_test_runtime_dependency_breaks_ci_gate.md",
+        "pitfall_av_blocks_bundled_native_binary.md"
+      ]
+    },
+    {
+      "id": 3,
+      "note": "커밋 시 인자 순서/스테이징 함정",
+      "query": "이 변경사항 커밋해줘",
+      "context": "git commit",
+      "expect": [
+        "pitfall_git_commit_only_arg_order.md",
+        "pitfall_git_add_preexisting_dirty_file.md",
+        "pitfall_git_commit_only_untracked_requires_add.md"
+      ]
+    },
+    {
+      "id": 4,
+      "note": "릴리즈 요청 — 태그/게이트/버전 동기화",
+      "query": "릴리즈 진행하자",
+      "context": "태그 push → Actions 서명 빌드",
+      "expect": [
+        "pitfall_release_artifact_source_drift_vacuous_version_gate.md",
+        "pitfall_release_terminal_contract_postbuild_20260910.md"
+      ]
+    },
+    {
+      "id": 5,
+      "note": "PowerShell 로 원격 명령 — 인자 인용 함정",
+      "query": "5080 꺼줘",
+      "context": "shutdown-5080.ps1 → ssh native exe 인자 전달",
+      "expect": [
+        "pitfall_powershell_native_arg_quote.md"
+      ]
+    },
+    {
+      "id": 6,
+      "note": "장기 작업 감시 등록",
+      "query": "빌드 오래 걸리니까 끝나면 이어서 해줘",
+      "context": "task-watch 마커 작성",
+      "expect": [
+        "pitfall_taskwatch_marker_path_guessed_not_verified_20260922.md",
+        "pitfall_taskwatch_conversationid_env_vs_savepath_mismatch.md"
+      ]
+    },
+    {
+      "id": 7,
+      "note": "설치본 확인 — WebView2 캐시 stale",
+      "query": "설치본에 반영됐는지 확인해줘",
+      "context": "버전 표시 확인",
+      "expect": [
+        "pitfall_webview2_cache_stale_after_update.md"
+      ]
+    },
+    {
+      "id": 8,
+      "note": "테스트가 통과했다는 보고 — 공허한 게이트 경계",
+      "query": "테스트 다 통과했어?",
+      "context": "게이트 판정",
+      "expect": [
+        "pitfall_vacuous_gates_and_substring_state_checks.md"
+      ]
+    }
+  ]
+}

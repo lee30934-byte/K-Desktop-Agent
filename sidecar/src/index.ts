@@ -26,6 +26,8 @@ import {
   extractHangulTokens,
   derivePitfallTriggers,
   scorePitfalls,
+  selectPitfallInjection,
+  pitfallOneLiner,
 } from "./memoryRelevance.js";
 import {
   existsSync,
@@ -1428,7 +1430,7 @@ function buildTriggeredPitfallEntries(memoryDir: string, currentMsg: string): Me
   } catch {
     return [];
   }
-  // Phase 149 — 본문 로드와 점수 계산을 분리. 점수 로직은 memoryRelevance.scorePitfalls 단일 구현.
+  // Phase 149 — 본문 로드와 점수 계산을 분리. 점수 로직은 memoryRelevance 단일 구현.
   const bodies = new Map<string, string>();
   const candidates: { file: string; body: string }[] = [];
   for (const f of files) {
@@ -1440,8 +1442,20 @@ function buildTriggeredPitfallEntries(memoryDir: string, currentMsg: string): Me
       /* skip */
     }
   }
-  const scored = scorePitfalls(candidates, currentMsg);
-  return scored.slice(0, MAX_TRIGGERED_PITFALLS).map((s) => {
+
+  // Phase 149 Step D — 2단 주입. 실측 근거(골든셋 8케이스/기대 13항목, 2026-09-23):
+  //   구 v1: recall@8 = 0.0%  (K=100 에서도 0.0% — 후보가 아예 득점을 못 했다)
+  //   신 v2: recall@8 = 30.8% / @25 = 61.5% / @40 = 84.6% / @100 = 100%
+  // → 본문은 상위 소수만, 나머지는 "한 줄 인덱스"로 넓게 알린다 (예산 대비 회상 효율).
+  const { full, index: related } = selectPitfallInjection(candidates, currentMsg);
+
+  const entries: MemorySectionEntry[] = [];
+
+  // ⚠ Tier B 를 **먼저** 넣는다. 예산 greedy 루프는 같은 priority 안에서 배열 순서대로
+  //   채우므로(정렬이 stable), 큰 본문 6개가 먼저 들어가면 cap 에 걸려 Tier B 가 통째
+  //   drop 된다. Tier B 는 ~5KB 로 recall 을 30.8% → 84.6% 로 올리는 구간이라
+  //   본문 한두 개보다 **예산 대비 가치가 훨씬 크다**. 순서를 바꾸지 말 것.
+  const bodyEntries: MemorySectionEntry[] = full.map((s) => {
     const stripped = (bodies.get(s.file) ?? "")
       .replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
       .trim();
@@ -1457,6 +1471,35 @@ function buildTriggeredPitfallEntries(memoryDir: string, currentMsg: string): Me
       text: `### ${s.file} (관련 함정 — 본문 로딩됨, 회피책 반드시 적용)\n${body}`,
     };
   });
+
+  // Tier B — 한 줄 인덱스. 본문이 아니라 "있다"는 신호다.
+  // 파일당 ~120 bytes 로 40개 ≈ 5KB. 실측상 이 구간에서 recall 이 30.8% → 84.6% 로 뛴다.
+  if (related.length > 0) {
+    const lines = related
+      .map((s) => {
+        const one = pitfallOneLiner(bodies.get(s.file) ?? "");
+        const slug = s.file.replace(/^pitfall_/, "").replace(/\.md$/, "");
+        return one ? `- ${slug} — ${one}` : `- ${slug}`;
+      })
+      .filter(Boolean);
+    entries.push({
+      group: "memory",
+      priority: MEMORY_PRIORITY_TRIGGERED,
+      file: "__related_index__",
+      text: [
+        `### 지금 작업과 관련 가능성이 있는 함정 ${lines.length}건 (이름만 — 본문 미로딩)`,
+        "",
+        "⚠ 아래는 **요약이 아니라 목록**이다. 해당 작업을 실제로 하기 전에",
+        "   `~/.kda/memory/pitfall_<slug>.md` 를 직접 read 해서 회피책을 확인할 것.",
+        "   목록만 보고 '함정을 확인했다'고 보고하지 말 것.",
+        "",
+        ...lines,
+      ].join("\n"),
+    });
+  }
+
+  entries.push(...bodyEntries);
+  return entries;
 }
 
 /**
@@ -1510,7 +1553,17 @@ const MEMORY_PRIORITY_SUMMARY = 6; // 조건부 미매치 → 한 줄 요약 (�
 // MEMORY_ENTRIES_MIN_BUDGET: fixed 블록이 아무리 커도 entries 에 반드시 남겨줄 최소 예산.
 // MEMORY_TRIGGERED_RESERVE_MAX: 그중 TRIGGERED(현재 메시지 관련 본문) 몫으로 선점할 상한.
 const MEMORY_ENTRIES_MIN_BUDGET = 12 * 1024;
-const MEMORY_TRIGGERED_RESERVE_MAX = 10 * 1024;
+// Phase 149 — 10KB → 12KB (= MEMORY_ENTRIES_MIN_BUDGET 과 동일, 불변식 상한).
+//
+// 한때 22KB 로 올렸다가 되돌렸다. test-memory-budget 의 불변식
+// `TRIGGERED 예약 <= entries 최소예산` 이 FAIL 했고, 그 불변식은 옳다 —
+// 예약이 보장 예산을 넘으면 reserve 항 때문에 CORE(= K 의 feedback_* 정책 결정)가
+// **전부** drop 된다. 함정 본문 몇 개를 더 넣으려다 K 의 명시적 지시를 버리는 셈.
+//
+// 대신 buildTriggeredPitfallEntries 가 Tier B(한 줄 인덱스, ~5.9KB)를 배열 **맨 앞**에
+// 넣으므로, 12KB 안에서 Tier B 전량 + 본문 1개가 확보된다. 본문 2~4번째는 예산이
+// 남을 때만 들어간다. 회상(= 관련 함정이 이름으로라도 노출되는가)은 Tier B 가 책임진다.
+const MEMORY_TRIGGERED_RESERVE_MAX = 12 * 1024;
 
 /**
  * Phase 106 — 현재 사용자 메시지(userMessage)를 받아 조건부 메모리를 선택 로딩.
