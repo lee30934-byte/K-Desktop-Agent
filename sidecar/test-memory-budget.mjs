@@ -15,18 +15,27 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(__dirname, "src", "index.ts");
 const src = readFileSync(SRC, "utf-8");
 // Phase 149 — TRIGGERED_BODY_MAX_CHARS 는 src/memoryRelevance.ts 로 이동했다.
 // 텍스트를 다시 긁지 않고 **빌드된 실제 값**을 import 한다 (미러 드리프트 방지).
-const { TRIGGERED_BODY_MAX_CHARS: BODY_MAX_REAL } = await import("./dist/memoryRelevance.js");
+//
+// ⚠ 단 이 파일의 대부분은 소스 정적 검사라 빌드 전에도 돌아야 한다.
+//   dist 가 없으면(= CI fast 게이트, 빌드 이전) 전체를 죽이지 말고
+//   **dist 의존 검사만 SKIP** 한다. 빌드 뒤 post-build 게이트가 다시 돌려 실측한다.
+//   (2026-09-23 v0.7.37: 무조건 import 라 ERR_MODULE_NOT_FOUND 로 게이트가 FAIL 했다.)
+const DIST = path.join(__dirname, "dist", "memoryRelevance.js");
+const BODY_MAX_REAL = existsSync(DIST)
+  ? (await import(pathToFileURL(DIST).href)).TRIGGERED_BODY_MAX_CHARS
+  : null;
 
 let pass = 0;
 let fail = 0;
 let warn = 0;
+let skipped = 0;
 function check(name, cond, detail = "") {
   if (cond) {
     pass++;
@@ -75,13 +84,21 @@ for (const [n, v] of Object.entries({
   PITFALL_INDEX_MAX_CHARS: IDX_MAX,
   PITFALL_INDEX_MIN_CHARS: IDX_MIN,
   PITFALL_INDEX_HEADER_CHARS: IDX_HDR,
-  TRIGGERED_BODY_MAX_CHARS: BODY_MAX,
   HEADER_RESERVE: HEADER_RESERVE,
 })) {
   check(`상수 ${n} 파싱`, typeof v === "number" && v > 0, String(v));
 }
 
-if ([CAP, ENTRIES_MIN, TRIG_RESERVE, IDX_MAX, IDX_MIN, IDX_HDR, BODY_MAX, HEADER_RESERVE].some((v) => !v)) {
+// dist 의존 상수는 빌드 뒤에만 검사한다 (없으면 SKIP — 전체를 죽이지 않는다)
+if (BODY_MAX) {
+  check("상수 TRIGGERED_BODY_MAX_CHARS 파싱 (dist 실측)",
+    typeof BODY_MAX === "number" && BODY_MAX > 0, String(BODY_MAX));
+} else {
+  skipped++;
+  console.log("  ⏭️  SKIP 상수 TRIGGERED_BODY_MAX_CHARS — dist 없음 (post-build 게이트에서 실측)");
+}
+
+if ([CAP, ENTRIES_MIN, TRIG_RESERVE, IDX_MAX, IDX_MIN, IDX_HDR, HEADER_RESERVE].some((v) => !v)) {
   console.log("\n상수 파싱 실패 — 이후 검사 중단");
   process.exit(1);
 }
@@ -101,7 +118,12 @@ check(
 // TRIGGERED 예약은 entries 예산 안에 들어와야 한다 (다른 우선순위를 전부 굶기면 안 됨).
 check("TRIGGERED 예약 <= entries 최소예산", TRIG_RESERVE <= ENTRIES_MIN, `${TRIG_RESERVE} <= ${ENTRIES_MIN}`);
 // 잘린 본문 하나가 예약 전체를 먹지 않아야 8개 중 여러 개가 들어온다.
-check("triggered 본문 상한 < TRIGGERED 예약", BODY_MAX < TRIG_RESERVE, `${BODY_MAX} < ${TRIG_RESERVE}`);
+if (BODY_MAX) {
+  check("triggered 본문 상한 < TRIGGERED 예약", BODY_MAX < TRIG_RESERVE, `${BODY_MAX} < ${TRIG_RESERVE}`);
+} else {
+  skipped++;
+  console.log("  ⏭️  SKIP triggered 본문 상한 < TRIGGERED 예약 — dist 없음");
+}
 
 console.log("\n[2] 구조 — 4개 수정이 코드에 살아 있는가");
 
@@ -201,11 +223,16 @@ if (!existsSync(memDir)) {
     entriesBudget >= ENTRIES_MIN,
     `entries 예산 ${entriesBudget} >= ${ENTRIES_MIN}`,
   );
-  check(
-    "triggered 본문 1개 이상이 실제로 들어갈 공간이 있다",
-    entriesBudget >= BODY_MAX,
-    `${entriesBudget} >= ${BODY_MAX}`,
-  );
+  if (BODY_MAX) {
+    check(
+      "triggered 본문 1개 이상이 실제로 들어갈 공간이 있다",
+      entriesBudget >= BODY_MAX,
+      `${entriesBudget} >= ${BODY_MAX}`,
+    );
+  } else {
+    skipped++;
+    console.log("  ⏭️  SKIP triggered 본문 공간 검사 — dist 없음");
+  }
   warnIf(
     "인덱스가 무손실(트림 없이) 예산에 들어감",
     idxLen > derivedBudget,
@@ -218,5 +245,9 @@ if (!existsSync(memDir)) {
   );
 }
 
-console.log(`\nResult: ${pass}/${pass + fail} passed, ${warn} warn`);
+// skipped 를 반드시 표시한다 — 조용히 건너뛰면 "통과"로 오해돼 공허한 게이트가 된다.
+console.log(
+  `\nResult: ${pass}/${pass + fail} passed, ${warn} warn` +
+    (skipped ? `, ${skipped} SKIP (dist 의존 — post-build 게이트에서 실측)` : ""),
+);
 process.exit(fail > 0 ? 1 : 0);

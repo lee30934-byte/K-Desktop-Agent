@@ -10,11 +10,30 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import {
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+// ⚠ 이 테스트는 **빌드 산출물(dist)** 에 의존한다 — 소스 정적 검사가 아니다.
+//   앱이 실제로 쓰는 구현을 그대로 import 해야 미러 드리프트가 안 생기기 때문이다.
+//   그런데 CI 의 fast 게이트는 `Build sidecar` **이전**에 돌아서 dist 가 없다.
+//   정적 import 로 두면 ERR_MODULE_NOT_FOUND 로 죽어 게이트 전체가 FAIL 한다
+//   (2026-09-23 v0.7.37 빌드 실패 실측 원인).
+//   → test-conv-routing.mjs 와 같은 규약: dist 없으면 **SKIP(exit 0)**, 빌드 뒤
+//     post-build 게이트가 같은 파일을 다시 돌려 실측한다.
+//   조건은 `--fast` 가 아니라 **dist 존재 여부**다. CI 는 두 게이트 호출 모두 --fast 라,
+//   --fast 로 거르면 이 테스트가 CI 에서 영영 안 돌아 공허한 게이트가 된다.
+const DIST = fileURLToPath(new URL("./dist/memoryRelevance.js", import.meta.url));
+if (!existsSync(DIST)) {
+  console.log("⏭️  전체 SKIP — sidecar/dist/memoryRelevance.js 없음 (npm run build 선행 필요)");
+  console.log(`      ${DIST}`);
+  console.log("      빌드 후 post-build 게이트에서 실측된다 (release.yml: Release gate (post-build)).");
+  console.log("결과: 0 통과 / 0 실패 (총 0, 전체 SKIP — dist 의존)");
+  process.exit(0);
+}
+const {
   scorePitfalls, scorePitfallsV2, buildV2Index, buildQueryGroups,
   selectPitfallInjection, pitfallOneLiner, tokenizeForIndex,
   INJECT_FULL_K, INJECT_INDEX_K, TRIGGERED_BODY_MAX_CHARS, buildWorkContextQuery,
-} from "./dist/memoryRelevance.js";
+} = await import(pathToFileURL(DIST).href);
 
 const RECALL_MIN = 0.80;        // 실측 92.3% 기준, 코퍼스 변동 여유 12pp
 const BUDGET_MAX_BYTES = 24 * 1024;
