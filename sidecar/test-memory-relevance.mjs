@@ -13,7 +13,7 @@ import os from "node:os";
 import {
   scorePitfalls, scorePitfallsV2, buildV2Index, buildQueryGroups,
   selectPitfallInjection, pitfallOneLiner, tokenizeForIndex,
-  INJECT_FULL_K, INJECT_INDEX_K, TRIGGERED_BODY_MAX_CHARS,
+  INJECT_FULL_K, INJECT_INDEX_K, TRIGGERED_BODY_MAX_CHARS, buildWorkContextQuery,
 } from "./dist/memoryRelevance.js";
 
 const RECALL_MIN = 0.80;        // 실측 92.3% 기준, 코퍼스 변동 여유 12pp
@@ -32,12 +32,17 @@ const ok = (c, m) => { if (c) { pass++; console.log(`✅ ${m}`); } else { fail++
   // 같은 단어가 반복돼도 증거는 1개다 (중복 가산 금지)
   const enDup = buildQueryGroups("ripgrep ripgrep ripgrep").filter((g) => g.kind === "e");
   ok(enDup.length === 1, `반복된 영문 단어는 1그룹으로 합쳐진다 (실제 ${enDup.length})`);
-  // 서로 다른 단어는 각각 독립 증거 ("grep" 은 4글자라 최소길이를 통과한다 — 제외 대상 아님)
+  // 서로 다른 단어는 각각 독립 증거
   const enTwo = buildQueryGroups("ripgrep grep").filter((g) => g.kind === "e");
   ok(enTwo.length === 2, `서로 다른 영문 단어는 각각 1그룹 (실제 ${enTwo.length})`);
-  // 3글자 이하는 인덱싱 제외 → 그룹 0
-  const enShort = buildQueryGroups("rg ls cd").filter((g) => g.kind === "e");
-  ok(enShort.length === 0, `3글자 이하 영문은 그룹이 생기지 않는다 (실제 ${enShort.length})`);
+  // ★ 3글자 명령어가 살아남아야 한다 — 최소길이 4 시절 'git'/'npm' 이 통째로 탈락해
+  //   작업문맥을 붙여도 git 함정이 안 뜨던 결함(2026-09-23 실측, 순위 56위)의 회귀 방지.
+  const enCmd = buildQueryGroups("git npm ssh").filter((g) => g.kind === "e");
+  ok(enCmd.length === 3, `3글자 명령어 git/npm/ssh 가 전부 인덱싱된다 (실제 ${enCmd.length}/3)`);
+  ok(tokenizeForIndex("git commit").has("e:git"), "'git' 이 문서 인덱스에도 들어간다");
+  // 2글자 이하는 여전히 제외 (최소길이 3)
+  const enShort = buildQueryGroups("ls cd mv").filter((g) => g.kind === "e");
+  ok(enShort.length === 0, `2글자 영문은 그룹이 생기지 않는다 (실제 ${enShort.length})`);
 }
 
 // ── 2. 토크나이저: 영문 토큰 경계 ─────────────────────────────────
@@ -98,6 +103,50 @@ if (!existsSync(MEMORY_DIR)) {
   // [NC] 음성 대조 — 이게 통과해버리면 위 검사는 아무것도 증명하지 못한다.
   ok(v1.recall < RECALL_MIN,
     `[NC] 구 스코어러(v1)는 같은 기준에서 실패해야 한다 → v1 recall ${(v1.recall * 100).toFixed(1)}% (${v1.hit}/${v1.tot})`);
+}
+
+// ── 4. 작업 문맥 배선 (Phase 149 ②) ────────────────────────────────
+// K 의 메시지는 "추천대로"/"진행해"처럼 내용어가 0개인 경우가 잦다.
+// 그런 턴에 직전 도구 호출이 질의에 합쳐지는지, 그리고 그게 **실제로 회상을 늘리는지** 잰다.
+{
+  const hist = [
+    { role: "user", content: "추천대로" },
+    { role: "tool", toolName: "Bash", toolInput: { command: "git add CHANGELOG.md && git commit -F-", description: "Commit" } },
+    { role: "tool", toolName: "Bash", toolInput: { command: "npm run build" } },
+  ];
+  const wc = buildWorkContextQuery(hist);
+  ok(wc.includes("git commit"), "도구 인자(command)가 작업문맥에 들어간다");
+  ok(!wc.includes("추천대로"), "사용자 메시지는 작업문맥에 중복 포함되지 않는다");
+  ok(buildWorkContextQuery(undefined) === "", "히스토리 없으면 빈 문자열 (하위호환)");
+  // 도구 출력은 IDF 를 오염시키므로 제외해야 한다
+  const wc2 = buildWorkContextQuery([
+    { role: "tool", toolName: "Bash", toolInput: { command: "ls" }, toolOutput: "ZZUNIQUEOUTPUT" },
+  ]);
+  ok(!wc2.includes("ZZUNIQUEOUTPUT"), "도구 출력은 작업문맥에서 제외된다");
+
+  if (existsSync(MEMORY_DIR)) {
+    const cands = readdirSync(MEMORY_DIR)
+      .filter((f) => f.startsWith("pitfall_") && f.endsWith(".md"))
+      .map((f) => ({ file: f, body: readFileSync(path.join(MEMORY_DIR, f), "utf8") }));
+    const idx = buildV2Index(cands);
+    const want = [
+      "pitfall_git_commit_only_arg_order.md",
+      "pitfall_git_add_preexisting_dirty_file.md",
+      "pitfall_git_commit_only_untracked_requires_add.md",
+    ].filter((w) => cands.some((c) => c.file === w));
+    const cover = (q) => {
+      const s = selectPitfallInjection(cands, q, idx);
+      const cov = [...s.full, ...s.index].map((x) => x.file);
+      return want.filter((w) => cov.includes(w)).length;
+    };
+    const withCtx = cover(`추천대로\n${wc}`);
+    const noCtx = cover("추천대로");
+    ok(withCtx >= want.length,
+      `내용어 없는 메시지라도 작업문맥이 있으면 git 함정 ${want.length}건이 전부 노출 (실제 ${withCtx}/${want.length})`);
+    // [NC] 문맥이 없으면 못 찾아야 한다 — 같으면 이 배선은 아무것도 안 한 것이다.
+    ok(noCtx < withCtx,
+      `[NC] 작업문맥 없이는 덜 찾아야 한다 → 문맥없음 ${noCtx} < 문맥있음 ${withCtx}`);
+  }
 }
 
 console.log("─".repeat(60));

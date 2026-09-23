@@ -221,8 +221,22 @@ export function scorePitfalls(
 export const V2_BODY_INDEX_MAX_CHARS = 8000;
 /** 한글 n-gram 길이. 2 는 재현율, 3 은 정밀도. */
 const V2_HANGUL_NGRAMS = [2, 3];
-/** 영문 토큰 최소 길이 (v1 과 동일 기준). */
-const V2_EN_MIN_LEN = 4;
+/**
+ * 영문 토큰 최소 길이.
+ *
+ * ⚠ v1 의 값 4 를 그대로 물려받았다가 데었다 (2026-09-23 실측):
+ *   `git`(3) `npm`(3) `ssh`(3) `rg`(2) 처럼 **가장 변별력 높은 명령어가 전부 탈락**한다.
+ *   실제로 pitfall_git_commit_only_arg_order.md 의 인덱스에 'git' 이 없었고,
+ *   작업문맥에 `git commit` 이 그대로 들어가 있는데도 순위 56위로 밀려 주입되지 않았다.
+ *   길이는 변별력의 대리지표가 아니다 — 변별력은 IDF 가 이미 직접 재고 있다.
+ *   (짧고 흔한 말은 IDF 가 낮아 V2_IDF_FLOOR 에서 걸러진다.)
+ * 값은 스윕으로 고른다.
+ */
+// 스윕 실측 (2026-09-23, 골든셋 + 작업문맥 케이스):
+//   len=4 → 골든 92.3% / 작업문맥 1/5 / 인덱스 155k 토큰   ← 'git' 'npm' 이 탈락
+//   len=3 → 골든 92.3% / 작업문맥 3/5 / 인덱스 161k 토큰   ← 채택
+//   len=2 → 골든 92.3% / 작업문맥 3/5 / 인덱스 167k 토큰   ← 이득 없이 인덱스만 증가
+const V2_EN_MIN_LEN = Number(process.env.KDA_MEM_EN_MIN_LEN ?? 3);
 /** IDF 상한 — 희귀 토큰 하나가 순위를 독점하지 않도록 클램프. */
 const V2_IDF_CAP = 6;
 
@@ -451,6 +465,76 @@ export function pitfallOneLiner(body: string, maxLen = 110): string {
   }
   if (!line) return "";
   return line.length > maxLen ? line.slice(0, maxLen) + "…" : line;
+}
+
+// ── 작업 문맥 질의 (Phase 149 ②) ──────────────────────────────────────
+//
+// ## 왜 필요한가
+// 지금까지 질의는 **사용자 메시지뿐**이었다. 그런데 K 의 메시지는 종종
+// "추천대로", "진행해", "1" 처럼 내용어가 0개다. 그런 턴에는 매칭할 것이 아무것도 없다.
+//
+// 반면 **직전에 무슨 도구를 무슨 인자로 돌렸는가**는 고밀도 신호다:
+//   Bash("git commit -F- …")  → git_* 함정
+//   Grep(pattern=…)           → rg_* 함정
+//   Bash("npm run build")     → cargo/build 함정
+// 2026-09-23 실측에서 골든셋을 `메시지 + 작업문맥` 으로 쟀던 이유가 이것이다.
+// 이 함수가 그 "작업문맥"을 실제 히스토리에서 만들어 준다.
+//
+// ⚠ 도구 **출력**은 넣지 않는다. 출력은 길고 잡음이 많아(로그·JSON·에러 스택)
+//   IDF 를 오염시키고 무관 함정을 끌어올린다. 이름과 인자만 쓴다.
+
+/** 작업 문맥으로 훑을 최근 히스토리 항목 수. */
+export const WORK_CONTEXT_MAX_ITEMS = 12;
+/** 항목당 인자에서 가져올 최대 길이. */
+const WORK_CONTEXT_ARG_MAX = 200;
+
+export type WorkHistoryItem =
+  | { role: "user" | "assistant"; content?: string }
+  | { role: "tool"; toolName?: string; toolInput?: unknown; toolOutput?: string };
+
+/** toolInput 에서 의미 있는 필드만 뽑는다 (command/path/pattern 등). 없으면 얕게 직렬화. */
+function extractToolArgs(input: unknown): string {
+  if (input == null) return "";
+  if (typeof input === "string") return input.slice(0, WORK_CONTEXT_ARG_MAX);
+  if (typeof input !== "object") return String(input).slice(0, WORK_CONTEXT_ARG_MAX);
+  const o = input as Record<string, unknown>;
+  const KEYS = [
+    "command", "cmd", "file_path", "path", "pattern", "query", "url",
+    "old_string", "new_string", "description", "prompt", "glob",
+  ];
+  const parts: string[] = [];
+  for (const k of KEYS) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim()) parts.push(v.trim());
+  }
+  if (parts.length === 0) {
+    try {
+      return JSON.stringify(input).slice(0, WORK_CONTEXT_ARG_MAX);
+    } catch {
+      return "";
+    }
+  }
+  return parts.join(" ").slice(0, WORK_CONTEXT_ARG_MAX);
+}
+
+/**
+ * 최근 히스토리에서 관련도 질의에 합칠 "작업 문맥" 문자열을 만든다.
+ * 도구 이름 + 인자만 사용 (출력 제외). 결과가 비면 빈 문자열.
+ */
+export function buildWorkContextQuery(
+  history: WorkHistoryItem[] | undefined,
+  maxItems: number = WORK_CONTEXT_MAX_ITEMS,
+): string {
+  if (!Array.isArray(history) || history.length === 0) return "";
+  const recent = history.slice(-maxItems);
+  const parts: string[] = [];
+  for (const h of recent) {
+    if (!h || h.role !== "tool") continue;
+    const name = typeof h.toolName === "string" ? h.toolName : "";
+    const args = extractToolArgs(h.toolInput);
+    if (name || args) parts.push(`${name} ${args}`.trim());
+  }
+  return parts.join("\n");
 }
 
 export interface PitfallInjection {

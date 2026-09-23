@@ -75,7 +75,10 @@ check("Gemini CLI 가 projectProfile 전달", /buildEngineSystemText\(msg\.folde
 console.log("\n[5] 메모리 스코프 필터 (memoryTags)");
 check("MemoryFileMeta 에 projects: string[]", /interface MemoryFileMeta \{[\s\S]*?projects: string\[\];[\s\S]*?\}/.test(src));
 check("parseMemoryFrontmatter 가 projects 파싱", /projects: extractYamlList\(block, "projects"\)/.test(src));
-check("loadMemoryContext 가 projectMemoryTags param 받음", /function loadMemoryContext\([\s\S]*?projectMemoryTags\?: string\[\],\s*\): MemoryContext/.test(src));
+// Phase 149 — 뒤에 workContext param 이 추가됐다. 원래 의도는 "projectMemoryTags 를 받는가"
+// 이지 "그게 마지막 인자인가"가 아니므로, 인자 위치를 고정하지 않는다.
+check("loadMemoryContext 가 projectMemoryTags param 받음", /function loadMemoryContext\([\s\S]*?projectMemoryTags\?: string\[\],[\s\S]*?\): MemoryContext/.test(src));
+check("loadMemoryContext 가 workContext param 받음 (Phase 149)", /function loadMemoryContext\([\s\S]*?workContext\?: string,\s*\): MemoryContext/.test(src));
 check("교집합 없는 타 프로젝트 메모리 본문 생략 (stub)",
   /activeTags\.length > 0 &&[\s\S]*?meta\.projects\.length > 0 &&[\s\S]*?!meta\.projects\.some\(\(p\) => activeTags\.includes\(p\)\)/.test(src));
 check("isCore/공용 메모리는 필터 면제 (항상 로딩)",

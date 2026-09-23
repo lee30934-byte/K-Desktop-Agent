@@ -28,6 +28,7 @@ import {
   scorePitfalls,
   selectPitfallInjection,
   pitfallOneLiner,
+  buildWorkContextQuery,
 } from "./memoryRelevance.js";
 import {
   existsSync,
@@ -1575,6 +1576,12 @@ function loadMemoryContext(
   // 비어 있으면(미전달 또는 projectMode OFF) 필터 미적용 → 종전 동작.
   // 지정 시 frontmatter `projects:` 가 있고 교집합 없는 파일은 본문 대신 한 줄 stub 만.
   projectMemoryTags?: string[],
+  // Phase 149 (2) — 직전 도구 호출/인자에서 뽑은 "작업 문맥".
+  // K 의 메시지는 "추천대로", "진행해" 처럼 내용어가 0개인 경우가 잦다. 그런 턴엔
+  // 사용자 메시지만으로 매칭할 것이 없어 관련 함정이 하나도 안 뜬다.
+  // 직전에 무슨 도구를 무슨 인자로 돌렸는지가 훨씬 강한 신호다.
+  // 미전달이면 종전 동작(메시지만) — 하위호환.
+  workContext?: string,
 ): MemoryContext {
   const dir = getMemoryDir();
   const leeProfile = loadLeeProfile();
@@ -1671,7 +1678,11 @@ function loadMemoryContext(
     // Phase 142 (v0.7.14) — retrieval-augmented pitfall 본문: 현재 메시지에 매치된 관련
     // pitfall 만 full body 로 승격 (priority TRIGGERED). 나머지는 아래 pitfall summary 인덱스로.
     // pitfall_memory_injection_cap_dilutes_pitfall_recall 의 근본 대책.
-    for (const e of buildTriggeredPitfallEntries(dir, currentMsg)) entries.push(e);
+    // pitfall 질의에만 작업 문맥을 합친다. 다른 메모리 파일의 triggers 매칭 동작은
+    // 종전 그대로 둔다 (그쪽까지 바꾸면 이번 변경의 효과를 분리 측정할 수 없다).
+    const pitfallQuery = workContext ? `${currentMsg}
+${workContext}` : currentMsg;
+    for (const e of buildTriggeredPitfallEntries(dir, pitfallQuery)) entries.push(e);
 
     // Phase 81 (v0.6.25): lee-profile.md 가 있으면 memory 보다 먼저 박힘 (K 의 개인 규칙이 최우선)
     const leeBlock = leeProfile.exists && leeProfile.content
@@ -3316,6 +3327,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   const memory = loadMemoryContext(
     msg.content,
     resolveProjectMemoryTags(msg.projectProfile, loadAgentFlags()),
+    buildWorkContextQuery(msg.history),
   );
   const promptHistory = compactHistoryForPrompt(msg.history);
   const promptWithHistory = buildPromptWithHistory(
@@ -4512,6 +4524,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   const memory = loadMemoryContext(
     msg.content,
     resolveProjectMemoryTags(msg.projectProfile, loadAgentFlags()),
+    buildWorkContextQuery(msg.history),
   );
 
   // Phase 59 (v0.5.47): poisoned session 차단 가드 — K 다른 PC 진단 핵심.
@@ -5861,6 +5874,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
   const memory = loadMemoryContext(
     msg.content,
     resolveProjectMemoryTags(msg.projectProfile, loadAgentFlags()),
+    buildWorkContextQuery(msg.history),
   );
 
   // v1 stateless — 항상 bootstrap history 재주입 (resume 함정 구조적 회피, 상단 주석 참조).
@@ -6369,6 +6383,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   const memory = loadMemoryContext(
     msg.content,
     resolveProjectMemoryTags(msg.projectProfile, loadAgentFlags()),
+    buildWorkContextQuery(msg.history),
   );
   // Phase X-2 — soul.md 정체성을 REST(외부 API) 경로에도 동일하게 박음.
   const restSoul = loadSoul();
