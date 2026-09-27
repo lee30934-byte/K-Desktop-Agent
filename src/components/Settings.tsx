@@ -314,6 +314,16 @@ const API_PROVIDERS: APIProvider[] = [
     models: [
       { id: "default", label: "ChatGPT 구독 기본 모델 (자동 최신)" },
       { id: "gpt-6-astra", label: "GPT-6 Astra (최강 · 복합 작업)" },
+      // GPT-6 Sol / Luna (2026-09-23 추가). 슬러그는 추측이 아니라 실제 호출로 확정했다:
+      //   codex exec --skip-git-repo-check -m gpt-6-sol  → rc=0, PROBE_OK, 메타데이터 인식
+      //   codex exec --skip-git-repo-check -m gpt-6-luna → rc=0, PROBE_OK, 메타데이터 인식
+      //   음성 대조 gpt-6-zzz-nonexistent → rc=1 (400) → 검사에 판별력 있음
+      // ⚠ Codex CLI **0.156.0 이상** 필요 (changelog: "Added GPT-6 Sol and Luna to the model
+      //   catalog"). 0.154.0 에서는 카탈로그에 없어 서버가 400 으로 거부하며, 그 에러 문구가
+      //   존재하지 않는 모델과 **완전히 동일**해 "없는 모델"로 오판하기 쉽다.
+      //   K 의 이 PC 는 0.157.1 로 갱신해 실호출 확인 완료. 다른 PC 는 버전 확인 필요.
+      { id: "gpt-6-sol", label: "GPT-6 Sol (코딩·에이전트 · CLI 0.156+)" },
+      { id: "gpt-6-luna", label: "GPT-6 Luna (경량 · 대량 작업 · CLI 0.156+)" },
       { id: "gpt-5.6", label: "GPT-5.6 (alias -> Sol)" },
       { id: "gpt-5.6-sol", label: "GPT-5.6 Sol (flagship)" },
       { id: "gpt-5.6-terra", label: "GPT-5.6 Terra (balanced)" },

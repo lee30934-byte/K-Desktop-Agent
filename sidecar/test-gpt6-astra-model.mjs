@@ -17,11 +17,27 @@ const geminiStart = settings.indexOf('id: "gemini"', openAiStart);
 const codexBlock = settings.slice(codexStart, geminiCliStart);
 const openAiBlock = settings.slice(openAiStart, geminiStart);
 
-if (!codexBlock.includes('{ id: "gpt-6-astra"')) {
-  failures.push("Codex model picker is missing gpt-6-astra");
+// GPT-6 계열은 Codex(ChatGPT 구독 OAuth) 경로에만 노출한다.
+// legacy OpenAI REST 경로는 별도 유료 API 키가 필요하고 실호출로 확인하지 못했으므로
+// 추측으로 목록에 올리지 않는다 (올리면 K 가 골랐을 때 원인 불명 에러만 본다).
+const GPT6_CODEX_ONLY = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
+for (const id of GPT6_CODEX_ONLY) {
+  if (!codexBlock.includes(`{ id: "${id}"`)) {
+    failures.push(`Codex model picker is missing ${id}`);
+  }
+  if (openAiBlock.includes(`{ id: "${id}"`)) {
+    failures.push(`${id} must not be advertised on the legacy OpenAI REST path`);
+  }
 }
-if (openAiBlock.includes('{ id: "gpt-6-astra"')) {
-  failures.push("gpt-6-astra must not be advertised on the legacy OpenAI REST path");
+// CLI 버전 요구를 라벨에 남겨야 한다 — 0.156 미만에서는 존재하지 않는 모델과 똑같은
+// 400 이 떠서 원인 판별이 불가능하다 (2026-09-23 실측).
+for (const id of ["gpt-6-sol", "gpt-6-luna"]) {
+  const m = new RegExp(`\{ id: "${id}", label: "([^"]*)"`).exec(codexBlock);
+  if (!m) {
+    failures.push(`${id} label not found`);
+  } else if (!/0\.156\+/.test(m[1])) {
+    failures.push(`${id} label must state the CLI 0.156+ requirement (got: ${m[1]})`);
+  }
 }
 if (!sidecar.includes('args.unshift(`model="${msg.model}"`);')) {
   failures.push("Codex model passthrough wiring is missing");
@@ -35,4 +51,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("PASS: GPT-6 Astra Codex picker and model passthrough invariants");
+console.log("PASS: GPT-6 (Astra/Sol/Luna) Codex picker + CLI 버전 표기 + model passthrough invariants");
