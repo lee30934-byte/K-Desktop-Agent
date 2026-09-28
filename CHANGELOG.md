@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+## [0.7.39] - 2026-09-28
+
+### Fixed
+- Task-watch runs ready work from separate conversations concurrently (up to three), while keeping one active turn per conversation. Deferred markers retry after the owner turn finishes.
+
+### Tests
+- Installed-app diagnostic: two conversations fired together; a second marker for one conversation deferred, then retried and ACKed.
+
 ## [0.7.38] - 2026-09-28
 
 ### Fixed
