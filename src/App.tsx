@@ -27,6 +27,7 @@ import SidePanel, { type SidePanelItem } from "./components/SidePanel";
 import { ConversationControl, buildSteeringMessage, type PendingSend, type SendMode } from "./conversationControl";
 import TaskActivityPanel from "./components/TaskActivityPanel";
 import { ConversationMessageWriter } from "./messagePersistence";
+import { dispatchFirstAvailableWatch } from "./utils/taskWatchDispatch";
 // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
 import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
 // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid)
@@ -3365,10 +3366,11 @@ export default function App() {
 
   const sendTaskWatchTurn = useStableCallback(
     async (w: { id: string; file?: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }) => {
-      if (!dbReadyRef.current) return;
-      if (taskWatchTurnsRef.current.size > 0) return; // busy — 다음 틱
+      if (!dbReadyRef.current) return false;
+      if (taskWatchTurnsRef.current.size > 0) return false; // busy — 다음 틱
       let turnId: string | undefined;
       let convId = "";
+      let reserved = false;
       try {
         // 대상 conv 확보: 마커의 conversationId 가 실제 존재하면 그 conv(맥락 보존),
         // 아니면 전용 ⏳ 작업감시 conv (localStorage 영속).
@@ -3379,7 +3381,7 @@ export default function App() {
         }
         if (!convValid && w.conversationId?.trim()) {
           taskWatchLog("DEFER task-watch " + w.id + " reason=missing-original-conversation");
-          return;
+          return false;
         }
         if (!convValid) {
           convId = localStorage.getItem("kda_taskwatch_conv_id") || "";
@@ -3440,8 +3442,9 @@ export default function App() {
         turnId = crypto.randomUUID();
         if (conversationTurnGateRef.current.allPaused || conversationTurnGateRef.current.paused.has(convId) || !claimConversationTurn(convId, turnId)) {
           taskWatchLog(`DEFER task-watch "${w.id}" conv=${convId.slice(0, 8)} reason=conversation-busy`);
-          return;
+          return false;
         }
+        reserved = true;
         const watchFile = w.file || w.id;
         await invoke("task_watch_claim", {
           file: watchFile,
@@ -3470,6 +3473,7 @@ export default function App() {
           projectProfile: folderCtx.projectProfile,
         });
         taskWatchLog(`FIRE task-watch "${w.id}" (${w.title}) status=${w.status} conv=${convId.slice(0, 8)} turn=${turnId} provider=${s.provider}(${s.providerSource}) folderInstructions=${folderCtx.folderSystemPrompt ? "yes" : "no"}`);
+        return true;
       } catch (err) {
         // turn 이 시작 안 됐으면 done/error 이벤트가 안 오므로 busy gate 를 여기서 직접 원복.
         if (turnId) {
@@ -3488,6 +3492,7 @@ export default function App() {
         }
         taskWatchLog(`FIRE-FAIL task-watch "${w.id}" err=${String(err)}`);
         console.error("[task-watch] turn 주입 실패:", err);
+        return reserved;
       }
     },
   );
@@ -3535,10 +3540,9 @@ export default function App() {
           return;
         }
         if (!Array.isArray(fired) || fired.length === 0) return;
-        // 한 틱에 1건 — claim을 먼저 영속화한다. done ACK에서만 삭제하고,
-        // 실패 시에는 backoff 상태로 release하여 다음 하트비트가 재시도한다.
-        const w = fired[0];
-        await sendTaskWatchTurn(w);
+        // 보류된 첫 마커가 다른 대화의 완료 신호까지 막지 않도록 다음 후보를 검사한다.
+        // 실제 예약은 한 틱에 한 건만 한다. done ACK에서만 삭제하고 실패 시 release한다.
+        await dispatchFirstAvailableWatch(fired, sendTaskWatchTurn);
       } finally {
         taskWatchTickBusyRef.current = false;
       }
