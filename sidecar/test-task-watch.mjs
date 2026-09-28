@@ -83,7 +83,8 @@ check("④ done 뒤 ACK 삭제", /case "done"[\s\S]*?invoke\("task_watch_ack"/.t
 check("④ 완료 응답 DB 저장 뒤 ACK", /saveMessage\(convForTurn[\s\S]{0,500}invoke\("task_watch_ack"/.test(appTsx));
 check("④ error 뒤 retry release", /case "error"[\s\S]*?invoke\("task_watch_release"/.test(appTsx));
 check("④ 주입 전 clear 금지", !/invoke\("task_watch_clear"[\s\S]{0,500}sendTaskWatchTurn/.test(appTsx));
-check("④ 보류 후보를 건너뛰는 dispatch 연결", /dispatchFirstAvailableWatch\(fired, sendTaskWatchTurn\)/.test(appTsx) && !/const w = fired\[0\]/.test(appTsx));
+check("④ 빈 슬롯만큼 다른 대화 dispatch", /dispatchAvailableWatches\([\s\S]{0,160}TASK_WATCH_MAX_CONCURRENT - taskWatchTurnsRef\.current\.size/.test(appTsx) && !/const w = fired\[0\]/.test(appTsx));
+check("④ 대화별 owner gate와 전역 상한", /claimConversationTurn\(convId, turnId\)/.test(appTsx) && /const TASK_WATCH_MAX_CONCURRENT = 3/.test(appTsx));
 
 // ── ⑤ done/error 양 경로 gate 정리 ─────────────────────────
 // taskWatchTurnsRef.current.delete 가 최소 2회(done + error) 이상 등장해야 함.

@@ -1,10 +1,13 @@
-/** Try ready watches in scan order; a deferred watch must not block another conversation. */
-export async function dispatchFirstAvailableWatch<T>(
+/** Fill available turn slots in scan order. Deferred watches stay available for later ticks. */
+export async function dispatchAvailableWatches<T>(
   watches: readonly T[],
+  availableSlots: number,
   tryDispatch: (watch: T) => Promise<boolean>,
-): Promise<boolean> {
+): Promise<number> {
+  let dispatched = 0;
   for (const watch of watches) {
-    if (await tryDispatch(watch)) return true;
+    if (dispatched >= availableSlots) break;
+    if (await tryDispatch(watch)) dispatched++;
   }
-  return false;
+  return dispatched;
 }

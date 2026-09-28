@@ -27,7 +27,7 @@ import SidePanel, { type SidePanelItem } from "./components/SidePanel";
 import { ConversationControl, buildSteeringMessage, type PendingSend, type SendMode } from "./conversationControl";
 import TaskActivityPanel from "./components/TaskActivityPanel";
 import { ConversationMessageWriter } from "./messagePersistence";
-import { dispatchFirstAvailableWatch } from "./utils/taskWatchDispatch";
+import { dispatchAvailableWatches } from "./utils/taskWatchDispatch";
 // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
 import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
 // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid)
@@ -270,6 +270,7 @@ const LS_AUTO_RESUME_MANUAL_STOPPED = "kda_auto_resume_manual_stopped";
 // 15분: 정상 Codex 빌드/OCR turn 도 reasoning·tool 이벤트를 훨씬 촘촘히 뱉으므로 오탐이 아니고,
 // 반대로 sidecar 가 죽은 경우에는 영원히 무음이라 반드시 걸린다.
 const TASK_WATCH_STALE_MS = 15 * 60 * 1000;
+const TASK_WATCH_MAX_CONCURRENT = 3;
 
 function readLocalBool(key: string, defaultValue: boolean): boolean {
   try {
@@ -3367,7 +3368,7 @@ export default function App() {
   const sendTaskWatchTurn = useStableCallback(
     async (w: { id: string; file?: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }) => {
       if (!dbReadyRef.current) return false;
-      if (taskWatchTurnsRef.current.size > 0) return false; // busy — 다음 틱
+      if (taskWatchTurnsRef.current.size >= TASK_WATCH_MAX_CONCURRENT) return false;
       let turnId: string | undefined;
       let convId = "";
       let reserved = false;
@@ -3529,7 +3530,6 @@ export default function App() {
           );
         }
       }
-      if (taskWatchTurnsRef.current.size > 0) return; // busy — 진행 중 turn 있음
       taskWatchTickBusyRef.current = true;
       try {
         let fired: Array<{ id: string; file?: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }> = [];
@@ -3540,9 +3540,13 @@ export default function App() {
           return;
         }
         if (!Array.isArray(fired) || fired.length === 0) return;
-        // 보류된 첫 마커가 다른 대화의 완료 신호까지 막지 않도록 다음 후보를 검사한다.
-        // 실제 예약은 한 틱에 한 건만 한다. done ACK에서만 삭제하고 실패 시 release한다.
-        await dispatchFirstAvailableWatch(fired, sendTaskWatchTurn);
+        // 대화별 owner gate는 같은 대화의 중복 turn을 막는다. 다른 대화는 빈 슬롯만큼 시작한다.
+        // 주입 전 claim, done ACK 및 실패 release는 각 마커별로 독립 유지한다.
+        await dispatchAvailableWatches(
+          fired,
+          Math.max(0, TASK_WATCH_MAX_CONCURRENT - taskWatchTurnsRef.current.size),
+          sendTaskWatchTurn,
+        );
       } finally {
         taskWatchTickBusyRef.current = false;
       }
