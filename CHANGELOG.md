@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [0.7.41] - 2026-10-02
+
+### Fixed
+- Route Codex app-server approval requests to the active KDA conversation. Accept or decline applies to one thread, turn, item, and token; timeout declines.
+- Make PowerShell 5.1 preflight interpret Cargo warnings without a false failure.
+
+### Tests
+- Mock accept/decline/stale-item checks; real Codex isolated WhatIf accept and decline; frontend, sidecar, and Rust preflight.
+
 ## [0.7.40] - 2026-10-02
 
 ### Added

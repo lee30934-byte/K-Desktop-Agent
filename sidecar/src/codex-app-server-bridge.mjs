@@ -174,7 +174,7 @@ async function start(input) {
     try { onServerMessage(JSON.parse(line)); }
     catch (error) { fail(`Codex app-server protocol: ${error.message}`); }
   });
-  await request("initialize", { clientInfo: { name: "k_desktop_agent", title: "K Desktop Agent", version: "0.7.31" } });
+  await request("initialize", { clientInfo: { name: "k_desktop_agent", title: "K Desktop Agent", version: "0.7.41" } });
   send({ method: "initialized", params: {} });
   const threadParams = input.threadId
     ? { threadId: input.threadId, approvalPolicy: "on-request", sandbox: "danger-full-access" }
