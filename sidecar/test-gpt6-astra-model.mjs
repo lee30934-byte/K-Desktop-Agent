@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const settings = fs.readFileSync(path.join(root, "src", "components", "Settings.tsx"), "utf8");
 const sidecar = fs.readFileSync(path.join(root, "sidecar", "src", "index.ts"), "utf8");
+const bridge = fs.readFileSync(path.join(root, "sidecar", "src", "codex-app-server-bridge.mjs"), "utf8");
 
 const failures = [];
 const codexStart = settings.indexOf('id: "codex"');
@@ -39,11 +40,14 @@ for (const id of ["gpt-6-sol", "gpt-6-luna"]) {
     failures.push(`${id} label must state the CLI 0.156+ requirement (got: ${m[1]})`);
   }
 }
-if (!sidecar.includes('args.unshift(`model="${msg.model}"`);')) {
-  failures.push("Codex model passthrough wiring is missing");
+if (!sidecar.includes('model: msg.model && msg.model !== "default" ? msg.model : null,')) {
+  failures.push("Codex model passthrough to the app-server bridge is missing");
 }
 if (!sidecar.includes('msg.model !== "default"')) {
   failures.push("Codex explicit-model guard is missing");
+}
+if (!bridge.includes('...(input.model ? { model: input.model } : {})')) {
+  failures.push("Codex app-server model forwarding is missing");
 }
 
 if (failures.length > 0) {
