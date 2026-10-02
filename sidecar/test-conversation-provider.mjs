@@ -175,7 +175,7 @@ check("W2 claude 만 레거시 agent_id 폴백",
 // ── [D] send 경로 5곳이 전부 대화별 ──────────────────────────────────────
 console.log("\n[D] send 경로 — 전부 buildSendSettings(convId)");
 check("buildSendSettings 가 convId 를 받는다",
-  /const buildSendSettings = useStableCallback\(async \(convId\?: string\) => \{/.test(appTsx));
+  /const buildSendSettings = useStableCallback\(async \(convId\?: string, prompt = ""\) => \{/.test(appTsx));
 check("buildSendSettings 가 대화별 pin 조회", /await getConversationProvider\(convId\)/.test(appTsx));
 check("buildSendSettings 가 resolveProviderSettings 사용",
   /resolveProviderSettings\(pin, localStorage\)/.test(appTsx));
@@ -188,16 +188,16 @@ const withConv = appCode.match(/buildSendSettings\((?:convId|targetId)[^)]*\)/g)
 check("convId 를 넘기는 호출 5곳 이상", withConv.length >= 5, `${withConv.length}곳`);
 
 // 각 경로별 개별 확인 (한 곳만 빠져도 잡히게). 전부 주석 제거본 기준.
-check("① 직접 입력 경로", /await buildSendSettings\(targetId \?\? undefined\)/.test(appCode) && /const convSettings = settingsSnapshot;/.test(appCode));
+check("① 직접 입력 경로", /await buildSendSettings\(targetId \?\? undefined, text\)/.test(appCode) && /const convSettings = settingsSnapshot;/.test(appCode));
 const telegramBody = appCode.slice(appCode.indexOf("const sendTelegramTurn"), appCode.indexOf("const sendTelegramTurn") + 6000);
-check("② 텔레그램 경로", /await buildSendSettings\(convId\)/.test(telegramBody));
+check("② 텔레그램 경로", /await buildSendSettings\(convId, text\)/.test(telegramBody));
 const schedIdx = appCode.indexOf("scheduleTurnsRef.current.set");
 check("③ 예약(remote trigger) 경로",
-  /await buildSendSettings\(convId\)/.test(appCode.slice(Math.max(0, schedIdx - 4000), schedIdx)));
+  /await buildSendSettings\(convId, `\$\{row\.title\}/.test(appCode.slice(Math.max(0, schedIdx - 4000), schedIdx)));
 const twIdx = appCode.indexOf("taskWatchTurnsRef.current.set(turnId");
 check("④ task-watch 경로 (W3 오배송 가드)",
-  /await buildSendSettings\(convId\)/.test(appCode.slice(Math.max(0, twIdx - 4000), twIdx)));
-check("⑤ resume 재시도 경로", /const resumeSettings = await buildSendSettings\(convId\);/.test(appCode));
+  /await buildSendSettings\(convId, `\$\{w\.title\}/.test(appCode.slice(Math.max(0, twIdx - 4000), twIdx)));
+check("⑤ resume 재시도 경로", /const resumeSettings = await buildSendSettings\(convId, userMessage\.content\);/.test(appCode));
 
 // send 경로에 전역 직접 읽기가 재유입되지 않았는지.
 // 허용: activeProvider state 초기화/동기화(4곳). 그 이상이면 어떤 경로가 전역으로 되돌아간 것.

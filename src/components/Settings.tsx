@@ -408,6 +408,7 @@ const EXTERNAL_USAGE_PAGES: ExternalUsagePage[] = [
 // localStorage 키 — App.tsx 와 공유
 const LS_ACTIVE_PROVIDER = "kda_active_provider";
 const LS_ACTIVE_MODEL = "kda_active_model";
+const LS_CODEX_MODEL_MODE = "kda_codex_model_mode";
 // Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort). App.tsx 의 loadReasoningEffort 와 동일 키.
 const LS_REASONING_EFFORT = "kda_reasoning_effort";
 // Codex `model_reasoning_effort` 선택지. "default" = 안 박음 (config.toml/모델 기본값).
@@ -1261,6 +1262,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // 실제 채팅에 사용되는 active provider/model (sidecar 로 전달됨)
   const [chatProvider, setChatProvider] = useState<string>("claude");
   const [chatModel, setChatModel] = useState<string>("default");
+  const [codexModelMode, setCodexModelMode] = useState<"auto" | "manual">("manual");
   // Phase 125 (v0.6.80) — Codex 추론 강도. "default" = 미적용.
   const [reasoningEffort, setReasoningEffort] = useState<string>("default");
 
@@ -1898,8 +1900,10 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         // 활성 provider/model 로드 (저장된 게 있으면 채팅 전환에 사용)
         const savedProvider = localStorage.getItem(LS_ACTIVE_PROVIDER) || "claude";
         const savedModel = localStorage.getItem(LS_ACTIVE_MODEL) || "default";
+        const savedMode = localStorage.getItem(LS_CODEX_MODEL_MODE);
+        setCodexModelMode(savedMode === "auto" || (savedMode === null && savedProvider === "codex" && savedModel === "auto") ? "auto" : "manual");
         setChatProvider(savedProvider);
-        setChatModel(savedModel);
+        setChatModel(savedModel === "auto" ? "default" : savedModel);
         setActiveProvider(savedProvider);
         // Phase 125 (v0.6.80) — 저장된 추론 강도 로드 (없으면 default).
         const savedReasoning = localStorage.getItem(LS_REASONING_EFFORT) || "default";
@@ -1931,6 +1935,16 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     } catch {
       // ignore — 발행 실패해도 저장은 됐고 다음 새로고침이면 반영됨
     }
+  }
+
+  function saveCodexModelMode(mode: "auto" | "manual") {
+    setCodexModelMode(mode);
+    localStorage.setItem(LS_CODEX_MODEL_MODE, mode);
+    if (localStorage.getItem(LS_ACTIVE_PROVIDER) === "codex"
+        && localStorage.getItem(LS_ACTIVE_MODEL) === "auto") {
+      saveActiveProvider("codex", chatModel === "auto" ? "default" : chatModel);
+    }
+    window.dispatchEvent(new Event("kda-active-changed"));
   }
 
   // Phase 125 (v0.6.80) — Codex 추론 강도 저장. state + localStorage + 이벤트 발행.
@@ -4200,13 +4214,35 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     </>
                   )}
 
+                  {currentProvider.id === "codex" && (
+                    <div style={{ marginTop: "14px" }}>
+                      <div className="settings-row-title" style={{ fontSize: "0.95em", marginBottom: "6px" }}>모델 선택 방식</div>
+                      <select
+                        className="api-key-input"
+                        aria-label="Codex 모델 선택 방식"
+                        value={codexModelMode}
+                        onChange={(e) => saveCodexModelMode(e.target.value as "auto" | "manual")}
+                        style={{ width: "100%", padding: "8px 10px" }}
+                      >
+                        <option value="auto">자동 — 요청에 맞춰 선택 후 전송</option>
+                        <option value="manual">수동 — 내가 고른 모델로 전송</option>
+                      </select>
+                      {codexModelMode === "auto" && (
+                        <div className="settings-row-desc" style={{ marginTop: "6px" }}>
+                          요청별로 Luna / Sol / Astra와 추론 강도를 다시 선택합니다. 대화의 기존 모델 지정은 자동 모드에서 적용되지 않습니다.
+                          Codex 계정 사용량은 공통 한도이며 모델별 잔량은 추정하지 않습니다.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* 모델 드롭박스 */}
                   <div style={{ marginTop: "14px" }}>
                     <div
                       className="settings-row-title"
                       style={{ fontSize: "0.95em", marginBottom: "6px" }}
                     >
-                      모델 선택
+                      {currentProvider.id === "codex" ? "수동 모델" : "모델 선택"}
                     </div>
                     <select
                       className="api-key-input mono"
@@ -4218,6 +4254,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                       onChange={(e) =>
                         saveActiveProvider(currentProvider.id, e.target.value)
                       }
+                      disabled={currentProvider.id === "codex" && codexModelMode === "auto"}
                       style={{ width: "100%", padding: "8px 10px" }}
                     >
                       {currentProvider.models.map((m) => (
@@ -4241,6 +4278,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                         className="api-key-input mono"
                         value={reasoningEffort}
                         onChange={(e) => saveReasoningEffort(e.target.value)}
+                        disabled={codexModelMode === "auto"}
                         style={{ width: "100%", padding: "8px 10px" }}
                       >
                         {REASONING_EFFORT_OPTIONS.map((o) => (

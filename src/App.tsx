@@ -87,6 +87,7 @@ import {
 } from "./db";
 // Phase 144 (v0.7.20) — provider 결정 순수 로직 (전역/대화별 폴백 단일 지점)
 import { resolveProviderSettings, providerLabel } from "./providerResolve";
+import { chooseCodexAutoModel, shouldAutoSelectCodexModel } from "./codexAutoModel";
 // Phase 145 (v0.7.22) — 폴더 지침/프로필/첨부 결정 순수 로직 (모든 send 경로 공용)
 import {
   resolveFolderContext,
@@ -2540,7 +2541,7 @@ export default function App() {
     const allStopGeneration = allStopGenerationRef.current;
     const mode = options?.mode ?? "queue";
     const sourceMessages = !options?.fromQueue && targetId === activeConversationIdRef.current ? [...messagesRef.current] : null;
-    const settingsSnapshot = options?.fromQueue ? draftSendSettingsRef.current.get(options.fromQueue) ?? await buildSendSettings(targetId ?? undefined) : await buildSendSettings(targetId ?? undefined);
+    const settingsSnapshot = options?.fromQueue ? draftSendSettingsRef.current.get(options.fromQueue) ?? await buildSendSettings(targetId ?? undefined, text) : await buildSendSettings(targetId ?? undefined, text);
     if (!text && (!files || files.length === 0)) return;
 
     // 메모리 92%+ 차단 — streaming 여부와 무관하게 입구에서 차단.
@@ -2709,6 +2710,9 @@ export default function App() {
       // 대화별 provider 가 불가능했다. 이제 대화 고정값 우선 → 미지정이면 전역 폴백.
       // agent_id 조회보다 먼저 확정해야 한다 (W2: provider 별 세션 id 를 골라야 하므로).
       const convSettings = settingsSnapshot;
+      if (convSettings.autoChoice) {
+        pushSystem(`🤖 자동 선택: ${convSettings.autoChoice.model} (${convSettings.reasoningEffort}) — ${convSettings.autoChoice.reason}`, "info");
+      }
       // W2: 이 turn 이 어느 엔진으로 나갔는지 기록 → done/error 가 그 provider 컬럼에만 저장.
       turnProviderMap.current.set(turnId, convSettings.provider);
 
@@ -2908,7 +2912,7 @@ export default function App() {
   //   convId 를 안 주면 종전과 동일하게 전역값만 쓴다.
   //   결정 로직 자체는 providerResolve.ts (순수 함수) 한 곳에만 있다.
   // 주의: DB 조회가 들어가므로 async 다. 호출부는 반드시 await 할 것.
-  const buildSendSettings = useStableCallback(async (convId?: string) => {
+  const buildSendSettings = useStableCallback(async (convId?: string, prompt = "") => {
     let pin: { provider: string | null; model: string | null } = { provider: null, model: null };
     if (convId && dbReadyRef.current) {
       try {
@@ -2920,7 +2924,12 @@ export default function App() {
     }
     const resolved = resolveProviderSettings(pin, localStorage);
     const provider = resolved.provider;
-    const model = resolved.model;
+    // 자동 모드는 대화에 저장된 모델도 무시하고 요청마다 다시 선택한다.
+    const autoChoice = provider === "codex"
+      && shouldAutoSelectCodexModel(localStorage.getItem("kda_codex_model_mode"), localStorage.getItem("kda_active_model"))
+      ? chooseCodexAutoModel(prompt)
+      : undefined;
+    const model = autoChoice?.model ?? (resolved.model === "auto" ? undefined : resolved.model);
     const apiKey = resolved.apiKey;
     let permissions: Record<string, string> | undefined;
     try {
@@ -2946,8 +2955,8 @@ export default function App() {
     const sm = localStorage.getItem("kda_safe_mode");
     if (sm === "balanced" || sm === "strict") safeMode = sm;
     return {
-      provider, model, apiKey, permissions, lockedTools, safeMode,
-      reasoningEffort: loadReasoningEffort(),
+      provider, model, apiKey, permissions, lockedTools, safeMode, autoChoice,
+      reasoningEffort: autoChoice?.reasoningEffort ?? loadReasoningEffort(),
       // Phase 144 — "conversation" 이면 대화 고정값이 이겼다는 뜻. 로그/디버깅용.
       providerSource: resolved.source,
     };
@@ -3067,7 +3076,7 @@ export default function App() {
       } catch { /* 맥락 없이 진행 */ }
 
       // Phase 144 (v0.7.20) — W1: 텔레그램 conv 에 고정된 provider 로 실행 (전역 토글 무관).
-      const s = await buildSendSettings(convId);
+      const s = await buildSendSettings(convId, text);
       // Phase 145 (v0.7.22) — 폴더 지침(권한 경계 포함)을 이 경로에도 싣는다.
       const folderCtx = await buildFolderContext(convId);
 
@@ -3233,7 +3242,7 @@ export default function App() {
         } catch { /* 맥락 없이 진행 */ }
 
         // Phase 144 (v0.7.20) — W1: 예약이 지정한 대화의 provider 로 실행 (전역 토글 무관).
-        const s = await buildSendSettings(convId);
+        const s = await buildSendSettings(convId, `${row.title}\n${row.action ?? ""}`);
         // Phase 145 (v0.7.22) — 폴더 지침(권한 경계 포함)을 이 경로에도 싣는다.
         const folderCtx = await buildFolderContext(convId);
 
@@ -3416,7 +3425,7 @@ export default function App() {
         // 종전엔 buildSendSettings() 가 전역 provider 를 읽어, 마커가 A 대화를 지정해도
         // "그 순간 전역에 켜져 있던" provider 로 turn 이 나갔다 (오배송).
         // 라우팅(conversationId)은 이미 대화별인데 provider 만 전역이던 불일치를 여기서 닫는다.
-        const s = await buildSendSettings(convId);
+        const s = await buildSendSettings(convId, `${w.title}\n${w.prompt ?? ""}`);
 
         // Phase 145 (v0.7.22) — 이 경로가 폴더 지침을 통째로 빠뜨리던 결함의 수정 지점.
         // 마커가 지정한 대화가 프로젝트 폴더에 속하면 그 지침(권한 경계 포함)을 반드시 싣는다.
@@ -4082,7 +4091,7 @@ export default function App() {
 
     try {
       // Phase 144 (v0.7.20) — W1: 끊긴 턴 재시도도 그 대화의 provider 로 (전역 토글 무관).
-     const resumeSettings = await buildSendSettings(convId);
+     const resumeSettings = await buildSendSettings(convId, userMessage.content);
      turnProviderMap.current.set(turnId, resumeSettings.provider); // W2
 
      // resume agentId — 마지막 완료된 턴의 것 (DB 에 저장됨). 없으면 신규 세션.
@@ -4127,7 +4136,7 @@ export default function App() {
       const apiKey: string | undefined = resumeSettings.apiKey;
 
       // Phase 125 (v0.6.80) — Resume path 도 Codex 추론 강도 동일 적용.
-      const reasoningEffort = loadReasoningEffort();
+      const reasoningEffort = resumeSettings.reasoningEffort;
 
       // permissions / lockedTools — handleSendMessage 와 동일
       let permissions: Record<string, string> | undefined;
