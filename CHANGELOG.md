@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [0.7.42] - 2026-10-02
+
+### Fixed
+- Keep live Codex protocol probes outside the automated release regression gate; retain them for manual checks.
+- Verify GPT-6 model forwarding through the app-server bridge in the static regression test.
+
 ## [0.7.41] - 2026-10-02
 
 ### Fixed
