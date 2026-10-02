@@ -4271,9 +4271,9 @@ function splitToolContent(content: unknown): { text: string; images: string[] } 
   return { text: texts.join("\n"), images };
 }
 
-// ─── Codex CLI 경로 (ChatGPT Plus/Pro OAuth — Phase 15) ──────────────────
+// ─── Codex app-server 경로 (ChatGPT Plus/Pro OAuth) ──────────────────
 //
-// Codex CLI 의 `codex exec --json` 은 다음 JSONL 이벤트들을 stdout 으로 emit:
+// Per-turn app-server bridge emits the established Codex JSONL events:
 //   - {"type":"thread.started", "thread_id":"<uuid>"}        — session 시작
 //   - {"type":"turn.started"}                                — turn 시작
 //   - {"type":"item.completed", "item":{ "id":..., "type":"agent_message", "text":... }}
@@ -4291,10 +4291,8 @@ function splitToolContent(content: unknown): { text: string; images: string[] } 
 //   2. usage 는 turn.completed 에 한 번만 옴 (sub-agent 누적 부풀음 없음 → 그대로 maxTurnUsage 로 사용).
 //   3. K-Personal MCP 등록은 Codex 가 자체 관리 (~/.codex/config.toml + `codex mcp add`).
 //      sidecar 는 mcp-config 인자를 안 넘김 — Codex CLI 가 자기 config 의 mcp_servers 를 자동으로 사용.
-//   4. 권한 게이트: Codex 는 자체 sandbox + approvals 시스템. K-Desktop-Agent 의 PermLevel 은
-//      sandbox 모드로 매핑 (auto → workspace-write, ask → read-only, manual → 자체 거부).
-//      향후 정밀 매핑은 별도 phase. 현재는 --dangerously-bypass-approvals-and-sandbox 로
-//      stdin 프로토콜 호환성 우선 (Claude CLI 의 bypassPermissions 와 동등).
+//   4. 명령/파일 변경 승인은 app-server server request → KDA UI → 동일 item 의
+//      accept/decline 응답으로 처리. 권한 토글이 승인을 암묵적으로 부여하지 않는다.
 
 // Phase 61 (v0.5.49): runtime session blocklist — Codex stderr 에 "Reconnecting 5/5
 // websocket closed before response.completed" 패턴 감지 시 그 sessionId 를 자동 박음.
@@ -4600,15 +4598,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     : buildPromptWithHistory(baseContent, codexBootstrapHistory, memory.content, codexSystemText);
   const promptBytes = Buffer.byteLength(promptWithHistory, "utf-8");
 
-  // Codex CLI 인자 — `codex exec` 의 sub-form.
-  // resume 은 별도 subcommand 라 case 분기로 처리.
-  const args: string[] = [];
-
-  if (effectiveAgentId) {
-    // `codex exec resume <thread_id>` — 기존 세션 이어가기.
-    args.push("exec", "resume", effectiveAgentId, "--json");
-  } else {
-    args.push("exec", "--json");
+  if (!effectiveAgentId) {
     if (poisonedSkipped) {
       // poisoned skip 시 frontend 에 즉시 안내 — 시스템 메시지로 표시 가능
       emit({
@@ -4626,30 +4616,9 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     }
   }
 
-  // 공통 옵션
-  args.push(
-    "--skip-git-repo-check",                          // 프로젝트 루트가 git repo 가 아니어도 진행
-    "--dangerously-bypass-approvals-and-sandbox",      // Claude 의 bypassPermissions 등가 (stdin 프로토콜)
-    "-",                                               // prompt = stdin
-  );
-
-  // 모델 지정 — Settings 의 chatModel 과 동기화. "default" 면 안 박음 (config.toml 기본값 사용).
-  if (msg.model && msg.model.trim() && msg.model !== "default") {
-    // -c model="..." 형식 (TOML literal). Codex 는 TOML 파싱 후 dotted-path override.
-    args.unshift(`model="${msg.model}"`);
-    args.unshift("-c");
-  }
-
-  // Phase 125 (v0.6.80) — 추론 강도 (reasoning effort) override.
-  // Codex CLI 의 `-c model_reasoning_effort="..."` (TOML literal). config.toml 기본값을 덮음.
-  // 화이트리스트로만 박음 (TOML/shell injection 방지 — pitfall_js_arg_type_silent_throw 계열 방어).
-  // "default"/미지정/비허용값 → 안 박음 → Codex 가 config.toml 또는 모델 기본 effort 사용.
+  // app-server turn/start receives a validated effort override.
   const VALID_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
   const reasoning = msg.reasoningEffort?.trim().toLowerCase();
-  if (reasoning && VALID_REASONING_EFFORTS.has(reasoning)) {
-    args.unshift(`model_reasoning_effort="${reasoning}"`);
-    args.unshift("-c");
-  }
 
   logToFile(
     "info",
@@ -4717,10 +4686,8 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
   try {
     turnLifecycle.assertRunning(msg.id);
-    const proc = spawn(CODEX_CLI, args, {
+    const proc = spawn(process.execPath, [path.join(__dirname_local, "codex-app-server-bridge.mjs")], {
       stdio: ["pipe", "pipe", "pipe"],
-      shell: true,
-      // Windows: cmd.exe 콘솔 창 깜빡임 방지 (shell:true 동반 필수)
       windowsHide: true,
       env: {
         ...process.env,
@@ -4820,8 +4787,14 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       proc.stdin.on("error", (e) => {
         logToFile("warn", `Codex stdin error: ${e instanceof Error ? e.message : String(e)}`);
       });
-      proc.stdin.write(promptWithHistory, "utf-8");
-      proc.stdin.end();
+      proc.stdin.write(JSON.stringify({
+        type: "start",
+        codex: CODEX_CLI,
+        prompt: promptWithHistory,
+        threadId: effectiveAgentId ?? null,
+        model: msg.model && msg.model !== "default" ? msg.model : null,
+        effort: reasoning && VALID_REASONING_EFFORTS.has(reasoning) ? reasoning : null,
+      }) + "\n", "utf-8");
     }
 
     if (proc.stderr) {
@@ -4922,6 +4895,24 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
           }
           case "turn.started": {
             // 신호용 — 현재는 별도 처리 없음
+            break;
+          }
+          case "approval.requested": {
+            emit({
+              type: "codex_approval_request",
+              id: msg.id,
+              conversation_id: msg.conversation_id ?? null,
+              token: event.token,
+              kind: event.kind,
+              threadId: event.threadId,
+              turnId: event.turnId,
+              itemId: event.itemId,
+              command: event.command,
+              cwd: event.cwd,
+              changes: event.changes,
+              networkApprovalContext: event.networkApprovalContext,
+              reason: event.reason,
+            });
             break;
           }
           case "token_count": {
@@ -6894,6 +6885,21 @@ rl.on("line", (line) => {
 
   if (browserHost.receive(msg)) return;
   switch (msg.type) {
+    case "codex_approval_response": {
+      const value = msg as Record<string, unknown>;
+      const turnId = value.id;
+      const proc = typeof turnId === "string" ? activeTurns.get(turnId) : null;
+      if (!proc?.stdin?.writable) break;
+      if (typeof value.token !== "string" || typeof value.threadId !== "string" ||
+          typeof value.turnId !== "string" || typeof value.itemId !== "string" ||
+          (value.decision !== "accept" && value.decision !== "decline")) break;
+      proc.stdin.write(JSON.stringify({
+        type: "approval", token: value.token, threadId: value.threadId,
+        turnId: value.turnId, itemId: value.itemId, decision: value.decision,
+      }) + "\n");
+      logToFile("info", `Codex approval response id=${turnId} decision=${value.decision} item=${value.itemId}`);
+      break;
+    }
     case "user_message":
       dispatchRootTurn(msg as UserMessage, handleUserMessage);
       break;

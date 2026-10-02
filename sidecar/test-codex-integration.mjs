@@ -100,11 +100,13 @@ for (const [label, p] of [
     }
   }
 
-  // codex exec --json 인자
-  if (text.includes("--json") && text.includes("--skip-git-repo-check")) {
-    ok("codex exec --json --skip-git-repo-check 인자 박힘");
+  // Approval-bearing turns use app-server; the old bypass flag must not launch.
+  const bridge = readFileSync(path.join(sidecarRoot, "src", "codex-app-server-bridge.mjs"), "utf-8");
+  if (text.includes("codex-app-server-bridge.mjs") && bridge.includes('"app-server"') &&
+      bridge.includes('"on-request"') && !text.includes('"--dangerously-bypass-approvals-and-sandbox"')) {
+    ok("Codex app-server approval bridge wired without bypass flag");
   } else {
-    ng("codex exec 핵심 인자 누락");
+    ng("Codex app-server approval bridge wiring incomplete");
   }
 
   // defaultModelFor 분기

@@ -423,6 +423,29 @@ async fn interrupt(id: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn codex_approval_response(
+    id: String,
+    token: String,
+    thread_id: String,
+    turn_id: String,
+    item_id: String,
+    decision: String,
+) -> Result<(), String> {
+    if decision != "accept" && decision != "decline" {
+        return Err("invalid Codex approval decision".into());
+    }
+    let payload = serde_json::json!({
+        "type": "codex_approval_response", "id": id, "token": token,
+        "threadId": thread_id, "turnId": turn_id, "itemId": item_id,
+        "decision": decision,
+    });
+    let tx_holder = get_tx_holder().clone();
+    let guard = tx_holder.lock().await;
+    let tx = guard.as_ref().ok_or("sidecar not initialized")?;
+    tx.send(format!("{}\n", payload)).await.map_err(|e| e.to_string())
+}
+
 // Phase 69 (v0.6.13) — frontend 가 sidecar.log 에 진단 메시지를 박을 path.
 //
 // Settings.tsx 의 mcp_tools listener / 다른 React component 가 invoke("frontend_log", { message })
@@ -4443,6 +4466,7 @@ pub fn run_with_options(start_minimized: bool) {
         .invoke_handler(tauri::generate_handler![
             browser_host::browser_host_request,
             send_message,
+            codex_approval_response,
             interrupt,
             reload_sidecar,
             ping_sidecar,

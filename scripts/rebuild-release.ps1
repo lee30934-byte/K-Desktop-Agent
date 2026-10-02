@@ -123,6 +123,14 @@ if (Test-Path $installDistFile) {
     Copy-Item "$projectRoot\sidecar\dist\index.js" $installDistFile -Force
     $newSize = [int](Get-Item $installDistFile).Length
     Write-Host "  synced: dist\index.js ($newSize bytes)" -ForegroundColor DarkGray
+    $bridgeSrc = Join-Path $projectRoot 'sidecar\dist\codex-app-server-bridge.mjs'
+    if (-not (Test-Path $bridgeSrc)) { throw "Codex app-server bridge missing: $bridgeSrc" }
+    $bridgeDst = Join-Path $installSidecar 'dist\codex-app-server-bridge.mjs'
+    Copy-Item $bridgeSrc $bridgeDst -Force
+    if ((Get-FileHash $bridgeSrc -Algorithm SHA256).Hash -ne (Get-FileHash $bridgeDst -Algorithm SHA256).Hash) {
+        throw "Codex app-server bridge sync hash mismatch"
+    }
+    Write-Host "  synced: dist\codex-app-server-bridge.mjs" -ForegroundColor DarkGray
 
     # Sync hooks (whole folder mirror)
     $installHooks = Join-Path $installSidecar 'hooks'

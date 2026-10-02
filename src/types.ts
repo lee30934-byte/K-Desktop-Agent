@@ -76,6 +76,20 @@ type SidecarEventPayload =
   | { type: "turn_started" | "turn_stopping" | "turn_stopped"; id: string; conversationId: string; agentId?: string | null }
   | { type: "interrupt_warning" | "interrupt_rejected"; id: string; conversationId?: string; message: string }
   | { type: "ready"; version: string }
+  | {
+      type: "codex_approval_request";
+      id: string;
+      token: string;
+      kind: "command" | "file";
+      threadId: string;
+      turnId: string;
+      itemId: string;
+      command: string | string[] | null;
+      cwd: string | null;
+      changes: Array<{ path: string; kind: string; diff?: string }> | null;
+      networkApprovalContext?: { host?: string; protocol?: string; port?: number } | null;
+      reason?: string | null;
+    }
   | { type: "assistant_delta"; id: string; text: string }
   | {
       type: "tool_use";

@@ -2249,6 +2249,34 @@ export default function App() {
         break;
       }
 
+      case "codex_approval_request": {
+        const request = ev;
+        const convId = resolveEventConv(ev);
+        const active = !!convId && convId === activeConversationIdRef.current;
+        const detail = request.networkApprovalContext
+          ? `네트워크: ${request.networkApprovalContext.protocol ?? "?"}://${request.networkApprovalContext.host ?? "?"}:${request.networkApprovalContext.port ?? "?"}`
+          : request.kind === "command"
+            ? `명령: ${Array.isArray(request.command) ? request.command.join(" ") : request.command ?? "(없음)"}\n작업 폴더: ${request.cwd ?? "(없음)"}`
+            : `파일 변경:\n${(request.changes ?? []).map((c) => `${c.kind}: ${c.path}\n${c.diff ?? ""}`).join("\n")}`;
+        // Background turns cannot borrow a click intended for the visible chat.
+        // An unreviewable payload is denied; there is no session-wide approval.
+        const reviewable = detail.length <= 12_000 &&
+          (request.kind === "command" ? !!request.command || !!request.networkApprovalContext : !!request.changes?.length);
+        const accepted = active && reviewable && window.confirm(
+          `Codex 실행 승인 요청 (이 명령 1회만)\n대화: ${convId}\n요청: ${request.threadId}/${request.turnId}/${request.itemId}\n\n${detail}\n\n승인하면 이 요청만 실행합니다.`,
+        );
+        const decision = accepted ? "accept" : "decline";
+        void invoke("codex_approval_response", {
+          id: request.id, token: request.token, threadId: request.threadId,
+          turnId: request.turnId, itemId: request.itemId, decision,
+        }).then(() => {
+          pushSystem(`Codex 요청 ${decision === "accept" ? "승인" : "거절"}: ${request.itemId}`, decision === "accept" ? "info" : "warn");
+        }).catch((error) => {
+          pushSystem(`Codex 승인 응답 전달 실패: ${String(error)}`, "error");
+        });
+        break;
+      }
+
       // Phase 83 (v0.6.26) — Session Recovery Hook: sidecar 가 Codex reconnect timeout 감지
       // 시 emit. 즉시 long_tasks 재스캔 + 결과 있으면 상단 RecoveryBanner 갱신.
       // K 의 다른 PC root cause (Reconnecting 2/5 timeout) 가 작업 중단으로 이어지지 않게.

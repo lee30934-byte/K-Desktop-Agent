@@ -146,7 +146,10 @@ Invoke-Step "tauri.conf.json bundle.resources 의 scripts ps1 등록 검증" {
 }
 
 Invoke-Step "Rust cargo check" {
-    cargo check --manifest-path src-tauri/Cargo.toml --all-targets --quiet
+    # PowerShell 5.1 treats native stderr warnings as terminating errors when
+    # ErrorActionPreference is Stop. Merge streams inside cmd and trust cargo's exit code.
+    & cmd.exe /c "cargo check --manifest-path src-tauri/Cargo.toml --all-targets --quiet 2>&1"
+    if ($LASTEXITCODE -ne 0) { throw "cargo check exit $LASTEXITCODE" }
 }
 
 # 2. 프론트 타입 체크 — Phase 25.1 (v0.5.12): npx 없는 환경에서도 동작하도록
