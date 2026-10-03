@@ -4897,6 +4897,13 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             // 신호용 — 현재는 별도 처리 없음
             break;
           }
+          case "provider.notice": {
+            if (event.code === "mcp_elicitation_declined") {
+              emit({ type: "provider_notice", id: msg.id, provider: "codex", message: event.message });
+              logToFile("warn", "Codex MCP elicitation safely declined: unsupported input UI");
+            }
+            break;
+          }
           case "approval.requested": {
             emit({
               type: "codex_approval_request",

@@ -77,6 +77,18 @@ function onServerMessage(message) {
     return;
   }
   const { method, params = {} } = message;
+  if (method === "mcpServer/elicitation/request") {
+    // Elicitation uses action/content, not the command approval decision shape.
+    // Until KDA has a schema-aware form/URL consent UI, fail closed for this
+    // request only. Never infer answers from defaults, permission settings, or
+    // a prior command approval. turnId is optional in the Codex 0.158 protocol.
+    if (typeof message.id !== "string" && !Number.isSafeInteger(message.id)) return;
+    send({ id: message.id, result: { action: "decline", content: null } });
+    // Do not expose the remote message, form defaults, or authentication URL.
+    emit({ type: "provider.notice", code: "mcp_elicitation_declined",
+      message: "연결된 도구의 추가 입력·승인 요청은 현재 KDA에서 지원하지 않아 거절했습니다. 해당 요청은 승인되지 않았으며 대화는 계속됩니다." });
+    return;
+  }
   if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
     if (!turnId && typeof params.turnId === "string") turnId = params.turnId;
     // Missing identifiers or a mismatched conversation cannot be approved.

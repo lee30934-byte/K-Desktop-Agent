@@ -45,7 +45,7 @@ const FORBIDDEN_FILES = [
 // 빌드된 sidecar/dist/index.js 를 읽는다. 이것들은 CI 의 fast 게이트 단계(빌드·MCP
 // fetch 이전)나 깨끗한 체크아웃엔 없으므로 --fast 에선 건너뛴다(로컬 전체 게이트는 실행).
 // 근본 원인: 모든 test-*.mjs 가 정적 검사라는 가정이 틀렸음 → 환경 의존분을 명시 분리.
-const ENV_DEPENDENT_TESTS = new Set(["test-headless-mcp.mjs"]);
+const ENV_DEPENDENT_TESTS = new Set(["test-headless-mcp.mjs", "test-codex-elicitation-turn.mjs"]);
 
 // ─── 결과 수집 ────────────────────────────────────────────────────────────
 const results = [];

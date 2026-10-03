@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- Decline unsupported Codex MCP form/URL elicitation with the protocol's `action`/`content` response instead of terminating the turn. Show a notice in the originating conversation; never infer consent or submit form defaults.
+
+### Tests
+- Cover form, URL, extended form, missing/stale context, malformed input, numeric/string request IDs, and concurrent command/file approvals. Run offline built-sidecar continuation and conversation-routing checks in the post-build release gate.
+
 ## [0.7.42] - 2026-10-02
 
 ### Fixed

@@ -61,7 +61,9 @@ console.log("\n[5] 회귀테스트 러너");
 check("sidecar test-*.mjs glob", /\^test-\.\*\\\.mjs\$/.test(gate));
 check("결과 N/M 통과 파싱", /결과:\\s\*\(\\d\+\)\\\/\(\\d\+\)\\s\*통과/.test(gate));
 check("자기 자신(test-release-gate)도 패턴에 포함되나 spawn 만 — 무한재귀 아님", /spawnSync\(process\.execPath, \[f\]/.test(gate));
-check("ENV_DEPENDENT_TESTS 에 test-headless-mcp (환경 의존)", /ENV_DEPENDENT_TESTS = new Set\(\["test-headless-mcp\.mjs"\]\)/.test(gate));
+const environmentTests = JSON.parse(/ENV_DEPENDENT_TESTS\s*=\s*new Set\((\[[\s\S]*?\])\)/.exec(gate)?.[1] ?? "[]");
+check("ENV_DEPENDENT_TESTS 에 test-headless-mcp (환경 의존)", environmentTests.includes("test-headless-mcp.mjs"));
+check("빌드된 elicitation 턴 검사는 post-build 게이트에서 실행", environmentTests.includes("test-codex-elicitation-turn.mjs"));
 check("--fast 면 환경 의존 테스트 SKIP (CI 빌드 전 단계 자원 부재 회피)", /if \(FAST && ENV_DEPENDENT_TESTS\.has\(f\)\) \{[\s\S]*?skipped\+\+;/.test(gate));
 
 // ── 6. --fast 게이트 ───────────────────────────────────────────────────────
