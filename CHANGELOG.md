@@ -3,7 +3,7 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
-## [Unreleased]
+## [0.7.43] - 2026-10-03
 
 ### Fixed
 - Decline unsupported Codex MCP form/URL elicitation with the protocol's `action`/`content` response instead of terminating the turn. Show a notice in the originating conversation; never infer consent or submit form defaults.
