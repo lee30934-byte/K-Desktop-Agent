@@ -1279,6 +1279,9 @@ fn append_schedule_log(line: String) -> Result<(), String> {
     let root = data_root();
     let _ = std::fs::create_dir_all(&root);
     let path = root.join("schedule-heartbeat.log");
+    // 로테이션 — 2026-10-07 실측으로 이 파일이 로테이션 없이 7MB/76,902줄까지 자랐다.
+    // 기존 로그는 지우지 않고 `.1` 로 밀어 보존한다(진단 근거).
+    rotate_log_if_needed(&path, 5 * 1024 * 1024, 3);
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
@@ -1368,14 +1371,34 @@ fn eval_watch(marker: &serde_json::Value, now_ms: i64) -> Option<(String, String
     // timeout 우선 검사 — 조건 미충족이어도 너무 오래되면 안전망 발화.
     if let Some(timeout_ms) = marker.get("timeoutMs").and_then(|v| v.as_i64()) {
         if timeout_ms > 0 {
-            if let Some(created) = marker.get("createdAt").and_then(|v| v.as_str()) {
-                if let Ok(created_ms) = parse_iso_ms(created) {
-                    if now_ms - created_ms >= timeout_ms {
-                        return Some((
-                            "timeout".to_string(),
-                            format!("timeoutMs={}ms 초과", timeout_ms),
-                        ));
-                    }
+            // ★ timeout 기준점: `run` 을 띄웠다면 **실제 시작 시각**이 기준이다.
+            // createdAt 을 쓰면 startAt 예약 대기 시간까지 타이머에 포함돼
+            // "시작도 전에 timeout" 이 난다(pitfall_taskwatch_stale_createdat_false_timeout).
+            let base_ms = marker
+                .get("run")
+                .and_then(|r| r.get("startedAtMs"))
+                .and_then(|v| v.as_i64())
+                .or_else(|| {
+                    marker
+                        .get("createdAt")
+                        .and_then(|v| v.as_str())
+                        .and_then(|c| parse_iso_ms(c).ok())
+                });
+            if let Some(base_ms) = base_ms {
+                if now_ms - base_ms >= timeout_ms {
+                    let from = if marker
+                        .get("run")
+                        .and_then(|r| r.get("startedAtMs"))
+                        .is_some()
+                    {
+                        "run.startedAt"
+                    } else {
+                        "createdAt"
+                    };
+                    return Some((
+                        "timeout".to_string(),
+                        format!("timeoutMs={}ms 초과 (기준={})", timeout_ms, from),
+                    ));
                 }
             }
         }
@@ -1495,10 +1518,35 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let marker: serde_json::Value = match serde_json::from_str(&raw) {
+        // BOM 허용 파싱 + 손상 마커는 **격리하고 로그를 남긴다**(조용한 방치 금지).
+        let mut marker: serde_json::Value = match parse_marker_json(&raw) {
             Ok(v) => v,
-            Err(_) => continue, // 손상 마커는 건너뜀 (다음 스캔에서 재시도 안 됨 — 방치)
+            Err(e) => {
+                quarantine_invalid_marker(&path, &e.to_string());
+                continue;
+            }
         };
+
+        let stem_for_run = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let run_id = marker
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&stem_for_run)
+            .to_string();
+
+        // ── v0.7.45 task-run ──
+        // `run` 블록 처리를 **_delivery 백오프보다 먼저** 둔다. 전달 재시도 대기 때문에
+        // 실행 자체가 굶으면 안 된다(pitfall_taskwatch_deferred_head_starves_queue_20260928 계열).
+        let run_note = match process_run_block(&mut marker, &path, &run_id, now_ms) {
+            RunGate::NotApplicable => None,
+            RunGate::Waiting => continue, // 예약 대기 / 실행 실패 → 이번 스캔에서 발화 평가 안 함
+            RunGate::Active(note) => note,
+        };
+
         if let Some(delivery) = marker.get("_delivery") {
             if let Some(next_attempt_at) = delivery.get("nextAttemptAt").and_then(|v| v.as_i64()) {
                 if now_ms < next_attempt_at {
@@ -1522,6 +1570,11 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
             .unwrap_or(&stem)
             .to_string();
         if let Some((status, note)) = eval_watch(&marker, now_ms) {
+            // run 경고(.done 선존재 / 고아 pid)가 있으면 주입될 turn 문구에 그대로 실어 보낸다.
+            let note = match &run_note {
+                Some(w) => format!("{} / {}", note, w),
+                None => note,
+            };
             fired.push(serde_json::json!({
                 "id": id,
                 "file": stem,
@@ -1546,7 +1599,8 @@ fn task_watch_marker_path(file: &str) -> Result<PathBuf, String> {
 fn read_task_watch_marker(path: &Path) -> Result<serde_json::Value, String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| format!("task-watch marker read failed {}: {}", path.display(), e))?;
-    serde_json::from_str(&raw)
+    // scan 과 동일하게 BOM 허용 — 한쪽만 고치면 claim/ack 경로에서 또 깨진다.
+    parse_marker_json(&raw)
         .map_err(|e| format!("task-watch marker JSON invalid {}: {}", path.display(), e))
 }
 
@@ -1656,13 +1710,396 @@ fn task_watch_log(line: String) -> Result<(), String> {
     let root = data_root();
     let _ = std::fs::create_dir_all(&root);
     let path = root.join("task-watch.log");
+    rotate_log_if_needed(&path, 5 * 1024 * 1024, 3);
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .map_err(|e| format!("task-watch.log 열기 실패: {}", e))?;
+    // 프론트는 이미 로컬시각을 붙여 넘긴다 — 여기서 또 붙이지 않는다.
     writeln!(f, "{}", line).map_err(|e| format!("로그 작성 실패: {}", e))?;
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// v0.7.45 — task-run: 장기작업 "띄우기"까지 KDA 가 담당 (Windows 작업 스케줄러 대체)
+//
+// 마커에 `run` 블록이 있으면 task_watch_scan 이 **detached 로 직접 실행**하고 pid/startedAt 을
+// 마커에 기록한다. 그 뒤는 기존 `watch` 로직이 그대로 완료를 감시한다. 작업 스케줄러가 주던
+// 세 가지(예약 시각 / 실행 / 프로세스 트리 바깥)를 전부 대체한다.
+//
+//   "run": {
+//     "exe": "py",
+//     "args": ["-3", "-X", "utf8", "C:\\...\\runner.py"],
+//     "cwd": "C:\\...",                      // 생략 가능
+//     "env": { "PYTHONUTF8": "1" },          // 생략 가능
+//     "stdoutLog": "C:\\...\\launch.log",    // 생략 가능 (없으면 출력 버림)
+//     // ⚠ stdoutLog 는 **실제 exe**(py/node/where 등)의 출력만 잡힌다. `cmd` 내장명령
+//     //    (copy/echo 등)은 콘솔 없는 DETACHED_PROCESS 에서 메시지를 쓰지 않는다 — 2026-10-07 실측.
+//     //    cmd 로 뭔가 로깅하려면 자식 쪽에서 직접 `> 파일` 리다이렉트를 하게 만들어야 한다.
+//     "startAt": "2026-10-08T09:00:00"       // 생략 가능 = 즉시 실행
+//   }
+//
+// 설계 근거(2026-10-07 실측): KDA 는 job object 안에서 돌지만 자손이 job 밖으로 나갈 수 있다.
+// 다만 job 이 breakaway 를 금지하면 CreateProcess 가 ERROR_ACCESS_DENIED 로 **실패**하므로
+// breakaway 포함 → 실패 시 breakaway 제외로 재시도하는 2단 폴백을 쓴다
+// (`pitfall_work_v138_guard_must_use_fallback_not_continue`). 어느 경로로 떴는지 로그에 남긴다.
+
+/// 로그 로테이션 — 상한 초과 시 `<name>.1` … `<name>.{keep}` 으로 밀어낸다.
+/// 기존 로그는 **삭제하지 않고** 뒤로 밀기만 한다(진단 증거 보존).
+fn rotate_log_if_needed(path: &Path, max_bytes: u64, keep: usize) {
+    let too_big = std::fs::metadata(path)
+        .map(|m| m.len() > max_bytes)
+        .unwrap_or(false);
+    if !too_big {
+        return;
+    }
+    let as_n = |n: usize| -> PathBuf {
+        let mut p = path.as_os_str().to_os_string();
+        p.push(format!(".{}", n));
+        PathBuf::from(p)
+    };
+    let _ = std::fs::remove_file(as_n(keep));
+    for n in (1..keep).rev() {
+        let _ = std::fs::rename(as_n(n), as_n(n + 1));
+    }
+    let _ = std::fs::rename(path, as_n(1));
+}
+
+/// 내부용 task-watch 로그 — `task_watch_log` 커맨드와 Rust 내부가 같은 파일을 공유한다.
+fn task_watch_log_line(line: &str) {
+    let root = data_root();
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("task-watch.log");
+    rotate_log_if_needed(&path, 5 * 1024 * 1024, 3);
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{}] {}", chrono_lite_now(), line);
+    }
+}
+
+/// 마커 JSON 파싱 — **BOM 허용**. PowerShell `Set-Content -Encoding utf8` 이 쓴 마커는
+/// UTF-8 BOM 이 붙어 `serde_json::from_str` 이 실패한다. 2026-10-07 좀비 마커 12건 중 9건이
+/// 이 원인이었다(`pitfall_ps51_set_content_encoding_utf8_writes_bom_breaks_json_parsers`).
+fn parse_marker_json(raw: &str) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_str(strip_bom(raw).trim_start())
+}
+
+/// 손상 마커 격리 — 조용히 건너뛰면 영원히 방치된다(실측: 43~78일 좀비 12건).
+/// `~/.kda/task-watch/invalid/` 로 옮기고 `MARKER-INVALID` 를 로그에 남긴다.
+fn quarantine_invalid_marker(path: &Path, reason: &str) {
+    let dir = task_watch_dir().join("invalid");
+    let _ = std::fs::create_dir_all(&dir);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let dest = dir.join(format!("{}-{}.json", stem, current_unix_ms()));
+    match std::fs::rename(path, &dest) {
+        Ok(_) => task_watch_log_line(&format!(
+            "MARKER-INVALID \"{}\" reason={} → invalid/{}",
+            stem,
+            reason.chars().take(200).collect::<String>(),
+            dest.file_name().and_then(|s| s.to_str()).unwrap_or("?")
+        )),
+        Err(e) => task_watch_log_line(&format!(
+            "MARKER-INVALID \"{}\" reason={} 격리실패={}",
+            stem,
+            reason.chars().take(200).collect::<String>(),
+            e
+        )),
+    }
+}
+
+/// `run` 처리 결과.
+enum RunGate {
+    /// `run` 없음 — 기존 동작 그대로.
+    NotApplicable,
+    /// 아직 실행 시각(startAt) 전 — 이번 스캔에서 이 마커는 **건드리지 않는다**.
+    Waiting,
+    /// 실행 중/실행 완료 상태. 경고가 있으면 발화 note 에 덧붙인다.
+    Active(Option<String>),
+}
+
+/// `run.exe` 안전성 — 셸을 거치지 않으므로 메타문자는 의미가 없지만,
+/// 실수로 `"cmd /c foo & bar"` 처럼 한 줄을 통째로 넣는 것을 막는다.
+fn run_exe_is_sane(exe: &str) -> bool {
+    !exe.trim().is_empty()
+        && exe.len() <= 400
+        && !exe.contains('&')
+        && !exe.contains('|')
+        && !exe.contains('>')
+        && !exe.contains('<')
+        && !exe.contains('\n')
+        && !exe.contains('\r')
+}
+
+/// detached 로 실제 spawn. 성공 시 (pid, 사용한 플래그 설명) 반환.
+#[cfg(windows)]
+fn spawn_detached(
+    exe: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    envs: &[(String, String)],
+    stdout_log: Option<&str>,
+) -> Result<(u32, &'static str), String> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let build = |flags: u32| -> Result<std::process::Command, String> {
+        // ★ 셸 문자열 보간 없음 — exe + args 배열로만 실행한다.
+        //   (pitfall_powershell_native_arg_quote / pitfall_bash_heredoc_collapses_backslash)
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(args);
+        if let Some(d) = cwd {
+            cmd.current_dir(d);
+        }
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        cmd.stdin(Stdio::null());
+        match stdout_log {
+            Some(p) => {
+                if let Some(parent) = Path::new(p).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let f = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .map_err(|e| format!("stdoutLog 열기 실패 {}: {}", p, e))?;
+                let f2 = f
+                    .try_clone()
+                    .map_err(|e| format!("stdoutLog 핸들 복제 실패: {}", e))?;
+                cmd.stdout(Stdio::from(f));
+                cmd.stderr(Stdio::from(f2));
+            }
+            None => {
+                cmd.stdout(Stdio::null());
+                cmd.stderr(Stdio::null());
+            }
+        }
+        cmd.creation_flags(flags);
+        Ok(cmd)
+    };
+
+    let with_breakaway = DETACHED_PROCESS
+        | CREATE_NEW_PROCESS_GROUP
+        | CREATE_NO_WINDOW
+        | CREATE_BREAKAWAY_FROM_JOB;
+    let without_breakaway = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+
+    // 1차: breakaway 포함 (앱 종료/job 일괄종료에도 살아남게)
+    match build(with_breakaway)?.spawn() {
+        Ok(child) => Ok((child.id(), "detached+breakaway")),
+        Err(e1) => {
+            // job 이 breakaway 를 금지하면 ERROR_ACCESS_DENIED(5). 폴백한다.
+            task_watch_log_line(&format!(
+                "RUN-FALLBACK breakaway 실패({}) → breakaway 없이 재시도",
+                e1
+            ));
+            match build(without_breakaway)?.spawn() {
+                Ok(child) => Ok((child.id(), "detached(no-breakaway)")),
+                Err(e2) => Err(format!("spawn 실패: breakaway={} / fallback={}", e1, e2)),
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn spawn_detached(
+    exe: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    envs: &[(String, String)],
+    _stdout_log: Option<&str>,
+) -> Result<(u32, &'static str), String> {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args).stdin(Stdio::null());
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.spawn()
+        .map(|c| (c.id(), "spawn"))
+        .map_err(|e| format!("spawn 실패: {}", e))
+}
+
+/// 마커의 `run` 블록을 평가해 필요하면 실행한다. 마커를 갱신했으면 `*marker` 가 바뀐다.
+fn process_run_block(
+    marker: &mut serde_json::Value,
+    path: &Path,
+    id: &str,
+    now_ms: i64,
+) -> RunGate {
+    let run = match marker.get("run") {
+        Some(r) if r.is_object() => r.clone(),
+        _ => return RunGate::NotApplicable,
+    };
+
+    // ── 이미 띄운 마커: 재실행 금지 + 고아 감지 ──
+    // (pitfall_launched_duplicate_of_already_running_job / pitfall_done_marker_shared_by_duplicate_launch
+    //  / pitfall_taskwatch_duplicate_turn_relaunches_chain)
+    if run.get("startedAt").is_some() {
+        let done_exists = marker
+            .get("watch")
+            .and_then(|w| w.get("path"))
+            .and_then(|v| v.as_str())
+            .map(|p| Path::new(p).exists())
+            .unwrap_or(false);
+        let pid = run.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        if !done_exists && pid != 0 && !pid_alive(pid) && run.get("orphanReportedAt").is_none() {
+            // 프로세스는 죽었는데 .done 이 없다 → 중간에 실패한 것. **재실행하지 않고** 보고만 한다.
+            marker["run"]["orphanReportedAt"] = serde_json::json!(now_ms);
+            let _ = write_task_watch_marker(path, marker);
+            task_watch_log_line(&format!(
+                "RUN-ORPHAN \"{}\" pid={} 종료했는데 .done 없음 — 재실행하지 않음",
+                id, pid
+            ));
+            return RunGate::Active(Some(format!(
+                "⚠ run pid={} 이 .done 없이 종료했습니다(중도 실패 가능). 자동 재실행은 하지 않았습니다",
+                pid
+            )));
+        }
+        return RunGate::Active(None);
+    }
+
+    // ── 예약 시각 전이면 아무것도 하지 않는다 ──
+    // 여기서 Waiting 을 돌려 eval_watch 를 건너뛰게 한다. 그렇지 않으면 대기 중에
+    // timeoutMs 가 createdAt 기준으로 흘러 **시작도 전에 timeout 발화**한다
+    // (pitfall_taskwatch_stale_createdat_false_timeout).
+    if let Some(start_at) = run.get("startAt").and_then(|v| v.as_str()) {
+        match parse_iso_ms(start_at) {
+            Ok(start_ms) if now_ms < start_ms => return RunGate::Waiting,
+            Ok(_) => {}
+            Err(e) => {
+                task_watch_log_line(&format!(
+                    "RUN-BADSTART \"{}\" startAt={} 파싱실패({}) — 즉시 실행으로 처리",
+                    id, start_at, e
+                ));
+            }
+        }
+    }
+
+    // ── .done 선존재: 띄우면 완료 판정이 즉시 오염된다 → 실행하지 않고 경고를 붙여 발화 ──
+    let done_path = marker
+        .get("watch")
+        .and_then(|w| w.get("path"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(done) = done_path {
+        if Path::new(&done).exists() {
+            marker["run"]["blockedAt"] = serde_json::json!(now_ms);
+            marker["run"]["blockedReason"] = serde_json::json!("done-preexists");
+            let _ = write_task_watch_marker(path, marker);
+            task_watch_log_line(&format!(
+                "RUN-BLOCKED \"{}\" .done 이 실행 전부터 존재({}) — 실행하지 않음",
+                id, done
+            ));
+            return RunGate::Active(Some(format!(
+                "⚠ run 을 실행하지 않았습니다 — 감시 대상 .done 이 실행 전부터 존재했습니다({}). 이전 실행의 잔존물인지 확인하세요",
+                done
+            )));
+        }
+    }
+
+    // ── 실제 실행 ──
+    let exe = match run.get("exe").and_then(|v| v.as_str()) {
+        Some(e) if run_exe_is_sane(e) => e.to_string(),
+        Some(e) => {
+            quarantine_invalid_marker(path, &format!("run.exe 부적합: {}", e));
+            return RunGate::Waiting;
+        }
+        None => {
+            quarantine_invalid_marker(path, "run.exe 없음");
+            return RunGate::Waiting;
+        }
+    };
+    let args: Vec<String> = run
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let cwd = run.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let envs: Vec<(String, String)> = run
+        .get("env")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let stdout_log = run
+        .get("stdoutLog")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // 같은 틱/다중 인스턴스 중복 실행 방지 — create_new 는 원자적이다.
+    // (pitfall_multiple_kda_sessions_race_same_project)
+    let lock = task_watch_dir().join(format!("{}.launch.lock", id));
+    if OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .is_err()
+    {
+        task_watch_log_line(&format!("RUN-SKIP \"{}\" launch.lock 선점됨", id));
+        return RunGate::Waiting;
+    }
+
+    let result = spawn_detached(
+        &exe,
+        &args,
+        cwd.as_deref(),
+        &envs,
+        stdout_log.as_deref(),
+    );
+    let _ = std::fs::remove_file(&lock);
+
+    match result {
+        Ok((pid, how)) => {
+            marker["run"]["startedAt"] = serde_json::json!(chrono_lite_now());
+            marker["run"]["startedAtMs"] = serde_json::json!(now_ms);
+            marker["run"]["pid"] = serde_json::json!(pid);
+            marker["run"]["spawnMode"] = serde_json::json!(how);
+            if let Err(e) = write_task_watch_marker(path, marker) {
+                // 기록 실패는 치명적이다 — 다음 스캔에서 또 띄울 수 있다.
+                task_watch_log_line(&format!(
+                    "RUN-WRITEBACK-FAIL \"{}\" pid={} err={} — 중복실행 위험, 마커 격리",
+                    id, pid, e
+                ));
+                quarantine_invalid_marker(path, "run writeback 실패");
+                return RunGate::Waiting;
+            }
+            task_watch_log_line(&format!(
+                "RUN-START \"{}\" pid={} mode={} exe={} args={} log={}",
+                id,
+                pid,
+                how,
+                exe,
+                args.len(),
+                stdout_log.as_deref().unwrap_or("-")
+            ));
+            RunGate::Active(None)
+        }
+        Err(e) => {
+            marker["run"]["lastSpawnError"] = serde_json::json!(e.clone());
+            marker["run"]["lastSpawnErrorAt"] = serde_json::json!(now_ms);
+            let _ = write_task_watch_marker(path, marker);
+            task_watch_log_line(&format!("RUN-FAIL \"{}\" {}", id, e));
+            RunGate::Waiting
+        }
+    }
 }
 
 /// 현재 시각을 Unix epoch ms 로. std 만 사용.
@@ -1671,6 +2108,269 @@ fn current_unix_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod task_run_tests {
+    use super::*;
+
+    /// BOM 이 붙은 마커도 파싱돼야 한다 — 좀비 마커 12건 중 9건의 실제 원인.
+    #[test]
+    fn marker_json_tolerates_utf8_bom() {
+        let plain = r#"{"id":"x","title":"t"}"#;
+        let with_bom = format!("\u{feff}{}", plain);
+        assert!(serde_json::from_str::<serde_json::Value>(&with_bom).is_err(),
+            "전제 확인: std 파서는 BOM 에서 실패해야 한다 (실패하면 이 테스트가 공허해짐)");
+        let v = parse_marker_json(&with_bom).expect("BOM 마커 파싱");
+        assert_eq!(v.get("id").and_then(|x| x.as_str()), Some("x"));
+    }
+
+    /// startAt 이 미래면 실행하지 않고 Waiting — 그리고 **timeout 도 흐르지 않아야** 한다.
+    #[test]
+    fn future_start_at_waits_and_does_not_time_out() {
+        let dir = std::env::temp_dir().join(format!("kda-task-run-test-{}", current_unix_ms()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("m.json");
+        let now = current_unix_ms();
+        let mut marker = serde_json::json!({
+            "id": "m",
+            "timeoutMs": 1000,
+            "createdAt": "2020-01-01T00:00:00.000Z",
+            "watch": { "type": "file", "path": dir.join("never.done").to_string_lossy() },
+            "run": { "exe": "cmd", "args": [], "startAt": "2999-01-01T00:00:00.000Z" }
+        });
+        write_task_watch_marker(&path, &marker).expect("write");
+
+        match process_run_block(&mut marker, &path, "m", now) {
+            RunGate::Waiting => {}
+            _ => panic!("미래 startAt 은 Waiting 이어야 한다"),
+        }
+        // createdAt 이 2020 이라 createdAt 기준이면 즉시 timeout 이다. scan 은 Waiting 에서
+        // continue 하므로 eval_watch 에 도달하지 않는 것이 정상 — 여기서는 기준점 전환만 검증한다.
+        marker["run"]["startedAtMs"] = serde_json::json!(now);
+        assert!(
+            eval_watch(&marker, now).is_none(),
+            "run.startedAt 기준이면 아직 timeout 이 아니어야 한다"
+        );
+        marker["run"]["startedAtMs"] = serde_json::json!(now - 5000);
+        let fired = eval_watch(&marker, now).expect("5초 지났으면 timeout");
+        assert_eq!(fired.0, "timeout");
+        assert!(fired.1.contains("run.startedAt"), "기준점이 로그에 드러나야 한다: {}", fired.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `.done` 이 실행 전부터 있으면 띄우지 않고 경고를 반환한다(완료 오판 방지).
+    #[test]
+    fn preexisting_done_blocks_launch() {
+        let dir = std::env::temp_dir().join(format!("kda-task-run-blk-{}", current_unix_ms()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let done = dir.join("already.done");
+        std::fs::write(&done, b"x").expect("done");
+        let path = dir.join("m.json");
+        let mut marker = serde_json::json!({
+            "id": "m",
+            "watch": { "type": "file", "path": done.to_string_lossy() },
+            "run": { "exe": "cmd", "args": ["/c", "exit"] }
+        });
+        write_task_watch_marker(&path, &marker).expect("write");
+        match process_run_block(&mut marker, &path, "m", current_unix_ms()) {
+            RunGate::Active(Some(note)) => assert!(note.contains(".done")),
+            _ => panic!("경고와 함께 Active 여야 한다"),
+        }
+        assert!(marker["run"].get("startedAt").is_none(), "실행되지 않아야 한다");
+        assert_eq!(
+            marker["run"].get("blockedReason").and_then(|v| v.as_str()),
+            Some("done-preexists")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 이미 startedAt 이 있으면 절대 재실행하지 않는다.
+    #[test]
+    fn already_started_never_relaunches() {
+        let dir = std::env::temp_dir().join(format!("kda-task-run-dup-{}", current_unix_ms()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("m.json");
+        let mut marker = serde_json::json!({
+            "id": "m",
+            "watch": { "type": "file", "path": dir.join("x.done").to_string_lossy() },
+            "run": { "exe": "cmd", "args": [], "startedAt": "2026-10-07 18:00:00", "startedAtMs": current_unix_ms(), "pid": 0 }
+        });
+        write_task_watch_marker(&path, &marker).expect("write");
+        match process_run_block(&mut marker, &path, "m", current_unix_ms()) {
+            RunGate::Active(None) => {}
+            _ => panic!("이미 시작된 마커는 경고 없이 Active 여야 한다"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 셸 한 줄 통째로 넣은 exe 는 거부한다.
+    #[test]
+    fn shell_oneliner_exe_is_rejected() {
+        assert!(run_exe_is_sane("py"));
+        assert!(run_exe_is_sane(r"C:\Python311\python.exe"));
+        assert!(!run_exe_is_sane("cmd /c foo & bar"));
+        assert!(!run_exe_is_sane("py runner.py > out.txt"));
+        assert!(!run_exe_is_sane(""));
+    }
+
+    /// ★ 양성 대조 — **실제로 프로세스를 띄워** 자식이 파일을 만드는 것까지 확인한다.
+    /// 위 테스트들은 전부 "띄우지 않는 경로"만 봤다. 이게 없으면 spawn 이 통째로 깨져도 통과한다.
+    /// 셸 메타문자를 쓰지 않도록 `cmd /c copy /y nul <file>` 로 빈 파일을 만든다.
+    #[cfg(windows)]
+    #[test]
+    fn real_spawn_creates_done_and_captures_stdout() {
+        let dir = std::env::temp_dir().join(format!("kda-task-run-live-{}", current_unix_ms()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let done = dir.join("child.done");
+        let log = dir.join("launch.log");
+        let path = dir.join("m.json");
+        let mut marker = serde_json::json!({
+            "id": "live",
+            "watch": { "type": "file", "path": done.to_string_lossy() },
+            "run": {
+                "exe": "cmd",
+                "args": ["/c", "copy", "/y", "nul", done.to_string_lossy()],
+                "cwd": dir.to_string_lossy(),
+                "stdoutLog": log.to_string_lossy()
+            }
+        });
+        write_task_watch_marker(&path, &marker).expect("write");
+
+        // 전제 확인 — 실행 전에는 .done 이 없어야 한다(있으면 RUN-BLOCKED 경로로 가 공허해짐).
+        assert!(!done.exists(), "전제: 실행 전 .done 없음");
+
+        match process_run_block(&mut marker, &path, "live", current_unix_ms()) {
+            RunGate::Active(None) => {}
+            RunGate::Active(Some(w)) => panic!("경고 없이 떠야 한다: {}", w),
+            _ => panic!("Active 여야 한다 (spawn 실패)"),
+        }
+
+        let pid = marker["run"]["pid"].as_u64().expect("pid 기록돼야 한다");
+        assert!(pid > 0, "pid 가 0 이면 안 된다");
+        let mode = marker["run"]["spawnMode"].as_str().expect("spawnMode 기록");
+        assert!(
+            mode.starts_with("detached"),
+            "detached 경로여야 한다: {}",
+            mode
+        );
+        assert!(marker["run"]["startedAtMs"].as_i64().is_some());
+
+        // 자식이 실제로 일했는지 — 폴링(최대 15초). rc 가 아니라 **산출물**로 판정한다.
+        let mut waited_ms = 0;
+        while !done.exists() && waited_ms < 15_000 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            waited_ms += 200;
+        }
+        assert!(
+            done.exists(),
+            "자식이 {}ms 안에 .done 을 만들어야 한다 (log={})",
+            waited_ms,
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+
+        // stdoutLog 파일 핸들 자체는 열렸어야 한다(우리가 만든다).
+        assert!(log.exists(), "stdoutLog 파일이 생성돼야 한다");
+
+        // 그리고 그 .done 으로 기존 watch 로직이 발화해야 한다 — 실행→감시 연결 확인.
+        let (status, note) = eval_watch(&marker, current_unix_ms()).expect("발화해야 한다");
+        assert_eq!(status, "fired");
+        assert!(note.contains("파일 존재"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ stdout 배선 전용 — **실제 exe**(`where.exe`)의 출력이 stdoutLog 에 잡히는지 본다.
+    /// cmd 내장명령(copy 등)은 콘솔 없는 DETACHED_PROCESS 에서 메시지를 안 쓸 수 있어
+    /// 배선 검증용으로 부적합하다(실측으로 확인됨). 실제 exe 로 갈라서 측정한다.
+    #[cfg(windows)]
+    #[test]
+    fn real_exe_stdout_is_captured_to_log() {
+        let dir = std::env::temp_dir().join(format!("kda-task-run-out-{}", current_unix_ms()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let log = dir.join("out.log");
+        let path = dir.join("m.json");
+        let mut marker = serde_json::json!({
+            "id": "out",
+            "watch": { "type": "file", "path": dir.join("never.done").to_string_lossy() },
+            "run": {
+                "exe": "where",
+                "args": ["cmd"],
+                "stdoutLog": log.to_string_lossy()
+            }
+        });
+        write_task_watch_marker(&path, &marker).expect("write");
+        match process_run_block(&mut marker, &path, "out", current_unix_ms()) {
+            RunGate::Active(None) => {}
+            _ => panic!("spawn 되어야 한다"),
+        }
+        let mut captured = String::new();
+        let mut waited = 0;
+        while waited < 10_000 {
+            captured = std::fs::read_to_string(&log).unwrap_or_default();
+            if !captured.trim().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            waited += 200;
+        }
+        assert!(
+            captured.to_lowercase().contains("cmd"),
+            "where.exe 출력이 stdoutLog 에 잡혀야 한다 ({}ms 대기, 내용={:?})",
+            waited,
+            captured
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ 음성 대조 — 없는 exe 는 "조용히 성공" 하지 않고 에러를 마커에 남기고 Waiting 이어야 한다.
+    #[cfg(windows)]
+    #[test]
+    fn missing_exe_records_error_and_does_not_mark_started() {
+        let dir = std::env::temp_dir().join(format!("kda-task-run-neg-{}", current_unix_ms()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("m.json");
+        let mut marker = serde_json::json!({
+            "id": "neg",
+            "watch": { "type": "file", "path": dir.join("never.done").to_string_lossy() },
+            "run": { "exe": "kda-nonexistent-binary-zzz.exe", "args": [] }
+        });
+        write_task_watch_marker(&path, &marker).expect("write");
+        match process_run_block(&mut marker, &path, "neg", current_unix_ms()) {
+            RunGate::Waiting => {}
+            _ => panic!("spawn 실패는 Waiting 이어야 한다"),
+        }
+        assert!(
+            marker["run"].get("startedAt").is_none(),
+            "실패했는데 startedAt 이 찍히면 재시도가 영구 차단된다"
+        );
+        assert!(
+            marker["run"]["lastSpawnError"].as_str().unwrap_or("").len() > 0,
+            "실패 사유가 마커에 남아야 한다"
+        );
+        // 락이 남아 있으면 영구히 재실행이 막힌다 — 반드시 해제됐어야 한다.
+        assert!(
+            !task_watch_dir().join("neg.launch.lock").exists(),
+            "실패 후 launch.lock 이 남으면 안 된다"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 로테이션은 상한 초과 시에만 돌고, 기존 내용을 `.1` 로 보존한다.
+    #[test]
+    fn rotation_preserves_old_content() {
+        let dir = std::env::temp_dir().join(format!("kda-rot-{}", current_unix_ms()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let log = dir.join("a.log");
+        std::fs::write(&log, b"0123456789").expect("write");
+        rotate_log_if_needed(&log, 100, 3);
+        assert!(log.exists(), "상한 미달이면 그대로 있어야 한다");
+        rotate_log_if_needed(&log, 5, 3);
+        assert!(!log.exists(), "상한 초과면 본체가 밀려나야 한다");
+        let rotated = std::fs::read_to_string(dir.join("a.log.1")).expect("a.log.1");
+        assert_eq!(rotated, "0123456789", "기존 증거가 보존돼야 한다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
