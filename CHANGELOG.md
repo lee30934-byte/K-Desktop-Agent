@@ -3,6 +3,28 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.45] - 2026-10-07
+
+### Added
+- Launch long-running jobs from task-watch markers. A `run` block (`exe`/`args[]`/`cwd`/`env`/`stdoutLog`/`startAt`) makes KDA spawn the job itself with `DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`, record `pid`/`startedAt`/`spawnMode`, then hand off to the existing watch logic. Trigger, launch and completion now live in one marker, replacing the Windows Task Scheduler dependency. Arguments are passed as an array — never interpolated into a shell string.
+- Fall back to a non-breakaway spawn when the job forbids breakaway, and record which path was used in the marker and the log.
+
+### Fixed
+- Accept markers that carry a UTF-8 BOM. `serde_json::from_str` rejected them, so 9 of 12 stale markers were skipped in silence for 43–78 days. Applied on both the scan and the claim/ack paths.
+- Quarantine unparseable markers into `~/.kda/task-watch/invalid/` and log `MARKER-INVALID` instead of skipping them forever.
+- Measure `timeoutMs` from `run.startedAt` when a run exists. With `createdAt` as the base, a scheduled `startAt` burned the timeout before the job ever started.
+- Refuse to launch when the watched `.done` already exists, and carry the warning into the injected turn; otherwise an unexecuted job reports as complete.
+- Rotate `schedule-heartbeat.log` and `task-watch.log` at 5 MB, keeping 3 generations. The former had no rotation and reached 7 MB / 76,902 lines. Existing logs are rolled to `.1`, never deleted.
+- Guard against duplicate launches with an atomic `launch.lock`, a `run.startedAt` precondition, and quarantine on write-back failure. Report `RUN-ORPHAN` when the pid is gone without a `.done` instead of relaunching.
+
+### Tests
+- Cover BOM tolerance (with a positive control proving the stock parser fails), future `startAt`, timeout base switching, pre-existing `.done`, relaunch refusal, shell-oneliner rejection, and log rotation.
+- Spawn a real process and assert the child's artifact and captured stdout. This positive control found that console-less `cmd` builtins write no stdout, so stdout capture is verified with a real executable.
+
+### Verification notes
+- Child survival across a job-wide kill was measured outside the app: a `KILL_ON_JOB_CLOSE` job with breakaway denied kills the child (negative control), while the same job with breakaway allowed leaves it running and still producing output.
+- Not yet measured: survival when the shipped app itself is force-closed, and whether breakaway succeeds when the spawn originates in KDA's own process rather than a descendant. `spawnMode` in the marker reports which path was taken.
+
 ## [0.7.44] - 2026-10-07
 
 ### Added

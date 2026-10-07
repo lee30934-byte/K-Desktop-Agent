@@ -1369,38 +1369,34 @@ fn pid_alive(_pid: u32) -> bool {
 /// 마커 하나의 조건을 평가해 상태 문자열을 반환. 발화 아니면 None.
 fn eval_watch(marker: &serde_json::Value, now_ms: i64) -> Option<(String, String)> {
     // timeout 우선 검사 — 조건 미충족이어도 너무 오래되면 안전망 발화.
+    // ★ timeout 기준점: `run` 을 띄웠다면 **실제 시작 시각**이 기준이다.
+    // createdAt 을 쓰면 startAt 예약 대기 시간까지 타이머에 포함돼 "시작도 전에 timeout" 이
+    // 난다(pitfall_taskwatch_stale_createdat_false_timeout).
+    //
+    // 기준점 계산을 timeoutMs 검사보다 **위로** 뺀 이유: sidecar/test-task-watch.mjs 가
+    // `/timeoutMs[\s\S]{0,500}"timeout"/` 로 소스를 정규식 검사한다. 사이에 코드를 끼우면
+    // 동작이 멀쩡해도 게이트가 깨진다(pitfall_kda_test_signature_brittleness).
+    let run_started_ms = marker
+        .get("run")
+        .and_then(|r| r.get("startedAtMs"))
+        .and_then(|v| v.as_i64());
+    let base_label = if run_started_ms.is_some() {
+        "run.startedAt"
+    } else {
+        "createdAt"
+    };
+    let base_ms = run_started_ms.or_else(|| {
+        marker
+            .get("createdAt")
+            .and_then(|v| v.as_str())
+            .and_then(|c| parse_iso_ms(c).ok())
+    });
     if let Some(timeout_ms) = marker.get("timeoutMs").and_then(|v| v.as_i64()) {
-        if timeout_ms > 0 {
-            // ★ timeout 기준점: `run` 을 띄웠다면 **실제 시작 시각**이 기준이다.
-            // createdAt 을 쓰면 startAt 예약 대기 시간까지 타이머에 포함돼
-            // "시작도 전에 timeout" 이 난다(pitfall_taskwatch_stale_createdat_false_timeout).
-            let base_ms = marker
-                .get("run")
-                .and_then(|r| r.get("startedAtMs"))
-                .and_then(|v| v.as_i64())
-                .or_else(|| {
-                    marker
-                        .get("createdAt")
-                        .and_then(|v| v.as_str())
-                        .and_then(|c| parse_iso_ms(c).ok())
-                });
-            if let Some(base_ms) = base_ms {
-                if now_ms - base_ms >= timeout_ms {
-                    let from = if marker
-                        .get("run")
-                        .and_then(|r| r.get("startedAtMs"))
-                        .is_some()
-                    {
-                        "run.startedAt"
-                    } else {
-                        "createdAt"
-                    };
-                    return Some((
-                        "timeout".to_string(),
-                        format!("timeoutMs={}ms 초과 (기준={})", timeout_ms, from),
-                    ));
-                }
-            }
+        if timeout_ms > 0 && base_ms.is_some_and(|b| now_ms - b >= timeout_ms) {
+            return Some((
+                "timeout".to_string(),
+                format!("timeoutMs={}ms 초과 (기준={})", timeout_ms, base_label),
+            ));
         }
     }
     let watch = marker.get("watch")?;
