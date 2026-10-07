@@ -3,6 +3,17 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.44] - 2026-10-07
+
+### Added
+- Show a per-request MCP consent form in the originating Codex conversation. Support flat typed inputs, enums and explicit accept/decline/cancel responses; never submit server defaults automatically.
+
+### Fixed
+- Bind elicitation responses to their single-use request token and thread/turn. Reject invalid, expired, resolved or cross-conversation approvals. Keep unsupported URL/nested forms fail-closed while the conversation continues.
+
+### Tests
+- Validate schema constraints, token replay, stale context, timeout, command/file approval coexistence, and consecutive offline sidecar turns. Verify rendered form interactions separately from installed GUI validation.
+
 ## [0.7.43] - 2026-10-03
 
 ### Fixed

@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import readline from "node:readline";
 import treeKill from "tree-kill";
+import { parseElicitationSchema, validateElicitationContent } from "./mcp-elicitation-schema.mjs";
 
 const stopServer = () => {
   if (server?.pid) treeKill(server.pid, "SIGKILL", () => {});
@@ -64,7 +65,9 @@ function decline(key) {
   if (!entry) return;
   pending.delete(key);
   clearTimeout(entry.timer);
-  send({ id: entry.rpcId, result: { decision: "decline" } });
+  send({ id: entry.rpcId, result: entry.kind === "elicitation"
+    ? { action: "decline", content: null } : { decision: "decline" } });
+  if (entry.kind === "elicitation") emit({ type: "elicitation.resolved", token: key });
 }
 
 function onServerMessage(message) {
@@ -78,15 +81,29 @@ function onServerMessage(message) {
   }
   const { method, params = {} } = message;
   if (method === "mcpServer/elicitation/request") {
-    // Elicitation uses action/content, not the command approval decision shape.
-    // Until KDA has a schema-aware form/URL consent UI, fail closed for this
-    // request only. Never infer answers from defaults, permission settings, or
-    // a prior command approval. turnId is optional in the Codex 0.158 protocol.
     if (typeof message.id !== "string" && !Number.isSafeInteger(message.id)) return;
-    send({ id: message.id, result: { action: "decline", content: null } });
-    // Do not expose the remote message, form defaults, or authentication URL.
-    emit({ type: "provider.notice", code: "mcp_elicitation_declined",
-      message: "연결된 도구의 추가 입력·승인 요청은 현재 KDA에서 지원하지 않아 거절했습니다. 해당 요청은 승인되지 않았으며 대화는 계속됩니다." });
+    // turnId is optional in Codex 0.158. The process and RPC ID bind requests
+    // lacking it to this KDA turn. Mismatching non-null IDs are never accepted.
+    const valid = !finished && params && threadId && params.threadId === threadId &&
+      (params.turnId == null || (typeof params.turnId === "string" && (!turnId || params.turnId === turnId))) &&
+      typeof params.serverName === "string" && params.serverName.length > 0 && params.serverName.length <= 200 &&
+      typeof params.message === "string" && params.message.trim().length > 0 && params.message.length <= 12000 &&
+      ["form", "openai/form", "openaiForm"].includes(params.mode) && parseElicitationSchema(params.requestedSchema);
+    if (!valid || pending.size >= 16) {
+      send({ id: message.id, result: { action: "decline", content: null } });
+      emit({ type: "provider.notice", code: "mcp_elicitation_declined",
+        message: "연결된 도구의 요청 형식·대화 정보를 확인할 수 없어 거절했습니다. URL 인증과 지원하지 않는 입력 형식은 승인되지 않으며 대화는 계속됩니다." });
+      return;
+    }
+    if ([...pending.values()].some(e => e.rpcId === message.id)) return;
+    if (!turnId && params.turnId) turnId = params.turnId;
+    const token = randomUUID();
+    const expiresAt = Date.now() + 120_000;
+    const timer = setTimeout(() => decline(token), 120_000);
+    pending.set(token, { kind: "elicitation", rpcId: message.id, timer, threadId,
+      turnId: params.turnId ?? null, schema: params.requestedSchema, expiresAt });
+    emit({ type: "elicitation.requested", token, threadId, turnId: params.turnId ?? null,
+      serverName: params.serverName, message: params.message, schema: params.requestedSchema, expiresAt });
     return;
   }
   if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
@@ -122,6 +139,7 @@ function onServerMessage(message) {
       if (entry.rpcId === params.requestId) {
         clearTimeout(entry.timer);
         pending.delete(token);
+        if (entry.kind === "elicitation") emit({ type: "elicitation.resolved", token });
       }
     }
     return;
@@ -213,9 +231,23 @@ inputReader.on("line", (line) => {
   try {
     const value = JSON.parse(line);
     if (value.type === "start") { void start(value).catch((error) => fail(error.message)); return; }
+    if (value.type === "elicitation") {
+      const entry = pending.get(value.token);
+      if (!entry || entry.kind !== "elicitation" || value.threadId !== entry.threadId || value.turnId !== entry.turnId) return;
+      if (Date.now() >= entry.expiresAt) { decline(value.token); return; }
+      if (!["accept", "decline", "cancel"].includes(value.action)) return;
+      if (value.action === "accept" && !validateElicitationContent(entry.schema, value.content)) {
+        decline(value.token); return;
+      }
+      pending.delete(value.token);
+      clearTimeout(entry.timer);
+      send({ id: entry.rpcId, result: { action: value.action, content: value.action === "accept" ? value.content : null } });
+      emit({ type: "elicitation.resolved", token: value.token });
+      return;
+    }
     if (value.type !== "approval") return;
     const entry = pending.get(value.token);
-    if (!entry || value.threadId !== entry.threadId || value.turnId !== entry.turnId || value.itemId !== entry.itemId) return;
+    if (!entry || entry.kind === "elicitation" || value.threadId !== entry.threadId || value.turnId !== entry.turnId || value.itemId !== entry.itemId) return;
     if (value.decision !== "accept" && value.decision !== "decline") return;
     pending.delete(value.token);
     clearTimeout(entry.timer);

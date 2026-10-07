@@ -6,7 +6,7 @@
   "description": "Node sidecar running Claude Agent SDK for K Desktop Agent",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && node -e \"require('fs').copyFileSync('src/codex-app-server-bridge.mjs','dist/codex-app-server-bridge.mjs')\"",
+    "build": "tsc && node -e \"for(const f of ['codex-app-server-bridge.mjs','mcp-elicitation-schema.mjs'])require('fs').copyFileSync('src/'+f,'dist/'+f)\"",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js"
   },

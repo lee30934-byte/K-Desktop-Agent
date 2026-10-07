@@ -5082,3 +5082,11 @@
 .composer-send-modes button { border: 0; border-radius: 4px; padding: 5px 9px; background: transparent; color: var(--text-secondary, #9cafbd); font: inherit; font-size: 12px; cursor: pointer; }
 .composer-send-modes button[aria-pressed="true"] { background: #54d5c21c; color: var(--text-primary, #e5eef6); }
 .task-activity button:focus-visible, .composer-send-modes button:focus-visible { outline: 2px solid #54d5c2; outline-offset: 3px; }
+
+.codex-elicitation { max-height: 85vh; overflow-y: auto; }
+.codex-elicitation .elicitation-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.codex-elicit-fields { display: grid; gap: var(--space-md); }
+.codex-elicit-fields label { display: grid; gap: var(--space-xs); }
+.codex-elicit-fields input, .codex-elicit-fields select { background: var(--bg-2); color: var(--text-primary); padding: var(--space-sm); }
+.codex-elicitation button:disabled { opacity: 0.45; cursor: not-allowed; }
+.codex-elicitation .elicitation-hint { color: var(--text-secondary); }

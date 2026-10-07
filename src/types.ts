@@ -90,6 +90,8 @@ type SidecarEventPayload =
       networkApprovalContext?: { host?: string; protocol?: string; port?: number } | null;
       reason?: string | null;
     }
+  | CodexElicitationRequest
+  | { type: "codex_elicitation_resolved"; id: string; token: string; conversation_id?: string | null }
   | { type: "assistant_delta"; id: string; text: string }
   | {
       type: "tool_use";
@@ -569,4 +571,10 @@ export interface FileChangeEvent {
   kind: "create" | "modify" | "remove" | "rename";
   paths: string[];
   timestamp: number;
+}
+
+export interface CodexElicitationRequest {
+  type: "codex_elicitation_request";
+  id: string; token: string; threadId: string; turnId: string | null;
+  conversation_id: string; serverName: string; message: string; schema: unknown; expiresAt: number;
 }

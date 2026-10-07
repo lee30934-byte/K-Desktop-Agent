@@ -21,6 +21,10 @@ async function run(decision) {
   reader.on("line", (line) => {
     const value = JSON.parse(line);
     events.push(value);
+    if (value.type === "elicitation.requested") {
+      proc.stdin.write(JSON.stringify({ type: "elicitation", token: value.token, threadId: value.threadId,
+        turnId: value.turnId, action: "decline", content: null }) + "\n");
+    }
     if (value.type !== "approval.requested") return;
     // An existing command token and a forged elicitation approval must never
     // authorize the form, nor consume the legitimate command/file consent.
@@ -37,9 +41,10 @@ async function run(decision) {
   assert.equal(stderr, "");
   assert.deepEqual(events.filter(e => e.type === "approval.requested").map(e => e.kind), ["command", "file"]);
   const notices = events.filter(e => e.type === "provider.notice");
-  assert.equal(notices.length, 12);
+  assert.equal(notices.length, 6);
+  assert.equal(events.filter(e => e.type === "elicitation.requested").length, 6);
   assert.ok(notices.every(e => e.code === "mcp_elicitation_declined"));
-  assert.ok(!JSON.stringify(events).includes("PRIVATE_"), "remote form or URL leaked into UI events");
+  assert.ok(!JSON.stringify(events).includes("PRIVATE_URL_SENTINEL"), "unsupported authentication URL leaked");
   const answer = events.find(e => e.type === "item.completed" && e.item?.type === "agent_message");
   const audit = JSON.parse(answer.item.text);
   assert.equal(audit.continued, true);

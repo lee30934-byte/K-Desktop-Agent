@@ -57,7 +57,9 @@ input.on("line", (line) => {
   }
   if (!value.method && Object.hasOwn(value, "id")) {
     if (expected.has(value.id)) {
-      assert.deepEqual(value.result, { action: "decline", content: null });
+      const index = value.id === 0 ? 0 : Number(value.id.slice(7));
+      const accepted = process.env.KDA_PROBE_ELICITATION_ACTION === 'accept' && [0, 2, 3, 4, 5, 11].includes(index);
+      assert.deepEqual(value.result, accepted ? { action: 'accept', content: index === 11 ? {} : { approve: false } } : { action: 'decline', content: null });
       expected.delete(value.id);
       received.push({ id: value.id, result: value.result });
       send({ method: "serverRequest/resolved", params: { requestId: value.id } });

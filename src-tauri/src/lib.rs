@@ -424,6 +424,26 @@ async fn interrupt(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn codex_elicitation_response(
+    id: String, token: String, thread_id: String, turn_id: Option<String>,
+    action: String, content: Option<serde_json::Value>,
+) -> Result<(), String> {
+    if !["accept", "decline", "cancel"].contains(&action.as_str()) {
+        return Err("invalid MCP elicitation action".into());
+    }
+    let payload = serde_json::json!({
+        "type": "codex_elicitation_response", "id": id, "token": token,
+        "threadId": thread_id, "turnId": turn_id, "action": action, "content": content,
+    });
+    let line = format!("{}\n", payload);
+    if line.len() > 65536 { return Err("MCP elicitation response too large".into()); }
+    let tx_holder = get_tx_holder().clone();
+    let guard = tx_holder.lock().await;
+    let tx = guard.as_ref().ok_or("sidecar not initialized")?;
+    tx.send(line).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn codex_approval_response(
     id: String,
     token: String,
@@ -4467,6 +4487,7 @@ pub fn run_with_options(start_minimized: bool) {
             browser_host::browser_host_request,
             send_message,
             codex_approval_response,
+            codex_elicitation_response,
             interrupt,
             reload_sidecar,
             ping_sidecar,

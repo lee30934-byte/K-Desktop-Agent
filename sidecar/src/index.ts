@@ -4900,8 +4900,19 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
           case "provider.notice": {
             if (event.code === "mcp_elicitation_declined") {
               emit({ type: "provider_notice", id: msg.id, provider: "codex", message: event.message });
-              logToFile("warn", "Codex MCP elicitation safely declined: unsupported input UI");
+              logToFile("warn", "Codex MCP elicitation declined: unreviewable request");
             }
+            break;
+          }
+          case "elicitation.requested": {
+            emit({ type: "codex_elicitation_request", id: msg.id, conversation_id: msg.conversation_id ?? null,
+              token: event.token, threadId: event.threadId, turnId: event.turnId,
+              serverName: event.serverName, message: event.message, schema: event.schema, expiresAt: event.expiresAt });
+            logToFile("info", `Codex elicitation awaiting user id=${msg.id}`);
+            break;
+          }
+          case "elicitation.resolved": {
+            emit({ type: "codex_elicitation_resolved", id: msg.id, conversation_id: msg.conversation_id ?? null, token: event.token });
             break;
           }
           case "approval.requested": {
@@ -6892,6 +6903,16 @@ rl.on("line", (line) => {
 
   if (browserHost.receive(msg)) return;
   switch (msg.type) {
+    case "codex_elicitation_response": {
+      const v = msg as Record<string, unknown>;
+      const proc = typeof v.id === "string" ? activeTurns.get(v.id) : null;
+      if (!proc?.stdin?.writable || typeof v.token !== "string" || typeof v.threadId !== "string" ||
+          (v.turnId !== null && typeof v.turnId !== "string") || !["accept", "decline", "cancel"].includes(String(v.action))) break;
+      proc.stdin.write(JSON.stringify({ type: "elicitation", token: v.token, threadId: v.threadId,
+        turnId: v.turnId, action: v.action, content: v.content ?? null }) + "\n");
+      logToFile("info", `Codex elicitation response id=${v.id} action=${v.action}`);
+      break;
+    }
     case "codex_approval_response": {
       const value = msg as Record<string, unknown>;
       const turnId = value.id;

@@ -20,6 +20,8 @@ import type {
   RateLimitWindow,
 } from "./types";
 import ElicitationDialog from "./components/ElicitationDialog";
+import CodexElicitationDialog from "./components/CodexElicitationDialog";
+import type { CodexElicitationRequest } from "./types";
 import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
 import SidebarResizer from "./components/SidebarResizer";
@@ -428,6 +430,7 @@ export default function App() {
   // Phase 79 (v0.6.22) — Task State Manager: startup 시 끊긴 long_task 후보 (running + stale).
   // RecoveryBanner 가 K 에게 표시 + "복구" or "버림" 버튼.
   const [recoverableTasks, setRecoverableTasks] = useState<DBLongTask[]>([]);
+  const [codexElicitations, setCodexElicitations] = useState<CodexElicitationRequest[]>([]);
   const [elicitationRequest, setElicitationRequest] = useState<ElicitationRequest | null>(null);
   const elicitationResolveRef = useRef<((response: ElicitationResponse) => void) | null>(null);
   // Phase 50 — ask_user_question 추적용. 응답 시 어떤 turn 의 질문이었는지 기록 + multi-question
@@ -1443,7 +1446,10 @@ export default function App() {
 
   const handleSidecarEvent = (ev: SidecarEvent) => {
     const event = ev as any;
-    const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window"]);
+    if (["done", "error", "turn_stopping", "turn_stopped"].includes(ev.type)) {
+      setCodexElicitations(prev => prev.filter(r => r.id !== event.id));
+    }
+    const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "codex_elicitation_request", "codex_elicitation_resolved", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window"]);
     const eventTurnId = event.turn_id ?? event.taskId ?? event.id;
     const taskWatchActivity = taskWatchTurnsRef.current.get(eventTurnId);
     if (taskWatchActivity) taskWatchActivity.lastActivityAt = Date.now();
@@ -2249,6 +2255,17 @@ export default function App() {
         break;
       }
 
+      case "codex_elicitation_request": {
+        const convId = resolveEventConv(ev);
+        if (!convId || convId !== ev.conversation_id) break;
+        setCodexElicitations(prev => prev.some(r => r.token === ev.token) ? prev : [...prev, ev]);
+        if (convId !== activeConversationIdRef.current) saveControlNotice(convId, "연결된 도구가 추가 승인을 기다립니다. 해당 대화를 열어 검토해 주세요.");
+        break;
+      }
+      case "codex_elicitation_resolved": {
+        setCodexElicitations(prev => prev.filter(r => r.token !== ev.token || r.id !== ev.id));
+        break;
+      }
       case "codex_approval_request": {
         const request = ev;
         const convId = resolveEventConv(ev);
@@ -5064,6 +5081,15 @@ export default function App() {
         </div>
       )}
 
+      {codexElicitations.filter(r => r.conversation_id === activeConversationId && r.expiresAt > Date.now()).slice(0, 1).map(request =>
+        <CodexElicitationDialog key={request.token} request={request} onResponse={async (r, action, content) => {
+          const active = r.conversation_id === activeConversationIdRef.current &&
+            conversationTurnGateRef.current.accepts(r.conversation_id, r.id) && Date.now() < r.expiresAt;
+          const safeAction = action === "accept" && !active ? "decline" : action;
+          await invoke("codex_elicitation_response", { id: r.id, token: r.token, threadId: r.threadId,
+            turnId: r.turnId, action: safeAction, content: safeAction === "accept" ? content : null });
+          setCodexElicitations(prev => prev.filter(p => p.token !== r.token));
+        }} />)}
       <ElicitationDialog
         request={elicitationRequest}
         onResponse={handleElicitationResponse}
