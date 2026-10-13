@@ -15,6 +15,17 @@ export interface ReadyWatch {
   delivery?: WatchDelivery;
 }
 
+export interface WaitingWatch { id: string; title: string; reason: string; conversationId?: string | null }
+
+export function waitingWatchKey(watch: WaitingWatch): string {
+  return `${watch.id}:${watch.reason}`;
+}
+
+export function visibleWaitingWatches(watches: WaitingWatch[], activeConversationId: string | null, dismissed: ReadonlySet<string>): WaitingWatch[] {
+  if (!activeConversationId) return [];
+  return watches.filter((watch) => watch.conversationId === activeConversationId && !dismissed.has(waitingWatchKey(watch)));
+}
+
 /** Hold the owner until the retry decision is durable. IPC failures are never retry permission. */
 export async function settleWatchFailure(
   control: ConversationControl, conversationId: string, turnId: string,

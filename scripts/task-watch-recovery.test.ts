@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { ConversationControl } from "../src/conversationControl";
-import { settleWatchFailure, watchBlockReason, persistWatchResult, watchRecoveryPrompt, type ReadyWatch, type WatchDelivery } from "../src/utils/taskWatchRecovery";
+import { settleWatchFailure, watchBlockReason, persistWatchResult, watchRecoveryPrompt, visibleWaitingWatches, waitingWatchKey, type ReadyWatch, type WatchDelivery } from "../src/utils/taskWatchRecovery";
 import { dispatchAvailableWatches } from "../src/utils/taskWatchDispatch";
 const dir = mkdtempSync(path.join(tmpdir(), "kda-watch-recovery-"));
 const capacity = "Codex CLI exited with code 1\nstderr (tail):\nSelected model is at capacity. Please try a different model.";
@@ -17,6 +17,19 @@ function rust(op: string, file: string, args: Record<string, unknown> = {}) { co
 function setup(file: string) { rust("write", file, { marker: { id: file, conversationId: "chat", watch: { type: "file", path: "already-completed.done" }, run: { startedAt: "past", pid: 0 } } }); }
 function scanned(file: string, now = 1_000_000, session = "app-one"): ReadyWatch { return { id: file, file, title: file, conversationId: "chat", prompt: "process result", note: "completion file rechecked", status: "fired", delivery: rust("view", file, { now, session }) }; }
 async function test(name: string, fn: () => unknown | Promise<unknown>) { await fn(); console.log("PASS " + name); passed++; }
+
+await test("waiting banner shows only the open conversation and stays dismissed until reason changes", () => {
+  const watches = [
+    { id: "same", title: "current", reason: "user-paused", conversationId: "chat" },
+    { id: "other", title: "another project", reason: "conversation-running", conversationId: "elsewhere" },
+    { id: "unbound", title: "unbound", reason: "requires-user" },
+  ];
+  assert.deepEqual(visibleWaitingWatches(watches, "chat", new Set()).map(w => w.id), ["same"]);
+  assert.deepEqual(visibleWaitingWatches(watches, null, new Set()), []);
+  const dismissed = new Set([waitingWatchKey(watches[0])]);
+  assert.deepEqual(visibleWaitingWatches(watches, "chat", dismissed), []);
+  assert.deepEqual(visibleWaitingWatches([{ ...watches[0], reason: "retry-exhausted" }], "chat", dismissed).map(w => w.id), ["same"]);
+});
 
 await test("reproduce v0.7.44 failed-turn pause deadlock", () => {
   const c = new ConversationControl(); c.claim("chat", "old"); c.finish("chat", "old", "failed");

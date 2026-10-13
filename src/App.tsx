@@ -30,7 +30,7 @@ import { ConversationControl, buildSteeringMessage, type PendingSend, type SendM
 import TaskActivityPanel from "./components/TaskActivityPanel";
 import { ConversationMessageWriter } from "./messagePersistence";
 import { dispatchAvailableWatches } from "./utils/taskWatchDispatch";
-import { settleWatchFailure, watchBlockReason, watchBlockLabel, watchRecoveryPrompt, persistWatchResult, type ReadyWatch, type WatchDelivery } from "./utils/taskWatchRecovery";
+import { settleWatchFailure, watchBlockReason, watchBlockLabel, watchRecoveryPrompt, persistWatchResult, visibleWaitingWatches, waitingWatchKey, type WaitingWatch, type ReadyWatch, type WatchDelivery } from "./utils/taskWatchRecovery";
 // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
 import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
 // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid)
@@ -3418,7 +3418,20 @@ export default function App() {
   // 스케줄러 하트비트(X-4)와 동형 — time 기반 대신 조건 기반이라는 점만 다르다.
   // ─────────────────────────────────────────────────────────────
   const taskWatchTickBusyRef = useRef(false);
-  const [taskWatchWaiting, setTaskWatchWaiting] = useState<Array<{ id: string; title: string; reason: string }>>([]);
+  const [taskWatchWaiting, setTaskWatchWaiting] = useState<WaitingWatch[]>([]);
+  const [dismissedTaskWatchKeys, setDismissedTaskWatchKeys] = useState<Set<string>>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("kda_dismissed_task_watch_waiting_v1") || "[]");
+      return new Set(Array.isArray(stored) ? stored.filter((key): key is string => typeof key === "string").slice(-100) : []);
+    } catch { return new Set(); }
+  });
+  const visibleTaskWatchWaiting = visibleWaitingWatches(taskWatchWaiting, activeConversationId, dismissedTaskWatchKeys);
+  const dismissTaskWatchWaiting = () => {
+    const next = new Set([...dismissedTaskWatchKeys, ...visibleTaskWatchWaiting.map(waitingWatchKey)]);
+    const bounded = [...next].slice(-100);
+    try { localStorage.setItem("kda_dismissed_task_watch_waiting_v1", JSON.stringify(bounded)); } catch { /* in-memory dismissal still works */ }
+    setDismissedTaskWatchKeys(new Set(bounded));
+  };
   const taskWatchLog = useCallback((line: string) => {
     void invoke("task_watch_log", { line: `[${new Date().toLocaleString("sv-SE")}] ${line}` }).catch(() => {});
   }, []);
@@ -3607,7 +3620,7 @@ export default function App() {
         if (!Array.isArray(fired)) return;
         setTaskWatchWaiting(fired.flatMap((w) => {
           const reason = watchBlockReason(w, conversationTurnGateRef.current, w.conversationId || "");
-          return reason ? [{ id: w.id, title: w.title, reason }] : [];
+          return reason ? [{ id: w.id, title: w.title, reason, conversationId: w.conversationId }] : [];
         }));
         if (fired.length === 0) return;
         // 대화별 owner gate는 같은 대화의 중복 turn을 막는다. 다른 대화는 빈 슬롯만큼 시작한다.
@@ -4934,10 +4947,11 @@ export default function App() {
         </div>
       )}
 
-      {taskWatchWaiting.length > 0 && (
+      {visibleTaskWatchWaiting.length > 0 && (
         <div role="status" className="task-watch-waiting" style={{ padding: "8px 12px", color: "var(--warn)", background: "var(--bg-2)", fontSize: "0.85em" }}>
-          <strong>작업 결과 확인 대기 {taskWatchWaiting.length}건</strong>
-          {taskWatchWaiting.slice(0, 3).map((w) => <div key={w.id}>{w.title} · {watchBlockLabel(w.reason)}</div>)}
+          <button className="settings-btn" style={{ float: "right", padding: "2px 8px", fontSize: "0.85em" }} onClick={dismissTaskWatchWaiting} title="이 알림 숨김 · 작업 감시는 계속됨">✕</button>
+          <strong>이 대화의 작업 결과 확인 대기 {visibleTaskWatchWaiting.length}건</strong>
+          {visibleTaskWatchWaiting.slice(0, 3).map((w) => <div key={w.id}>{w.title} · {watchBlockLabel(w.reason)}</div>)}
         </div>
       )}
       {/* Phase 121 (v0.6.76) — dead-stream 워치독 배너. 비파괴적: 자동 중단 안 함. */}
