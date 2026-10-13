@@ -3,6 +3,15 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.47] - 2026-10-14
+
+### Fixed
+- Show task-watch waiting notices only in their own conversation, so unrelated projects no longer fill the current chat.
+- Let the user dismiss the current notice without changing or deleting the watched job. The same item stays hidden after restart; a new waiting reason is shown again.
+
+### Tests
+- Cover conversation filtering, dismissal, and new-reason visibility. Frontend build and full release gate pass.
+
 ## [0.7.46] - 2026-10-13
 
 ### Fixed
