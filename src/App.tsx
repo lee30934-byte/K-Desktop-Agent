@@ -30,6 +30,7 @@ import { ConversationControl, buildSteeringMessage, type PendingSend, type SendM
 import TaskActivityPanel from "./components/TaskActivityPanel";
 import { ConversationMessageWriter } from "./messagePersistence";
 import { dispatchAvailableWatches } from "./utils/taskWatchDispatch";
+import { settleWatchFailure, watchBlockReason, watchBlockLabel, watchRecoveryPrompt, persistWatchResult, type ReadyWatch, type WatchDelivery } from "./utils/taskWatchRecovery";
 // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
 import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
 // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid)
@@ -766,12 +767,17 @@ export default function App() {
       setCurrentTurnId(owner ?? null);
       currentTurnIdRef.current = owner ?? null;
     }
-    try { localStorage.setItem("kda_paused_conversations_v1", JSON.stringify([...control.paused])); } catch {}
+    try {
+      localStorage.setItem("kda_paused_conversations_v1", JSON.stringify([...control.paused]));
+      localStorage.setItem("kda_pause_reasons_v2", JSON.stringify(control.pauseSnapshot()));
+    } catch {}
   }, []);
   useEffect(() => {
     try {
       const paused = JSON.parse(localStorage.getItem("kda_paused_conversations_v1") || "[]");
-      if (Array.isArray(paused)) for (const id of paused) if (typeof id === "string") conversationTurnGateRef.current.pause(id);
+      let reasons: unknown = null;
+      try { reasons = JSON.parse(localStorage.getItem("kda_pause_reasons_v2") || "null"); } catch { /* retain legacy stops */ }
+      conversationTurnGateRef.current.restorePauses(reasons, paused);
       conversationTurnGateRef.current.allPaused = localStorage.getItem(LS_AUTO_RESUME_MANUAL_STOPPED) === "1";
     } catch {}
     syncControl();
@@ -1771,13 +1777,13 @@ export default function App() {
         {
           const tw = taskWatchTurnsRef.current.get(ev.id);
           if (tw) {
-            taskWatchTurnsRef.current.delete(ev.id);
             const line = `[${new Date().toLocaleString("sv-SE")}] DONE task-watch "${tw.watchId}" (${tw.title}) turn=${ev.id}`;
             void (async () => {
               try {
                 if (!convForTurn || !tw.lastText?.trim()) {
                   throw new Error("done without a durable assistant response");
                 }
+                await invoke("task_watch_record_result", { file: tw.watchFile, turnId: ev.id, text: tw.lastText });
                 await saveMessage(convForTurn, {
                   id: ev.id,
                   role: "assistant",
@@ -1794,9 +1800,9 @@ export default function App() {
                   error: String(err),
                 }).catch(() => {});
                 await invoke("task_watch_log", {
-                  line: `${line} ACK-ERROR=${String(err)} RETRY-SCHEDULED`,
+                  line: `${line} ACK-ERROR=${String(err)} inspect durable delivery state`,
                 }).catch(() => {});
-              }
+              } finally { taskWatchTurnsRef.current.delete(ev.id); }
             })();
           }
         }
@@ -1998,6 +2004,7 @@ export default function App() {
       }
 
       case "error": {
+        const failedWatch = ev.id ? taskWatchTurnsRef.current.get(ev.id) : undefined;
         // Phase 127 (v0.6.82) — 텔레그램 turn 이 실패하면 폰으로 에러 회신 + 엔트리 정리.
         {
           const tgId = ev.id;
@@ -2020,22 +2027,18 @@ export default function App() {
             void invoke("append_schedule_log", { line }).catch(() => {});
           }
         }
-        // v0.7.17 — task-watch turn 실패면 busy gate 해제 + 실패 로그. 마커는 이미 삭제됨(재발화 없음).
+        // Keep ownership until the durable retry/hold decision is recorded.
         {
           const twId = ev.id;
           const tw = twId ? taskWatchTurnsRef.current.get(twId) : undefined;
           if (tw && twId) {
-            taskWatchTurnsRef.current.delete(twId);
-            const line = `[${new Date().toLocaleString("sv-SE")}] ERROR task-watch "${tw.watchId}" (${tw.title}) turn=${twId} msg=${(ev as any).message ?? "?"}`;
-            void invoke("task_watch_release", {
-              file: tw.watchFile,
-              turnId: twId,
-              error: String((ev as any).message ?? "unknown error"),
-            })
-              .then(() => invoke("task_watch_log", { line: `${line} RETRY-SCHEDULED` }))
-              .catch((err) => invoke("task_watch_log", {
-                line: `${line} RELEASE-ERROR=${String(err)}`,
-              }));
+            const failedConv = resolveEventConv(ev);
+            const line = `[${new Date().toLocaleString("sv-SE")}] ERROR task-watch "${tw.watchId}" turn=${twId}`;
+            const release = () => invoke<WatchDelivery>("task_watch_release", { file: tw.watchFile, turnId: twId, error: String((ev as any).message ?? "unknown error") });
+            void (failedConv ? settleWatchFailure(conversationTurnGateRef.current, failedConv, twId, release) : release())
+              .then((decision) => invoke("task_watch_log", { line: `${line} delivery=${decision.state} reason=${decision.reason ?? ""}` }))
+              .catch((err) => invoke("task_watch_log", { line: `${line} RELEASE-ERROR=${String(err)}` }).catch(() => {}))
+              .finally(() => { taskWatchTurnsRef.current.delete(twId); syncControl(); });
           }
         }
         // Phase 111 (v0.6.60) — background turn 의 error 도 routing.
@@ -2049,7 +2052,7 @@ export default function App() {
        if (ev.id) {
          turnToConvMap.current.delete(ev.id);
        }
-        if (convForErr && ev.id) {
+        if (convForErr && ev.id && !failedWatch) {
           conversationTurnGateRef.current.finish(convForErr, ev.id, "failed");
           syncControl();
         }
@@ -3415,18 +3418,27 @@ export default function App() {
   // 스케줄러 하트비트(X-4)와 동형 — time 기반 대신 조건 기반이라는 점만 다르다.
   // ─────────────────────────────────────────────────────────────
   const taskWatchTickBusyRef = useRef(false);
+  const [taskWatchWaiting, setTaskWatchWaiting] = useState<Array<{ id: string; title: string; reason: string }>>([]);
   const taskWatchLog = useCallback((line: string) => {
     void invoke("task_watch_log", { line: `[${new Date().toLocaleString("sv-SE")}] ${line}` }).catch(() => {});
   }, []);
 
   const sendTaskWatchTurn = useStableCallback(
-    async (w: { id: string; file?: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }) => {
+    async (w: ReadyWatch) => {
       if (!dbReadyRef.current) return false;
       if (taskWatchTurnsRef.current.size >= TASK_WATCH_MAX_CONCURRENT) return false;
       let turnId: string | undefined;
       let convId = "";
       let reserved = false;
       try {
+        if (w.delivery?.state === "result_ready") {
+          if ([...taskWatchTurnsRef.current.values()].some((tw) => tw.watchFile === (w.file || w.id))) return false;
+          await persistWatchResult(w,
+            (conversationId, id, content, timestamp) => saveMessage(conversationId, { id, role: "assistant", content, timestamp, streaming: false }),
+            (file, turnId) => invoke("task_watch_ack", { file, turnId }));
+          taskWatchLog(`RECOVERED task-watch "${w.id}" saved result; no model invocation`);
+          return false;
+        }
         // 대상 conv 확보: 마커의 conversationId 가 실제 존재하면 그 conv(맥락 보존),
         // 아니면 전용 ⏳ 작업감시 conv (localStorage 영속).
         convId = (w.conversationId || "").trim();
@@ -3487,7 +3499,7 @@ export default function App() {
             : `\n(감시 발화: ${w.note})`;
         const text =
           `⏳ 감시하던 장기 작업 "${w.title}" 이(가) 완료 신호를 보냈습니다.${statusNote}\n\n` +
-          (w.prompt ? `${w.prompt}\n\n` : "") +
+          (w.prompt ? `${w.prompt}\n\n` : "") + watchRecoveryPrompt(w) +
           `이어서 진행하세요. 추가로 또 다른 장기 작업을 기다려야 하면 ~/.kda/task-watch/ 에 새 마커를 등록하세요.`;
 
         const userMsg: ChatMessage = {
@@ -3495,8 +3507,9 @@ export default function App() {
         };
 
         turnId = crypto.randomUUID();
-        if (conversationTurnGateRef.current.allPaused || conversationTurnGateRef.current.paused.has(convId) || !claimConversationTurn(convId, turnId)) {
-          taskWatchLog(`DEFER task-watch "${w.id}" conv=${convId.slice(0, 8)} reason=conversation-busy`);
+        const blocked = watchBlockReason(w, conversationTurnGateRef.current, convId);
+        if (blocked || !claimConversationTurn(convId, turnId)) {
+          taskWatchLog(`DEFER task-watch "${w.id}" conv=${convId.slice(0, 8)} reason=${blocked ?? "conversation-running"}`);
           return false;
         }
         reserved = true;
@@ -3534,11 +3547,9 @@ export default function App() {
         if (turnId) {
           const tw = taskWatchTurnsRef.current.get(turnId);
           if (tw) {
-            void invoke("task_watch_release", {
-              file: tw.watchFile,
-              turnId,
-              error: String(err),
-            }).catch(() => {});
+            await settleWatchFailure(conversationTurnGateRef.current, convId, turnId,
+              () => invoke<WatchDelivery>("task_watch_release", { file: tw.watchFile, turnId, error: String(err) })).catch(() => {});
+            syncControl();
           }
          taskWatchTurnsRef.current.delete(turnId);
          turnToConvMap.current.delete(turnId);
@@ -3586,14 +3597,19 @@ export default function App() {
       }
       taskWatchTickBusyRef.current = true;
       try {
-        let fired: Array<{ id: string; file?: string; conversationId?: string | null; title: string; prompt: string; status: string; note: string }> = [];
+        let fired: ReadyWatch[] = [];
         try {
           fired = (await invoke("task_watch_scan")) as any[];
         } catch (e) {
           taskWatchLog(`SCAN-ERR ${String(e)}`);
           return;
         }
-        if (!Array.isArray(fired) || fired.length === 0) return;
+        if (!Array.isArray(fired)) return;
+        setTaskWatchWaiting(fired.flatMap((w) => {
+          const reason = watchBlockReason(w, conversationTurnGateRef.current, w.conversationId || "");
+          return reason ? [{ id: w.id, title: w.title, reason }] : [];
+        }));
+        if (fired.length === 0) return;
         // 대화별 owner gate는 같은 대화의 중복 turn을 막는다. 다른 대화는 빈 슬롯만큼 시작한다.
         // 주입 전 claim, done ACK 및 실패 release는 각 마커별로 독립 유지한다.
         await dispatchAvailableWatches(
@@ -4918,6 +4934,12 @@ export default function App() {
         </div>
       )}
 
+      {taskWatchWaiting.length > 0 && (
+        <div role="status" className="task-watch-waiting" style={{ padding: "8px 12px", color: "var(--warn)", background: "var(--bg-2)", fontSize: "0.85em" }}>
+          <strong>작업 결과 확인 대기 {taskWatchWaiting.length}건</strong>
+          {taskWatchWaiting.slice(0, 3).map((w) => <div key={w.id}>{w.title} · {watchBlockLabel(w.reason)}</div>)}
+        </div>
+      )}
       {/* Phase 121 (v0.6.76) — dead-stream 워치독 배너. 비파괴적: 자동 중단 안 함. */}
       {isStreaming && streamStalled && (
         <div

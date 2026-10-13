@@ -71,6 +71,20 @@ const ok = (c, m) => { if (c) { pass++; console.log(`✅ ${m}`); } else { fail++
   ok(t.has("e:large"), "'large' 는 단어로 인덱싱된다");
 }
 
+// 짧은 기술 용어는 본문이 같은 문서 사이에서 파일명으로 구분되어야 한다.
+// 일반 영문 단어의 부분문자열이 rg 별칭으로 취급되면 안 된다.
+{
+  const cands = [
+    { file: "pitfall_rg_abcd.md", body: "ripgrep large" },
+    { file: "pitfall_xy_abcd.md", body: "ripgrep large" },
+    ...Array.from({ length: 20 }, (_, i) => ({ file: `pitfall_background_${i}.md`, body: "unrelated background" })),
+  ];
+  const relevant = scorePitfallsV2(cands, "ripgrep");
+  const unrelated = scorePitfallsV2(cands, "large");
+  ok(relevant[0]?.file === "pitfall_rg_abcd.md", "ripgrep 질의는 rg 파일명에 작은 가산을 준다");
+  ok(unrelated[0]?.score === unrelated[1]?.score, "large 는 rg 파일명에 부분문자열 가산을 주지 않는다");
+}
+
 // ── 3. 실데이터 회상 + 음성 대조 ───────────────────────────────────
 if (!existsSync(MEMORY_DIR)) {
   console.log(`⏭  ${MEMORY_DIR} 없음 — 실데이터 검사 skip (합성 검사만 채점)`);

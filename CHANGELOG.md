@@ -3,6 +3,17 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.46] - 2026-10-13
+
+### Fixed
+- Recover task-watch turns from transient capacity or connection failures with a bounded retry schedule. Preserve explicit user stops and approvals, and hold uncertain interrupted turns for review.
+- Recheck completion files and producer processes before retrying. Replay a saved final response after a restart without calling the model again.
+- Show why a watched conversation is waiting or held, including missing completion, active producer, and retry backoff.
+- Improve memory recall for technical filenames while requiring a matching document body. The local golden set improved from 9/13 to 12/13.
+
+### Tests
+- Cover retry decisions, marker and conversation state, final-response replay, and live producer checks. Full release gate: 11 PASS, 0 FAIL.
+
 ## [0.7.45] - 2026-10-07
 
 ### Added

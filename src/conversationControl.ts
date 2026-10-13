@@ -24,6 +24,7 @@ export class ConversationControl extends ConversationTurnGate {
   readonly runs = new Map<string, RunView>();
   readonly queues = new Map<string, PendingSend[]>();
   readonly paused = new Set<string>();
+  readonly pauseReasons = new Map<string, "user" | "failure" | "legacy">();
   allPaused = false;
 
   override claim(conversationId: string, turnId: string): boolean {
@@ -46,11 +47,12 @@ export class ConversationControl extends ConversationTurnGate {
     if (id && run) this.runs.set(conversationId, { ...run, state: "stopping", detail: "실제 종료를 확인하고 있습니다", updatedAt: Date.now() });
     return id;
   }
-  finish(conversationId: string, turnId: string, state: "stopped" | "completed" | "failed"): boolean {
+  finish(conversationId: string, turnId: string, state: "stopped" | "completed" | "failed", retryScheduled = false): boolean {
     if (!super.release(conversationId, turnId)) return false;
     const run = this.runs.get(conversationId)!;
     this.runs.set(conversationId, { ...run, state, detail: state === "stopped" ? "정지 확인됨" : state === "failed" ? "작업 실패 · 확인 필요" : "작업 완료", updatedAt: Date.now() });
-    if (state === "failed") this.paused.add(conversationId);
+    // A durable, bounded watch retry owns recovery. Never clear an existing user stop.
+    if (state === "failed" && !retryScheduled && !this.paused.has(conversationId)) this.pause(conversationId, "failure");
     return true;
   }
   override release(conversationId: string, turnId: string): boolean { return this.finish(conversationId, turnId, "completed"); }
@@ -64,8 +66,26 @@ export class ConversationControl extends ConversationTurnGate {
     if (next.length) this.queues.set(conversationId, next); else this.queues.delete(conversationId);
   }
   canAutoRun(conversationId: string): boolean { return !this.allPaused && !this.paused.has(conversationId) && !this.isActive(conversationId); }
-  pause(conversationId: string): void { this.paused.add(conversationId); }
-  resume(conversationId: string): void { this.paused.delete(conversationId); }
+  pause(conversationId: string, reason: "user" | "failure" | "legacy" = "user"): void {
+    this.paused.add(conversationId); this.pauseReasons.set(conversationId, reason);
+  }
+  resume(conversationId: string): void { this.paused.delete(conversationId); this.pauseReasons.delete(conversationId); }
+  autoRunBlockReason(conversationId: string): string | undefined {
+    if (this.allPaused) return "all-paused";
+    if (this.paused.has(conversationId)) return `${this.pauseReasons.get(conversationId) ?? "legacy"}-paused`;
+    if (this.isActive(conversationId)) return this.runs.get(conversationId)?.state === "stopping" ? "stopping" : "conversation-running";
+    return undefined;
+  }
+  pauseSnapshot(): Array<[string, "user" | "failure" | "legacy"]> {
+    return [...this.paused].map((id) => [id, this.pauseReasons.get(id) ?? "legacy"]);
+  }
+  restorePauses(snapshot: unknown, legacy: unknown): void {
+    // Old booleans cannot distinguish a user stop from an automatic pause. Fail closed.
+    if (Array.isArray(legacy)) for (const id of legacy) if (typeof id === "string") this.pause(id, "legacy");
+    if (Array.isArray(snapshot)) for (const row of snapshot) {
+      if (Array.isArray(row) && typeof row[0] === "string" && ["user", "failure", "legacy"].includes(row[1])) this.pause(row[0], row[1]);
+    }
+  }
 }
 
 export function buildSteeringMessage(text: string): string {

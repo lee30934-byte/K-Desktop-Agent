@@ -1,3 +1,4 @@
+mod task_watch_recovery;
 mod browser_host;
 mod browser_host_bridge;
 use std::collections::HashMap;
@@ -1355,8 +1356,9 @@ fn pid_alive(pid: u32) -> bool {
                 // WAIT_TIMEOUT → 아직 signaled 안 됨 = 살아있음. WAIT_OBJECT_0 → 종료.
                 r == WAIT_TIMEOUT
             }
-            // OpenProcess 실패 = 프로세스 없음(또는 접근 불가) → 종료로 간주.
-            _ => false,
+            // Access denied/unknown is not proof of exit. ERROR_INVALID_PARAMETER means no such PID.
+            Err(e) => e.code().0 as u32 != 0x80070057,
+            _ => true,
         }
     }
 }
@@ -1368,7 +1370,8 @@ fn pid_alive(_pid: u32) -> bool {
 
 /// 마커 하나의 조건을 평가해 상태 문자열을 반환. 발화 아니면 None.
 fn eval_watch(marker: &serde_json::Value, now_ms: i64) -> Option<(String, String)> {
-    // timeout 우선 검사 — 조건 미충족이어도 너무 오래되면 안전망 발화.
+    if let Some(done) = eval_watch_condition(marker) { return Some(done); }
+    // 완료 조건을 먼저 검사한 뒤, 미충족이면 timeout 안전망을 평가한다.
     // ★ timeout 기준점: `run` 을 띄웠다면 **실제 시작 시각**이 기준이다.
     // createdAt 을 쓰면 startAt 예약 대기 시간까지 타이머에 포함돼 "시작도 전에 timeout" 이
     // 난다(pitfall_taskwatch_stale_createdat_false_timeout).
@@ -1399,6 +1402,11 @@ fn eval_watch(marker: &serde_json::Value, now_ms: i64) -> Option<(String, String
             ));
         }
     }
+
+    None
+}
+
+fn eval_watch_condition(marker: &serde_json::Value) -> Option<(String, String)> {
     let watch = marker.get("watch")?;
     let wtype = watch.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match wtype {
@@ -1494,6 +1502,7 @@ fn parse_iso_ms(s: &str) -> Result<i64, String> {
 /// 프론트 하트비트가 폴링 → 발화분을 turn 으로 주입 → task_watch_clear 로 정리.
 #[tauri::command]
 fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
+    let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
     let dir = task_watch_dir();
     if !dir.exists() {
         let _ = std::fs::create_dir_all(&dir);
@@ -1537,23 +1546,27 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
         // ── v0.7.45 task-run ──
         // `run` 블록 처리를 **_delivery 백오프보다 먼저** 둔다. 전달 재시도 대기 때문에
         // 실행 자체가 굶으면 안 된다(pitfall_taskwatch_deferred_head_starves_queue_20260928 계열).
-        let run_note = match process_run_block(&mut marker, &path, &run_id, now_ms) {
+        let run_note = match if marker.get("_delivery").is_some() { RunGate::NotApplicable } else { process_run_block(&mut marker, &path, &run_id, now_ms) } {
             RunGate::NotApplicable => None,
             RunGate::Waiting => continue, // 예약 대기 / 실행 실패 → 이번 스캔에서 발화 평가 안 함
             RunGate::Active(note) => note,
         };
 
-        if let Some(delivery) = marker.get("_delivery") {
-            if let Some(next_attempt_at) = delivery.get("nextAttemptAt").and_then(|v| v.as_i64()) {
-                if now_ms < next_attempt_at {
-                    continue;
-                }
+        let mut delivery = task_watch_recovery::view(&marker, now_ms, task_watch_session());
+        if delivery["state"] == "claimed" { continue; }
+        let mut observation = eval_watch(&marker, now_ms);
+        if delivery["state"] == "result_ready" {
+            observation = Some(("result_ready".into(), "저장된 완료 응답을 복구합니다 (모델 재호출 없음)".into()));
+        } else if let Some(reason) = task_watch_recovery::observation_block(&marker,
+            observation.as_ref().is_some_and(|(status, _)| status == "timeout"), pid_alive) {
+            if marker.get("_delivery").is_some() || observation.is_some() {
+                delivery["state"] = serde_json::json!("held");
+                delivery["reason"] = serde_json::json!(reason);
+                observation = Some(("held".into(), reason.into()));
             }
-            if let Some(claimed_at) = delivery.get("claimedAt").and_then(|v| v.as_i64()) {
-                if now_ms - claimed_at < 10 * 60 * 1000 {
-                    continue;
-                }
-            }
+        }
+        if let Some((_, note)) = observation.as_mut() {
+            if let Some(watch) = marker.get("watch") { note.push_str(&format!(" / 현재 감시 대상: {}", watch)); }
         }
         let stem = path
             .file_stem()
@@ -1565,7 +1578,8 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
             .and_then(|v| v.as_str())
             .unwrap_or(&stem)
             .to_string();
-        if let Some((status, note)) = eval_watch(&marker, now_ms) {
+        if let Some((mut status, note)) = observation {
+            if matches!(delivery["state"].as_str(), Some("blocked" | "exhausted" | "held")) { status = "held".into(); }
             // run 경고(.done 선존재 / 고아 pid)가 있으면 주입될 turn 문구에 그대로 실어 보낸다.
             let note = match &run_note {
                 Some(w) => format!("{} / {}", note, w),
@@ -1580,6 +1594,7 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
                 "prompt": marker.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
                 "status": status,
                 "note": note,
+                "delivery": delivery,
             }));
         }
     }
@@ -1601,96 +1616,105 @@ fn read_task_watch_marker(path: &Path) -> Result<serde_json::Value, String> {
 }
 
 fn write_task_watch_marker(path: &Path, marker: &serde_json::Value) -> Result<(), String> {
-    let raw = serde_json::to_vec_pretty(marker)
-        .map_err(|e| format!("task-watch marker encode failed: {}", e))?;
-    std::fs::write(path, raw)
-        .map_err(|e| format!("task-watch marker write failed {}: {}", path.display(), e))
+    task_watch_recovery::write(path, marker)
 }
 
+static TASK_WATCH_IO: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TASK_WATCH_SESSION: OnceLock<String> = OnceLock::new();
+fn task_watch_session() -> &'static str {
+    TASK_WATCH_SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
 fn task_watch_claim_marker(path: &Path, turn_id: &str, conversation_id: &str) -> Result<(), String> {
-    let mut marker = read_task_watch_marker(&path)?;
-    let attempts = marker
-        .get("_delivery")
-        .and_then(|v| v.get("attempts"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
-        + 1;
-    marker["_delivery"] = serde_json::json!({
-        "state": "claimed",
-        "turnId": turn_id,
-        "conversationId": conversation_id,
-        "claimedAt": current_unix_ms(),
-        "attempts": attempts,
-    });
-    write_task_watch_marker(&path, &marker)
+    let marker = read_task_watch_marker(path)?;
+    // The scan may be stale after asynchronous history/settings reads. Recheck before any model call.
+    let observation = eval_watch(&marker, current_unix_ms());
+    if let Some(reason) = task_watch_recovery::observation_block(&marker,
+        observation.as_ref().is_some_and(|(status, _)| status == "timeout"), pid_alive) { return Err(reason.into()); }
+    task_watch_recovery::claim(path, turn_id, conversation_id, current_unix_ms(), task_watch_session())
 }
-
 #[tauri::command]
 fn task_watch_claim(file: String, turn_id: String, conversation_id: String) -> Result<(), String> {
-    let path = task_watch_marker_path(&file)?;
-    task_watch_claim_marker(&path, &turn_id, &conversation_id)
+    let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
+    task_watch_claim_marker(&task_watch_marker_path(&file)?, &turn_id, &conversation_id)
 }
-
 fn task_watch_ack_marker(path: &Path, turn_id: &str) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let marker = read_task_watch_marker(&path)?;
-    let owner = marker
-        .get("_delivery")
-        .and_then(|v| v.get("turnId"))
-        .and_then(|v| v.as_str());
-    if owner != Some(turn_id) {
-        return Err(format!("task-watch ack owner mismatch for {}", path.display()));
-    }
-    std::fs::remove_file(&path)
-        .map_err(|e| format!("task-watch ack remove failed {}: {}", path.display(), e))
+    task_watch_recovery::ack(path, turn_id)
 }
-
 #[tauri::command]
 fn task_watch_ack(file: String, turn_id: String) -> Result<(), String> {
-    let path = task_watch_marker_path(&file)?;
-    task_watch_ack_marker(&path, &turn_id)
+    let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
+    task_watch_ack_marker(&task_watch_marker_path(&file)?, &turn_id)
 }
-
-fn task_watch_release_marker(path: &Path, turn_id: &str, error: &str) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut marker = read_task_watch_marker(&path)?;
-    let delivery = marker
-        .get("_delivery")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    let owner = delivery.get("turnId").and_then(|v| v.as_str());
-    if owner != Some(turn_id) {
-        return Err(format!("task-watch release owner mismatch for {}", path.display()));
-    }
-    let attempts = delivery.get("attempts").and_then(|v| v.as_u64()).unwrap_or(1);
-    let delay_ms = 30_000_i64 * (1_i64 << attempts.saturating_sub(1).min(4) as u32);
-    let conversation_id = delivery
-        .get("conversationId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    marker["_delivery"] = serde_json::json!({
-        "state": "retry_wait",
-        "conversationId": conversation_id,
-        "attempts": attempts,
-        "nextAttemptAt": current_unix_ms() + delay_ms,
-        "lastError": error.chars().take(1000).collect::<String>(),
-    });
-    write_task_watch_marker(&path, &marker)
+fn task_watch_release_marker(path: &Path, turn_id: &str, error: &str) -> Result<serde_json::Value, String> {
+    task_watch_recovery::release(path, turn_id, error, current_unix_ms())
 }
-
 #[tauri::command]
-fn task_watch_release(file: String, turn_id: String, error: String) -> Result<(), String> {
-    let path = task_watch_marker_path(&file)?;
-    task_watch_release_marker(&path, &turn_id, &error)
+fn task_watch_release(file: String, turn_id: String, error: String) -> Result<serde_json::Value, String> {
+    let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
+    task_watch_release_marker(&task_watch_marker_path(&file)?, &turn_id, &error)
+}
+#[tauri::command]
+fn task_watch_record_result(file: String, turn_id: String, text: String) -> Result<(), String> {
+    let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
+    task_watch_recovery::record_result(&task_watch_marker_path(&file)?, &turn_id, &text, current_unix_ms())
+}
+
+#[cfg(test)]
+mod task_watch_capacity_tests {
+    use super::*;
+    fn fixture() -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("kda-watch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let done = dir.join("work.done");
+        std::fs::write(&done, "complete").unwrap();
+        let path = dir.join("watch.json");
+        write_task_watch_marker(&path, &serde_json::json!({"id":"watch","conversationId":"chat", "watch":{"type":"file","path":done},"createdAt":"2020-01-01T00:00:00Z","timeoutMs":1})).unwrap();
+        (path, done)
+    }
+    #[test]
+    fn task_watch_capacity_result_lifecycle_with_real_files() {
+        let (path, _) = fixture();
+        assert_eq!(eval_watch(&read_task_watch_marker(&path).unwrap(), current_unix_ms()).unwrap().0, "fired");
+        task_watch_claim_marker(&path, "one", "chat").unwrap();
+        let d = task_watch_release_marker(&path, "one", "Selected model is at capacity").unwrap();
+        assert_eq!(d["state"], "retry_wait");
+        assert!(task_watch_claim_marker(&path, "early", "chat").is_err());
+        let mut m = read_task_watch_marker(&path).unwrap();
+        m["_delivery"]["nextAttemptAt"] = serde_json::json!(0);
+        write_task_watch_marker(&path, &m).unwrap();
+        task_watch_claim_marker(&path, "two", "chat").unwrap();
+        task_watch_recovery::record_result(&path, "two", "completed result", current_unix_ms()).unwrap();
+        assert_eq!(task_watch_recovery::view(&read_task_watch_marker(&path).unwrap(), current_unix_ms(), "restart")["state"], "result_ready");
+        task_watch_ack_marker(&path, "two").unwrap();
+        task_watch_ack_marker(&path, "two").unwrap();
+        assert!(task_watch_claim_marker(&path, "duplicate", "chat").is_err());
+    }
+    #[test]
+    fn task_watch_claim_rechecks_disappeared_completion() {
+        let (path, done) = fixture();
+        task_watch_claim_marker(&path, "one", "chat").unwrap();
+        task_watch_release_marker(&path, "one", "ECONNRESET").unwrap();
+        let mut m = read_task_watch_marker(&path).unwrap();
+        m["_delivery"]["nextAttemptAt"] = serde_json::json!(0);
+        write_task_watch_marker(&path, &m).unwrap();
+        std::fs::remove_file(done).unwrap(); // this test's private fixture only
+        assert_eq!(task_watch_claim_marker(&path, "two", "chat").unwrap_err(), "watch-condition-missing");
+    }
+    #[test]
+    #[cfg(windows)]
+    fn task_watch_live_producer_is_not_restarted_or_consumed() {
+        let (path, _) = fixture();
+        let mut m = read_task_watch_marker(&path).unwrap();
+        m["run"] = serde_json::json!({"startedAt":"already-started", "pid":std::process::id()});
+        write_task_watch_marker(&path, &m).unwrap();
+        assert_eq!(task_watch_claim_marker(&path, "one", "chat").unwrap_err(), "producer-still-running");
+        assert_eq!(read_task_watch_marker(&path).unwrap()["run"], m["run"]);
+    }
 }
 
 #[tauri::command]
 fn task_watch_clear(id: String) -> Result<(), String> {
+    let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
     let safe = sanitize_watch_id(&id).ok_or_else(|| format!("잘못된 watch id: {}", id))?;
     let path = task_watch_dir().join(format!("{}.json", safe));
     match std::fs::remove_file(&path) {
@@ -2369,55 +2393,6 @@ mod task_run_tests {
     }
 }
 
-#[cfg(test)]
-mod task_watch_delivery_tests {
-    use super::*;
-
-    #[test]
-    fn claim_release_reclaim_ack_is_durable() {
-        let dir = std::env::temp_dir().join(format!(
-            "kda-task-watch-test-{}-{}",
-            std::process::id(),
-            current_unix_ms()
-        ));
-        std::fs::create_dir_all(&dir).expect("create test dir");
-        let marker_path = dir.join("delivery.json");
-        write_task_watch_marker(
-            &marker_path,
-            &serde_json::json!({
-                "id": "delivery",
-                "conversationId": "conv-a",
-                "watch": { "type": "file", "path": "unused.done" }
-            }),
-        )
-        .expect("write marker");
-
-        task_watch_claim_marker(&marker_path, "turn-1", "conv-a").expect("claim");
-        let claimed = read_task_watch_marker(&marker_path).expect("read claim");
-        assert_eq!(claimed["_delivery"]["state"], "claimed");
-        assert_eq!(claimed["_delivery"]["turnId"], "turn-1");
-        assert_eq!(claimed["_delivery"]["attempts"], 1);
-        assert!(task_watch_ack_marker(&marker_path, "wrong-turn").is_err());
-        assert!(marker_path.exists());
-
-        task_watch_release_marker(&marker_path, "turn-1", "temporary failure")
-            .expect("release");
-        let released = read_task_watch_marker(&marker_path).expect("read release");
-        assert_eq!(released["_delivery"]["state"], "retry_wait");
-        assert_eq!(released["_delivery"]["conversationId"], "conv-a");
-        assert_eq!(released["_delivery"]["attempts"], 1);
-        assert!(released["_delivery"]["nextAttemptAt"].as_i64().unwrap() > current_unix_ms());
-
-        task_watch_claim_marker(&marker_path, "turn-2", "conv-a").expect("reclaim");
-        let reclaimed = read_task_watch_marker(&marker_path).expect("read reclaim");
-        assert_eq!(reclaimed["_delivery"]["turnId"], "turn-2");
-        assert_eq!(reclaimed["_delivery"]["attempts"], 2);
-        task_watch_ack_marker(&marker_path, "turn-2").expect("ack");
-        assert!(!marker_path.exists());
-
-        std::fs::remove_dir(&dir).expect("remove test dir");
-    }
-}
 
 /// 데이터 폴더 변경. 옵션으로 기존 데이터 마이그레이션.
 ///
@@ -5257,6 +5232,7 @@ pub fn run_with_options(start_minimized: bool) {
             task_watch_claim,
             task_watch_ack,
             task_watch_release,
+            task_watch_record_result,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,

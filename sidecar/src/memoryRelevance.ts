@@ -348,6 +348,36 @@ export function buildQueryGroups(query: string): { kind: "k" | "e"; toks: string
 }
 
 /**
+ * Short technical vocabulary shared by Korean requests and English pitfall filenames.
+ * Only add aliases observed in a real recall miss; body scoring remains the primary signal.
+ */
+const TITLE_QUERY_ALIASES: ReadonlyArray<[RegExp, readonly string[]]> = [
+  [/\bripgrep\b/i, ["rg"]],
+  [/\btask-watch\b/i, ["taskwatch"]],
+  [/마커/, ["marker"]],
+  [/게이트/, ["gate", "gates"]],
+  [/테스트/, ["test", "tests", "check", "checks"]],
+];
+
+function titleQueryTerms(query: string): Set<string> {
+  const terms = new Set(
+    (query.toLowerCase().match(/[a-z0-9]+/g) ?? [])
+      .filter((term) => term.length >= V2_EN_MIN_LEN && !PITFALL_TRIGGER_STOPWORDS.has(term)),
+  );
+  for (const [pattern, aliases] of TITLE_QUERY_ALIASES) {
+    if (pattern.test(query)) for (const alias of aliases) terms.add(alias);
+  }
+  return terms;
+}
+
+function filenameMatchBonus(filename: string, terms: Set<string>): number {
+  const slug = filename.replace(/^pitfall_/, "").replace(/\.md$/, "").toLowerCase();
+  const matches = slug.split(/[_-]/).filter((part) => terms.has(part));
+  // A filename is a concise human label, but never enough to outweigh several body hits.
+  return 0.2 * Math.min(new Set(matches).size, 3);
+}
+
+/**
  * v2 스코어. query 는 사용자 메시지 + (선택) 도구/경로 등 문맥 신호를 합친 문자열.
  *
  * score = Σ_{그룹 g} max_{t ∈ g∩doc} idf(t)  / sqrt(|doc|)   ← 어절당 증거 1개 + 길이 보정
@@ -362,6 +392,7 @@ export function scorePitfallsV2(
   const idx = index ?? buildV2Index(candidates);
   const groups = buildQueryGroups(query);
   const lcQuery = query.toLowerCase();
+  const titleTerms = titleQueryTerms(query);
 
   const scored: PitfallScore[] = [];
   for (const c of candidates) {
@@ -400,6 +431,7 @@ export function scorePitfallsV2(
         explicitHits.push(t);
       }
     }
+    if (score > 0) score += filenameMatchBonus(c.file, titleTerms);
     if (score > 0) {
       scored.push({
         file: c.file,

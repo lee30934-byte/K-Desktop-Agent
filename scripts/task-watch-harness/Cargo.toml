@@ -1,0 +1,12 @@
+[package]
+name = "kda-task-watch-test-driver"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde_json = "1.0"
+
+[[bin]]
+name = "kda-task-watch-test-driver"
+path = "main.rs"
