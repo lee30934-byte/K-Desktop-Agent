@@ -76,6 +76,14 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
   const [projMemoryTags, setProjMemoryTags] = useState<string>(
     Array.isArray(pp?.memoryTags) ? pp!.memoryTags!.join(", ") : "",
   );
+  // v0.7.48 — REA MCP 선택적 연동. 다른 외부 MCP 이름은 보존만 한다(현재 UI 미노출).
+  const otherMcpServers = Array.isArray(pp?.mcpServers)
+    ? pp!.mcpServers!.filter((m) => typeof m === "string" && m.trim().toLowerCase() !== "rea")
+    : [];
+  const [projUseRea, setProjUseRea] = useState<boolean>(
+    Array.isArray(pp?.mcpServers) && pp!.mcpServers!.some((m) => typeof m === "string" && m.trim().toLowerCase() === "rea"),
+  );
+  const [projReaRuntime, setProjReaRuntime] = useState<boolean>(pp?.allowReaRuntime === true);
 
   // ESC 로 닫기
   useEffect(() => {
@@ -131,6 +139,9 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
       if (ft.length > 0) profile.forbiddenTools = ft;
       const mt = splitLines(projMemoryTags);
       if (mt.length > 0) profile.memoryTags = mt;
+      const mcp = [...otherMcpServers, ...(projUseRea ? ["rea"] : [])];
+      if (mcp.length > 0) profile.mcpServers = mcp;
+      if (projUseRea && projReaRuntime) profile.allowReaRuntime = true;
       const profileOrNull = Object.keys(profile).length > 0 ? profile : null;
       await onSave(prompt.trim() ? prompt : null, attachments, profileOrNull);
       onClose();
@@ -139,7 +150,7 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
       setErrorMsg(`저장 실패: ${err instanceof Error ? err.message : String(err)}`);
       setSaving(false);
     }
-  }, [prompt, attachments, projName, projDefaultPath, projForbidden, projMemoryTags, onSave, onClose]);
+  }, [prompt, attachments, projName, projDefaultPath, projForbidden, projMemoryTags, projUseRea, projReaRuntime, otherMcpServers, onSave, onClose]);
 
   return (
     <div
@@ -430,6 +441,41 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
                 spellCheck={false}
                 style={inputStyle}
               />
+            </div>
+
+            {/* v0.7.48 — REA 리버스 엔지니어링 MCP (설정 → 실험 기능의 REA 토글도 켜져 있어야 연결) */}
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={projUseRea}
+                  onChange={(e) => setProjUseRea(e.target.checked)}
+                  disabled={saving}
+                />
+                이 프로젝트에서 REA 리버스 엔지니어링 도구 사용
+              </label>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  marginTop: 4,
+                  marginLeft: 20,
+                  opacity: projUseRea ? 1 : 0.45,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={projReaRuntime}
+                  onChange={(e) => setProjReaRuntime(e.target.checked)}
+                  disabled={saving || !projUseRea}
+                />
+                런타임 도구 허용 (앱 실행·frida/gdb 계측·adb 기기 제어 — 위험도 높음)
+              </label>
+              <div style={{ fontSize: 10, opacity: 0.55, marginTop: 4 }}>
+                설정 → 실험 기능의 &quot;REA 리버스 엔지니어링 도구&quot;와 프로젝트 모드가 켜져 있고, 고정 버전이 설치된 경우에만 연결됩니다. Claude·Codex 엔진 전용.
+              </div>
             </div>
           </div>
 

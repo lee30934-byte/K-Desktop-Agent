@@ -114,6 +114,17 @@ import {
   type GeminiContent,
 } from "./restTools.js";
 import { STATUSLINE_SOURCE } from "./statusLineSource.js";
+// v0.7.48 — REA(Reverse Engineer Anything) MCP 선택적 주입 정책 (순수 모듈, 빌드 없이 테스트).
+import {
+  buildReaClaudeServer,
+  buildReaCodexConfig,
+  buildReaGuidance,
+  decideRea,
+  detectReaInstall,
+  pickReaNode,
+  reaClaudeDisallowed,
+  type ReaDecision,
+} from "./rea-mcp.mjs";
 import { statSync, renameSync } from "node:fs";
 
 // ─── 파일 로거 ─────────────────────────────────────────
@@ -775,6 +786,9 @@ interface AgentFlags {
   // ON 이면 폴더(프로젝트)에 부여된 projectProfile(금지 도구·메모리 태그·기본 경로)이
   // 도구 게이트/메모리 로딩/시스템 텍스트에 enforce 됨. OFF 면 projectProfile 무시 → 종전 동작.
   projectMode: boolean;
+  // v0.7.48 — REA MCP 선택적 연동. ON + projectMode ON + 폴더 프로필 mcpServers 에 "rea"
+  // + 고정 버전 설치 확인 시에만 그 turn 에 REA MCP 서버를 주입 (sidecar/src/rea-mcp.mjs).
+  reaMcp: boolean;
 }
 const AGENT_FLAGS_DEFAULT: AgentFlags = {
   nudge: false,
@@ -783,6 +797,7 @@ const AGENT_FLAGS_DEFAULT: AgentFlags = {
   schedule: false,
   skillRegistry: false,
   projectMode: false,
+  reaMcp: false,
 };
 let _agentFlagsCache: { mtimeMs: number; flags: AgentFlags } | null = null;
 function loadAgentFlags(): AgentFlags {
@@ -833,6 +848,8 @@ const FLAG_GATED_TOOLS: Record<keyof AgentFlags, string[]> = {
   // projectMode 는 별도 도구를 노출/숨김하지 않음 — 프로젝트별 금지 도구는
   // projectProfile.forbiddenTools 로 동적 결정되므로 정적 게이트 목록은 비움.
   projectMode: [],
+  // reaMcp 는 도구를 숨기는 게 아니라 MCP 서버 자체를 주입/미주입 → 정적 게이트 목록 없음.
+  reaMcp: [],
 };
 
 /** flag OFF 인 기능들의 MCP 도구 풀네임을 모아 반환 (disallowed 에 추가용). */
@@ -2255,6 +2272,85 @@ interface ProjectProfile {
   forbiddenTools?: string[];
   memoryTags?: string[];
   defaultPath?: string;
+  // v0.7.48 — 이 프로젝트에서만 주입할 외부 MCP 서버 (현재 "rea" 만 인식).
+  mcpServers?: string[];
+  // v0.7.48 — REA 런타임/계측/기기 제어 도구 허용 (기본 false = 정적 분석만).
+  allowReaRuntime?: boolean;
+}
+
+/** `<node> --version` (실패 시 null). REA 런타임 탐지 전용 — 요청된 turn 에서만 호출. */
+function probeNodeVersion(nodePath: string): string | null {
+  try {
+    const r = spawnSync(nodePath, ["--version"], { encoding: "utf-8", timeout: 5000, windowsHide: true });
+    return r.status === 0 ? String(r.stdout ?? "").trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * v0.7.48 — REA 를 띄울 Node 런타임. 설치본 sidecar 는 번들 Node v20.18.0 이라 그대로 쓰면
+ * REA(22.19+)가 항상 꺼진다. 후보: KDA_REA_NODE → sidecar 자신 → PATH 의 node (최대 4개).
+ * 찾으면 프로세스 수명 동안 캐시, 못 찾으면 60초 후 재탐지 (설치 직후 재시작 없이 회복).
+ */
+let _reaNodeCache: { at: number; value: { path: string; version: string } | null } | null = null;
+function resolveReaNodeRuntime(): { path: string; version: string } | null {
+  const now = Date.now();
+  if (_reaNodeCache && (_reaNodeCache.value || now - _reaNodeCache.at < 60_000)) {
+    return _reaNodeCache.value;
+  }
+  const candidates: Array<{ path: string; version: string | null }> = [];
+  const envNode = (process.env.KDA_REA_NODE ?? "").trim();
+  if (envNode) candidates.push({ path: envNode, version: probeNodeVersion(envNode) });
+  candidates.push({ path: process.execPath, version: process.version });
+  try {
+    const r = spawnSync(process.platform === "win32" ? "where.exe" : "which", ["node"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      windowsHide: true,
+    });
+    const self = path.resolve(process.execPath).toLowerCase();
+    const found = String(r.stdout ?? "")
+      .split(/\r?\n/)
+      .map((x) => x.trim())
+      .filter((x) => x && path.resolve(x).toLowerCase() !== self)
+      .slice(0, 4);
+    for (const nodePath of found) candidates.push({ path: nodePath, version: probeNodeVersion(nodePath) });
+  } catch {
+    /* PATH 탐지 실패 → 앞 후보만으로 판단 */
+  }
+  const value = pickReaNode(candidates);
+  _reaNodeCache = { at: now, value };
+  return value;
+}
+
+/**
+ * v0.7.48 — 이번 turn 의 REA 주입 결정. 평소 대화(프로필에 rea 없음)는 디스크 접근·프로세스 탐지 없이 즉시 off.
+ */
+function resolveReaForTurn(
+  profile: ProjectProfile | undefined,
+  flags: AgentFlags,
+  provider: "claude" | "codex",
+): ReaDecision & { nodePath?: string } {
+  const requested =
+    !!profile && Array.isArray(profile.mcpServers) &&
+    profile.mcpServers.some((s) => typeof s === "string" && s.trim().toLowerCase() === "rea");
+  const install = requested ? detectReaInstall(os.homedir()) : null;
+  const reaNode = requested ? resolveReaNodeRuntime() : null;
+  const decision = decideRea({
+    flags,
+    profile,
+    install,
+    nodeVersion: reaNode?.version ?? `${process.version} (PATH 에 22.19+ node 없음)`,
+    provider,
+  });
+  if (decision.requested) {
+    logToFile(
+      decision.enabled ? "info" : "warn",
+      `[REA] provider=${provider} enabled=${decision.enabled} runtime=${decision.allowRuntime} node=${reaNode?.path ?? "none"}@${reaNode?.version ?? "-"} reason=${decision.reason}`,
+    );
+  }
+  return decision.enabled && reaNode ? { ...decision, nodePath: reaNode.path } : decision;
 }
 
 // ─── 권한 카테고리 ↔ Claude CLI 도구 매핑 ─────────────────
@@ -3421,8 +3517,14 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   // flag OFF 인 기능의 MCP 도구는 disallowed 에 추가 → 모델이 못 부름 (기본 OFF = 종전 동작).
   // (agentFlags 는 위에서 이미 로드 — projectMode 게이트가 buildToolFlags 보다 먼저 필요했음.)
   const gatedDisallowed = flagGatedDisallowed(agentFlags);
+  // v0.7.48 — REA MCP: 조건 충족 turn 에만 mcpConfig 에 추가 + 런타임 도구 hard 차단.
+  const reaDecision = resolveReaForTurn(msg.projectProfile, agentFlags, "claude");
+  if (reaDecision.enabled && reaDecision.entry && reaDecision.nodePath) {
+    mcpConfig.rea = buildReaClaudeServer(reaDecision.nodePath, reaDecision.entry);
+  }
+  const reaDisallowed = reaDecision.enabled ? reaClaudeDisallowed(reaDecision.allowRuntime) : [];
   const effectiveDisallowed = Array.from(
-    new Set([...toolFlags.disallowed, ...gatedDisallowed]),
+    new Set([...toolFlags.disallowed, ...gatedDisallowed, ...reaDisallowed]),
   );
   if (effectiveDisallowed.length > 0) {
     args.push("--disallowed-tools", effectiveDisallowed.join(","));
@@ -3460,8 +3562,9 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   const featureGuidance = buildAgentFeatureGuidance(agentFlags);
   // Phase 138 (v0.7.10) — #3 프로젝트 모드 블록 (projectMode OFF 면 빈 문자열 → 종전 동작).
   const projectProfileBlock = buildProjectProfileBlock(msg.projectProfile, agentFlags);
+  const reaGuidance = buildReaGuidance(reaDecision);
   const fullSystemPrompt =
-    SYSTEM_PROMPT + soulBlock + folderInstructionBlock + projectProfileBlock + askGuidance + manualGuidance + featureGuidance;
+    SYSTEM_PROMPT + soulBlock + folderInstructionBlock + projectProfileBlock + askGuidance + manualGuidance + featureGuidance + reaGuidance;
 
   // ─── 큰 인자 자동 파일 외화 ─────────────────────────────────────────
   // 임계치(LARGE_ARG_THRESHOLD) 이상의 인자 값은 임시 파일로 빼고 path 인자로 전환.
@@ -4589,10 +4692,16 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // + 도구 게이트를 <kda_system> 블록으로 주입. 종전엔 Codex 가 KDA 룰을 전혀 못 받았음.
   // resume 턴은 thread 에 bootstrap 의 전체 지침이 있으므로 compact 리마인더만 (context 보호).
   const codexAgentFlags = loadAgentFlags();
+  // v0.7.48 — REA MCP: app-server thread/start·resume 의 config override 로 이 스레드에만 주입.
+  const codexReaDecision = resolveReaForTurn(msg.projectProfile, codexAgentFlags, "codex");
+  const codexThreadConfig =
+    codexReaDecision.enabled && codexReaDecision.entry && codexReaDecision.nodePath
+      ? buildReaCodexConfig(codexReaDecision.nodePath, codexReaDecision.entry, codexReaDecision.allowRuntime)
+      : null;
   const codexSystemText = buildEngineSystemText(msg.folderSystemPrompt, codexAgentFlags, {
     compact: !!effectiveAgentId,
     projectProfile: msg.projectProfile,
-  });
+  }) + buildReaGuidance(codexReaDecision);
   const promptWithHistory = effectiveAgentId
     ? buildPromptWithHistory(baseContent, undefined, undefined, codexSystemText)
     : buildPromptWithHistory(baseContent, codexBootstrapHistory, memory.content, codexSystemText);
@@ -4794,6 +4903,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
         threadId: effectiveAgentId ?? null,
         model: msg.model && msg.model !== "default" ? msg.model : null,
         effort: reasoning && VALID_REASONING_EFFORTS.has(reasoning) ? reasoning : null,
+        config: codexThreadConfig,
       }) + "\n", "utf-8");
     }
 

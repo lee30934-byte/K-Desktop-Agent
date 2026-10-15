@@ -4266,17 +4266,19 @@ async fn set_sidecar_config_flag(
 // ────────── Agent feature flags (v0.7.1 — 실험 기능 토글 UI) ──────────
 //
 // sidecar 가 turn spawn 시 읽는 ~/.kda/agent-flags.json 의 한 키만 partial-update.
-// 6개 키: nudge / failureCapture / memoryWrite / schedule / skillRegistry / projectMode (전부 기본 false).
+// 7개 키: nudge / failureCapture / memoryWrite / schedule / skillRegistry / projectMode / reaMcp (전부 기본 false).
 // 효과는 다음 turn 부터 — sidecar 의 loadAgentFlags() 가 메시지마다 mtime 캐시로 재로드.
 // BOM 없는 UTF-8 write (Rust std::fs::write 는 raw bytes — pitfall_powershell_secret_bom 무관).
 
-const AGENT_FLAG_KEYS: [&str; 6] = [
+const AGENT_FLAG_KEYS: [&str; 7] = [
     "nudge",
     "failureCapture",
     "memoryWrite",
     "schedule",
     "skillRegistry",
     "projectMode",
+    // v0.7.48 — REA MCP 선택적 연동 (프로젝트 프로필 mcpServers 에 rea 필요).
+    "reaMcp",
 ];
 
 fn agent_flags_path() -> Result<PathBuf, String> {
@@ -4364,6 +4366,31 @@ async fn agent_soul_status() -> Result<serde_json::Value, String> {
         "exists": exists,
         "bytes": bytes,
         "path": path.display().to_string(),
+    }))
+}
+
+// v0.7.48 — REA 고정 설치 상태 (Settings 표시용, 읽기 전용).
+// sidecar/src/rea-mcp.mjs 의 REA_PINNED_VERSION 과 동기화 — test-rea-mcp.mjs 가 일치를 검사.
+const REA_PINNED_VERSION: &str = "6.5.0";
+
+#[tauri::command]
+async fn rea_install_status() -> Result<serde_json::Value, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "HOME/USERPROFILE 환경변수 없음".to_string())?;
+    let root = PathBuf::from(home).join(".kda").join("tools").join("rea");
+    let pkg = root.join("node_modules").join("rea-agents").join("package.json");
+    let entry = root.join("node_modules").join("rea-agents").join("scripts").join("rea.mjs");
+    let version: Option<String> = std::fs::read_to_string(&pkg)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(strip_bom(&raw)).ok())
+        .and_then(|v| v.get("version").and_then(|x| x.as_str()).map(|s| s.to_string()));
+    let installed = version.is_some() && entry.exists();
+    Ok(serde_json::json!({
+        "installed": installed,
+        "version": version,
+        "pinned": REA_PINNED_VERSION,
+        "root": root.display().to_string(),
     }))
 }
 
@@ -5244,6 +5271,7 @@ pub fn run_with_options(start_minimized: bool) {
             get_agent_flags,
             set_agent_flag,
             agent_soul_status,
+            rea_install_status,
             // Phase 75 (v0.6.18) — Codex 좀비 process detect + 안전 정리
             list_stale_codex_processes,
             kill_process_tree,

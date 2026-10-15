@@ -485,6 +485,10 @@ export interface ProjectProfile {
   forbiddenTools?: string[];
   memoryTags?: string[];
   defaultPath?: string;
+  // v0.7.48 — 이 프로젝트에서만 주입할 외부 MCP 서버 (현재 "rea" 만 인식).
+  mcpServers?: string[];
+  // v0.7.48 — REA 런타임/계측/기기 제어 도구 허용 (기본 false).
+  allowReaRuntime?: boolean;
 }
 
 // Phase 107 — 폴더에 등록된 reference 파일 (절대 경로 + display name + meta).
@@ -550,6 +554,9 @@ function parseProjectProfile(raw: string | null | undefined): ProjectProfile | n
     if (ft && ft.length > 0) out.forbiddenTools = ft;
     const mt = strArr(p.memoryTags);
     if (mt && mt.length > 0) out.memoryTags = mt;
+    const ms = strArr(p.mcpServers);
+    if (ms && ms.length > 0) out.mcpServers = ms;
+    if (p.allowReaRuntime === true) out.allowReaRuntime = true;
     return Object.keys(out).length > 0 ? out : null;
   } catch {
     return null;
@@ -676,6 +683,14 @@ export async function updateFolderProjectProfile(
       ? profile.memoryTags.filter((t) => typeof t === "string" && t.trim()).map((t) => t.trim())
       : [];
     if (mt.length > 0) cleaned.memoryTags = mt;
+    const ms = Array.isArray(profile.mcpServers)
+      ? profile.mcpServers.filter((t) => typeof t === "string" && t.trim()).map((t) => t.trim())
+      : [];
+    if (ms.length > 0) cleaned.mcpServers = ms;
+    // 런타임 허용은 REA 를 쓸 때만 의미 — 단독 저장 안 함.
+    if (profile.allowReaRuntime === true && ms.some((m) => m.toLowerCase() === "rea")) {
+      cleaned.allowReaRuntime = true;
+    }
     if (Object.keys(cleaned).length > 0) json = JSON.stringify(cleaned);
   }
   await database.execute(

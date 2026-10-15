@@ -3,6 +3,18 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.48] - 2026-10-15
+
+### Added
+- Connect the REA (Reverse Engineer Anything) MCP server only to opted-in project conversations. It needs all of the following: the new "REA reverse-engineering tools" toggle, project mode, "Use REA" in the folder profile, and the pinned rea-agents 6.5.0 install under `~/.kda/tools/rea`. Other conversations get no REA tools and pay no context cost.
+- Inject REA per turn through the Claude CLI `--mcp-config` and per thread through the Codex app-server `thread/start`/`thread/resume` config. REA's global setup, which edits `~/.claude.json`, `~/.codex/config.toml` and Gemini settings, is not used. Gemini CLI is not supported.
+- Use REA's compact input and disabled output schema profiles. In a local measurement, tool schema size dropped from 3.09 MB to 215 KB.
+- Block the 59 runtime, instrumentation, device-control and annotation-writing REA tools by default. They are opened per folder with "Allow runtime tools".
+- Show the REA install and pinned-version status in Settings.
+
+### Tests
+- Add `sidecar/test-rea-mcp.mjs`, which checks the activation conditions, version and Node checks, the runtime-tool block, injection formats, source wiring, and bridge config pass-through with a mock app-server.
+
 ## [0.7.47] - 2026-10-14
 
 ### Fixed

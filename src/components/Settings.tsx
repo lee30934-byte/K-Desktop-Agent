@@ -1351,7 +1351,15 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     schedule: false,
     skillRegistry: false,
     projectMode: false,
+    reaMcp: false,
   });
+  // v0.7.48 — REA 고정 설치 상태 (~/.kda/tools/rea). null = 확인 중.
+  const [reaStatus, setReaStatus] = useState<{
+    installed: boolean;
+    version: string | null;
+    pinned: string;
+    root: string;
+  } | null>(null);
   const [agentFlagBusy, setAgentFlagBusy] = useState<string | null>(null);
   const [soulStatus, setSoulStatus] = useState<{ exists: boolean; bytes: number } | null>(null);
   // Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 opt-in (localStorage only).
@@ -2268,9 +2276,21 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           schedule: !!f?.schedule,
           skillRegistry: !!f?.skillRegistry,
           projectMode: !!f?.projectMode,
+          reaMcp: !!f?.reaMcp,
         });
       })
       .catch((err) => console.error("get_agent_flags failed:", err));
+    invoke<{ installed?: boolean; version?: string | null; pinned?: string; root?: string }>("rea_install_status")
+      .then((r) => {
+        if (cancelled) return;
+        setReaStatus({
+          installed: !!r?.installed,
+          version: typeof r?.version === "string" ? r.version : null,
+          pinned: typeof r?.pinned === "string" ? r.pinned : "?",
+          root: typeof r?.root === "string" ? r.root : "",
+        });
+      })
+      .catch((err) => console.error("rea_install_status failed:", err));
     invoke<{ exists?: boolean; bytes?: number }>("agent_soul_status")
       .then((s) => {
         if (cancelled) return;
@@ -3546,6 +3566,12 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                     desc: "폴더(프로젝트)에 부여한 프로필(금지 도구·메모리 태그·기본 경로)을 enforce — 대화별 스코프 격리. 폴더 우클릭→프로젝트 지침에서 프로필 설정.",
                     risk: "낮음",
                   },
+                  {
+                    key: "reaMcp",
+                    title: "REA 리버스 엔지니어링 도구",
+                    desc: "프로젝트 모드 ON + 폴더 프로필에서 'REA 사용'을 체크한 대화에만 REA MCP(고정 버전)를 연결. Claude·Codex 엔진만 지원. 기본은 정적 분석만 — 앱 실행·계측·adb 도구는 폴더별로 따로 허용해야 열림.",
+                    risk: "중간",
+                  },
                 ].map((feat) => (
                   <div
                     key={feat.key}
@@ -3586,6 +3612,15 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   opacity: 0.65,
                 }}
               >
+                REA 설치:{" "}
+                {reaStatus
+                  ? reaStatus.installed && reaStatus.version === reaStatus.pinned
+                    ? `✓ ${reaStatus.version} (고정 ${reaStatus.pinned})`
+                    : reaStatus.installed
+                      ? `⚠ 버전 불일치 ${reaStatus.version ?? "?"} — 고정 ${reaStatus.pinned} 필요 (주입 안 됨)`
+                      : `없음 — ${reaStatus.root} 에 rea-agents@${reaStatus.pinned} 설치 필요 (주입 안 됨)`
+                  : "확인 중…"}
+                <br />
                 soul.md (에이전트 정체성):{" "}
                 {soulStatus
                   ? soulStatus.exists

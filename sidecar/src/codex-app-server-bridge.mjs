@@ -206,10 +206,14 @@ async function start(input) {
   });
   await request("initialize", { clientInfo: { name: "k_desktop_agent", title: "K Desktop Agent", version: "0.7.41" } });
   send({ method: "initialized", params: {} });
+  // v0.7.48 — 스레드 단위 config override (현재 REA MCP 주입용). 전역 config.toml 은 건드리지 않는다.
+  // resume 에도 같이 실어야 그 turn 의 app-server 프로세스가 MCP 서버를 띄운다.
+  const threadConfig = input.config && typeof input.config === "object" && !Array.isArray(input.config)
+    ? { config: input.config } : {};
   const threadParams = input.threadId
-    ? { threadId: input.threadId, approvalPolicy: "on-request", sandbox: "danger-full-access" }
+    ? { threadId: input.threadId, approvalPolicy: "on-request", sandbox: "danger-full-access", ...threadConfig }
     : { approvalPolicy: "on-request", sandbox: "danger-full-access", cwd: process.cwd(),
-        ...(input.model ? { model: input.model } : {}) };
+        ...(input.model ? { model: input.model } : {}), ...threadConfig };
   const thread = await request(input.threadId ? "thread/resume" : "thread/start", threadParams);
   threadId = thread?.thread?.id;
   if (!threadId) throw new Error("Codex app-server returned no thread id");

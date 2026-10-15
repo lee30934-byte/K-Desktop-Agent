@@ -113,7 +113,7 @@ check("App send_message 가 projectProfile 전달", /folderAttachmentPaths,\s*pr
 check("App 저장 핸들러가 updateFolderProjectProfile 호출", /await updateFolderProjectProfile\(folderId, projectProfile\)/.test(app));
 check("Rust send_message 가 project_profile 파라미터", /project_profile: Option<serde_json::Value>,/.test(lib));
 check("Rust 가 projectProfile 키로 payload 박음", /payload\["projectProfile"\] = profile;/.test(lib));
-check("Rust AGENT_FLAG_KEYS 에 projectMode", /const AGENT_FLAG_KEYS: \[&str; 6\] = \[[\s\S]*?"projectMode",[\s\S]*?\]/.test(lib));
+check("Rust AGENT_FLAG_KEYS 에 projectMode", /const AGENT_FLAG_KEYS: \[&str; \d+\] = \[[\s\S]*?"projectMode",[\s\S]*?\]/.test(lib));
 
 // ── 9. UI ────────────────────────────────────────────────────────────────
 console.log("\n[9] UI (Dialog + Settings 토글)");
