@@ -4947,52 +4947,55 @@ export default function App() {
         </div>
       )}
 
-      {visibleTaskWatchWaiting.length > 0 && (
-        <div role="status" className="task-watch-waiting" style={{ padding: "8px 12px", color: "var(--warn)", background: "var(--bg-2)", fontSize: "0.85em" }}>
-          <button className="settings-btn" style={{ float: "right", padding: "2px 8px", fontSize: "0.85em" }} onClick={dismissTaskWatchWaiting} title="이 알림 숨김 · 작업 감시는 계속됨">✕</button>
-          <strong>이 대화의 작업 결과 확인 대기 {visibleTaskWatchWaiting.length}건</strong>
-          {visibleTaskWatchWaiting.slice(0, 3).map((w) => <div key={w.id}>{w.title} · {watchBlockLabel(w.reason)}</div>)}
-        </div>
-      )}
-      {/* Phase 121 (v0.6.76) — dead-stream 워치독 배너. 비파괴적: 자동 중단 안 함. */}
-      {isStreaming && streamStalled && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "8px 12px",
-            margin: "0 12px 8px",
-            background: "rgba(220,160,40,0.12)",
-            border: "1px solid rgba(220,160,40,0.4)",
-            borderRadius: 8,
-            fontSize: "0.88em",
-          }}
-        >
-          <span style={{ flex: 1 }}>
-            ⏳ 응답이 90초 넘게 멈춰 있어요. 아직 긴 작업 중일 수도 있지만, 멈춘 것 같으면 중단하고 다시 시도하세요.
-          </span>
-          <button
-            className="settings-btn"
-            style={{ padding: "2px 10px", fontSize: "0.85em" }}
-            onClick={() => {
-              void handleInterrupt();
+      <MainChat
+        // v0.7.49 — 대기/정체 배너는 채팅창 안(입력창 위)에 그린다. 종전엔 .app 그리드의
+        // 직계 자식(grid-area 없음)이라 암묵 행을 만들어 왼쪽 아래에 끼고 채팅창 높이를 줄였다.
+        notices={<>
+        {visibleTaskWatchWaiting.length > 0 && (
+          <div role="status" className="task-watch-waiting" style={{ padding: "8px 12px", color: "var(--warn)", background: "var(--bg-2)", fontSize: "0.85em" }}>
+            <button className="settings-btn" style={{ float: "right", padding: "2px 8px", fontSize: "0.85em" }} onClick={dismissTaskWatchWaiting} title="이 알림 숨김 · 작업 감시는 계속됨">✕</button>
+            <strong>이 대화의 작업 결과 확인 대기 {visibleTaskWatchWaiting.length}건</strong>
+            {visibleTaskWatchWaiting.slice(0, 3).map((w) => <div key={w.id}>{w.title} · {watchBlockLabel(w.reason)}</div>)}
+          </div>
+        )}
+        {/* Phase 121 (v0.6.76) — dead-stream 워치독 배너. 비파괴적: 자동 중단 안 함. */}
+        {isStreaming && streamStalled && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 12px",
+              margin: "0 12px 8px",
+              background: "rgba(220,160,40,0.12)",
+              border: "1px solid rgba(220,160,40,0.4)",
+              borderRadius: 8,
+              fontSize: "0.88em",
             }}
           >
-            🛑 중단
-          </button>
-          <button
-            className="settings-btn"
-            style={{ padding: "2px 8px", fontSize: "0.85em" }}
-            onClick={() => setStreamStalled(false)}
-            title="배너만 숨김 — 작업은 계속 진행"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      <MainChat
+            <span style={{ flex: 1 }}>
+              ⏳ 응답이 90초 넘게 멈춰 있어요. 아직 긴 작업 중일 수도 있지만, 멈춘 것 같으면 중단하고 다시 시도하세요.
+            </span>
+            <button
+              className="settings-btn"
+              style={{ padding: "2px 10px", fontSize: "0.85em" }}
+              onClick={() => {
+                void handleInterrupt();
+              }}
+            >
+              🛑 중단
+            </button>
+            <button
+              className="settings-btn"
+              style={{ padding: "2px 8px", fontSize: "0.85em" }}
+              onClick={() => setStreamStalled(false)}
+              title="배너만 숨김 — 작업은 계속 진행"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        </>}
         activityPanel={<TaskActivityPanel
         runs={[...conversationTurnGateRef.current.runs.values()]}
         queues={conversationTurnGateRef.current.queues}

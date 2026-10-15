@@ -1,4 +1,14 @@
-import { useRef, useState, useCallback, useMemo, memo, type ReactNode } from "react";
+import {
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+  memo,
+  type Dispatch,
+  type ReactNode,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
@@ -9,6 +19,8 @@ import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFi
 
 interface MainChatProps {
   activityPanel?: ReactNode;
+  // v0.7.49 — 채팅창 안(입력창 위)에 표시할 알림 배너 (작업 결과 확인 대기 / 응답 정체 등).
+  notices?: ReactNode;
   conversationId: string;
   isStopping?: boolean;
   queuedCount?: number;
@@ -71,6 +83,7 @@ function formatToolName(name: string): string {
 
 function MainChat({
   activityPanel,
+  notices,
   conversationId,
   isStopping,
   queuedCount,
@@ -104,11 +117,7 @@ function MainChat({
     }
   });
   // activeFilter: 클릭한 위험도 또는 카테고리. null = 필터 없음 (전체 보임).
-  const [activeFilter, setActiveFilter] = useState<
-    | { kind: "risk"; value: "low" | "medium" | "high" | "critical" }
-    | { kind: "category"; value: string }
-    | null
-  >(null);
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>(null);
   const setShowToolCardsPersist = useCallback((v: boolean) => {
     setShowToolCards(v);
     try {
@@ -147,7 +156,10 @@ function MainChat({
   const handleScrollToBottomClick = useCallback(() => {
     const v = virtuosoRef.current;
     if (!v) return;
-    v.scrollToIndex({ index: "LAST", behavior: "smooth", align: "end" });
+    // v0.7.49 — smooth 는 높이 미측정 항목이 많거나 스트리밍으로 끝이 늘어나면 목표를 계속 쫓아가
+    // 바닥에 도달하지 못했다(6x CPU 실측: 30초 내 미도달, 커밋 1000회). 즉시 이동 + 측정 후 1회 보정.
+    v.scrollToIndex({ index: "LAST", behavior: "auto", align: "end" });
+    requestAnimationFrame(() => v.scrollToIndex({ index: "LAST", behavior: "auto", align: "end" }));
     setShowScrollToBottom(false);
   }, []);
 
@@ -261,74 +273,15 @@ function MainChat({
       {/* 메시지 영역 */}
       <div className="main-body">
         <div className="messages">
-          {(() => {
-            // Phase 90 — showToolCards 면 tool 메시지도 visible, OFF 면 기존 동작 (tool 빠짐).
-            // Phase 98.4 — 단 OFF 라도 이미지가 있는 tool 메시지는 본문에 표시.
-            // Phase 101 — filter chain 을 src/utils/messageFilters.ts 로 분리.
-            // Phase 103 — Virtuoso 로 list virtualization. 1717개 같은 큰 대화도 viewport 안 보이는
-            // 메시지는 DOM 에서 unmount → React reconciler 의 매 turn 비용 O(viewport) 로 cap.
-            // K 의 keystroke 시 UI thread 가 free 해져 타이핑 lag 사라짐.
-            const visibleMessages = filterMessagesForBody(messages, showToolCards);
-
-            if (visibleMessages.length === 0) {
-              return <EmptyState />;
-            }
-
-            // activeFilter 매칭 헬퍼 — tool 메시지의 risk 와 매칭. tool 아닌 메시지는 항상 통과.
-            const matchesFilter = (msg: ChatMessage): boolean => {
-              if (!activeFilter) return true;
-              if (msg.role !== "tool") return true; // user/assistant/system 은 dim 안 함
-              const r = (msg as any).risk;
-              if (!r) return false;
-              if (activeFilter.kind === "risk") return r.level === activeFilter.value;
-              return r.categoryId === activeFilter.value;
-            };
-
-            return (
-              <Virtuoso
-                ref={virtuosoRef}
-                data={visibleMessages}
-                computeItemKey={(_, msg) => msg.id}
-                followOutput={(isAtBottom) => {
-                  // 사용자가 위로 올린 상태면 자동 따라가지 않음 (Virtuoso 기본 동작).
-                  // 맨 아래일 때만 새 메시지 따라감 — chat 메신저 표준.
-                  return isAtBottom ? "smooth" : false;
-                }}
-                atBottomStateChange={(atBottom) => {
-                  setShowScrollToBottom(!atBottom);
-                }}
-                initialTopMostItemIndex={visibleMessages.length - 1}
-                increaseViewportBy={{ top: 800, bottom: 800 }}
-                components={{
-                  Header: () => <div className="messages-spacer" />,
-                }}
-                itemContent={(_, msg) => {
-                  const dimmed = activeFilter && !matchesFilter(msg);
-                  return (
-                    <div
-                      style={
-                        dimmed
-                          ? { opacity: 0.25, transition: "opacity 0.2s" }
-                          : { transition: "opacity 0.2s" }
-                      }
-                    >
-                      <Message
-                        message={msg}
-                        onPreviewRequest={onPreviewRequest}
-                        onToolFilterToggle={(kind, value) => {
-                          setActiveFilter((cur) => {
-                            if (cur && cur.kind === kind && cur.value === value) return null;
-                            return { kind, value } as typeof activeFilter;
-                          });
-                        }}
-                      />
-                    </div>
-                  );
-                }}
-                style={{ height: "100%" }}
-              />
-            );
-          })()}
+          <MessageList
+            messages={messages}
+            showToolCards={showToolCards}
+            activeFilter={activeFilter}
+            setActiveFilter={setActiveFilter}
+            onPreviewRequest={onPreviewRequest}
+            virtuosoRef={virtuosoRef}
+            onAtBottomChange={setShowScrollToBottom}
+          />
         </div>
 
         {/* 맨 아래로 가기 버튼 — 위로 스크롤했을 때만 노출 */}
@@ -342,6 +295,9 @@ function MainChat({
             <span className="scroll-to-bottom-icon">▼</span>
           </button>
         )}
+
+        {/* v0.7.49 — 알림 배너: 레이아웃 흐름 안에서 메시지 영역만 줄인다. */}
+        {notices ? <div className="chat-notices">{notices}</div> : null}
 
         {/* 진행 중 표시 — 스트리밍 중에만 노출, 마지막 pending tool 라벨 표시 */}
         <ProgressIndicator messages={messages} isStreaming={isStreaming} />
@@ -367,6 +323,115 @@ function MainChat({
     </section>
   );
 }
+
+type ActiveFilter =
+  | { kind: "risk"; value: "low" | "medium" | "high" | "critical" }
+  | { kind: "category"; value: string }
+  | null;
+
+// v0.7.49 — Virtuoso components 는 반드시 안정된 참조. 인라인 `Header: () => ...` 는 렌더마다
+// 새 컴포넌트 타입이라 헤더가 unmount/remount 되고 목록 높이를 다시 재게 만든다.
+const VIRTUOSO_COMPONENTS = {
+  Header: function MessagesSpacer() {
+    return <div className="messages-spacer" />;
+  },
+};
+const VIRTUOSO_VIEWPORT = { top: 800, bottom: 800 };
+const VIRTUOSO_STYLE = { height: "100%" };
+const DIM_STYLE = { opacity: 0.25, transition: "opacity 0.2s" };
+const NORMAL_STYLE = { transition: "opacity 0.2s" };
+
+/**
+ * v0.7.49 — 채팅 메시지 목록 (memo).
+ * 종전엔 MainChat 본문 안 IIFE 라, App 이 매 렌더 새로 만드는 activityPanel 엘리먼트 때문에
+ * MainChat memo 가 항상 깨지고 → 전체 필터(대형 대화 3만+ 행) + Virtuoso 재렌더가 매번 일어났다.
+ * (6x CPU 실측: 5초 동안 163 커밋, 2.5초 소비.) 여기선 목록과 무관한 prop 변화엔 재렌더하지 않는다.
+ */
+const MessageList = memo(function MessageList({
+  messages,
+  showToolCards,
+  activeFilter,
+  setActiveFilter,
+  onPreviewRequest,
+  virtuosoRef,
+  onAtBottomChange,
+}: {
+  messages: ChatMessage[];
+  showToolCards: boolean;
+  activeFilter: ActiveFilter;
+  setActiveFilter: Dispatch<SetStateAction<ActiveFilter>>;
+  onPreviewRequest?: (pathOrUrl: string, label?: string) => void;
+  virtuosoRef: RefObject<VirtuosoHandle>;
+  onAtBottomChange: (showButton: boolean) => void;
+}) {
+  // Phase 90/98.4/101 — 본문 필터 (src/utils/messageFilters.ts). messages/토글이 바뀔 때만 재계산.
+  const visibleMessages = useMemo(
+    () => filterMessagesForBody(messages, showToolCards),
+    [messages, showToolCards],
+  );
+
+  const handleToolFilterToggle = useCallback(
+    (kind: "risk" | "category", value: string) => {
+      setActiveFilter((cur) => {
+        if (cur && cur.kind === kind && cur.value === value) return null;
+        return { kind, value } as ActiveFilter;
+      });
+    },
+    [setActiveFilter],
+  );
+
+  // activeFilter 매칭 — tool 메시지의 risk 와 매칭. tool 아닌 메시지는 항상 통과.
+  const itemContent = useCallback(
+    (_: number, msg: ChatMessage) => {
+      let dimmed = false;
+      if (activeFilter && msg.role === "tool") {
+        const r = (msg as any).risk;
+        dimmed = !r
+          ? true
+          : activeFilter.kind === "risk"
+            ? r.level !== activeFilter.value
+            : r.categoryId !== activeFilter.value;
+      }
+      return (
+        <div style={dimmed ? DIM_STYLE : NORMAL_STYLE}>
+          <Message
+            message={msg}
+            onPreviewRequest={onPreviewRequest}
+            onToolFilterToggle={handleToolFilterToggle}
+          />
+        </div>
+      );
+    },
+    [activeFilter, onPreviewRequest, handleToolFilterToggle],
+  );
+  const computeItemKey = useCallback((_: number, msg: ChatMessage) => msg.id, []);
+  // 맨 아래일 때만 새 메시지를 따라간다. "smooth" 는 스트리밍 토큰마다 애니메이션이 겹쳐
+  // 바닥을 쫓아가는 상태가 이어지므로 즉시("auto") 따라간다.
+  const followOutput = useCallback((isAtBottom: boolean) => (isAtBottom ? "auto" : false), []);
+  const atBottomStateChange = useCallback(
+    (atBottom: boolean) => onAtBottomChange(!atBottom),
+    [onAtBottomChange],
+  );
+
+  if (visibleMessages.length === 0) {
+    return <EmptyState />;
+  }
+
+  return (
+    <Virtuoso
+      ref={virtuosoRef}
+      data={visibleMessages}
+      computeItemKey={computeItemKey}
+      followOutput={followOutput}
+      atBottomStateChange={atBottomStateChange}
+      initialTopMostItemIndex={visibleMessages.length - 1}
+      increaseViewportBy={VIRTUOSO_VIEWPORT}
+      components={VIRTUOSO_COMPONENTS}
+      itemContent={itemContent}
+      style={VIRTUOSO_STYLE}
+    />
+  );
+});
 
 // memo — 핸들러 ref 안정화로 props 변동은 사실상 messages/status/isStreaming 뿐.
 // 다른 state 변화 (settingsOpen 등) 로 인한 부모 리렌더에선 스킵됨.

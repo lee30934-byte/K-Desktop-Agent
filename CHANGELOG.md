@@ -3,6 +3,16 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.49] - 2026-10-15
+
+### Fixed
+- Keep the chat window at full height when the "waiting for task result" or "response stalled" banner appears. These banners were direct children of the app grid with no grid area, so they created an extra row under the sidebar (bottom-left) and shrank the chat by about 82 px. They now render inside the chat window, above the composer, with a height cap.
+- Make "scroll to bottom" reliable in long conversations. It used a smooth scroll that kept chasing growing content while a response streamed; with 6x CPU throttling it did not reach the bottom within 30 seconds. It now jumps immediately and corrects once after measurement (353 ms in the same test). Auto-follow during streaming also jumps instead of animating.
+- Stop re-rendering the whole message list when unrelated header state changes. The list is now a memoized component with stable Virtuoso callbacks and components. Measured idle re-render work dropped from 65 ms to 3 ms per 5 seconds on a 33,161-message conversation.
+
+### Tests
+- Add `sidecar/test-chat-layout-scroll.mjs`. It requires every direct child of the app grid to have a grid area or fixed position, keeps the banners inside the chat, and guards the list structure against smooth scrolling. It fails on v0.7.48 source (3/16) and passes on this release (16/16).
+
 ## [0.7.48] - 2026-10-15
 
 ### Added

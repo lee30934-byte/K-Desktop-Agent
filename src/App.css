@@ -343,6 +343,14 @@
 
 /* ─── 메인 채팅 ─────────────────────────────────────── */
 
+/* v0.7.49 — 채팅창 안 알림 영역. 내용이 많아도 메시지 영역을 다 먹지 않게 상한 + 내부 스크롤. */
+.chat-notices {
+  flex: 0 0 auto;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+
 .main-chat {
   grid-area: main;
   display: flex;
