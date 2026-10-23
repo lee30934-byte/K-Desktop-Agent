@@ -479,6 +479,24 @@ export function scorePitfallsV2(
 export const INJECT_FULL_K = Number(process.env.KDA_MEM_FULL_K ?? 4);
 /** Tier B — 한 줄 인덱스로 알릴 개수 (Tier A 제외하고 이만큼 더). */
 export const INJECT_INDEX_K = Number(process.env.KDA_MEM_INDEX_K ?? 45);
+/**
+ * v0.7.50 — pitfall 주입 바이트 예산 (Tier A 본문 + Tier B 한 줄). 종전엔 개수(4+45)만 고정이라
+ * 메모리가 늘면 예산을 넘었다 (2026-10-23 실측 24.1KB > 24KB, memory 849개). 넘으면 Tier B 를
+ * 낮은 순위부터 덜어낸다. Tier A(실행 가능한 본문)는 건드리지 않는다.
+ */
+export const INJECT_BUDGET_BYTES = Number(process.env.KDA_MEM_INJECT_BUDGET ?? 24 * 1024);
+
+/** 주입 크기 추정 — test-memory-relevance.mjs 의 측정식과 같다 (본문 절단+헤더 80, 한 줄+파일명+8, 고정 300). */
+export function estimateInjectionBytes(
+  full: { file: string }[],
+  index: { file: string }[],
+  bodyOf: (file: string) => string,
+): number {
+  const stripFm = (b: string) => b.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+  const fb = full.reduce((n, s) => n + Math.min(stripFm(bodyOf(s.file)).length, TRIGGERED_BODY_MAX_CHARS) + 80, 0);
+  const ib = index.reduce((n, s) => n + pitfallOneLiner(bodyOf(s.file)).length + s.file.length + 8, 0) + 300;
+  return fb + ib;
+}
 
 /** pitfall 파일에서 한 줄 요약을 뽑는다. frontmatter description → 첫 서술 줄 순. */
 export function pitfallOneLiner(body: string, maxLen = 110): string {
@@ -610,8 +628,11 @@ export function selectPitfallInjection(
   indexK: number = INJECT_INDEX_K,
 ): PitfallInjection {
   const scored = scorePitfallsV2(candidates, query, index);
-  return {
-    full: scored.slice(0, fullK),
-    index: scored.slice(fullK, fullK + indexK),
-  };
+  const full = scored.slice(0, fullK);
+  const tierB = scored.slice(fullK, fullK + indexK);
+  // v0.7.50 — 바이트 예산 강제: 넘으면 Tier B 를 끝(낮은 순위)부터 제거.
+  const bodies = new Map(candidates.map((c) => [c.file, c.body]));
+  const bodyOf = (file: string) => bodies.get(file) ?? "";
+  while (tierB.length > 0 && estimateInjectionBytes(full, tierB, bodyOf) > INJECT_BUDGET_BYTES) tierB.pop();
+  return { full, index: tierB };
 }
