@@ -3,6 +3,24 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.50] - 2026-10-23
+
+### Changed
+- Switch conversations faster. Opening a conversation used to read every message with full tool input and output. Now it reads only the latest 1,500 rows, and only the first 900/1,600 characters of tool input/output. On the largest local conversation (41,067 rows), the query dropped from 410 MB / 2.8 s to 2.3 MB / 21 ms. A `(conversation_id, timestamp)` index is added on startup.
+- Load older messages when scrolling to the top, or with "Load older messages". The current reading position stays in place; measured shifts were 7 px, 0 px and 0 px over three loads.
+- Clear the previous conversation immediately on switch and show a loading message, instead of leaving the old messages on screen until the new ones load.
+- Build prompt history for queued, background, Telegram, schedule and task-watch turns from recent pages instead of reading the whole conversation. Reading stops once 40 user/assistant messages are collected.
+
+### Fixed
+- Never write truncated tool payloads back to the database. Saving a message whose input or output is still the loaded preview keeps the stored original, and a message with a truncated payload is never inserted as a new row. Tool cards show "Load full" to read the original.
+- Detect missing Telegram and schedule conversations correctly. The old existence check read the whole conversation and always succeeded, even for deleted conversations.
+- Copy the full conversation even when only recent messages are loaded.
+- Enforce the 24 KB pitfall-injection budget. The selector used to cap only the count (4 bodies and 45 one-line entries), so memory growth pushed it to 24.1 KB (849 memory files). It now drops the lowest-ranked one-line entries until the injection fits; the 4 bodies are unchanged. Golden-set recall stays at 92.3%.
+
+### Tests
+- Add `sidecar/test-message-view.mjs` (24 checks). It covers preview decoding, save protection, page queries and merging, wiring, and identical prompt history for previews versus originals.
+- Verify against a read-only snapshot of the real database: paging matched a full read for all 27 conversations, and prompt history was identical for 78,336 tool rows. The save-protection SQL was also run against SQLite (`evidence/conv-switch-20261023`).
+
 ## [0.7.49] - 2026-10-15
 
 ### Fixed

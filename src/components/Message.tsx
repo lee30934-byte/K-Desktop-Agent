@@ -8,6 +8,8 @@ import { loadPreview, getCategory, isUrl } from "./SidePanel";
 import logger from "../utils/logger";
 // Phase 85 (v0.6.28) — Tool Safety Layer 후속. tool_use 카드 risk 배지.
 import { RISK_BADGES } from "../utils/toolSafety";
+// v0.7.50 — 화면용 로딩에서 잘린 도구 원문을 필요할 때만 DB 에서 읽는다.
+import { getToolMessagePayload } from "../db";
 
 interface MessageProps {
   message: ChatMessage;
@@ -730,6 +732,31 @@ function ToolMessageView({
   // Phase 99 — lightbox ←/→ navigation + counter + download + clipboard, 썸네일 hover scale.
   const hasImages = Array.isArray(message.images) && message.images.length > 0;
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // v0.7.50 — 잘린 도구 원문(앞부분만 표시) → "전체 불러오기" 로 DB 원문을 카드 안에서만 표시.
+  // 메시지 객체는 바꾸지 않는다(저장 보호 판정과 프롬프트 이력이 미리보기 기준으로 일관되게).
+  const isTruncated = typeof message.inputPreview === "string" || typeof message.outputPreview === "string";
+  const [fullPayload, setFullPayload] = useState<{ toolInput: unknown; toolOutput: string | undefined } | null>(null);
+  const [payloadState, setPayloadState] = useState<"idle" | "loading" | "error">("idle");
+  const loadFullPayload = async () => {
+    setPayloadState("loading");
+    try {
+      const payload = await getToolMessagePayload(message.id);
+      if (!payload) throw new Error("메시지를 DB 에서 찾지 못했습니다");
+      setFullPayload(payload);
+      setPayloadState("idle");
+    } catch (err) {
+      logger.warn(`[ToolMessageView] 원문 불러오기 실패 id=${message.id}: ${err instanceof Error ? err.message : String(err)}`);
+      setPayloadState("error");
+    }
+  };
+  const shownInput = fullPayload ? fullPayload.toolInput : message.toolInput;
+  const shownOutput = fullPayload ? fullPayload.toolOutput : message.toolOutput;
+  const inputText =
+    !fullPayload && typeof message.inputPreview === "string"
+      ? `${message.inputPreview}…`
+      : JSON.stringify(shownInput, null, 2);
+  const outputText =
+    !fullPayload && typeof message.outputPreview === "string" ? `${shownOutput ?? ""}…` : shownOutput;
   // Phase 115 (v0.6.70) — 표시 모드. inline 으로 크게 띄울지, footnote 로 접을지 결정.
   const imageMode = useToolImageMode();
   const showInline =
@@ -992,18 +1019,29 @@ function ToolMessageView({
             </div>
           </div>
         )}
-        {message.toolInput != null && (
+        {shownInput != null && (
           <div className="msg-tool-section">
             <span className="eyebrow">Arguments</span>
-            <pre className="mono msg-tool-json">
-              {JSON.stringify(message.toolInput, null, 2)}
-            </pre>
+            <pre className="mono msg-tool-json">{inputText}</pre>
           </div>
         )}
-        {message.toolOutput && (
+        {shownOutput && (
           <div className="msg-tool-section">
             <span className="eyebrow">Output</span>
-            <pre className="mono msg-tool-json">{message.toolOutput}</pre>
+            <pre className="mono msg-tool-json">{outputText}</pre>
+          </div>
+        )}
+        {isTruncated && !fullPayload && (
+          <div className="msg-tool-section msg-tool-truncated">
+            <span style={{ opacity: 0.7 }}>앞부분만 표시 중</span>{" "}
+            <button
+              type="button"
+              className="msg-tool-load-full"
+              onClick={() => void loadFullPayload()}
+              disabled={payloadState === "loading"}
+            >
+              {payloadState === "loading" ? "불러오는 중…" : payloadState === "error" ? "다시 시도" : "전체 불러오기"}
+            </button>
           </div>
         )}
         {/* Phase 98.1 — 이미지 영역은 도구 카드 위쪽 inline 으로 분리됨 (위 fragment 참조).

@@ -7,6 +7,20 @@
 
 import Database from "@tauri-apps/plugin-sql";
 import { MESSAGE_UPSERT_SQL } from "./messagePersistence";
+import {
+  HISTORY_MIN_TEXT_MESSAGES,
+  countTextMessages,
+  prependOlder,
+  VIEW_PAGE_ROWS,
+  buildPreservingUpdateSql,
+  buildViewPageQuery,
+  decodeToolInputPreview,
+  decodeToolOutputPreview,
+  pageCursor,
+  preservingUpdateParams,
+  toolPayloadPreservation,
+  type ViewCursor,
+} from "./messageView.mjs";
 import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage, Conversation, ToolMessage } from "./types";
 import logger from "./utils/logger";
@@ -157,6 +171,12 @@ export async function initDB(): Promise<Database> {
   await db.execute(`
     CREATE INDEX IF NOT EXISTS idx_messages_conversation
     ON messages(conversation_id)
+  `);
+
+  // v0.7.50 — 대화 화면 페이지 조회(최근 N행). 최대 대화(41k행) 실측 827ms → 17ms.
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_messages_conv_ts
+    ON messages(conversation_id, timestamp)
   `);
 
   await db.execute(`
@@ -1139,6 +1159,70 @@ export async function getMessages(conversationId: string): Promise<ChatMessage[]
 }
 
 /**
+ * v0.7.50 — 대화 화면용 메시지 페이지 (최근 VIEW_PAGE_ROWS 행, before 가 있으면 그 이전 페이지).
+ * 도구 원문은 앞부분만 읽는다(messageView.mjs). 내보내기·백업·분기에는 쓰지 말 것 — getMessages 사용.
+ */
+export async function getMessagesForView(
+  conversationId: string,
+  before?: ViewCursor | null,
+  limit: number = VIEW_PAGE_ROWS,
+): Promise<{ messages: ChatMessage[]; hasOlder: boolean; before: ViewCursor | null }> {
+  const database = await initDB();
+  const { sql, cursorParams } = buildViewPageQuery(before ?? null);
+  const rows = await database.select<DBMessage[]>(sql, [conversationId, ...cursorParams, limit]);
+  const cursor = pageCursor(rows, limit);
+  return { messages: rows.map(dbViewRowToMessage), ...cursor };
+}
+
+/**
+ * v0.7.50 — 프롬프트 이력용 최근 메시지. 본문(user/assistant)이 minText 개 모일 때까지만 최근 페이지를 거슬러 읽는다.
+ * 종전엔 텔레그램/예약/작업감시/대기열 전송마다 대화 전체(최대 410MB)를 읽었다. 도구 항목은 미리보기 —
+ * sidecar summarizeToolItem 절단(입력 800·출력 1500자)보다 길게 읽으므로 이력 텍스트는 원문과 같다.
+ */
+export async function getRecentMessagesForHistory(
+  conversationId: string,
+  minText: number = HISTORY_MIN_TEXT_MESSAGES,
+): Promise<ChatMessage[]> {
+  let page = await getMessagesForView(conversationId);
+  let collected = page.messages;
+  while (page.hasOlder && page.before && countTextMessages(collected) < minText) {
+    page = await getMessagesForView(conversationId, page.before);
+    collected = prependOlder(collected, page.messages);
+  }
+  return collected;
+}
+
+/** v0.7.50 — 잘려서 표시된 도구 메시지의 원문 (도구 카드의 "전체 불러오기"). */
+export async function getToolMessagePayload(
+  id: string,
+): Promise<{ toolInput: unknown; toolOutput: string | undefined } | null> {
+  const database = await initDB();
+  const rows = await database.select<{ tool_input: string | null; tool_output: string | null }[]>(
+    `SELECT tool_input, tool_output FROM messages WHERE id = ?`,
+    [id],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  let toolInput: unknown = undefined;
+  if (row.tool_input) {
+    try { toolInput = JSON.parse(row.tool_input); } catch { toolInput = row.tool_input; }
+  }
+  return { toolInput, toolOutput: row.tool_output ?? undefined };
+}
+
+/** v0.7.50 — 대화 복사용: 도구를 제외한 본문 전체 (페이지로 일부만 불러온 대화에서도 복사가 완전하도록). */
+export async function getConversationTextMessages(conversationId: string): Promise<ChatMessage[]> {
+  const database = await initDB();
+  const rows = await database.select<DBMessage[]>(
+    `SELECT id, conversation_id, role, content, timestamp, streaming, level,
+       NULL AS tool_id, NULL AS tool_name, NULL AS tool_input, NULL AS tool_output, NULL AS tool_status, NULL AS tool_risk
+     FROM messages WHERE conversation_id = ? AND role != 'tool' ORDER BY timestamp ASC, id ASC`,
+    [conversationId],
+  );
+  return rows.map(dbRowToMessage);
+}
+
+/**
  * 메시지 저장 (upsert)
  */
 export async function saveMessage(
@@ -1148,6 +1232,19 @@ export async function saveMessage(
   const database = await initDB();
 
   const params = messageToDbParams(conversationId, message);
+
+  // v0.7.50 — 화면용으로 잘라 읽은 도구 원문이 그대로면 그 컬럼은 DB 값을 보존한다.
+  // 잘린 값으로 INSERT 하지 않도록 UPDATE 만 쓴다 (행이 없으면 저장하지 않고 경고).
+  const keep = toolPayloadPreservation(message);
+  if (keep.keepInput || keep.keepOutput) {
+    const updated = await database.execute(buildPreservingUpdateSql(keep), preservingUpdateParams(params, keep));
+    if (updated.rowsAffected !== 1) {
+      logger.warn(`[DB] 잘린 도구 원문을 가진 메시지 ${message.id} 저장 건너뜀 — 기존 행 없음 (잘린 값으로 새 행을 만들지 않음)`);
+      return;
+    }
+    await touchConversation(conversationId);
+    return;
+  }
 
   const result = await database.execute(
     MESSAGE_UPSERT_SQL,
@@ -1182,6 +1279,21 @@ export async function updateMessage(
 // ─────────────────────────────────────────────────────────────────
 // Helper Functions
 // ─────────────────────────────────────────────────────────────────
+
+/** v0.7.50 — 화면용 행 변환: 도구 원문은 미리보기(잘림 표시 포함)로 해석. */
+function dbViewRowToMessage(row: DBMessage): ChatMessage {
+  if (row.role !== "tool") return dbRowToMessage(row);
+  const full = dbRowToMessage({ ...row, tool_input: null, tool_output: null }) as ToolMessage;
+  const input = decodeToolInputPreview(row.tool_input);
+  const output = decodeToolOutputPreview(row.tool_output);
+  return {
+    ...full,
+    toolInput: input.toolInput,
+    toolOutput: output.toolOutput,
+    ...(input.inputPreview !== undefined ? { inputPreview: input.inputPreview } : {}),
+    ...(output.outputPreview !== undefined ? { outputPreview: output.outputPreview } : {}),
+  };
+}
 
 function dbRowToMessage(row: DBMessage): ChatMessage {
   const base = {

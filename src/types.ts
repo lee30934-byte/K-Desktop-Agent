@@ -41,6 +41,10 @@ export interface ToolMessage extends BaseMessage {
   toolName: string;
   toolInput?: unknown;
   toolOutput?: string;
+  // v0.7.50 — 화면용 로딩(getMessagesForView)에서 도구 원문이 잘렸을 때만 채워진다.
+  // 값은 잘린 앞부분 그대로 — toolInput/toolOutput 이 이 값과 같으면 저장 시 DB 원문을 보존한다.
+  inputPreview?: string;
+  outputPreview?: string;
   // Phase 98 — MCP 도구가 반환한 image content (base64 data URL 배열).
   // sidecar 가 tool_result block 의 image part 를 분리해 emit. ToolMessageView 가
   // 썸네일 그리드로 렌더링. 이전엔 normalizeToolOutput 이 JSON.stringify 로 덤프해

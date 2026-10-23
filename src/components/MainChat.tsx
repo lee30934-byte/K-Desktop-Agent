@@ -40,6 +40,13 @@ interface MainChatProps {
   onFlushQueueNow?: () => void;
   // Phase 44 (v0.5.32) — 메시지 안 link 클릭 → SidePanel 트리거
   onPreviewRequest?: (pathOrUrl: string, label?: string) => void;
+  // v0.7.50 — 페이지 로딩 (최근 메시지만 먼저, 위로 스크롤 시 이전 메시지)
+  loading?: boolean;
+  hasOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void;
+  // 일부만 불러온 대화에서 '복사' 시 DB 에서 본문 전체를 읽는다
+  onLoadAllForCopy?: () => Promise<ChatMessage[]>;
 }
 
 // 빌트인 도구 → 한국어 라벨 매핑. MCP 도구는 정규식으로 자동 변환 (mcp__server__tool → tool).
@@ -99,6 +106,11 @@ function MainChat({
   onCancelQueuedSend,
   onFlushQueueNow,
   onPreviewRequest,
+  loading = false,
+  hasOlder = false,
+  loadingOlder = false,
+  onLoadOlder,
+  onLoadAllForCopy,
 }: MainChatProps) {
   // Phase 103 (v0.6.49) — react-virtuoso 박은 후 scroll 관리는 Virtuoso 가 자체 처리.
   // 기존 messagesContainerRef + userScrolledUpRef + scrollToBottom + 4 useEffect 들 모두 제거.
@@ -130,7 +142,16 @@ function MainChat({
 
   // 대화 내용 복사 함수
   const handleCopyChat = async () => {
-    const visibleMessages = filterMessagesForCopy(messages);
+    // v0.7.50 — 이전 메시지가 아직 안 불러와졌으면 DB 에서 본문 전체를 읽어 복사 (화면 일부만 복사 방지).
+    let source = messages;
+    if (onLoadAllForCopy) {
+      try {
+        source = await onLoadAllForCopy();
+      } catch (err) {
+        console.error("Failed to load full conversation for copy:", err);
+      }
+    }
+    const visibleMessages = filterMessagesForCopy(source);
 
     if (visibleMessages.length === 0) return;
 
@@ -274,6 +295,11 @@ function MainChat({
       <div className="main-body">
         <div className="messages">
           <MessageList
+            key={conversationId}
+            loading={loading}
+            hasOlder={hasOlder}
+            loadingOlder={loadingOlder}
+            onLoadOlder={onLoadOlder}
             messages={messages}
             showToolCards={showToolCards}
             activeFilter={activeFilter}
@@ -331,11 +357,29 @@ type ActiveFilter =
 
 // v0.7.49 — Virtuoso components 는 반드시 안정된 참조. 인라인 `Header: () => ...` 는 렌더마다
 // 새 컴포넌트 타입이라 헤더가 unmount/remount 되고 목록 높이를 다시 재게 만든다.
+// v0.7.50 — 헤더: 이전 메시지가 남아 있으면 불러오기 표시/버튼 (startReached 가 안 뜨는 짧은 목록 대비).
+type ListContext = { hasOlder: boolean; loadingOlder: boolean; onLoadOlder?: () => void };
 const VIRTUOSO_COMPONENTS = {
-  Header: function MessagesSpacer() {
-    return <div className="messages-spacer" />;
+  Header: function MessagesSpacer({ context }: { context?: ListContext }) {
+    return (
+      <div className="messages-spacer">
+        {context?.hasOlder ? (
+          <div className="messages-older">
+            {context.loadingOlder ? (
+              <span>이전 메시지 불러오는 중…</span>
+            ) : (
+              <button type="button" className="messages-older-btn" onClick={() => context.onLoadOlder?.()}>
+                이전 메시지 더 보기
+              </button>
+            )}
+          </div>
+        ) : null}
+      </div>
+    );
   },
 };
+// Virtuoso 는 앞에 항목이 붙으면 firstItemIndex 를 그 수만큼 줄여야 스크롤 위치를 유지한다.
+const FIRST_INDEX_BASE = 1_000_000_000;
 const VIRTUOSO_VIEWPORT = { top: 800, bottom: 800 };
 const VIRTUOSO_STYLE = { height: "100%" };
 const DIM_STYLE = { opacity: 0.25, transition: "opacity 0.2s" };
@@ -348,6 +392,10 @@ const NORMAL_STYLE = { transition: "opacity 0.2s" };
  * (6x CPU 실측: 5초 동안 163 커밋, 2.5초 소비.) 여기선 목록과 무관한 prop 변화엔 재렌더하지 않는다.
  */
 const MessageList = memo(function MessageList({
+  loading,
+  hasOlder,
+  loadingOlder,
+  onLoadOlder,
   messages,
   showToolCards,
   activeFilter,
@@ -356,6 +404,10 @@ const MessageList = memo(function MessageList({
   virtuosoRef,
   onAtBottomChange,
 }: {
+  loading: boolean;
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  onLoadOlder?: () => void;
   messages: ChatMessage[];
   showToolCards: boolean;
   activeFilter: ActiveFilter;
@@ -405,6 +457,28 @@ const MessageList = memo(function MessageList({
     [activeFilter, onPreviewRequest, handleToolFilterToggle],
   );
   const computeItemKey = useCallback((_: number, msg: ChatMessage) => msg.id, []);
+
+  // v0.7.50 — 앞에 붙은(이전 페이지) 항목 수만큼 firstItemIndex 를 줄인다. 끝에 추가되는 새 메시지는 무관.
+  // 대화가 바뀌면 이 컴포넌트는 key 로 새로 마운트되므로 누적값도 초기화된다.
+  const firstIdRef = useRef<string | null>(null);
+  const prependedRef = useRef(0);
+  const firstItemIndex = useMemo(() => {
+    const nextFirst = visibleMessages[0]?.id ?? null;
+    const prev = firstIdRef.current;
+    if (prev != null && nextFirst != null && prev !== nextFirst) {
+      const idx = visibleMessages.findIndex((m) => m.id === prev);
+      if (idx > 0) prependedRef.current += idx;
+    }
+    firstIdRef.current = nextFirst;
+    return FIRST_INDEX_BASE - prependedRef.current;
+  }, [visibleMessages]);
+  const listContext = useMemo<ListContext>(
+    () => ({ hasOlder, loadingOlder, onLoadOlder }),
+    [hasOlder, loadingOlder, onLoadOlder],
+  );
+  const startReached = useCallback(() => {
+    if (hasOlder && !loadingOlder) onLoadOlder?.();
+  }, [hasOlder, loadingOlder, onLoadOlder]);
   // 맨 아래일 때만 새 메시지를 따라간다. "smooth" 는 스트리밍 토큰마다 애니메이션이 겹쳐
   // 바닥을 쫓아가는 상태가 이어지므로 즉시("auto") 따라간다.
   const followOutput = useCallback((isAtBottom: boolean) => (isAtBottom ? "auto" : false), []);
@@ -414,6 +488,23 @@ const MessageList = memo(function MessageList({
   );
 
   if (visibleMessages.length === 0) {
+    if (loading) {
+      return (
+        <div className="conversation-loading" role="status">
+          대화를 불러오는 중…
+        </div>
+      );
+    }
+    // 페이지 전체가 도구 기록이라 본문이 안 보이는 경우: 이전 메시지를 이어서 볼 수 있게.
+    if (hasOlder) {
+      return (
+        <div className="conversation-loading">
+          <button type="button" className="messages-older-btn" onClick={() => onLoadOlder?.()} disabled={loadingOlder}>
+            {loadingOlder ? "이전 메시지 불러오는 중…" : "이전 메시지 더 보기"}
+          </button>
+        </div>
+      );
+    }
     return <EmptyState />;
   }
 
@@ -421,6 +512,9 @@ const MessageList = memo(function MessageList({
     <Virtuoso
       ref={virtuosoRef}
       data={visibleMessages}
+      firstItemIndex={firstItemIndex}
+      context={listContext}
+      startReached={startReached}
       computeItemKey={computeItemKey}
       followOutput={followOutput}
       atBottomStateChange={atBottomStateChange}

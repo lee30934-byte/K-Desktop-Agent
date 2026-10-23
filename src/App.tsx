@@ -42,6 +42,9 @@ import {
   deleteConversation,
   updateConversationTitle,
   getMessages,
+  getMessagesForView,
+  getConversationTextMessages,
+  getRecentMessagesForHistory,
   saveMessage,
   generateTitleFromMessage,
   generateSummaryPrompt,
@@ -88,6 +91,7 @@ import {
   // Phase 145 (v0.7.22) — 폴더 지침을 모든 send 경로에 싣기 위한 대화-폴더 상태 조회
   getConversationFolderState,
 } from "./db";
+import { loadedMessagesSufficeForHistory, prependOlder, type ViewCursor } from "./messageView.mjs";
 // Phase 144 (v0.7.20) — provider 결정 순수 로직 (전역/대화별 폴백 단일 지점)
 import { resolveProviderSettings, providerLabel } from "./providerResolve";
 import { chooseCodexAutoModel, shouldAutoSelectCodexModel } from "./codexAutoModel";
@@ -370,6 +374,18 @@ async function appendTrimLog(stat: TrimStat): Promise<void> {
 export default function App() {
   // ─── 상태 ───────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // v0.7.50 — 대화 화면 페이지 로딩. 전환 시 최근 페이지만 읽고, 위로 스크롤하면 이전 페이지를 붙인다.
+  // convId 로 소유 대화를 기록해 다른 대화의 페이지 상태가 섞이지 않게 한다.
+  const [olderPaging, setOlderPaging] = useState<{
+    convId: string;
+    hasOlder: boolean;
+    before: ViewCursor | null;
+    loading: boolean;
+  } | null>(null);
+  const olderPagingRef = useRef<typeof olderPaging>(null);
+  useEffect(() => { olderPagingRef.current = olderPaging; }, [olderPaging]);
+  // 전환 중인 대화 id (로드 완료 전까지 "불러오는 중" 표시, 이전 대화 내용은 즉시 비움)
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   // Phase 32 — folder tree
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -2671,7 +2687,12 @@ export default function App() {
     if (visibleAtSend) setPendingResume(null);
     if (creatingConversationRef.current) await creatingConversationRef.current;
     await flushMessageSaves(convId);
-    const sendHistory = sourceMessages ?? await getMessages(convId);
+    // v0.7.50 — 대화 전체(SELECT *) 대신 최근 페이지. 화면 목록이 이력에 모자라면(이전 페이지 미로딩) DB 에서 보충.
+    const pagingForSend = olderPagingRef.current;
+    const loadedHasOlder = !!pagingForSend && pagingForSend.convId === convId && pagingForSend.hasOlder;
+    const sendHistory = sourceMessages && loadedMessagesSufficeForHistory(sourceMessages, loadedHasOlder)
+      ? sourceMessages
+      : await getRecentMessagesForHistory(convId);
 
     const turnId = crypto.randomUUID();
 
@@ -3100,7 +3121,8 @@ export default function App() {
         // DB 에 실제 존재하는지 확인 (state 미반영 케이스). 없으면 새로 생성.
         let inDb = false;
         if (convId) {
-          try { await getMessages(convId); inDb = true; } catch { inDb = false; }
+          // v0.7.50 — 존재 확인만 (종전 getMessages 는 없는 대화도 [] 로 성공해 항상 true + 대화 전체를 읽었다)
+          try { inDb = (await getConversationMetrics(convId)) !== null; } catch { inDb = false; }
         }
         if (!convId || !inDb) {
           convId = crypto.randomUUID();
@@ -3113,7 +3135,7 @@ export default function App() {
       // 이전 대화 맥락 (prior 메시지만 — 방금 메시지는 send_message 의 message 로 따로 감).
       let history: Array<{ role: "user" | "assistant"; content: string }> = [];
       try {
-        const prior = await getMessages(convId);
+        const prior = await getRecentMessagesForHistory(convId); // v0.7.50 — 전체 대신 최근 페이지
         history = prior
           .filter((m) => m.role === "user" || m.role === "assistant")
           .slice(-20)
@@ -3267,7 +3289,8 @@ export default function App() {
         const exists = convId && conversations.some((c) => c.id === convId);
         if (!convId || !exists) {
           let inDb = false;
-          if (convId) { try { await getMessages(convId); inDb = true; } catch { inDb = false; } }
+          // v0.7.50 — 존재 확인만 (종전 getMessages 는 없는 대화도 [] 로 성공해 항상 true + 대화 전체를 읽었다)
+          if (convId) { try { inDb = (await getConversationMetrics(convId)) !== null; } catch { inDb = false; } }
           if (!convId || !inDb) {
             convId = crypto.randomUUID();
             const newConv = await createConversation(convId, "⏰ 예약");
@@ -3279,7 +3302,7 @@ export default function App() {
         // 이전 맥락 (최근 20턴).
         let history: Array<{ role: "user" | "assistant"; content: string }> = [];
         try {
-          const prior = await getMessages(convId);
+          const prior = await getRecentMessagesForHistory(convId); // v0.7.50 — 전체 대신 최근 페이지
           history = prior
             .filter((m) => m.role === "user" || m.role === "assistant")
             .slice(-20)
@@ -3481,7 +3504,7 @@ export default function App() {
         // 이전 맥락 (최근 20턴).
         let history: Array<{ role: "user" | "assistant"; content: string }> = [];
         try {
-          const prior = await getMessages(convId);
+          const prior = await getRecentMessagesForHistory(convId); // v0.7.50 — 전체 대신 최근 페이지
           history = prior
             .filter((m) => m.role === "user" || m.role === "assistant")
             .slice(-20)
@@ -3750,13 +3773,21 @@ export default function App() {
     // 다른 대화로 넘어가면 이전 대화의 이어받기 배너는 숨김
     setPendingResume(null);
 
+    // v0.7.50 — 이전 대화 내용을 즉시 비우고 로딩 표시 (종전: 로드 끝날 때까지 이전 대화가 남아 보임).
+    setMessages([]);
+    setOlderPaging(null);
+    setLoadingConversationId(id);
+
     // DB에서 메시지와 메트릭 로드
     try {
-      const [msgs, savedMetrics] = await Promise.all([
-        getMessages(id),
+      // v0.7.50 — 전체(SELECT *) 대신 최근 페이지 + 도구 원문 앞부분만 (최대 대화 410MB → 약 2MB).
+      const [page, savedMetrics] = await Promise.all([
+        getMessagesForView(id),
         getConversationMetrics(id),
       ]);
       if (activeConversationIdRef.current !== id) return;
+      const msgs = page.messages;
+      setOlderPaging({ convId: id, hasOlder: page.hasOlder, before: page.before, loading: false });
       const merged = new Map(msgs.map((m) => [m.id, m]));
       for (const [key, message] of messageCacheRef.current.get(id) ?? []) merged.set(key, message);
       setMessages([...merged.values()].sort((a, b) => a.timestamp - b.timestamp));
@@ -3829,7 +3860,41 @@ export default function App() {
         currentContextTokens: 0,
       });
       pushSystem("메시지를 불러오지 못했습니다.", "error");
+    } finally {
+      setLoadingConversationId((cur) => (cur === id ? null : cur));
     }
+  });
+
+  // v0.7.50 — 위로 스크롤해 목록 맨 위에 닿으면 이전 페이지를 붙인다. 활성 대화가 바뀌었으면 버린다.
+  const handleLoadOlderMessages = useStableCallback(async () => {
+    const paging = olderPagingRef.current;
+    const convId = activeConversationIdRef.current;
+    if (!paging || !convId || paging.convId !== convId || !paging.hasOlder || paging.loading || !paging.before) return;
+    const loadingState = { ...paging, loading: true };
+    olderPagingRef.current = loadingState;
+    setOlderPaging(loadingState);
+    try {
+      const page = await getMessagesForView(convId, paging.before);
+      if (activeConversationIdRef.current !== convId) return;
+      setMessages((prev) => prependOlder(prev, page.messages));
+      const next = { convId, hasOlder: page.hasOlder, before: page.before ?? paging.before, loading: false };
+      olderPagingRef.current = next;
+      setOlderPaging(next);
+    } catch (err) {
+      logger.warn(`[App] 이전 메시지 불러오기 실패: ${err instanceof Error ? err.message : String(err)}`);
+      if (activeConversationIdRef.current === convId) {
+        const failed = { ...paging, loading: false };
+        olderPagingRef.current = failed;
+        setOlderPaging(failed);
+      }
+    }
+  });
+
+  // v0.7.50 — 대화 복사: 일부만 불러온 대화도 DB 에서 본문 전체를 읽어 복사한다.
+  const handleLoadAllForCopy = useStableCallback(async (): Promise<ChatMessage[]> => {
+    const convId = activeConversationIdRef.current;
+    if (!convId) return messagesRef.current;
+    return getConversationTextMessages(convId);
   });
 
   const handleDeleteConversation = useStableCallback(async (id: string) => {
@@ -5029,6 +5094,16 @@ export default function App() {
         onFlushQueueNow={handleFlushQueueNow}
         // Phase 44 (v0.5.32) — link/file click → SidePanel
         onPreviewRequest={handlePreviewRequest}
+        // v0.7.50 — 페이지 로딩
+        loading={!!activeConversationId && loadingConversationId === activeConversationId}
+        hasOlder={!!olderPaging && olderPaging.convId === activeConversationId && olderPaging.hasOlder}
+        loadingOlder={!!olderPaging && olderPaging.convId === activeConversationId && olderPaging.loading}
+        onLoadOlder={handleLoadOlderMessages}
+        onLoadAllForCopy={
+          olderPaging && olderPaging.convId === activeConversationId && olderPaging.hasOlder
+            ? handleLoadAllForCopy
+            : undefined
+        }
       />
 
       <MetricsPanel
