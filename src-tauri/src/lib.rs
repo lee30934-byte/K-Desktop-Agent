@@ -1,6 +1,7 @@
 mod task_watch_recovery;
 mod browser_host;
 mod browser_host_bridge;
+mod media_preview;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -3249,10 +3250,12 @@ fn kill_process_tree(pid: u32) -> Result<(), String> {
 /// 신뢰 prefix (USERPROFILE/APPDATA/LOCALAPPDATA/install dir) 안만 허용.
 ///
 /// 반환: as_text=true 면 UTF-8 텍스트, 아니면 raw bytes (Vec<u8>) — frontend 가 base64 변환.
-#[tauri::command]
-fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, String> {
-    use std::path::Path;
+/// v0.7.51 — read_preview_file / grant_media_preview 공용 경로 신뢰 검증.
+/// (Phase 74/78/78.1/114/127 규칙 그대로: percent-decode → canonicalize → UNC strip →
+///  로컬 drive-letter 또는 WSL UNC 또는 신뢰 prefix.) 통과 시 canonical 경로 반환.
+fn resolve_trusted_preview_path(path: &str, purpose: &str) -> Result<PathBuf, String> {
     // Phase 78 (v0.6.21) — react-markdown URL-encoded path 양방향 방어. open_path 와 동일 로직.
+    let path = path.to_string();
     let normalized = percent_decode_local_path(&path);
     let p = Path::new(&normalized);
     let canonical = match p.canonicalize() {
@@ -3289,10 +3292,17 @@ fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, S
             .any(|prefix| canonical_str.starts_with(prefix));
     if !trusted {
         return Err(format!(
-            "신뢰하지 않는 경로 (미리보기 거부): {}\n네트워크/UNC 경로는 보안상 지원하지 않습니다.",
+            "신뢰하지 않는 경로 ({} 거부): {}\n네트워크/UNC 경로는 보안상 지원하지 않습니다.",
+            purpose,
             canonical.display(),
         ));
     }
+    Ok(canonical)
+}
+
+#[tauri::command]
+fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, String> {
+    let canonical = resolve_trusted_preview_path(&path, "미리보기")?;
 
     // 파일 크기 cap — 100MB 이상은 거부 (메모리 폭주 회피).
     let metadata = std::fs::metadata(&canonical).map_err(|e| format!("metadata 실패: {}", e))?;
@@ -3324,6 +3334,28 @@ fn read_preview_file(path: String, as_text: bool) -> Result<serde_json::Value, S
         let bytes = std::fs::read(&canonical).map_err(|e| format!("binary read 실패: {}", e))?;
         Ok(serde_json::json!({ "bytes": bytes }))
     }
+}
+
+/// v0.7.51 — 미리보기용 미디어 스트리밍 토큰 발급 (`kdamedia://`, media_preview.rs 참조).
+///
+/// SidePanel / 채팅 인라인 플레이어가 K 의 클릭(또는 기존 인라인 이미지 표시)으로 호출한다.
+/// read_preview_file 과 **같은 신뢰 검증**을 통과한 파일만 토큰을 받는다. 파일 내용은
+/// 여기서 읽지 않고, 웹뷰가 Range 요청으로 필요한 구간만 가져간다 (100MB 상한 없음).
+#[tauri::command]
+fn grant_media_preview(path: String) -> Result<serde_json::Value, String> {
+    let canonical = resolve_trusted_preview_path(&path, "미디어 미리보기")?;
+    let meta = std::fs::metadata(&canonical).map_err(|e| format!("metadata 실패: {}", e))?;
+    if !meta.is_file() {
+        return Err(format!("파일이 아닙니다: {}", canonical.display()));
+    }
+    let mime = media_preview::mime_for(&canonical);
+    let token = media_preview::grant(canonical);
+    Ok(serde_json::json!({
+        "token": token,
+        "scheme": media_preview::SCHEME,
+        "size": meta.len(),
+        "mime": mime,
+    }))
 }
 
 /// Phase 119 (v0.6.74) — 탐색기式 "거의 모든 파일" 미리보기.
@@ -4977,6 +5009,13 @@ pub fn run_with_options(start_minimized: bool) {
 
     tauri::Builder::default()
         .manage(browser_host::BrowserHost::default())
+        // v0.7.51 — 미리보기 미디어 스트리밍 (메인 창 전용, 토큰 기반). media_preview.rs 참조.
+        .register_asynchronous_uri_scheme_protocol(media_preview::SCHEME, |ctx, request, responder| {
+            let label = ctx.webview_label().to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(media_preview::handle(&label, &request));
+            });
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 이미 실행 중일 때 다시 실행되면 기존 창을 포커스
             if let Some(w) = app.get_webview_window("main") {
@@ -5218,6 +5257,7 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 74 (v0.6.17) — SidePanel 미리보기/외부 열기 — capabilities scope 우회
             open_path,
             read_preview_file,
+            grant_media_preview,
             get_shell_thumbnail,
             codex_login,
             codex_login_status,

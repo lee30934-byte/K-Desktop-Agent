@@ -809,6 +809,96 @@
   border-color: rgba(221, 119, 119, 0.4);
 }
 
+/* v0.7.51 — 채팅 본문 인라인 영상/음악 플레이어 */
+.md-inline-media-btn,
+.md-inline-media-status {
+  display: inline-block;
+  margin: 0 4px;
+  padding: 1px 8px;
+  font-size: 0.82em;
+  line-height: 1.6;
+  vertical-align: baseline;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-0);
+  color: var(--text-secondary, inherit);
+  font-family: inherit;
+}
+.md-inline-media-btn {
+  cursor: pointer;
+}
+.md-inline-media-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.md-inline-media-status.warn {
+  cursor: pointer;
+  color: #fa0;
+  border-color: rgba(255, 170, 0, 0.45);
+}
+.md-inline-media-status.error {
+  color: #d77;
+  border-color: rgba(221, 119, 119, 0.4);
+}
+.md-inline-media-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+.md-inline-media-label {
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+.md-inline-media-wrap {
+  position: relative;
+  display: block;
+  margin: 6px 0;
+  max-width: 480px;
+}
+.md-inline-media-wrap.audio {
+  max-width: 420px;
+}
+.md-inline-video {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  background: #000;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+}
+.md-inline-audio {
+  display: block;
+  width: 100%;
+  height: 36px;
+}
+.md-inline-media-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  line-height: 20px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.md-inline-media-wrap.audio .md-inline-media-close {
+  top: 7px;
+  right: -28px;
+}
+.md-inline-media-close:hover {
+  opacity: 1;
+}
+
 /* 인라인 코드 */
 .md-inline-code {
   font-family: var(--font-mono);

@@ -3,6 +3,26 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [Unreleased]
+
+### Fixed
+- Play video and audio in the preview panel. The app's CSP had no `media-src` or `frame-src`, so `<video>`, `<audio>` and the PDF frame blocked the data URLs the preview used (images worked only because `img-src` allowed `data:`). PDFs showed an error page for the same reason.
+- Use `audio/mp4` for `.m4a` files. They were labeled `audio/m4a`, which can stop playback.
+- Show a visible error card with "Open externally" when the built-in player cannot play a file. Before, only a black player was left.
+
+### Changed
+- Stream preview media instead of loading the whole file. The panel used to read the full file into a JSON number array and convert it to base64, so large videos were slow and files over 100 MB were refused. A new `kdamedia://` protocol serves only the byte ranges the player requests. In the live test, a 598 MB / 1 h 43 min video reached metadata in 169 ms and seeked to 5 seconds before the end in 132 ms.
+- Load images, video, audio and PDFs in the preview panel, and inline images in chat, through the same protocol. If streaming fails, the panel falls back once to the previous data URL method.
+- Restrict the protocol for safety. A file gets a random token only after it passes the existing preview path check (local drive, WSL, or trusted folders; network UNC paths are refused). Only the main window can use a token, and URLs contain the token but not the file path. Tauri's built-in asset protocol is not enabled, because it applies to every webview and cannot revoke access to a file.
+
+### Added
+- Play video and audio links in chat without opening the panel. A "▶ Play" button appears next to media links (and `![title](clip.mp4)` media). The file is opened only after the button is clicked. Files that fail the Final-Review Gate are not played; a warning chip points to the panel.
+
+### Tests
+- Add `sidecar/test-media-preview-stream.mjs` (48 checks): CSP directives, protocol and token wiring, the shared path check, streaming-first loading with fallback, inline player gating, and the MIME table. With the v0.7.50 CSP, 5 checks fail.
+- Add 5 Rust unit tests (`media_preview_tests`): MIME, Range parsing, 206/416 responses, refusing other windows, unknown tokens and raw paths in the URL, and the token limit.
+- Live test in an isolated debug build (separate profile, user folder and identifier) with WebView2: 27.8 MB MP4, MP3 (Korean name with spaces), WAV and a 598 MB MP4 played in the panel and in chat. The PDF showed in the panel (checked with an OS window capture, because CDP screenshots show the PDF frame incorrectly). A HOLD file was blocked, and there were 0 CSP violations (`evidence/media-preview-20261026`).
+
 ## [0.7.50] - 2026-10-23
 
 ### Changed

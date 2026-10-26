@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+// v0.7.51 — 영상/음악/PDF/이미지는 kdamedia:// 스트리밍 우선 (실패 시 data URL 폴백).
+import { grantMediaUrl, isMediaStreamUrl, mimeForExt } from "../utils/mediaStream";
 // Phase 74 (v0.6.17): plugin-fs/plugin-shell 의 default scope 가 너무 strict 해서
 // ~/.kda/cwd/runtime/previews/... 같은 K 워크스페이스 path 를 거부 ("forbidden path",
 // "Scoped command argument ... regex validation"). Rust 측 명시적 command (read_preview_file
@@ -44,13 +46,13 @@ export function isUrl(pathOrUrl: string): boolean {
 export type PreviewCategory = "image" | "video" | "audio" | "text" | "pdf" | "url" | "excel" | "word" | "other";
 
 export function getCategory(pathOrUrl: string): PreviewCategory {
-  if (isUrl(pathOrUrl) && !/\.(png|jpg|jpeg|gif|webp|svg|mp4|webm|mp3|wav|ogg|pdf|txt|md|json|csv|xml|yaml|yml|log)$/i.test(pathOrUrl)) {
+  if (isUrl(pathOrUrl) && !/\.(png|jpg|jpeg|gif|webp|svg|mp4|m4v|webm|mov|mp3|m4a|aac|wav|ogg|oga|opus|flac|pdf|txt|md|json|csv|xml|yaml|yml|log)$/i.test(pathOrUrl)) {
     return "url";
   }
   const ext = getExt(pathOrUrl);
   if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(ext)) return "image";
-  if (["mp4", "webm", "mov", "mkv"].includes(ext)) return "video";
-  if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
+  if (["mp4", "m4v", "webm", "mov", "mkv"].includes(ext)) return "video";
+  if (["mp3", "wav", "ogg", "oga", "opus", "m4a", "aac", "flac"].includes(ext)) return "audio";
   // Phase 118 (v0.6.73) — Office 인라인 미리보기. SheetJS(excel)/mammoth(word) 동적 import.
   if (["xlsx", "xls", "xlsm", "xlsb"].includes(ext)) return "excel";
   if (ext === "docx") return "word";
@@ -262,11 +264,23 @@ export async function checkFinalReviewGate(localPath: string): Promise<GateResul
  * - image/video/audio/pdf: bytes → base64 → data URL
  * - text: UTF-8 text 그대로
  */
+export interface PreviewResult {
+  dataUrl?: string;
+  text?: string;
+  html?: string;
+  error?: string;
+  /** v0.7.51 — dataUrl 이 kdamedia:// 스트리밍 URL 이면 true (재생 오류 시 data URL 로 폴백). */
+  streamed?: boolean;
+}
+
 export async function loadPreview(
   pathOrUrl: string,
   category: ReturnType<typeof getCategory>,
-): Promise<{ dataUrl?: string; text?: string; html?: string; error?: string }> {
-  if (isUrl(pathOrUrl)) {
+  opts: { legacy?: boolean } = {},
+): Promise<PreviewResult> {
+  // 웹 URL 은 그대로. file:// 은 아래에서 로컬 경로로 정규화해 스트리밍한다
+  // (file:// 를 그대로 src 에 넣으면 웹뷰가 차단한다).
+  if (isUrl(pathOrUrl) && !/^file:/i.test(pathOrUrl)) {
     return { dataUrl: pathOrUrl };
   }
 
@@ -346,6 +360,17 @@ export async function loadPreview(
       return { html: result.value || "<p>빈 문서입니다.</p>" };
     }
     if (category === "image" || category === "video" || category === "audio" || category === "pdf") {
+      // v0.7.51 — 스트리밍 우선. 파일을 미리 읽지 않고 웹뷰가 Range 로 필요한 구간만 읽는다
+      // (큰 영상도 즉시 재생, 100MB 상한 없음). 옛 binary(명령 없음)/토큰 발급 실패 시 아래 폴백.
+      if (!opts.legacy) {
+        try {
+          const grant = await grantMediaUrl(hostPath);
+          logger.log(`[SidePanel] 스트리밍 URL 발급 — ${category} ${grant.mime} ${grant.size}B`);
+          return { dataUrl: grant.url, streamed: true };
+        } catch (e) {
+          logger.warn(`[SidePanel] 스트리밍 토큰 발급 실패 → data URL 폴백: ${e}`);
+        }
+      }
       let bytes: Uint8Array | null = null;
       const rust = await tryRustRead(false);
       if (rust?.bytes) {
@@ -361,13 +386,9 @@ export async function loadPreview(
         bin += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
       }
       const b64 = btoa(bin);
-      const mimeMap: Record<string, string> = {
-        image: getExt(hostPath) === "svg" ? "image/svg+xml" : `image/${getExt(hostPath)}`,
-        video: `video/${getExt(hostPath) === "mov" ? "quicktime" : getExt(hostPath)}`,
-        audio: `audio/${getExt(hostPath) === "mp3" ? "mpeg" : getExt(hostPath)}`,
-        pdf: "application/pdf",
-      };
-      return { dataUrl: `data:${mimeMap[category] || "application/octet-stream"};base64,${b64}` };
+      // v0.7.51 — MIME 표를 Rust media_preview::mime_for 와 통일 (m4a → audio/mp4 등).
+      const mime = mimeForExt(getExt(hostPath), category);
+      return { dataUrl: `data:${mime};base64,${b64}` };
     }
     if (category === "other") {
       // Phase 119 (v0.6.74) — 탐색기式 셸 썸네일 시도. 설치된 프로그램의 thumbnail provider 가
@@ -392,13 +413,9 @@ export async function loadPreview(
 export default function SidePanel({ open, onOpenChange, item, onClose }: SidePanelProps) {
   const [loading, setLoading] = useState(false);
   // Phase 80 (v0.6.24): preview state 에 gate 차단 분기 추가
-  const [preview, setPreview] = useState<{
-    dataUrl?: string;
-    text?: string;
-    html?: string;
-    error?: string;
-    blockedByGate?: GateResult;
-  }>({});
+  const [preview, setPreview] = useState<PreviewResult & { blockedByGate?: GateResult }>({});
+  // v0.7.51 — 비동기 로드/폴백 결과가 늦게 도착해 다른 항목의 미리보기를 덮어쓰지 않도록.
+  const loadSeqRef = useRef(0);
   // K 가 차단된 항목에 "강제 열기" 누른 케이스 추적 — 같은 item 에 대해 그 후로는 gate skip
   const [gateOverrides, setGateOverrides] = useState<Set<string>>(new Set());
   const [width, setWidth] = useState<number>(() => {
@@ -424,6 +441,7 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
     // 가 어디서 끊기는지 추적. DevTools console 에서 [SidePanel] grep.
     logger.log(`[SidePanel] effect — open=${open} item=${item ? item.pathOrUrl : "null"}`);
     if (!item || !open) {
+      loadSeqRef.current++; // 진행 중인 로드 결과 무효화
       setPreview({});
       return;
     }
@@ -431,16 +449,19 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
     logger.log(`[SidePanel] category=${category} for ${item.pathOrUrl}`);
     if (category === "url") {
       // url 은 preview 안 박고 render 측에서 "외부 열기" 카드 표시. 빈 preview 가 정상.
+      loadSeqRef.current++;
       setPreview({});
       return;
     }
     // Phase 119 (v0.6.74): "other" 는 셸 썸네일(탐색기式) 시도 → 성공 이미지 / 실패 시 연동 카드.
     setLoading(true);
+    const seq = ++loadSeqRef.current;
     (async () => {
       // Phase 80 (v0.6.24): Final-Review Gate — image/video/audio/pdf 만 검사 (text 는 그대로 통과)
       const gatedCategory = category === "image" || category === "video" || category === "audio" || category === "pdf";
       if (gatedCategory && !gateOverrides.has(item.pathOrUrl)) {
         const gate = await checkFinalReviewGate(item.pathOrUrl);
+        if (seq !== loadSeqRef.current) return;
         if (gate.blocked) {
           logger.warn(`[Gate] BLOCKED: ${item.pathOrUrl} status=${gate.status} reason=${gate.reason ?? "(없음)"}`);
           setPreview({ blockedByGate: gate });
@@ -452,15 +473,44 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
         }
       }
       const result = await loadPreview(item.pathOrUrl, category);
+      if (seq !== loadSeqRef.current) return;
       setPreview(result);
       setLoading(false);
       if (result.error) {
         logger.warn(`[SidePanel] preview 로드 실패: ${item.pathOrUrl} → ${result.error}`);
       } else {
-        logger.log(`[SidePanel] preview 로드 성공 — hasDataUrl=${!!result.dataUrl} hasText=${!!result.text}`);
+        logger.log(`[SidePanel] preview 로드 성공 — hasDataUrl=${!!result.dataUrl} streamed=${!!result.streamed} hasText=${!!result.text}`);
       }
     })();
   }, [item, open, gateOverrides]);
+
+  /**
+   * v0.7.51 — 미디어 요소(video/audio/img)의 재생·로드 오류 처리.
+   * 스트리밍 URL 이 실패하면 한 번만 기존 data URL 방식으로 다시 시도한다.
+   * 이미 data URL 이었거나 그것도 실패하면 "외부 열기" 안내가 붙은 오류 카드로 바꾼다
+   * (종전엔 검은 플레이어만 남아 실패인지 알 수 없었다).
+   */
+  const handleMediaError = (kind: "image" | "video" | "audio" | "pdf") => {
+    if (!item) return;
+    const seq = loadSeqRef.current;
+    const failedUrl = preview.dataUrl;
+    if (preview.streamed && isMediaStreamUrl(failedUrl)) {
+      logger.warn(`[SidePanel] 스트리밍 ${kind} 오류 → data URL 폴백 시도: ${item.pathOrUrl}`);
+      setLoading(true);
+      loadPreview(item.pathOrUrl, kind, { legacy: true }).then((r) => {
+        if (seq !== loadSeqRef.current) return;
+        setPreview(r.error ? r : { ...r, streamed: false });
+        setLoading(false);
+      });
+      return;
+    }
+    const ext = getExt(item.pathOrUrl).toUpperCase() || "이";
+    logger.warn(`[SidePanel] ${kind} 재생/표시 실패 (폴백 후): ${item.pathOrUrl}`);
+    setPreview({
+      error: `${ext} 파일을 앱 안에서 ${kind === "image" ? "표시" : "재생"}하지 못했습니다. ` +
+        `코덱/형식을 내장 플레이어가 지원하지 않거나 파일이 손상됐을 수 있습니다.`,
+    });
+  };
 
   // 폭 drag
   useEffect(() => {
@@ -685,13 +735,32 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
               {!loading && !preview.error && !preview.blockedByGate && (
                 <>
                   {category === "image" && preview.dataUrl && (
-                    <img src={preview.dataUrl} alt={item.label || item.pathOrUrl} className="side-panel-image" />
+                    <img
+                      src={preview.dataUrl}
+                      alt={item.label || item.pathOrUrl}
+                      className="side-panel-image"
+                      onError={() => handleMediaError("image")}
+                    />
                   )}
                   {category === "video" && preview.dataUrl && (
-                    <video src={preview.dataUrl} controls className="side-panel-video" />
+                    <video
+                      key={preview.dataUrl}
+                      src={preview.dataUrl}
+                      controls
+                      preload="metadata"
+                      className="side-panel-video"
+                      onError={() => handleMediaError("video")}
+                    />
                   )}
                   {category === "audio" && preview.dataUrl && (
-                    <audio src={preview.dataUrl} controls className="side-panel-audio" />
+                    <audio
+                      key={preview.dataUrl}
+                      src={preview.dataUrl}
+                      controls
+                      preload="metadata"
+                      className="side-panel-audio"
+                      onError={() => handleMediaError("audio")}
+                    />
                   )}
                   {category === "pdf" && preview.dataUrl && (
                     <iframe src={preview.dataUrl} className="side-panel-pdf" title={item.label || "PDF"} />

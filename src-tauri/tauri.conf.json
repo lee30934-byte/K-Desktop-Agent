@@ -30,7 +30,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:* https://fonts.googleapis.com https://fonts.gstatic.com"
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https: http://kdamedia.localhost kdamedia:; media-src 'self' data: blob: https: http://kdamedia.localhost kdamedia:; frame-src 'self' data: blob: http://kdamedia.localhost kdamedia:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:* https://fonts.googleapis.com https://fonts.gstatic.com"
     }
   },
   "bundle": {

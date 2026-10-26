@@ -5,6 +5,9 @@ import rehypeHighlight from "rehype-highlight";
 import { open } from "@tauri-apps/plugin-shell";
 import type { ChatMessage } from "../types";
 import { loadPreview, getCategory, isUrl } from "./SidePanel";
+// v0.7.51 — 채팅 본문의 영상/음악 링크를 바로 재생하는 작은 플레이어.
+import InlineMediaPlayer from "./InlineMediaPlayer";
+import { isMediaStreamUrl } from "../utils/mediaStream";
 import logger from "../utils/logger";
 // Phase 85 (v0.6.28) — Tool Safety Layer 후속. tool_use 카드 risk 배지.
 import { RISK_BADGES } from "../utils/toolSafety";
@@ -48,11 +51,15 @@ function InlineImagePreview({
 }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // v0.7.51 — 스트리밍 URL 로 표시 실패 시 한 번만 data URL 로 폴백.
+  const [legacyTried, setLegacyTried] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    // http(s)/file/data URL 은 그대로 src 사용 — 별도 로드 불필요
-    if (isUrl(src) || src.startsWith("data:")) {
+    setLegacyTried(false);
+    // http(s)/data URL 은 그대로 src 사용 — 별도 로드 불필요.
+    // (file:// 은 웹뷰가 차단하므로 로컬 경로로 정규화해 아래 로드 경로를 탄다.)
+    if ((isUrl(src) && !/^file:/i.test(src)) || src.startsWith("data:")) {
       setDataUrl(src);
       setError(null);
       return;
@@ -104,12 +111,26 @@ function InlineImagePreview({
     return <span className="md-inline-image-loading">🖼️ {alt || "이미지 로딩 중…"}</span>;
   }
 
+  const handleImgError = () => {
+    if (!legacyTried && isMediaStreamUrl(dataUrl ?? undefined)) {
+      setLegacyTried(true);
+      logger.warn(`[InlineImage] 스트리밍 표시 실패 → data URL 폴백: ${src}`);
+      loadPreview(src, "image", { legacy: true }).then((r) => {
+        if (r.dataUrl && !r.error) setDataUrl(r.dataUrl);
+        else setError(r.error ?? "이미지를 표시하지 못했습니다");
+      });
+      return;
+    }
+    setError("이미지를 표시하지 못했습니다");
+  };
+
   return (
     <img
       src={dataUrl}
       alt={alt || ""}
       className="md-inline-thumbnail"
       onClick={handleClick}
+      onError={handleImgError}
       title="클릭 = 원본 미리보기"
     />
   );
@@ -204,7 +225,9 @@ function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps
                 // sidecar.log 에서 [Message a onClick] 라인 보고 어느 단계 실패인지 즉시 파악.
                 a: ({ href, children }) => {
                   const label = typeof children === "string" ? children : undefined;
-                  return (
+                  // v0.7.51 — 영상/음악 링크면 링크 옆에 "▶ 재생" 인라인 플레이어를 붙인다.
+                  const mediaKind = href ? getCategory(href) : null;
+                  const anchor = (
                     <a
                       href={href}
                       onClick={(e) => {
@@ -236,12 +259,37 @@ function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps
                       {children}
                     </a>
                   );
+                  if (href && (mediaKind === "video" || mediaKind === "audio")) {
+                    return (
+                      <>
+                        {anchor}
+                        <InlineMediaPlayer
+                          src={href}
+                          label={label ?? (extractText(children) || undefined)}
+                          kind={mediaKind}
+                          onPreviewRequest={onPreviewRequest}
+                        />
+                      </>
+                    );
+                  }
+                  return anchor;
                 },
                 // Phase 65 (v0.5.53 후보): markdown 이미지 `![alt](path)` → 인라인 썸네일.
                 // 로컬 파일 path 면 Tauri fs.readFile 로 base64 data URL 로드 (CSP 안전).
                 // 클릭 시 SidePanel 에 원본 표시.
+                // v0.7.51 — `![제목](영상.mp4)` 처럼 미디어를 이미지 문법으로 넣어도 인라인 플레이어로.
                 img: ({ src, alt }) => {
                   if (!src || typeof src !== "string") return null;
+                  const kind = getCategory(src);
+                  if (kind === "video" || kind === "audio") {
+                    const label = typeof alt === "string" && alt ? alt : undefined;
+                    return (
+                      <>
+                        <span className="md-inline-media-label">{kind === "video" ? "🎬" : "🎵"} {label ?? src}</span>
+                        <InlineMediaPlayer src={src} label={label} kind={kind} onPreviewRequest={onPreviewRequest} />
+                      </>
+                    );
+                  }
                   return (
                     <InlineImagePreview
                       src={src}
