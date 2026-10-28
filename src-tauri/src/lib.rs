@@ -3998,6 +3998,24 @@ async fn codex_fetch_usage() -> Result<serde_json::Value, String> {
     Ok(json)
 }
 
+/// v0.7.52 — 텔레그램 브리지 로그 — `<data_root>/telegram-bridge.log` 에 한 줄 append.
+/// 2026-10-29 점검에서 회신 성공/실패 기록이 없어 10/27 회신 도달 여부를 확인할 수 없었다.
+/// 프론트가 로컬시각 포함 라인을 만들어 넘기고 토큰은 프론트에서 가린다. 실패해도 앱 안 죽임.
+#[tauri::command]
+fn telegram_log(line: String) -> Result<(), String> {
+    let root = data_root();
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("telegram-bridge.log");
+    rotate_log_if_needed(&path, 2 * 1024 * 1024, 3);
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("telegram-bridge.log 열기 실패: {}", e))?;
+    writeln!(f, "{}", line).map_err(|e| format!("로그 작성 실패: {}", e))?;
+    Ok(())
+}
+
 /// Phase 127 (v0.6.82) — 텔레그램 봇 브리지: getUpdates long-polling.
 /// offset 이후 새 message 업데이트만 받아옴. 응답 raw JSON 그대로 반환 (frontend 파싱).
 /// 토큰은 frontend(Settings localStorage)에서 받아 그때그때 전달 — Rust 측 영속 저장 없음.
@@ -4020,7 +4038,7 @@ async fn telegram_get_updates(token: String, offset: i64) -> Result<serde_json::
         .timeout(std::time::Duration::from_secs(35))
         .send()
         .await
-        .map_err(|e| format!("HTTP 요청 실패: {}", e))?;
+        .map_err(|e| format!("HTTP 요청 실패: {}", e.without_url()))?; // v0.7.52 — URL 에 봇 토큰이 들어 있어 오류문에서 제거
     let status = resp.status();
     let body = resp
         .text()
@@ -4056,7 +4074,7 @@ async fn telegram_send_message(
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
-        .map_err(|e| format!("HTTP 요청 실패: {}", e))?;
+        .map_err(|e| format!("HTTP 요청 실패: {}", e.without_url()))?; // v0.7.52 — URL 에 봇 토큰이 들어 있어 오류문에서 제거
     let status = resp.status();
     let body = resp
         .text()
@@ -5269,6 +5287,7 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 127 (v0.6.82) — 텔레그램 봇 브리지 (폰에서 KDA 원격)
             telegram_get_updates,
             telegram_send_message,
+            telegram_log,
             // Phase 129 (v0.6.84) — VM/원격 호환 모드 (WebView2 GPU 가속 OFF)
             get_webview_gpu_off,
             set_webview_gpu_off,
