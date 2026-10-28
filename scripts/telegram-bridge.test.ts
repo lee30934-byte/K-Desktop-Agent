@@ -1,4 +1,4 @@
-// v0.7.52 — 텔레그램 브리지 견고화 회귀 테스트 (2026-10-29 장애 4건).
+// v0.7.53 — 텔레그램 브리지 견고화 회귀 테스트 (2026-10-29 장애 4건).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {

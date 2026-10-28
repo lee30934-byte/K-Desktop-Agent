@@ -747,7 +747,7 @@ export default function App() {
   // Phase 127 (v0.6.82) — 텔레그램 봇 브리지.
   // turnId → { chatId, text } 매핑. 텔레그램발 turn 만 등록. assistant_delta 가 text 누적,
   // done/error 가 그 text 를 chatId 로 회신 + 엔트리 정리. 일반 turn 은 미등록이라 무영향.
-  // v0.7.52 — Map 대신 TelegramTurnTracker: lastActivityAt(멈춘 turn 자동 해제) + 대기열 + 재시도 플래그.
+  // v0.7.53 — Map 대신 TelegramTurnTracker: lastActivityAt(멈춘 turn 자동 해제) + 대기열 + 재시도 플래그.
   const telegramTurnsRef = useRef<TelegramTurnTracker>(new TelegramTurnTracker());
   // X-4 (v0.7.x) — KDA 자체 스케줄러 하트비트.
   // ScheduleWakeup(harness 소유, KDA 가 못 깨움) 대체. personal.db 의 schedules 테이블을
@@ -768,7 +768,7 @@ export default function App() {
   // 텔레그램 회신 함수 ref — handleSidecarEvent(상단 정의)가 하단 정의된 deliverTelegramReply 를
   // 호출하기 위한 우회 (source 순서 디커플). 브리지 섹션에서 .current 할당.
   const deliverTelegramReplyRef = useRef<(chatId: string, text: string) => void>(() => {});
-  // v0.7.52 — 세션 유실 재시도 / 대기열 drain 을 handleSidecarEvent 에서 부르기 위한 ref.
+  // v0.7.53 — 세션 유실 재시도 / 대기열 drain 을 handleSidecarEvent 에서 부르기 위한 ref.
   const telegramTurnSenderRef = useRef<(text: string, chatId: string, opts?: { retryOf?: string; freshSession?: boolean }) => Promise<void>>(async () => {});
   const drainTelegramQueueRef = useRef<() => void>(() => {});
   const telegramLogRef = useRef<(line: string) => void>(() => {});
@@ -1494,7 +1494,7 @@ export default function App() {
     const eventTurnId = event.turn_id ?? event.taskId ?? event.id;
     const taskWatchActivity = taskWatchTurnsRef.current.get(eventTurnId);
     if (taskWatchActivity) taskWatchActivity.lastActivityAt = Date.now();
-    // v0.7.52 — 텔레그램 turn 도 무음 지속시간으로 멈춤 판정 (heartbeat 포함 모든 이벤트가 갱신).
+    // v0.7.53 — 텔레그램 turn 도 무음 지속시간으로 멈춤 판정 (heartbeat 포함 모든 이벤트가 갱신).
     telegramTurnsRef.current.touch(eventTurnId, Date.now());
     const eventConversationId = typeof eventTurnId === "string" ? turnToConvMap.current.get(eventTurnId) : undefined;
     if (routedTypes.has(ev.type) && eventTurnId) {
@@ -2053,7 +2053,7 @@ export default function App() {
             const errCode = (ev as any).code;
             telegramLogRef.current(`ERROR turn=${tgId} code=${errCode ?? "-"} msg=${String((ev as any).message ?? "").slice(0, 200)}`);
             if (shouldRetryWithFreshSession(tg, errCode)) {
-              // v0.7.52 — 2026-10-27 유실 대책: 세션 유실이면 원 메시지를 새 세션으로 1회 재실행.
+              // v0.7.53 — 2026-10-27 유실 대책: 세션 유실이면 원 메시지를 새 세션으로 1회 재실행.
               // 이 error 핸들러 아래에서 대화 잠금(finish)·세션 id 클리어가 끝난 뒤 돌도록 지연.
               void deliverTelegramReplyRef.current(tg.chatId, "↻ 이전 세션을 찾지 못해 새 세션으로 한 번 더 시도합니다.");
               const retryText = tg.userText;
@@ -3119,7 +3119,7 @@ export default function App() {
   );
 
   // 텔레그램 응답 회신 — [PC이름] 라벨 + 4096자 분할. done/error 핸들러가 ref 로 호출.
-  // v0.7.52 — 브리지 이벤트를 ~/.kda/telegram-bridge.log 에 남긴다 (종전엔 콘솔에만 남아 사후 확인 불가).
+  // v0.7.53 — 브리지 이벤트를 ~/.kda/telegram-bridge.log 에 남긴다 (종전엔 콘솔에만 남아 사후 확인 불가).
   // 토큰은 혹시 오류 문자열에 섞여도 기록 전에 가린다.
   const telegramLog = useStableCallback((line: string) => {
     const token = (localStorage.getItem("kda_telegram_token") || "").trim();
@@ -3155,7 +3155,7 @@ export default function App() {
   deliverTelegramReplyRef.current = deliverTelegramReply;
 
   // 텔레그램발 메시지를 전용 background conv 로 주입해 turn 실행.
-  // v0.7.52 — 처리 중 도착 메시지는 버리지 않고 대기열에 넣는다(상한 초과 시에만 거절).
+  // v0.7.53 — 처리 중 도착 메시지는 버리지 않고 대기열에 넣는다(상한 초과 시에만 거절).
   const enqueueTelegramMessage = useStableCallback((text: string, chatId: string, reason: string) => {
     const r = telegramTurnsRef.current.enqueue({ text, chatId, receivedAt: Date.now() });
     telegramLog(`QUEUE ${r.accepted ? "add" : "FULL"} pos=${r.position} reason=${reason} len=${text.length}`);
@@ -3305,7 +3305,7 @@ export default function App() {
   });
   telegramTurnSenderRef.current = sendTelegramTurn;
 
-  // v0.7.52 — 대기열 1건 처리. 진행 중 turn 이 있으면 아무것도 안 한다(주기 점검이 다시 부른다).
+  // v0.7.53 — 대기열 1건 처리. 진행 중 turn 이 있으면 아무것도 안 한다(주기 점검이 다시 부른다).
   const drainTelegramQueue = useStableCallback(() => {
     window.setTimeout(() => {
       if (telegramTurnsRef.current.size > 0) return;
@@ -3317,7 +3317,7 @@ export default function App() {
   });
   drainTelegramQueueRef.current = drainTelegramQueue;
 
-  // v0.7.52 — 멈춘 텔레그램 turn 자동 해제 + 대기열 재시도 (30초 주기).
+  // v0.7.53 — 멈춘 텔레그램 turn 자동 해제 + 대기열 재시도 (30초 주기).
   // 판정은 경과시간이 아니라 "무이벤트 지속시간" — sidecar 는 살아있는 turn 에 30초마다 heartbeat 를
   // 보내므로 정상 장기 작업은 해제되지 않는다. done/error 가 영영 안 오는 경우만 잡는다.
   useEffect(() => {

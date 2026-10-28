@@ -3998,7 +3998,7 @@ async fn codex_fetch_usage() -> Result<serde_json::Value, String> {
     Ok(json)
 }
 
-/// v0.7.52 — 텔레그램 브리지 로그 — `<data_root>/telegram-bridge.log` 에 한 줄 append.
+/// v0.7.53 — 텔레그램 브리지 로그 — `<data_root>/telegram-bridge.log` 에 한 줄 append.
 /// 2026-10-29 점검에서 회신 성공/실패 기록이 없어 10/27 회신 도달 여부를 확인할 수 없었다.
 /// 프론트가 로컬시각 포함 라인을 만들어 넘기고 토큰은 프론트에서 가린다. 실패해도 앱 안 죽임.
 #[tauri::command]
@@ -4038,7 +4038,7 @@ async fn telegram_get_updates(token: String, offset: i64) -> Result<serde_json::
         .timeout(std::time::Duration::from_secs(35))
         .send()
         .await
-        .map_err(|e| format!("HTTP 요청 실패: {}", e.without_url()))?; // v0.7.52 — URL 에 봇 토큰이 들어 있어 오류문에서 제거
+        .map_err(|e| format!("HTTP 요청 실패: {}", e.without_url()))?; // v0.7.53 — URL 에 봇 토큰이 들어 있어 오류문에서 제거
     let status = resp.status();
     let body = resp
         .text()
@@ -4074,7 +4074,7 @@ async fn telegram_send_message(
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
-        .map_err(|e| format!("HTTP 요청 실패: {}", e.without_url()))?; // v0.7.52 — URL 에 봇 토큰이 들어 있어 오류문에서 제거
+        .map_err(|e| format!("HTTP 요청 실패: {}", e.without_url()))?; // v0.7.53 — URL 에 봇 토큰이 들어 있어 오류문에서 제거
     let status = resp.status();
     let body = resp
         .text()

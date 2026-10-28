@@ -3,6 +3,23 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.53] - 2026-10-29
+
+### Fixed
+- Retry a Telegram message once in a new session when its previous Claude session is gone (`resume_session_missing`). Before, KDA cleared the session id but dropped the message; a request on 2026-10-27 was lost this way. The retry does not save the message twice, removes it from the history it resends, and is attempted only once.
+- Release a Telegram turn that has sent no sidecar event for 20 minutes. If `done`/`error` never arrived, every later Telegram message was answered "⏳ 이전 작업을 처리 중" until KDA restarted. Live turns are not affected, because the sidecar sends a heartbeat every 30 seconds. On release, KDA interrupts the turn, unlocks the conversation and tells the phone.
+- Hide the bot token in Telegram network errors. reqwest errors include the request URL, which contains the token.
+
+### Changed
+- Queue up to 3 Telegram messages that arrive while a turn is running, instead of asking K to send them again. The queue is processed after `done`, `error` or stop, and is also checked every 30 seconds. A paused conversation still refuses new messages.
+- Retry each Telegram reply part once after 3 seconds. If a part still fails, the remaining parts are not sent.
+
+### Added
+- Write Telegram bridge events to `~/.kda/telegram-bridge.log`: received, turn start, done, error, retry, queue, stale release, reply ok/failed and polling errors. Repeated polling errors are logged only when the message changes. The log rotates at 2 MB. Before, these events only went to the WebView console, so it was not possible to confirm whether the 2026-10-27 failure reply was delivered.
+
+### Tests
+- Add `scripts/telegram-bridge.test.ts` (7 tests) and run it in `release:gate`. When two defects were injected on purpose (retrying without the once-only check, and timing out from the start time instead of the last event), 2 tests failed.
+
 ## [0.7.52] - 2026-10-29
 
 ### Added

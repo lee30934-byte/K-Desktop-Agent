@@ -260,7 +260,7 @@ function runRegressionTests() {
 const NODE_TEST_SUITES = [
   { file: "scripts/browser-host.test.ts", runner: "tsx" },
   { file: "scripts/browser-provider.test.ts", runner: "tsx" },
-  { file: "scripts/telegram-bridge.test.ts", runner: "tsx" }, // v0.7.52
+  { file: "scripts/telegram-bridge.test.ts", runner: "tsx" }, // v0.7.53
   { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
 ];
 
