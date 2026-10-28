@@ -314,6 +314,8 @@ const API_PROVIDERS: APIProvider[] = [
     models: [
       { id: "default", label: "ChatGPT 구독 기본 모델 (자동 최신)" },
       { id: "gpt-6-astra", label: "GPT-6 Astra (최강 · 복합 작업)" },
+      { id: "gpt-6.1-sol", label: "GPT-6.1 Sol (코딩·에이전트 · 500K)" },
+      { id: "gpt-6.1-terra", label: "GPT-6.1 Terra (시각 이해·컴퓨터 사용 · CLI 0.159+)" },
       // GPT-6 Sol / Luna (2026-09-23 추가). 슬러그는 추측이 아니라 실제 호출로 확정했다:
       //   codex exec --skip-git-repo-check -m gpt-6-sol  → rc=0, PROBE_OK, 메타데이터 인식
       //   codex exec --skip-git-repo-check -m gpt-6-luna → rc=0, PROBE_OK, 메타데이터 인식

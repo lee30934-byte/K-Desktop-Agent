@@ -1095,6 +1095,12 @@ export default function App() {
     }
     const id = (activeModelId || "").toLowerCase();
 
+    // Codex 0.165 model catalog: both GPT-6.1 models default to 500K.
+    // Runtime-reported limits above remain authoritative (including overrides).
+    if (activeProvider === "codex" && (id === "gpt-6.1-sol" || id === "gpt-6.1-terra")) {
+      return { tokens: 500_000, source: "GPT-6.1 Codex 기본 500K (카탈로그)" };
+    }
+
     // 1M 모델 — 명시 시그널
     if (id.includes("1m")) return { tokens: 1_000_000, source: "1m 시그널" };
     if (id.includes("nano") && id.includes("gpt-5")) return { tokens: 1_000_000, source: "gpt-5-nano" };

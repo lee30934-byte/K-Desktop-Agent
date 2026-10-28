@@ -3,6 +3,13 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.52] - 2026-10-29
+
+### Added
+- Add GPT-6.1 Sol and GPT-6.1 Terra to the Codex model picker. Both models were verified with Codex CLI 0.165.0 using ChatGPT authentication.
+- Use the CLI catalog's 500K default context window for these models until a runtime context limit is reported; runtime measurements retain priority.
+- Extend the model picker regression check to cover both GPT-6.1 models and preserve model forwarding through the Codex app-server bridge.
+
 ## [0.7.51] - 2026-10-26
 
 ### Fixed

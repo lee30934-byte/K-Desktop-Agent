@@ -21,7 +21,7 @@ const openAiBlock = settings.slice(openAiStart, geminiStart);
 // GPT-6 계열은 Codex(ChatGPT 구독 OAuth) 경로에만 노출한다.
 // legacy OpenAI REST 경로는 별도 유료 API 키가 필요하고 실호출로 확인하지 못했으므로
 // 추측으로 목록에 올리지 않는다 (올리면 K 가 골랐을 때 원인 불명 에러만 본다).
-const GPT6_CODEX_ONLY = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
+const GPT6_CODEX_ONLY = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"];
 for (const id of GPT6_CODEX_ONLY) {
   if (!codexBlock.includes(`{ id: "${id}"`)) {
     failures.push(`Codex model picker is missing ${id}`);
