@@ -40,7 +40,7 @@ url = "2"
 # Phase 15.5 — Codex usage API 호출 (https://chatgpt.com/backend-api/codex/usage).
 # 비공식 endpoint 라 OpenAI 변경 시 깨질 수 있으므로 호출 측은 silently fail + UI 가 stale 표시.
 # rustls-tls 사용 — Windows 의 schannel 의존 회피, 빌드 환경 일관성.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
 
 # Phase 119 (v0.6.74) — 탐색기式 셸 썸네일 미리보기 (IShellItemImageFactory::GetImage).
 # windows 0.61 은 tauri 가 이미 transitive 로 가져오는 버전 → 중복 빌드 없음.

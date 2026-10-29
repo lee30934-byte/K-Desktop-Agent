@@ -4033,7 +4033,7 @@ async fn telegram_get_updates(token: String, offset: i64) -> Result<serde_json::
         .query(&[
             ("offset", offset.to_string()),
             ("timeout", "25".to_string()),
-            ("allowed_updates", "[\"message\"]".to_string()),
+            ("allowed_updates", "[\"message\",\"callback_query\"]".to_string()),
         ])
         .timeout(std::time::Duration::from_secs(35))
         .send()
@@ -4085,6 +4085,215 @@ async fn telegram_send_message(
         return Err(format!("HTTP {} — {}", status.as_u16(), snippet));
     }
     serde_json::from_str(&body).map_err(|e| format!("응답 JSON 파싱 실패: {}", e))
+}
+
+/// v0.7.54 — 텔레그램 Bot API 범용 호출 (버튼·메시지 수정·콜백 응답·파일 조회).
+/// 허용 메서드만 통과 — 프론트가 임의 메서드(setWebhook 등)를 부르지 못하게 한다.
+const TELEGRAM_ALLOWED_METHODS: &[&str] = &[
+    "sendMessage",
+    "editMessageText",
+    "editMessageReplyMarkup",
+    "answerCallbackQuery",
+    "deleteMessage",
+    "getFile",
+    "getMe",
+];
+
+async fn telegram_post_json(token: &str, method: &str, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("봇 토큰이 비어 있음".to_string());
+    }
+    if !TELEGRAM_ALLOWED_METHODS.contains(&method) {
+        return Err(format!("허용되지 않은 텔레그램 메서드: {}", method));
+    }
+    let url = format!("https://api.telegram.org/bot{}/{}", token, method);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(payload)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP 요청 실패: {}", e.without_url()))?;
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| format!("응답 읽기 실패: {}", e))?;
+    if !status.is_success() {
+        let snippet: String = body.chars().take(300).collect();
+        return Err(format!("HTTP {} — {}", status.as_u16(), snippet));
+    }
+    serde_json::from_str(&body).map_err(|e| format!("응답 JSON 파싱 실패: {}", e))
+}
+
+#[tauri::command]
+async fn telegram_call(token: String, method: String, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    telegram_post_json(&token, &method, &payload).await
+}
+
+const TG_PHOTO_MAX: u64 = 10 * 1024 * 1024;
+const TG_DOC_MAX: u64 = 50 * 1024 * 1024;
+
+/// v0.7.54 — 로컬 이미지/파일 전송. 이미지 10MB 이하 = sendPhoto, 그 외 50MB 이하 = sendDocument.
+/// 오류문 앞머리는 기계 판독용 코드(`not_found:` / `too_large:` / `not_file:`) — 프론트가 사유를 안내.
+#[tauri::command]
+async fn telegram_send_file(
+    token: String,
+    chat_id: String,
+    path: String,
+    caption: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err("봇 토큰이 비어 있음".to_string());
+    }
+    let p = PathBuf::from(&path);
+    let meta = tokio::fs::metadata(&p).await.map_err(|_| format!("not_found: {}", path))?;
+    if !meta.is_file() {
+        return Err(format!("not_file: {}", path));
+    }
+    let size = meta.len();
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif");
+    let as_photo = is_image && size <= TG_PHOTO_MAX && ext != "gif";
+    if size > TG_DOC_MAX {
+        return Err(format!("too_large: {} bytes", size));
+    }
+    let bytes = tokio::fs::read(&p).await.map_err(|e| format!("not_found: 읽기 실패 {}", e))?;
+    let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
+    let field = if as_photo { "photo" } else { "document" };
+    let method = if as_photo { "sendPhoto" } else { "sendDocument" };
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+    let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id).part(field, part);
+    if let Some(c) = caption {
+        let c: String = c.chars().take(1000).collect(); // caption 1024자 제한
+        form = form.text("caption", c);
+    }
+    let url = format!("https://api.telegram.org/bot{}/{}", token, method);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .multipart(form)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP 요청 실패: {}", e.without_url()))?;
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| format!("응답 읽기 실패: {}", e))?;
+    if !status.is_success() {
+        let snippet: String = body.chars().take(300).collect();
+        return Err(format!("HTTP {} — {}", status.as_u16(), snippet));
+    }
+    serde_json::from_str(&body).map_err(|e| format!("응답 JSON 파싱 실패: {}", e))
+}
+
+fn sanitize_inbox_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let trimmed = cleaned.trim_matches('.').to_string();
+    let base = if trimmed.is_empty() { "file".to_string() } else { trimmed };
+    base.chars().take(120).collect()
+}
+
+/// v0.7.54 — 폰에서 보낸 사진/파일을 `<data_root>/inbox/YYYYMMDD/` 에 저장하고 경로를 반환.
+/// Bot API getFile 상한(20MB)을 그대로 따른다. 같은 이름이면 시각 접두로 덮어쓰기를 피한다.
+#[tauri::command]
+async fn telegram_download_file(
+    token: String,
+    file_id: String,
+    file_name: Option<String>,
+    day: Option<String>,
+) -> Result<String, String> {
+    let info = telegram_post_json(&token, "getFile", &serde_json::json!({ "file_id": file_id })).await?;
+    let file_path = info
+        .get("result")
+        .and_then(|r| r.get("file_path"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "getFile 응답에 file_path 없음 (20MB 초과일 수 있음)".to_string())?
+        .to_string();
+    let size = info.get("result").and_then(|r| r.get("file_size")).and_then(|v| v.as_u64()).unwrap_or(0);
+    if size > 20 * 1024 * 1024 {
+        return Err(format!("too_large: {} bytes", size));
+    }
+    let url = format!("https://api.telegram.org/file/bot{}/{}", token.trim(), file_path);
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("다운로드 실패: {}", e.without_url()))?;
+    if !resp.status().is_success() {
+        return Err(format!("다운로드 HTTP {}", resp.status().as_u16()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| format!("다운로드 읽기 실패: {}", e))?;
+    // 날짜 폴더는 프론트의 로컬 날짜(YYYYMMDD)를 받는다 — 형식이 다르면 "undated".
+    let day = day.filter(|d| d.len() == 8 && d.chars().all(|c| c.is_ascii_digit())).unwrap_or_else(|| "undated".to_string());
+    let dir = data_root().join("inbox").join(day);
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| format!("inbox 폴더 생성 실패: {}", e))?;
+    let fallback = file_path.rsplit('/').next().unwrap_or("file").to_string();
+    let name = sanitize_inbox_name(file_name.as_deref().unwrap_or(&fallback));
+    let mut target = dir.join(&name);
+    if target.exists() {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        target = dir.join(format!("{}_{}", secs, name));
+    }
+    tokio::fs::write(&target, &bytes).await.map_err(|e| format!("저장 실패: {}", e))?;
+    Ok(target.to_string_lossy().replace('\\', "/"))
+}
+
+/// v0.7.54 — Codex 단발 호출 (텔레그램 분류·요약용). 도구 없는 짧은 질의 1회, 콘솔 창 숨김,
+/// 시간 제한 초과 시 프로세스 종료. 프롬프트는 stdin(`-`)으로 넘겨 cmd 인용 문제를 피하고,
+/// 최종 답변은 `--output-last-message` 파일에서 읽는다 (2026-10-29 실측: gpt-6-luna 4.7초 rc=0).
+#[tauri::command]
+async fn codex_oneshot(prompt: String, model: Option<String>, timeout_secs: Option<u64>) -> Result<String, String> {
+    let codex = codex_cli_path().ok_or_else(|| "codex_missing: Codex CLI 를 찾을 수 없음".to_string())?;
+    let model = model.unwrap_or_else(|| "gpt-6-luna".to_string());
+    if !model.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_') {
+        return Err("잘못된 모델 이름".to_string());
+    }
+    let timeout = Duration::from_secs(timeout_secs.unwrap_or(20).clamp(5, 120));
+    let work = std::env::temp_dir().join("kda-codex-oneshot");
+    let _ = std::fs::create_dir_all(&work);
+    let out_file = work.join(format!("last-{}.txt", uuid::Uuid::new_v4()));
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/c")
+        .arg(&codex)
+        .args(["exec", "--skip-git-repo-check", "--sandbox", "read-only", "-m", &model])
+        .args(["-c", "model_reasoning_effort=\"low\""])
+        .arg("--output-last-message")
+        .arg(&out_file)
+        .arg("-")
+        .current_dir(&work)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("codex 실행 실패: {}", e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(prompt.as_bytes()).await.map_err(|e| format!("codex 입력 실패: {}", e))?;
+        drop(stdin);
+    }
+    let waited = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    let output = match waited {
+        Ok(r) => r.map_err(|e| format!("codex 대기 실패: {}", e))?,
+        Err(_) => {
+            let _ = std::fs::remove_file(&out_file);
+            return Err(format!("timeout: {}초 초과", timeout.as_secs()));
+        }
+    };
+    let text = std::fs::read_to_string(&out_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&out_file);
+    if !output.status.success() {
+        let err: String = String::from_utf8_lossy(&output.stderr).chars().rev().take(300).collect::<String>().chars().rev().collect();
+        return Err(format!("codex_failed: rc={:?} {}", output.status.code(), err.trim()));
+    }
+    if text.trim().is_empty() {
+        return Err("codex_empty: 답변이 비어 있음".to_string());
+    }
+    Ok(text.trim().to_string())
 }
 
 /// `codex mcp add k-personal -- python <K-Personal-MCP/server.py>` 한 번 실행.
@@ -5288,6 +5497,10 @@ pub fn run_with_options(start_minimized: bool) {
             telegram_get_updates,
             telegram_send_message,
             telegram_log,
+            telegram_call,
+            telegram_send_file,
+            telegram_download_file,
+            codex_oneshot,
             // Phase 129 (v0.6.84) — VM/원격 호환 모드 (WebView2 GPU 가속 OFF)
             get_webview_gpu_off,
             set_webview_gpu_off,
