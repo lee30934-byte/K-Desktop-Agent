@@ -36,7 +36,9 @@ check("자동/수동 모드 메뉴", settings.includes('aria-label="Codex 모델
 check("모드 영속 저장", settings.includes('localStorage.setItem(LS_CODEX_MODEL_MODE, mode)'), true);
 check("선택한 방식 적용", app.includes('shouldAutoSelectCodexModel('), true);
 check("선택한 모델을 전송", app.includes("const model = autoChoice?.model ?? (resolved.model === \"auto\" ? undefined : resolved.model)"), true);
-check("자동 모드에서 수동 추론 강도 무시", app.includes("reasoningEffort: autoChoice?.reasoningEffort ?? loadReasoningEffort()"), true);
+// v0.7.54 — 자동 선택 강도가 최우선, 📱 텔레그램 대화(고정 Luna)만 low, 그 외는 수동 강도.
+check("자동 모드에서 수동 추론 강도 무시", app.includes('reasoningEffort: autoChoice?.reasoningEffort ?? (isTelegramConv ? "low" : loadReasoningEffort())'), true);
+check("텔레그램 고정 대화는 자동 모드 제외", app.includes("const autoChoice = provider === \"codex\" && !isTelegramConv"), true);
 check("직접 입력을 분류", app.includes("buildSendSettings(targetId ?? undefined, text)"), true);
 check("텔레그램 입력을 분류", app.includes("buildSendSettings(convId, text)"), true);
 check("예약 입력을 분류", app.includes('buildSendSettings(convId, `${row.title}'), true);
