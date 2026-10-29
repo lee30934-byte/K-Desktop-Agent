@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(join(here, "src", "index.ts"), "utf8");
+// v0.7.57 — CI(windows-latest, autocrlf) 체크아웃은 CRLF 라 줄 경계 정규식(\n}\n)이 로컬(LF)에서만 맞았다.
+// 양쪽에서 같게 동작하도록 LF 로 정규화한다 (run 40876089719 실패 원인).
+const src = readFileSync(join(here, "src", "index.ts"), "utf8").replace(/\r\n/g, "\n");
 let fail = 0;
 const check = (name, ok) => {
   console.log(`${ok ? "PASS" : "FAIL"} ${name}`);
