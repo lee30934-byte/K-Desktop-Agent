@@ -44,6 +44,7 @@ export default function CodexElicitationDialog({ request, onResponse }: {
         }
       }}>
       <h3 id="codex-elicit-title">연결된 도구의 추가 승인</h3>
+      {request.traceId && <p className="elicitation-hint">요청 ID: {request.traceId}</p>}
       <p>요청 서버: <strong>{request.serverName}</strong></p>
       <p className="elicitation-message">{request.message}</p>
       {typeof schemaInfo?.title === 'string' && <p>{schemaInfo.title}</p>}

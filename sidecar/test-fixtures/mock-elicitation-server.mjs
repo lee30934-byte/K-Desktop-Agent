@@ -20,6 +20,7 @@ const cases = [
   {},
   null,
   { ...base, ...form, requestedSchema: { type: "object", properties: {} } },
+  { ...base, ...form, requestedSchema: { type: "object", properties: { approve: { type: "boolean", futureConstraint: "PRIVATE_SCHEMA_SENTINEL" } } } },
 ];
 const expected = new Set(cases.map((_, i) => i === 0 ? 0 : `elicit-${i}`));
 const received = [];

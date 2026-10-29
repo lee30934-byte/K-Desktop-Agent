@@ -60,14 +60,24 @@ function mapItem(item) {
   };
 }
 
-function decline(key) {
+// Diagnostics deliberately exclude RPC IDs, permission tokens, server payloads,
+// field names and submitted values. traceId is an independent correlation ID.
+function diagnostic(entry, reason, terminal = false) {
+  emit({ type: "elicitation.diagnostic", traceId: entry?.traceId ?? null,
+    reason, terminal, elapsedMs: entry ? Math.max(0, Date.now() - entry.createdAt) : null });
+}
+
+function decline(key, reason = "timeout") {
   const entry = pending.get(key);
   if (!entry) return;
   pending.delete(key);
   clearTimeout(entry.timer);
   send({ id: entry.rpcId, result: entry.kind === "elicitation"
     ? { action: "decline", content: null } : { decision: "decline" } });
-  if (entry.kind === "elicitation") emit({ type: "elicitation.resolved", token: key });
+  if (entry.kind === "elicitation") {
+    diagnostic(entry, reason, true);
+    emit({ type: "elicitation.resolved", token: key });
+  }
 }
 
 function onServerMessage(message) {
@@ -81,7 +91,11 @@ function onServerMessage(message) {
   }
   const { method, params = {} } = message;
   if (method === "mcpServer/elicitation/request") {
-    if (typeof message.id !== "string" && !Number.isSafeInteger(message.id)) return;
+    const trace = { traceId: randomUUID(), createdAt: Date.now() };
+    diagnostic(trace, "received");
+    if (typeof message.id !== "string" && !Number.isSafeInteger(message.id)) {
+      diagnostic(trace, "invalid_request", true); return;
+    }
     // turnId is optional in Codex 0.158. The process and RPC ID bind requests
     // lacking it to this KDA turn. Mismatching non-null IDs are never accepted.
     const valid = !finished && params && threadId && params.threadId === threadId &&
@@ -90,19 +104,27 @@ function onServerMessage(message) {
       typeof params.message === "string" && params.message.trim().length > 0 && params.message.length <= 12000 &&
       ["form", "openai/form", "openaiForm"].includes(params.mode) && parseElicitationSchema(params.requestedSchema);
     if (!valid || pending.size >= 16) {
+      diagnostic(trace, pending.size >= 16 ? "pending_limit" :
+        finished ? "turn_finished" : params?.threadId !== threadId ? "request_thread_mismatch" :
+        params?.turnId != null && turnId && params.turnId !== turnId ? "request_turn_mismatch" :
+        !["form", "openai/form", "openaiForm"].includes(params?.mode) ? "unsupported_mode" :
+        !parseElicitationSchema(params?.requestedSchema) ? "unsupported_schema" : "invalid_request", true);
       send({ id: message.id, result: { action: "decline", content: null } });
       emit({ type: "provider.notice", code: "mcp_elicitation_declined",
         message: "연결된 도구의 요청 형식·대화 정보를 확인할 수 없어 거절했습니다. URL 인증과 지원하지 않는 입력 형식은 승인되지 않으며 대화는 계속됩니다." });
       return;
     }
-    if ([...pending.values()].some(e => e.rpcId === message.id)) return;
+    if ([...pending.values()].some(e => e.rpcId === message.id)) {
+      diagnostic(trace, "duplicate_request"); return;
+    }
     if (!turnId && params.turnId) turnId = params.turnId;
     const token = randomUUID();
     const expiresAt = Date.now() + 120_000;
     const timer = setTimeout(() => decline(token), 120_000);
-    pending.set(token, { kind: "elicitation", rpcId: message.id, timer, threadId,
+    pending.set(token, { ...trace, kind: "elicitation", rpcId: message.id, timer, threadId,
       turnId: params.turnId ?? null, schema: params.requestedSchema, expiresAt });
-    emit({ type: "elicitation.requested", token, threadId, turnId: params.turnId ?? null,
+    diagnostic(trace, "awaiting_response");
+    emit({ type: "elicitation.requested", traceId: trace.traceId, token, threadId, turnId: params.turnId ?? null,
       serverName: params.serverName, message: params.message, schema: params.requestedSchema, expiresAt });
     return;
   }
@@ -139,7 +161,10 @@ function onServerMessage(message) {
       if (entry.rpcId === params.requestId) {
         clearTimeout(entry.timer);
         pending.delete(token);
-        if (entry.kind === "elicitation") emit({ type: "elicitation.resolved", token });
+        if (entry.kind === "elicitation") {
+          diagnostic(entry, "server_resolved", true);
+          emit({ type: "elicitation.resolved", token });
+        }
       }
     }
     return;
@@ -165,7 +190,7 @@ function onServerMessage(message) {
   if (method === "turn/completed") {
     if (finished) return;
     finished = true;
-    for (const token of [...pending.keys()]) decline(token);
+    for (const token of [...pending.keys()]) decline(token, "turn_finished");
     if (params.turn?.status !== "completed") {
       fail(params.turn?.error?.message ?? `Codex turn ${params.turn?.status ?? "failed"}`);
       return;
@@ -192,7 +217,10 @@ async function start(input) {
   });
   server.on("error", (error) => fail(error.message));
   server.on("close", (code) => {
-    for (const entry of pending.values()) clearTimeout(entry.timer);
+    for (const entry of pending.values()) {
+      clearTimeout(entry.timer);
+      if (entry.kind === "elicitation") diagnostic(entry, "server_closed", true);
+    }
     pending.clear();
     if (!finished) fail(`Codex app-server closed before turn completion (exit ${code})`);
     inputReader?.close();
@@ -237,15 +265,20 @@ inputReader.on("line", (line) => {
     if (value.type === "start") { void start(value).catch((error) => fail(error.message)); return; }
     if (value.type === "elicitation") {
       const entry = pending.get(value.token);
-      if (!entry || entry.kind !== "elicitation" || value.threadId !== entry.threadId || value.turnId !== entry.turnId) return;
+      if (!entry || entry.kind !== "elicitation") { diagnostic(null, "unknown_or_resolved_response"); return; }
+      if (value.threadId !== entry.threadId || value.turnId !== entry.turnId) {
+        diagnostic(entry, "response_binding_mismatch"); return;
+      }
+      diagnostic(entry, "response_received");
       if (Date.now() >= entry.expiresAt) { decline(value.token); return; }
-      if (!["accept", "decline", "cancel"].includes(value.action)) return;
+      if (!["accept", "decline", "cancel"].includes(value.action)) { diagnostic(entry, "invalid_action"); return; }
       if (value.action === "accept" && !validateElicitationContent(entry.schema, value.content)) {
-        decline(value.token); return;
+        decline(value.token, "invalid_content"); return;
       }
       pending.delete(value.token);
       clearTimeout(entry.timer);
       send({ id: entry.rpcId, result: { action: value.action, content: value.action === "accept" ? value.content : null } });
+      diagnostic(entry, `${value.action}_forwarded`, true);
       emit({ type: "elicitation.resolved", token: value.token });
       return;
     }

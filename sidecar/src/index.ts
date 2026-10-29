@@ -5032,16 +5032,42 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             // 신호용 — 현재는 별도 처리 없음
             break;
           }
+          case "elicitation.diagnostic": {
+            const labels: Record<string, string> = {
+              timeout: "응답 대기 시간 만료로 거절했습니다.",
+              invalid_content: "입력값 검증 실패로 거절했습니다.",
+              accept_forwarded: "입력값 검증 후 승인 응답을 전달했습니다. 도구의 접근 허용 여부는 아직 확인되지 않았습니다.",
+              decline_forwarded: "거절 응답을 전달했습니다.",
+              cancel_forwarded: "취소 응답을 전달했습니다.",
+              server_resolved: "도구 서버가 요청을 종료했습니다. 허용·거부 사유는 제공되지 않았습니다.",
+              server_closed: "연결 종료로 승인 요청이 종료되었습니다.",
+              turn_finished: "턴 종료로 승인 요청을 종료했습니다.",
+              pending_limit: "동시 승인 요청 한도 초과로 거절했습니다.",
+              request_thread_mismatch: "요청의 대화 식별자가 맞지 않아 거절했습니다.",
+              request_turn_mismatch: "요청의 턴 식별자가 맞지 않아 거절했습니다.",
+              unsupported_mode: "지원하지 않는 승인 방식으로 거절했습니다.",
+              unsupported_schema: "지원하지 않는 입력 형식으로 거절했습니다.",
+              invalid_request: "요청 형식 검증 실패로 거절했습니다.",
+            };
+            // Only bridge-generated IDs and fixed reason codes; never form data.
+            const traceId = typeof event.traceId === "string" && /^[0-9a-f-]{36}$/.test(event.traceId) ? event.traceId : "unmatched";
+            const reason = Object.hasOwn(labels, event.reason) || ["received", "awaiting_response", "response_received", "response_binding_mismatch", "invalid_action", "duplicate_request", "unknown_or_resolved_response"].includes(event.reason) ? event.reason : "unknown";
+            const elapsedMs = Number.isFinite(event.elapsedMs) ? event.elapsedMs : null;
+            logToFile("info", `Codex elicitation diagnostic ${JSON.stringify({ traceId, reason, elapsedMs })}`);
+            if (event.terminal && labels[reason]) emit({ type: "provider_notice", id: msg.id,
+              provider: "codex", message: `승인 요청 ${traceId}: ${labels[reason]} [${reason}]` });
+            break;
+          }
           case "provider.notice": {
             if (event.code === "mcp_elicitation_declined") {
-              emit({ type: "provider_notice", id: msg.id, provider: "codex", message: event.message });
+              // The correlated diagnostic already supplies the visible reason.
               logToFile("warn", "Codex MCP elicitation declined: unreviewable request");
             }
             break;
           }
           case "elicitation.requested": {
             emit({ type: "codex_elicitation_request", id: msg.id, conversation_id: msg.conversation_id ?? null,
-              token: event.token, threadId: event.threadId, turnId: event.turnId,
+              token: event.token, traceId: event.traceId, threadId: event.threadId, turnId: event.turnId,
               serverName: event.serverName, message: event.message, schema: event.schema, expiresAt: event.expiresAt });
             logToFile("info", `Codex elicitation awaiting user id=${msg.id}`);
             break;

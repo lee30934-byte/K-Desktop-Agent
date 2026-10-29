@@ -41,14 +41,22 @@ async function run(decision) {
   assert.equal(stderr, "");
   assert.deepEqual(events.filter(e => e.type === "approval.requested").map(e => e.kind), ["command", "file"]);
   const notices = events.filter(e => e.type === "provider.notice");
-  assert.equal(notices.length, 6);
+  assert.equal(notices.length, 7);
   assert.equal(events.filter(e => e.type === "elicitation.requested").length, 6);
   assert.ok(notices.every(e => e.code === "mcp_elicitation_declined"));
   assert.ok(!JSON.stringify(events).includes("PRIVATE_URL_SENTINEL"), "unsupported authentication URL leaked");
+  const diagnostics = events.filter(e => e.type === "elicitation.diagnostic");
+  assert.equal(diagnostics.filter(e => e.reason === "received").length, 14); // 13 requests + ID-less notification
+  assert.equal(diagnostics.filter(e => e.terminal).length, 14);
+  assert.equal(diagnostics.filter(e => e.reason === "decline_forwarded").length, 6);
+  assert.ok(diagnostics.some(e => e.reason === "unsupported_mode"));
+  assert.ok(diagnostics.some(e => e.reason === "unsupported_schema"));
+  assert.ok(!JSON.stringify(diagnostics).includes("PRIVATE_"));
+  for (const d of diagnostics) assert.deepEqual(Object.keys(d).sort(), ["elapsedMs", "reason", "terminal", "traceId", "type"]);
   const answer = events.find(e => e.type === "item.completed" && e.item?.type === "agent_message");
   const audit = JSON.parse(answer.item.text);
   assert.equal(audit.continued, true);
-  assert.equal(audit.received.length, 14);
+  assert.equal(audit.received.length, 15);
   for (const request of audit.received) {
     assert.deepEqual(request.result, request.id === "command-request" || request.id === "file-request"
       ? { decision } : { action: "decline", content: null });
@@ -58,4 +66,4 @@ async function run(decision) {
 
 await run("decline");
 await run("accept");
-console.log("Codex elicitation: 12 request variants x 2 approval decisions PASS; command/file consent preserved; turn completed");
+console.log("Codex elicitation: 13 request variants x 2 approval decisions PASS; command/file consent preserved; diagnostic privacy checked");

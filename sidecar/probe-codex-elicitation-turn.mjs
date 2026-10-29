@@ -71,8 +71,13 @@ if (baseline) {
   assert.equal(result.terminals[0].type, "error");
   assert.match(result.terminals[0].message, /Unsupported Codex approval request: mcpServer\/elicitation\/request/);
 } else {
-  assert.equal(result.notices, 12);
+  assert.equal(result.notices, 28); // 14 terminal diagnostics per turn, including ID-less notification
   assert.equal(events.filter(e => e.type === "codex_elicitation_request").length, 12);
+  assert.ok(events.filter(e => e.type === "codex_elicitation_request").every(e => /^[0-9a-f-]{36}$/.test(e.traceId)));
+  const notices = events.filter(e => e.type === "provider_notice");
+  assert.ok(notices.every(e => !e.message.includes("PRIVATE_")));
+  const expectedAction = process.env.KDA_PROBE_ELICITATION_ACTION ?? "decline";
+  assert.equal(notices.filter(e => e.message.includes(`[${expectedAction}_forwarded]`)).length, 12);
   assert.deepEqual(result.terminals.map(e => [e.id, e.type]), turns.map(id => [id, "done"]));
   for (const id of turns) {
     const lastAnswer = events.filter(e => e.id === id && e.type === "assistant_delta").at(-1);

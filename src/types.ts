@@ -579,6 +579,7 @@ export interface FileChangeEvent {
 
 export interface CodexElicitationRequest {
   type: "codex_elicitation_request";
+  traceId?: string;
   id: string; token: string; threadId: string; turnId: string | null;
   conversation_id: string; serverName: string; message: string; schema: unknown; expiresAt: number;
 }

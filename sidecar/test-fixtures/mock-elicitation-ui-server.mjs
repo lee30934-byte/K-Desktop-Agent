@@ -12,13 +12,15 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     send({ id: v.id, result: { turn: { id: 'turn-ui' } } });
     send({ id: 0, method: 'mcpServer/elicitation/request', params: { ...base, turnId: null } });
     send({ id: 'second', method: 'mcpServer/elicitation/request', params: { ...base, turnId: 'turn-ui' } });
+    if (process.env.KDA_FIXTURE_END === 'turn_finished') setTimeout(() => send({ method: 'turn/completed', params: { turn: { id: 'turn-ui', status: 'completed' } } }), 20);
+    if (process.env.KDA_FIXTURE_END === 'server_closed') setTimeout(() => process.exit(0), 20);
   }
   if (!v.method && Object.hasOwn(v, 'id')) {
     assert.ok([0, 'second'].includes(v.id));
     const action = process.env.KDA_FIXTURE_ACTION ?? 'accept';
     assert.deepEqual(v.result, { action, content: action === 'accept' ? { approve: false } : null });
     responses++;
-    if (responses === 2) {
+    if (responses === 2 && !process.env.KDA_FIXTURE_END) {
       send({ method: 'serverRequest/resolved', params: { requestId: 'second' } });
       send({ id: 'resolved', method: 'mcpServer/elicitation/request', params: { ...base, turnId: 'turn-ui' } });
       send({ method: 'serverRequest/resolved', params: { requestId: 'resolved' } });

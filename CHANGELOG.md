@@ -1,3 +1,9 @@
+## [0.7.55] - 2026-10-29
+
+- Correlate MCP consent dialogs and metadata-only diagnostics with request IDs.
+- Distinguish response validation, expiry, cancellation, disconnect, and forwarded acceptance while preserving permission enforcement.
+- Add diagnostic lifecycle and privacy regression coverage. Actual native app authorization remains subject to post-install verification.
+
 # Changelog
 
 모든 주요 변경사항을 여기에 기록합니다.
