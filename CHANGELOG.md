@@ -1,3 +1,10 @@
+## [0.7.58] - 2026-10-29
+
+Same features as 0.7.57 (auto-continue, failure capture without asking, standing approvals, install after approved release). 0.7.57 was tagged but never released: its CI release gate failed on the Windows runner.
+
+### Fixed
+- `sidecar/test-autonomy-policy.mjs` used a line-boundary pattern (newline, `}`, newline) that matched the LF working copy but not the CRLF checkout on `windows-latest` (run 40876089719, step "Release gate (fast)"). The test now normalizes CRLF to LF before matching. Verified with a CRLF checkout: fast gate 8 PASS / 0 FAIL.
+
 ## [0.7.57] - 2026-10-29
 
 ### Added
