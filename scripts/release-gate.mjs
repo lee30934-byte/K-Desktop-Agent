@@ -263,6 +263,7 @@ const NODE_TEST_SUITES = [
   { file: "scripts/telegram-bridge.test.ts", runner: "tsx" }, // v0.7.53
   { file: "scripts/telegram-router.test.ts", runner: "tsx" }, // v0.7.54
   { file: "scripts/telegram-digest.test.ts", runner: "tsx" }, // v0.7.54
+  { file: "scripts/telegram-hub.test.ts", runner: "tsx" }, // v0.7.54
   { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
 ];
 

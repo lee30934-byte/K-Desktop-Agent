@@ -63,13 +63,25 @@ export function isShortFollowUp(text: string): boolean {
 }
 
 /** 분류기 프롬프트. 후보 id 는 짧은 번호 키로 바꿔 모델이 긴 uuid 를 틀리게 쓰지 않게 한다. */
-export function buildClassifierPrompt(message: string, targets: RouteTarget[]): string {
+export interface RouteExample {
+  text: string;
+  convId: string;
+}
+
+export function buildClassifierPrompt(message: string, targets: RouteTarget[], examples: RouteExample[] = []): string {
   const lines = targets.map((t, i) => `${i + 1}. ${t.label} — ${t.description.replace(/\s+/g, " ").slice(0, 200)}`);
+  // ③ K 가 /이동 으로 바로잡은 기록 — 최근 것 위주로 최대 8개만 (프롬프트 비대 방지)
+  const ex = examples
+    .map((e) => ({ e, idx: targets.findIndex((t) => t.convId === e.convId) }))
+    .filter((x) => x.idx >= 0)
+    .slice(-8)
+    .map((x) => `- "${x.e.text.replace(/\s+/g, " ").slice(0, 80)}" -> ${x.idx + 1}`);
   return [
     "You route a user's Telegram message to the best matching work session.",
     "Sessions:",
     "0. General — anything that fits none of the others, remote PC power/status, small talk",
     ...lines,
+    ...(ex.length > 0 ? ["", "Past corrections by the user (follow these):", ...ex] : []),
     "",
     "Message:",
     message.slice(0, 1500),
@@ -110,6 +122,8 @@ export interface RouteInput {
   defaultTarget: { convId: string; label: string };
   /** AI 분류기. 실패 시 throw 해도 된다(기본 대화로 강등). 없으면 AI 단계 생략. */
   classify?: (prompt: string) => Promise<string>;
+  /** /이동 으로 바로잡은 예시 (분류 프롬프트에 포함). */
+  examples?: RouteExample[];
 }
 
 function asDecision(t: { convId: string; label: string }, source: RouteSource, text: string, extra: Partial<RouteDecision> = {}): RouteDecision {
@@ -142,7 +156,7 @@ export async function decideRoute(input: RouteInput): Promise<RouteDecision> {
   if (input.classify && targets.length > 0) {
     let raw: string;
     try {
-      raw = await input.classify(buildClassifierPrompt(text, targets));
+      raw = await input.classify(buildClassifierPrompt(text, targets, input.examples ?? []));
     } catch (e) {
       return asDecision(defaultTarget, "default", text, { note: `classify-failed: ${String(e).slice(0, 120)}` });
     }
