@@ -1,0 +1,61 @@
+// v0.7.54 — 자율 진행 원칙 회귀 테스트 (2026-10-29 K 확정: "내 선택이 굳이 필요한 부분이 아니라면 계속 진행").
+// 원인 2곳(① "불확실하면 먼저 질문" ② self-nudge "자동 실행하지 말고 제안만")이 되살아나지 않는지,
+// 그리고 새 원칙이 모든 엔진 경로가 공유하는 SYSTEM_PROMPT 에 들어 있는지 소스로 검증한다.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const src = readFileSync(join(here, "src", "index.ts"), "utf8");
+let fail = 0;
+const check = (name, ok) => {
+  console.log(`${ok ? "PASS" : "FAIL"} ${name}`);
+  if (!ok) fail++;
+};
+
+const m = /const SYSTEM_PROMPT = `([\s\S]*?)`;/.exec(src);
+check("SYSTEM_PROMPT 추출", !!m);
+const sp = m ? m[1] : "";
+check("자율 진행 원칙 포함", sp.includes("[자율 진행 원칙"));
+check("끝까지 이어서 진행 문구", sp.includes("끝까지 이어서 진행"));
+for (const k of ["전원 조작", "되돌리기 어려운", "태그 push", "실자금", "사람 눈", "모순"]) {
+  check(`질문 허용 6가지 중 '${k}'`, sp.includes(k));
+}
+check("옛 '불확실하면 먼저 질문합니다' 제거", !sp.includes("불확실하면 먼저 질문합니다"));
+check("파괴 작업 사전 확인 규칙은 유지", sp.includes("dry_run"));
+
+const nudge = /\[턴경계 self-nudge[\s\S]*?\]\.join\("\\n"\)/.exec(src);
+check("nudge 블록 추출", !!nudge);
+const nb = nudge ? nudge[0] : "";
+check("nudge: 이어서 실행", nb.includes("이어서 실행"));
+check("nudge: 옛 '자동 실행하지는 말고, 제안만' 제거", !nb.includes("자동 실행하지는 말고, 제안만"));
+check("nudge: 새 작업 자가 시작 금지 유지", nb.includes("새 작업을 스스로 시작하지는 않습니다"));
+
+const rest = /const SYSTEM_PROMPT_REST = `([\s\S]*?)`;/.exec(src);
+check("REST 프롬프트에도 자율 진행 원칙", !!rest && rest[1].includes("[자율 진행 원칙]"));
+
+// 모든 엔진 경로가 같은 SYSTEM_PROMPT 를 쓰는지 (Claude CLI / 공용 빌더)
+check("Claude CLI 경로가 SYSTEM_PROMPT 사용", /SYSTEM_PROMPT \+ soulBlock \+ folderInstructionBlock/.test(src));
+check("공용 빌더(Codex 등)가 SYSTEM_PROMPT 사용", /return SYSTEM_PROMPT \+ soulBlock \+ folderBlock/.test(src));
+
+// 엔진별 경로 전수 — 어떤 모델/엔진이든 원칙을 받는지
+const body = (fn) => {
+  const s = src.indexOf(`async function ${fn}(`);
+  if (s < 0) return "";
+  const e = src.indexOf("\nasync function ", s + 10);
+  return src.slice(s, e < 0 ? undefined : e);
+};
+check("Codex CLI 가 buildEngineSystemText 사용", /buildEngineSystemText\(/.test(body("handleViaCodexCLI")));
+check("Gemini CLI 가 buildEngineSystemText 사용", /buildEngineSystemText\(/.test(body("handleViaGeminiCLI")));
+check("buildEngineSystemText 가 SYSTEM_PROMPT 로 시작", /function buildEngineSystemText\([\s\S]*?return SYSTEM_PROMPT \+/.test(src));
+check("REST API 가 SYSTEM_PROMPT_REST 사용", /SYSTEM_PROMPT_REST \+/.test(body("handleViaRestAPI")));
+check("ChatGPT 웹(BrowserHost)이 원칙 머리말 적용", /content: withAutonomyPreface\(msg\.content\)/.test(body("handleViaBrowserHost")));
+const pre = /const AUTONOMY_POLICY_PREFACE = \[([\s\S]*?)\]\.join/.exec(src);
+check("머리말에 질문 허용 범위 포함", !!pre && pre[1].includes("실자금") && pre[1].includes("되돌리기 어려운"));
+// 새 엔진이 추가됐는데 이 검사 목록에 없으면 실패 — 조용한 누락 방지
+const handlers = [...src.matchAll(/^async function (handleVia\w+)\(/gm)].map((m) => m[1]).sort();
+const covered = ["handleViaBrowserHost", "handleViaClaudeCLI", "handleViaCodexCLI", "handleViaGeminiCLI", "handleViaRestAPI"];
+check(`엔진 핸들러 전수 커버 (발견: ${handlers.join(",")})`, JSON.stringify(handlers) === JSON.stringify(covered));
+
+console.log(fail === 0 ? "\nALL PASS" : `\n${fail} FAIL`);
+process.exit(fail === 0 ? 0 : 1);

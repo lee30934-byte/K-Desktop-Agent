@@ -939,8 +939,9 @@ function buildAgentFeatureGuidance(flags: AgentFlags): string {
       [
         "",
         "[턴경계 self-nudge (실험 기능 ON)]",
-        "응답 마지막에, 작업이 끝나지 않았다면 다음에 할 일을 한 줄로 스스로 제안하세요.",
-        "K 의 명시적 지시 없이 다음 행동을 자동 실행하지는 말고, 제안만 합니다.",
+        "승인된 작업이 끝나지 않았다면 턴을 멈추지 말고 다음 단계를 이어서 실행하세요 ([자율 진행 원칙]).",
+        "턴을 끝내야 할 때(장기 작업 대기, K 확인이 필요한 6가지 경우)만 응답 마지막에 다음에 할 일을 한 줄로 적습니다.",
+        "새 작업을 스스로 시작하지는 않습니다 — 이어 가는 범위는 이미 승인된 작업까지입니다.",
       ].join("\n"),
     );
   }
@@ -1881,7 +1882,10 @@ const SYSTEM_PROMPT = `당신은 K님의 개인 Windows 컴퓨터를 자동화�
 
 [원칙]
 - K님이 한국어로 자연스럽게 명령하면, 적절한 도구를 선택해 실행하고 결과를 간결히 보고합니다.
-- 불확실하면 먼저 질문합니다.
+- [자율 진행 원칙 — v0.7.54, 2026-10-29 K 확정] K님이 승인·지시한 작업은 단계마다 멈추지 말고 끝까지 이어서 진행합니다.
+  기본값·세부 설계·모델·순서·이름처럼 추천안이 분명한 것은 스스로 정하고, 보고에 "추천으로 정한 것(바꾸려면 말씀)"으로 한 줄 적습니다.
+  K님께 묻는 경우는 다음뿐입니다: ① 전원 조작 ② 삭제·덮어쓰기 등 되돌리기 어려운 작업 ③ 태그 push·릴리즈 배포·외부 공개 ④ 실자금·결제·보안 권한 확대 ⑤ 사람 눈으로만 판단 가능한 검증 ⑥ 요구사항이 실제로 모순되거나 정보가 없어 진행 자체가 불가능할 때.
+  위 경우가 아니면 응답 끝에 "정해 주실 것" 목록을 만들지 않습니다. 물어야 할 때도 질문 전까지 할 수 있는 작업은 먼저 끝내 둡니다.
 - 선택지를 제시할 때는 AskUserQuestion 같은 별도 도구를 쓰지 말고, 반드시 번호를 매긴 텍스트(예: 1 / 2 / 3)로 본문에 직접 제시하세요. K님은 일반 메시지로 번호나 내용을 답합니다. (이 환경은 단방향 CLI라 interactive 질문 도구의 답을 제때 받지 못합니다.)
 - 파괴적인 작업(파일 삭제, 덮어쓰기, 이동)은 반드시 dry_run 모드나 확인 질문으로 먼저 시뮬레이션합니다.
 - 한 번에 여러 도구를 병렬로 호출할 수 있으면 그렇게 합니다.
@@ -2790,7 +2794,11 @@ const SYSTEM_PROMPT_REST = `당신은 K님의 개인 비서입니다. 한국어�
 [제약]
 - 이 모드(외부 API)에서는 K-Personal MCP 도구(스크린샷, 마우스, 파일 등)를 사용할 수 없습니다.
 - 시스템 자동화가 필요하면 K님께 "Claude (Max 구독) 모드로 전환" 을 안내하세요.
-- 코드/명령어를 제외한 모든 답변은 한국어로 작성합니다.`;
+- 코드/명령어를 제외한 모든 답변은 한국어로 작성합니다.
+
+[자율 진행 원칙]
+- 추천안이 분명한 세부 사항은 스스로 정해 답하고 "추천으로 정한 것"으로 한 줄 적습니다. 매 답변마다 선택지를 되묻지 않습니다.
+- K님께 묻는 경우는 전원 조작·되돌리기 어려운 작업·배포·실자금/보안·사람 눈 검증·모순이나 정보 부족으로 진행 불가일 때뿐입니다.`;
 
 // tool 호출 결과를 텍스트로 압축 — base64 폭탄 / 거대 파일 출력 방어.
 // toolInput 은 JSON 으로 직렬화하되 800자, toolOutput 은 1500자에서 절단.
@@ -3079,10 +3087,27 @@ async function handleUserMessage(msg: UserMessage): Promise<void> {
  * 대신 열린 권한이 있으면 "도구 0회" 를 고지한다. ChatGPT 가 도구처럼 생긴 텍스트를 뱉어도
  * provider 의 이벤트 화이트리스트 때문에 tool_use/tool_result 로는 절대 변환되지 않는다.
  */
+/**
+ * v0.7.54 — 자율 진행 원칙 (축약형). 시스템 프롬프트 채널이 없는 엔진(ChatGPT 웹 BrowserHost)은
+ * 사용자 메시지 앞에 이 블록을 붙여 전달한다. 전문은 SYSTEM_PROMPT / SYSTEM_PROMPT_REST 의 [자율 진행 원칙].
+ * 어떤 엔진·모델이든 같은 원칙을 받도록 test-autonomy-policy.mjs 가 모든 경로를 검사한다.
+ */
+const AUTONOMY_POLICY_PREFACE = [
+  "[KDA 진행 원칙 — 답변에 이 문구를 다시 적지 마세요]",
+  "추천안이 분명한 세부 사항은 스스로 정해 끝까지 진행하고 \"추천으로 정한 것\"으로 한 줄 적습니다. 선택지를 매번 되묻지 않습니다.",
+  "묻는 경우: 전원 조작 / 되돌리기 어려운 작업 / 배포 / 실자금·보안 / 사람 눈 검증 / 모순·정보 부족으로 진행 불가.",
+  "",
+].join("\n");
+
+function withAutonomyPreface(content: string): string {
+  if (!content || !content.trim()) return content; // 빈 메시지 거부 판정은 provider 가 그대로 하도록
+  return AUTONOMY_POLICY_PREFACE + "\n" + content;
+}
+
 async function handleViaBrowserHost(msg: UserMessage): Promise<void> {
   const outcome = await runBrowserTurn({
     id: msg.id,
-    content: msg.content,
+    content: withAutonomyPreface(msg.content),
     conversation_id: msg.conversation_id,
     model: msg.model,
     reasoningEffort: msg.reasoningEffort,

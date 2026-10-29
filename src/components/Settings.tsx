@@ -3535,7 +3535,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   {
                     key: "nudge",
                     title: "턴경계 self-nudge",
-                    desc: "작업이 안 끝났으면 다음 할 일을 한 줄로 스스로 제안 (자동 실행 X).",
+                    desc: "승인된 작업이 안 끝났으면 멈추지 않고 이어서 진행. 대기·확인 필요 시에만 다음 할 일 한 줄 (새 작업 자가 시작 X).",
                     risk: "낮음",
                   },
                   {
