@@ -115,6 +115,11 @@ import {
 import { TelegramHub, setActiveTelegramHub, type HubSettings } from "./telegramHub";
 import { seedRouteTargets, sanitizeTargets, type RouteTarget } from "./telegramRouter";
 import { useStableCallback } from "./utils/useStableCallback";
+import { classifyTurnEnding, buildAutoContinuePrompt, AutoContinueChain, isAutoContinueMessage } from "./autoContinue";
+import { decideAutoUpdate, updaterVersionMatches, AUTO_UPDATE_POLL_MS } from "./autoUpdate";
+import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
+import { relaunch as relaunchApp } from "@tauri-apps/plugin-process";
+import { getVersion as getAppVersion } from "@tauri-apps/api/app";
 // Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
 import {
   loadSchedule,
@@ -755,6 +760,11 @@ export default function App() {
   const telegramHubRef = useRef<TelegramHub | null>(null);
   // v0.7.54 — 텔레그램발 대화의 후속 턴(task-watch 등) 응답 누적: turnId → { convId, text }
   const telegramFollowTextRef = useRef<Map<string, { convId: string; text: string }>>(new Map());
+  // v0.7.57 — 자동 이어가기: 턴별 마지막 답변 텍스트 + 대화별 연속 주입 카운터.
+  // 실행 함수는 handleSendMessage(하단 정의) 를 쓰므로 ref 로 디커플 (telegram 회신 ref 와 같은 방식).
+  const autoContinueTextRef = useRef<Map<string, string>>(new Map());
+  const autoContinueChainRef = useRef(new AutoContinueChain());
+  const autoContinueRunRef = useRef<(convId: string, turnId: string, text: string) => void>(() => {});
   // X-4 (v0.7.x) — KDA 자체 스케줄러 하트비트.
   // ScheduleWakeup(harness 소유, KDA 가 못 깨움) 대체. personal.db 의 schedules 테이블을
   // 60s 마다 직접 폴링해 도래분을 ⏰ 예약 conv 로 turn 주입. turnId → {scheduleId,title} 매핑.
@@ -1496,6 +1506,8 @@ export default function App() {
     if (["done", "error", "turn_stopping", "turn_stopped"].includes(ev.type)) {
       setCodexElicitations(prev => prev.filter(r => r.id !== event.id));
     }
+    // v0.7.57 — 실패·정지 턴은 자동 이어가기 대상이 아니다 (텍스트만 정리).
+    if (["error", "turn_stopped"].includes(ev.type)) autoContinueTextRef.current.delete(event.turn_id ?? event.id);
     const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "codex_elicitation_request", "codex_elicitation_resolved", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window"]);
     const eventTurnId = event.turn_id ?? event.taskId ?? event.id;
     const taskWatchActivity = taskWatchTurnsRef.current.get(eventTurnId);
@@ -1612,6 +1624,7 @@ export default function App() {
           const tw = taskWatchTurnsRef.current.get(ev.id);
           if (tw) tw.lastText = ev.text;
         }
+        autoContinueTextRef.current.set(ev.id, ev.text);
         // partial assistant 텍스트를 DB 에 incrementally 저장 — 강제 종료/재기동 시
         // 끊긴 시점까지의 응답이 휘발하지 않도록. queueMessageSave 가 300ms 디바운스라
         // 매 chunk 마다 DB write 부담은 없음 (같은 id 로 upsert).
@@ -1890,6 +1903,12 @@ export default function App() {
           turnProviderMap.current.delete(ev.id);
          logger.warn(`[SingleFlight] stale done 무시 conv=${convForTurn?.slice(0, 8)} turn=${ev.id}`);
          break;
+        }
+        // v0.7.57 — 자동 이어가기: 답변이 확인 사유 없는 질문으로 끝났으면 같은 대화에 "추천안으로 진행" 턴 주입.
+        {
+          const finalText = autoContinueTextRef.current.get(ev.id) ?? "";
+          autoContinueTextRef.current.delete(ev.id);
+          if (convForTurn && finalText) autoContinueRunRef.current(convForTurn, ev.id, finalText);
         }
         if (!isActiveConv) {
           // Background turn 완료 — DB 의 agentId 만 갱신 + 사이드바 메타 refresh.
@@ -2685,6 +2704,8 @@ export default function App() {
 
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[], options?: { conversationId?: string; fromQueue?: string; mode?: SendMode }) => {
     const targetId = options?.conversationId ?? activeConversationIdRef.current;
+    // v0.7.57 — K 의 실제 메시지가 오면 그 대화의 자동 이어가기 연속 카운터 reset.
+    if (targetId && !isAutoContinueMessage(text)) autoContinueChainRef.current.reset(targetId);
     const sendGeneration = targetId ? stopGenerationRef.current.get(targetId) ?? 0 : 0;
     const allStopGeneration = allStopGenerationRef.current;
     const mode = options?.mode ?? "queue";
@@ -3202,6 +3223,105 @@ export default function App() {
 
   // 텔레그램발 메시지를 전용 background conv 로 주입해 turn 실행.
   // v0.7.53 — 처리 중 도착 메시지는 버리지 않고 대기열에 넣는다(상한 초과 시에만 거절).
+  // v0.7.57 — 자동 이어가기 실행기. 턴경계 self-nudge 토글(agent-flags "nudge")이 켜져 있을 때만 동작.
+  // 판정·주입 내역은 콘솔 로그와 ~/.kda/auto-continue.log 에 남긴다 (사후 검증용).
+  autoContinueRunRef.current = (convId: string, turnId: string, text: string) => {
+    const verdict = classifyTurnEnding(text);
+    if (verdict.kind === "none") return;
+    void (async () => {
+      const stamp = new Date().toLocaleString("sv-SE");
+      const log = (line: string) => {
+        logger.log("[AutoContinue] " + line);
+        void invoke("append_auto_continue_log", { line: `[${stamp}] ${line}` }).catch(() => {});
+      };
+      let flags: Record<string, boolean> = {};
+      try { flags = await invoke<Record<string, boolean>>("get_agent_flags"); } catch { flags = {}; }
+      if (!flags?.nudge) return;
+      if (verdict.kind === "allowed") {
+        log(`WAIT conv=${convId.slice(0, 8)} turn=${turnId} reason="${verdict.category}" evidence="${verdict.evidence}" ask="${verdict.ask}"`);
+        return;
+      }
+      if (!autoContinueChainRef.current.tryTake(convId)) {
+        log(`LIMIT conv=${convId.slice(0, 8)} turn=${turnId} ask="${verdict.ask}" (연속 ${autoContinueChainRef.current.count(convId)}회 — K 대기)`);
+        return;
+      }
+      log(`CONTINUE conv=${convId.slice(0, 8)} turn=${turnId} n=${autoContinueChainRef.current.count(convId)} ask="${verdict.ask}"`);
+      setTimeout(() => {
+        void handleSendMessage(buildAutoContinuePrompt(verdict), undefined, { conversationId: convId })
+          .catch((err) => log(`SEND-ERROR conv=${convId.slice(0, 8)} ${String(err)}`));
+      }, 1500);
+    })();
+  };
+
+  // v0.7.57 — 릴리즈 후 자동 설치. ~/.kda/auto-update-request.json 이 있고 진행 중 턴이 90초 이상 없으면
+  // 인앱 업데이터(서명 검증)로 요청 버전만 설치·재기동. 재기동 후 버전 확인 → auto-update.done.json.
+  const autoUpdateIdleSinceRef = useRef<number | null>(null);
+  const autoUpdateInstallingRef = useRef(false);
+  const autoUpdateTickRef = useRef<() => Promise<void>>(async () => {});
+  autoUpdateTickRef.current = async () => {
+    if (autoUpdateInstallingRef.current) return;
+    let raw: string | null = null;
+    try { raw = await invoke<string | null>("auto_update_request_read"); } catch { return; }
+    if (raw == null) { autoUpdateIdleSinceRef.current = null; return; }
+    const now = Date.now();
+    const busy = conversationTurnGateRef.current.activeConversationIds().size > 0 ||
+      taskWatchTurnsRef.current.size > 0 || telegramTurnsRef.current.size > 0;
+    if (busy) autoUpdateIdleSinceRef.current = null;
+    else if (autoUpdateIdleSinceRef.current == null) autoUpdateIdleSinceRef.current = now;
+    let current = "";
+    try { current = await getAppVersion(); } catch { return; }
+    const d = decideAutoUpdate({ raw, current, now, busy, idleSince: autoUpdateIdleSinceRef.current });
+    const stamp = new Date(now).toLocaleString("sv-SE");
+    const finish = (status: string, extra: Record<string, unknown> = {}) => {
+      let requested: unknown = null;
+      try { requested = JSON.parse(raw!.replace(/^\uFEFF/, "")).version ?? null; } catch { requested = null; }
+      const result = { status, requested, current, at: new Date(now).toISOString(), ...extra };
+      logger.log("[AutoUpdate] " + status, result);
+      return invoke("auto_update_finish", {
+        resultJson: JSON.stringify(result, null, 2),
+        logLine: `[${stamp}] ${status.toUpperCase()} requested=${String(requested)} current=${current}` + (extra.detail ? ` detail=${String(extra.detail)}` : ""),
+      }).catch((e) => logger.warn("[AutoUpdate] finish 기록 실패", e));
+    };
+    switch (d.action) {
+      case "none":
+      case "wait":
+        return;
+      case "invalid":
+        await finish("invalid", { detail: d.why });
+        return;
+      case "installed":
+        await finish("installed");
+        return;
+      case "expired":
+        await finish("expired", { detail: "요청 후 3시간 경과 — 설치하지 않음" });
+        return;
+      case "install": {
+        autoUpdateInstallingRef.current = true;
+        try {
+          void invoke("auto_update_log", { line: `[${stamp}] INSTALL-START requested=${d.version} current=${current}` }).catch(() => {});
+          const update = await checkForUpdate();
+          if (!update || !updaterVersionMatches(update.version, d.version)) {
+            await finish("mismatch", { detail: `업데이터가 찾은 버전=${update?.version ?? "없음"} — 설치하지 않음` });
+            return;
+          }
+          await update.downloadAndInstall();
+          void invoke("auto_update_log", { line: `[${new Date().toLocaleString("sv-SE")}] INSTALLED-RELAUNCH requested=${d.version}` }).catch(() => {});
+          await relaunchApp();
+        } catch (e) {
+          await finish("error", { detail: e instanceof Error ? e.message : String(e) });
+        } finally {
+          autoUpdateInstallingRef.current = false;
+        }
+        return;
+      }
+    }
+  };
+  useEffect(() => {
+    const first = setTimeout(() => { void autoUpdateTickRef.current(); }, 15_000);
+    const timer = setInterval(() => { void autoUpdateTickRef.current(); }, AUTO_UPDATE_POLL_MS);
+    return () => { clearTimeout(first); clearInterval(timer); };
+  }, []);
+
   const enqueueTelegramMessage = useStableCallback((text: string, chatId: string, reason: string, convId?: string) => {
     const r = telegramTurnsRef.current.enqueue({ text, chatId, receivedAt: Date.now(), convId });
     telegramLog(`QUEUE ${r.accepted ? "add" : "FULL"} pos=${r.position} reason=${reason} len=${text.length}`);
@@ -3228,6 +3348,7 @@ export default function App() {
     }
     // v0.7.54 — 동시성은 대화별 1턴. 분배 대상 대화(opts.convId)가 있으면 그 대화, 없으면 📱 텔레그램 대화.
     const targetConv = opts.convId || localStorage.getItem("kda_telegram_conv_id") || "";
+    if (targetConv) autoContinueChainRef.current.reset(targetConv); // v0.7.57 — 폰에서 온 실제 메시지
     if (targetConv && telegramTurnsRef.current.hasConv(targetConv)) {
       if (opts.fromQueue || opts.freshSession) telegramTurnsRef.current.requeueFront({ text, chatId, receivedAt: Date.now(), convId: opts.convId });
       else enqueueTelegramMessage(text, chatId, "telegram-busy", opts.convId);

@@ -946,13 +946,25 @@ function buildAgentFeatureGuidance(flags: AgentFlags): string {
     );
   }
   if (flags.failureCapture) {
+    // v0.7.57 (2026-10-29 K 승인) — "기록할까요?" 질문이 턴을 멈추는 주원인 중 하나였다.
+    // 새 파일 생성·append 는 되돌릴 수 있는 작업이므로 묻지 않고 기록 후 보고한다.
+    // 기존 내용 덮어쓰기만 종전대로 확인. memoryWrite 가 꺼져 있으면 기록 도구가 없으니 보고에만 적는다.
     blocks.push(
-      [
-        "",
-        "[실패 자동 포착 (실험 기능 ON)]",
-        "도구 호출이 실패하거나 K 가 같은 실수를 지적하면, 원인과 회피책을 한 줄로 정리해",
-        "K 에게 'memory/pitfall_*.md 로 기록할까요?' 라고 제안하세요 (자동 기록 금지, 승인 후에만).",
-      ].join("\n"),
+      flags.memoryWrite
+        ? [
+            "",
+            "[실패 자동 포착 (실험 기능 ON)]",
+            "도구 호출이 실패하거나 K 가 같은 실수를 지적하면, 원인과 회피책을 정리해 묻지 말고 바로 기록하세요.",
+            "먼저 ~/.kda/memory/ 의 실제 파일명을 확인해 같은 주제 파일이 있으면 db_memory_write 로 append, 없으면 pitfall_<주제>_<YYYYMMDD>.md 로 새로 만듭니다.",
+            "기존 내용 덮어쓰기는 하지 않습니다(필요하면 그때만 K 확인). 보고에는 기록한 파일 경로를 한 줄로 적습니다.",
+            "\"기록할까요?\" 라고 묻지 않습니다.",
+          ].join("\n")
+        : [
+            "",
+            "[실패 자동 포착 (실험 기능 ON)]",
+            "도구 호출이 실패하거나 K 가 같은 실수를 지적하면, 원인과 회피책을 한 줄로 정리해 보고에 적으세요.",
+            "기록 도구(자기수정 메모리)가 꺼져 있으므로 파일 기록은 하지 않습니다. 기록 여부를 따로 묻지 않습니다.",
+          ].join("\n"),
     );
   }
   if (flags.memoryWrite) {
@@ -987,7 +999,45 @@ function buildAgentFeatureGuidance(flags: AgentFlags): string {
       ].join("\n"),
     );
   }
+  const standing = buildStandingApprovalsBlock();
+  if (standing) blocks.push(standing);
   return blocks.join("\n");
+}
+
+/**
+ * v0.7.57 — 상시 승인 규칙 (`~/.kda/standing-approvals.md`).
+ *
+ * 배경: CAE 대화가 빌드할 때마다 같은 "설치본 aN 제거·빌드 aM 삭제 승인"을 물어 30분짜리 사이클이
+ * K 의 답을 기다리며 멈췄다 (2026-10-29 16:18 / 17:01 / 17:35 / 18:15 네 번). 삭제는 확인 사유 ②라
+ * 묻는 것 자체는 맞지만, 매번 같은 내용이면 K 가 한 번 정한 규칙으로 대신한다.
+ *
+ * 파일이 없으면 빈 문자열 → 종전 동작과 동일. 플래그와 무관하게 buildAgentFeatureGuidance 를 쓰는
+ * 모든 엔진 경로(Claude CLI / Codex·Gemini <kda_system> / REST)에 주입된다.
+ * 크기 상한 6000자 — 넘으면 잘라서 넣고 잘렸다고 적는다 (시스템 프롬프트 폭발 방지).
+ */
+const STANDING_APPROVALS_MAX = 6000;
+function buildStandingApprovalsBlock(file?: string): string {
+  const p = file ?? path.join(os.homedir(), ".kda", "standing-approvals.md");
+  let raw = "";
+  try {
+    if (!existsSync(p)) return "";
+    raw = readFileSync(p, "utf8").replace(/^\uFEFF/, "").trim();
+  } catch (e) {
+    log("warn", `standing-approvals.md read 실패: ${e instanceof Error ? e.message : String(e)}`);
+    return "";
+  }
+  if (!raw) return "";
+  const body = raw.length > STANDING_APPROVALS_MAX
+    ? raw.slice(0, STANDING_APPROVALS_MAX) + "\n…(길이 상한으로 잘림 — 원문: ~/.kda/standing-approvals.md)"
+    : raw;
+  return [
+    "",
+    "[상시 승인 규칙 — K 가 미리 승인한 반복 작업]",
+    "아래 규칙의 범위 안에 있는 작업은 확인 사유(② 삭제 등)에 해당해도 다시 묻지 말고 진행한 뒤 보고하세요.",
+    "규칙의 조건(사전 점검·보존 대상 등)을 하나라도 만족하지 못하거나 범위를 벗어나면 종전대로 K 에게 확인합니다.",
+    "",
+    body,
+  ].join("\n");
 }
 
 /**

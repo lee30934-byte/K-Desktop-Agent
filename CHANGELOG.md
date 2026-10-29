@@ -1,3 +1,13 @@
+## [0.7.57] - 2026-10-29
+
+### Added
+- **Auto-continue (turn-ending question check).** On 2026-10-29, 17 of 51 replies after 16:00 ended by asking K to choose, several of them without any of the six confirmation reasons (power / irreversible / release / money-security / human-eye check / blocked). The autonomy policy was prompt-only, so nothing caught it. Now, when a turn ends with a question (`할까요?`, `골라 주세요`, trailing `?` + numbered list …) and the question paragraph (plus the option list right before it) has no confirmation-reason cue, KDA injects `[자동 이어가기] … 추천안으로 정하고 이어서 진행` into the same conversation. The injected text tells the model to stop and name the reason if it really is one of the six. Max 2 consecutive injections per conversation; a real message from K (desktop or Telegram) resets the count. Engine-independent (runs in the app on the final text). Gated by the existing "턴경계 self-nudge" toggle. Decisions are logged to `~/.kda/auto-continue.log` (`CONTINUE` / `WAIT reason=…` / `LIMIT`). 13 real reply endings from that day are kept as test fixtures.
+- **Standing approvals** (`~/.kda/standing-approvals.md`). Rules K approved once (e.g. CAE build/install slot rotation, which asked for the same deletion approval four times on 2026-10-29) are injected into every engine's guidance; work inside a rule proceeds without asking, anything outside it still asks. No file → no change. Capped at 6000 chars.
+- **Install after an approved release.** The agent writes `~/.kda/auto-update-request.json` (`version`, `requestedAt`). KDA polls every 30 s and, once no turn has been running for 90 s, installs exactly that version through the signed in-app updater and relaunches; a different version found by the updater is not installed, and nothing is ever downgraded. After relaunch KDA writes `~/.kda/auto-update.done.json` (`installed` / `mismatch` / `expired` (3 h) / `invalid` / `error`) for task-watch, and logs to `~/.kda/auto-update.log`.
+
+### Changed
+- **Failure capture no longer asks "기록할까요?".** With self-editing memory on, the agent appends to an existing pitfall file or creates a new one and reports the path; overwriting still needs confirmation. With memory writing off it only reports the cause and workaround.
+
 ## [0.7.56] - 2026-10-29
 
 ### Fixed

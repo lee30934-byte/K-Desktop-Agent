@@ -57,5 +57,27 @@ const handlers = [...src.matchAll(/^async function (handleVia\w+)\(/gm)].map((m)
 const covered = ["handleViaBrowserHost", "handleViaClaudeCLI", "handleViaCodexCLI", "handleViaGeminiCLI", "handleViaRestAPI"];
 check(`엔진 핸들러 전수 커버 (발견: ${handlers.join(",")})`, JSON.stringify(handlers) === JSON.stringify(covered));
 
+// v0.7.57 — "기록할까요?" 질문 제거 (2026-10-29 K 승인). 실패 포착 블록이 묻지 않고 기록하도록.
+const fc = /\[실패 자동 포착[\s\S]*?\]\.join\("\\n"\)[\s\S]*?\]\.join\("\\n"\)/.exec(src);
+check("실패 포착 블록 추출", !!fc);
+const fcb = fc ? fc[0] : "";
+check("실패 포착: 옛 '기록할까요? 라고 제안' 제거", !fcb.includes("라고 제안하세요"));
+check("실패 포착: 옛 '자동 기록 금지' 제거", !fcb.includes("자동 기록 금지"));
+check("실패 포착: 묻지 말고 바로 기록", fcb.includes("묻지 말고 바로 기록"));
+check("실패 포착: 덮어쓰기는 하지 않음 유지", fcb.includes("덮어쓰기는 하지 않습니다"));
+check("실패 포착: memoryWrite OFF 분기", fcb.includes("flags.memoryWrite") || /flags\.memoryWrite\s*\?/.test(src));
+
+// v0.7.57 — 상시 승인 규칙이 모든 엔진 공용 가이던스에 주입되는지
+const fg = /function buildAgentFeatureGuidance\([\s\S]*?\n}\n/.exec(src);
+check("buildAgentFeatureGuidance 가 상시 승인 규칙 주입", !!fg && fg[0].includes("buildStandingApprovalsBlock()"));
+const sa = /function buildStandingApprovalsBlock\([\s\S]*?\n}\n/.exec(src);
+check("상시 승인: 파일 없으면 빈 문자열", !!sa && /if \(!existsSync\(p\)\) return "";/.test(sa[0]));
+check("상시 승인: 크기 상한", !!sa && sa[0].includes("STANDING_APPROVALS_MAX"));
+check("상시 승인: 범위 밖이면 종전대로 확인", !!sa && sa[0].includes("범위를 벗어나면 종전대로"));
+for (const fn of ["handleViaClaudeCLI", "handleViaRestAPI"]) {
+  check(`${fn} 가 buildAgentFeatureGuidance 사용`, /buildAgentFeatureGuidance\(/.test(body(fn)));
+}
+check("Codex/Gemini 공용 빌더가 buildAgentFeatureGuidance 사용", /function buildEngineSystemText\([\s\S]*?buildAgentFeatureGuidance\(agentFlags\)/.test(src));
+
 console.log(fail === 0 ? "\nALL PASS" : `\n${fail} FAIL`);
 process.exit(fail === 0 ? 0 : 1);

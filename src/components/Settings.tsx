@@ -3528,7 +3528,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 </div>
                 <div className="settings-row-desc">
                   켜면 다음 메시지(turn)부터 적용됩니다. OFF 면 해당 MCP 도구가 차단되고 가이던스도
-                  미주입 → 기존 동작과 100% 동일. 자동 행동(기록·실행)은 하지 않고 제안만 합니다.
+                  미주입 → 기존 동작과 100% 동일. 확인 사유(전원·삭제·배포·실자금/보안·사람 검증·진행 불가)는 계속 K 에게 묻습니다.
                 </div>
               </div>
               <div style={{ marginTop: 4 }}>
@@ -3536,13 +3536,13 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                   {
                     key: "nudge",
                     title: "턴경계 self-nudge",
-                    desc: "승인된 작업이 안 끝났으면 멈추지 않고 이어서 진행. 대기·확인 필요 시에만 다음 할 일 한 줄 (새 작업 자가 시작 X).",
+                    desc: "승인된 작업이 안 끝났으면 멈추지 않고 이어서 진행. 답변이 확인 사유 없는 질문(\"골라 주세요\")으로 끝나면 같은 대화에 '추천안으로 진행' 을 자동 주입 (대화당 연속 2회까지, 기록: ~/.kda/auto-continue.log).",
                     risk: "낮음",
                   },
                   {
                     key: "failureCapture",
                     title: "실패 자동포착",
-                    desc: "도구 실패/지적 시 원인·회피책을 pitfall 로 기록할지 제안 (자동 기록 X, 승인 후만).",
+                    desc: "도구 실패/지적 시 원인·회피책을 묻지 않고 pitfall 파일에 기록(새 파일·append)하고 경로만 보고. 덮어쓰기는 확인. 자기수정 메모리가 꺼져 있으면 보고에만 적음.",
                     risk: "낮음",
                   },
                   {

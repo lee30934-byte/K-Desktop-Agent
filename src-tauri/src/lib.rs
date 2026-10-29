@@ -1293,6 +1293,76 @@ fn append_schedule_log(line: String) -> Result<(), String> {
     Ok(())
 }
 
+/// v0.7.57 — 자동 이어가기 판정 로그 — `<data_root>/auto-continue.log` 에 한 줄 append.
+/// WAIT(확인 사유로 대기) / CONTINUE(주입) / LIMIT(연속 한도) 를 남겨 사후 검증 근거로 쓴다.
+#[tauri::command]
+fn append_auto_continue_log(line: String) -> Result<(), String> {
+    let root = data_root();
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("auto-continue.log");
+    rotate_log_if_needed(&path, 2 * 1024 * 1024, 3);
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("auto-continue.log 열기 실패: {}", e))?;
+    writeln!(f, "{}", line).map_err(|e| format!("로그 작성 실패: {}", e))?;
+    Ok(())
+}
+
+/// v0.7.57 — 릴리즈 후 자동 설치: 요청 파일 `<data_root>/auto-update-request.json` 읽기.
+/// 없으면 None. 판정·설치는 프론트(src/autoUpdate.ts + 인앱 업데이터 서명 검증)가 한다.
+#[tauri::command]
+fn auto_update_request_read() -> Result<Option<String>, String> {
+    let path = data_root().join("auto-update-request.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(&path)
+        .map(Some)
+        .map_err(|e| format!("auto-update-request.json 읽기 실패: {}", e))
+}
+
+/// v0.7.57 — 자동 설치 종료 기록. `result_json` 을 `<data_root>/auto-update.done.json` 에 쓰고
+/// (tmp → rename), 요청 파일을 지우고, `auto-update.log` 에 한 줄 남긴다.
+/// done 파일은 에이전트의 task-watch 감시 대상이다 (설치 후 검증 이어가기).
+#[tauri::command]
+fn auto_update_finish(result_json: String, log_line: String) -> Result<(), String> {
+    let root = data_root();
+    let _ = std::fs::create_dir_all(&root);
+    let done = root.join("auto-update.done.json");
+    let tmp = root.join("auto-update.done.json.tmp");
+    std::fs::write(&tmp, result_json.as_bytes())
+        .map_err(|e| format!("auto-update.done.json.tmp 쓰기 실패: {}", e))?;
+    std::fs::rename(&tmp, &done).map_err(|e| format!("auto-update.done.json 교체 실패: {}", e))?;
+    let req = root.join("auto-update-request.json");
+    if req.exists() {
+        std::fs::remove_file(&req).map_err(|e| format!("auto-update-request.json 삭제 실패: {}", e))?;
+    }
+    let log = root.join("auto-update.log");
+    rotate_log_if_needed(&log, 1024 * 1024, 3);
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log) {
+        let _ = writeln!(f, "{}", log_line);
+    }
+    Ok(())
+}
+
+/// v0.7.57 — 자동 설치 진행 로그만 남김 (대기·설치 시작 등). 실패해도 앱 안 죽임.
+#[tauri::command]
+fn auto_update_log(line: String) -> Result<(), String> {
+    let root = data_root();
+    let _ = std::fs::create_dir_all(&root);
+    let log = root.join("auto-update.log");
+    rotate_log_if_needed(&log, 1024 * 1024, 3);
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .map_err(|e| format!("auto-update.log 열기 실패: {}", e))?;
+    writeln!(f, "{}", line).map_err(|e| format!("로그 작성 실패: {}", e))?;
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // task-watch (v0.7.17) — 장기 분리작업 완료 자동 이어가기.
 //
@@ -5524,6 +5594,10 @@ pub fn run_with_options(start_minimized: bool) {
             // X-4 스케줄러 하트비트 — personal.db (schedules 테이블) 경로
             get_personal_db_path,
             append_schedule_log,
+            append_auto_continue_log,
+            auto_update_request_read,
+            auto_update_finish,
+            auto_update_log,
             // v0.7.17 — task-watch (장기 분리작업 완료 자동 이어가기)
             task_watch_scan,
             task_watch_clear,
