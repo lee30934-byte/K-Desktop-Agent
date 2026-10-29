@@ -16,6 +16,7 @@ function mk(over: Partial<HubSettings> = {}, opts: { oneshot?: (p: string) => Pr
   const files: Array<{ path: string; caption: string }> = [];
   const turns: Array<{ convId: string; text: string }> = [];
   const store = new Map<string, string>();
+  const logs: string[] = [];
   const timers: Array<{ fn: () => void; at: number }> = [];
   const settings: HubSettings = {
     routing: true, digest: true, buttons: true, progress: true, inbox: true, approvals: true,
@@ -41,12 +42,12 @@ function mk(over: Partial<HubSettings> = {}, opts: { oneshot?: (p: string) => Pr
     defaultTarget: () => DEF,
     settings: () => settings,
     now: () => now,
-    log: () => {},
+    log: (l) => { logs.push(l); },
     store: { get: (k) => store.get(k) ?? null, set: (k, v) => void store.set(k, v) },
     setTimeout: (fn, ms) => { timers.push({ fn, at: now + ms }); return 0; },
   });
   return {
-    hub, sent, files, turns, store, settings,
+    hub, sent, files, turns, store, settings, logs,
     advance: (ms: number) => { now += ms; for (const t of timers.splice(0)) { if (t.at <= now) t.fn(); else timers.push(t); } },
     setNow: (d: Date) => { now = d.getTime(); },
     texts: () => sent.filter((s) => s.method === "sendMessage").map((s) => String(s.payload.text)),
@@ -245,4 +246,14 @@ test("깨진 저장값에서도 시작 (자가 복구)", () => {
   // 새 허브가 예외 없이 생성되는지
   const h2 = new TelegramHub({ ...(t.hub as any).d });
   assert.equal(h2.heldCount, 0);
+});
+
+test("v0.7.56 성공 전송·요약·사진도 로그에 남는다 (감시 증거)", async () => {
+  const long = "결과 ".repeat(400);
+  const t = mk({}, { oneshot: async (p) => (p.startsWith("You condense") ? "요약본" : '{"pick":0,"confidence":1}') });
+  await t.hub.deliverResult({ convId: CAE.convId, chatId: CHAT, text: long + "\nC:/out/a.png\nC:/out/missing.png" });
+  assert.ok(t.logs.some((l) => /^HUB SENT conv=7e8845d0 mid=\d+ part=1\/1/.test(l)), t.logs.join("\n"));
+  assert.ok(t.logs.some((l) => /^HUB SUMMARY ok tier=result/.test(l)));
+  assert.ok(t.logs.some((l) => /^HUB PHOTO ok conv=7e8845d0 file=a\.png/.test(l)));
+  assert.ok(t.logs.some((l) => /^HUB PHOTO failed conv=7e8845d0 file=missing\.png/.test(l)));
 });

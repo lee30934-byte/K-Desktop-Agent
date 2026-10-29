@@ -200,6 +200,8 @@ export class TelegramHub {
       const mid = res?.result?.message_id;
       if (typeof mid === "number") {
         lastId = mid;
+        // v0.7.56 — 성공 전송도 기록 (0.7.54 실사용 점검에서 '보냈다' 증거가 로그에 없었다)
+        this.d.log(`HUB SENT conv=${convId ? convId.slice(0, 8) : "-"} mid=${mid} part=${i + 1}/${parts.length} len=${parts[i].length}${payload.reply_markup ? " buttons" : ""}`);
         if (convId) this.replyMap.remember(mid, convId);
         if (full) {
           this.fullText.set(mid, full);
@@ -471,6 +473,7 @@ export class TelegramHub {
     try {
       summary = (await this.d.api.oneshot(buildSummaryPrompt(label, tier, raw))).trim();
       if (!summary) throw new Error("empty");
+      this.d.log(`HUB SUMMARY ok tier=${tier} in=${raw.length} out=${summary.length}`);
     } catch (e) {
       this.note("SUMMARY-FAILED", String(e).slice(0, 120));
       summary = fallbackSummary(raw);
@@ -492,7 +495,9 @@ export class TelegramHub {
         const res = await this.d.api.sendFile(chatId, p, `[${label}] ${name}`);
         const mid = res?.result?.message_id;
         if (typeof mid === "number") this.replyMap.remember(mid, convId);
+        this.d.log(`HUB PHOTO ok conv=${convId.slice(0, 8)} file=${name} mid=${mid ?? "-"}`);
       } catch (e) {
+        this.d.log(`HUB PHOTO failed conv=${convId.slice(0, 8)} file=${name} err=${String(e).slice(0, 120)}`);
         const code = String(e).split(":")[0].replace(/^Error\s*/, "");
         failed.push(`${name}(${code === "not_found" ? "파일 없음" : code === "too_large" ? "용량 초과" : "전송 오류"})`);
       }

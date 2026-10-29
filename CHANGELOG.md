@@ -1,3 +1,8 @@
+## [0.7.56] - 2026-10-29
+
+### Fixed
+- Telegram hub now logs successful deliveries to `telegram-bridge.log`: `HUB SENT` (conversation, message id, part, buttons), `HUB SUMMARY ok`, `HUB PHOTO ok` / `HUB PHOTO failed`. In the first real 0.7.54 round trip (2026-10-29 16:08) routing and the turn were logged but there was no proof in the log that the summary and the two images reached the phone.
+
 ## [0.7.55] - 2026-10-29
 
 - Correlate MCP consent dialogs and metadata-only diagnostics with request IDs.
