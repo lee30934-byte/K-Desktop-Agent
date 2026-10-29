@@ -3,6 +3,25 @@
 모든 주요 변경사항을 여기에 기록합니다.
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)
 
+## [0.7.54] - 2026-10-29
+
+### Added
+- Telegram messages are routed to the matching work conversation. Order: reply to a bot message → `@alias` → short follow-up answer (number/yes/no) to the last replying conversation within 10 minutes → one hidden `gpt-6-luna` classification (confidence ≥ 0.6) → 📱 텔레그램. A failed or uncertain classification falls back to 📱 텔레그램 and says why; no message is dropped. Default targets are found live from folders (CAE GUI, CAE Solver, KDA 개발, 쇼츠, SIGILFALL; the trading bot is excluded).
+- Replies from routed conversations come back labelled `[대화명]`, including later results of task-watch follow-ups for 6 hours.
+- Digest replies: questions and errors are sent at once (rule-based, so an AI mistake cannot drop a question), results are summarised to 3–5 lines by `gpt-6-luna`, progress chatter is not sent. Reply `자세히` to get the full text. If summarising fails, the first 800 characters are sent instead.
+- Numbered choices get inline buttons; a press is sent to the right conversation. Up to 5 local images in a result are sent as photos/documents; missing or VM/WSL paths are reported.
+- One progress message per long task (after 5 minutes), edited in place.
+- `/이동 별칭` re-sends the last message to another conversation and keeps it as a classifier example. `/상태`, `/분배`, `/도움` commands.
+- Photos and files sent from the phone are saved under `~/.kda/inbox/YYYYMMDD/` and the path is passed on.
+- Quiet hours (default 23–7): only questions and errors are sent; results are sent together when quiet hours end, retried until delivered.
+- Remote approval: a Codex approval request from a Telegram-started turn is asked with one-time Approve/Decline buttons (5 minutes without an answer = decline, no "approve all").
+- Settings: per-feature toggles (all on), quiet hours, route targets, live status card. Turning everything off restores 0.7.53 behaviour.
+
+### Changed
+- Every engine (Claude CLI, Codex, Gemini CLI, REST APIs, ChatGPT web) now gets the same autonomy rule: continue approved work to the end and decide clear defaults; ask only for power actions, irreversible changes, releases, money/security, human-eye checks or real contradictions. The turn-end nudge now continues approved work instead of stopping to suggest.
+- 📱 텔레그램 conversation is pinned to Codex `gpt-6-luna` (only if it had no pin) with low reasoning effort, overriding Codex auto mode for that conversation only.
+- Telegram turns run one per conversation instead of one in total; the queue keeps per-conversation order.
+
 ## [0.7.53] - 2026-10-29
 
 ### Fixed
