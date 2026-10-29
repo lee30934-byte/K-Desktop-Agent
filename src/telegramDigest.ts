@@ -15,45 +15,87 @@ export interface ChoiceOption {
 }
 
 const ERROR_RE = /(❌|⚠️?\s*(오류|실패|에러)|\b(error|failed|failure|exception|traceback)\b|실패했|오류가|에러가|rc\s*=\s*[1-9]|exit code\s*[1-9])/i;
-const DECISION_WORD_RE = /(승인|확인해\s*주|선택해\s*주|골라\s*주|정해\s*주|알려\s*주세요|진행할까요|할까요\?|하시겠|어느 쪽|번호로|번호를)/;
+// v0.7.56 — "승인" 단독은 보고문("승인대로 처리했고")에도 나와 오분류됐다. 요청형 표현만 결정 신호로 본다.
+const DECISION_WORD_RE = /(승인(을|이)?\s*(필요|요청|해\s*주|하시겠|부탁|합니다\?)|확인해\s*주|선택해\s*주|골라\s*주|정해\s*주|알려\s*주세요|진행할까요|할까요\?|하시겠|어느 쪽|번호로|번호를)/;
 const PROGRESS_RE = /^(⏳|진행 중|작업 중|실행 중|계속 진행|중간 보고|빌드 중)/;
 
-/** 줄 머리 번호 선택지: "1. xxx", "1) xxx", "① xxx", "1번 xxx". 2개 이상 연속일 때만 선택지로 본다. */
-export function extractChoices(text: string, maxOptions = 6): ChoiceOption[] {
+interface ChoiceRun {
+  options: ChoiceOption[];
+  /** 원문에서 목록이 시작·끝나는 문자 위치 (결정 문구 근접성 판정용). */
+  start: number;
+  end: number;
+}
+
+/**
+ * 번호 목록 묶음 찾기. 한 묶음 = 빈 줄 없이 이어진 "1. … / 2. …" 줄들.
+ * 굵게 감싼 소제목 줄(**1. 점검 결과**)은 선택지가 아니라 보고 항목이라 제외한다.
+ * (2026-10-29 실사용: 소제목 "1. 점검 결과"를 선택지로 잡아 버튼 '1. 점검 결과'가 실제로는 '1 = 삭제 승인'을 보냈다)
+ */
+function findChoiceRuns(text: string): ChoiceRun[] {
   const circled = "①②③④⑤⑥⑦⑧⑨⑩";
-  const out: ChoiceOption[] = [];
-  const seen = new Set<string>();
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim().replace(/^[-*]\s+/, "").replace(/^\*\*|\*\*$/g, "");
-    let m = /^(\d{1,2})\s*(?:[.)]|번)\s+(.+)$/.exec(line);
+  const runs: ChoiceRun[] = [];
+  let cur: ChoiceRun | null = null;
+  let pos = 0;
+  for (const raw of text.split(/\n/)) {
+    const lineStart = pos;
+    pos += raw.length + 1;
+    const trimmed = raw.trim();
+    const isBoldHeading = /^\*\*.+\*\*[:：]?$/.test(trimmed);
+    const line = trimmed.replace(/^[-*]\s+/, "");
     let key: string | undefined;
     let body: string | undefined;
-    if (m) {
+    const m = /^(\d{1,2})\s*(?:[.)]|번)\s+(.+)$/.exec(line);
+    if (m && !isBoldHeading) {
       key = m[1];
       body = m[2];
-    } else {
+    } else if (!isBoldHeading) {
       const c = circled.indexOf(line.charAt(0));
       if (c >= 0 && line.length > 1) {
         key = String(c + 1);
         body = line.slice(1).trim();
       }
     }
-    if (!key || !body || seen.has(key)) continue;
-    seen.add(key);
-    const label = body.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
-    out.push({ key, label: label.length > 28 ? label.slice(0, 27) + "…" : label });
+    if (key && body) {
+      const label0 = body.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
+      const opt = { key, label: label0.length > 28 ? label0.slice(0, 27) + "…" : label0 };
+      if (cur && key === String(cur.options.length + 1)) {
+        cur.options.push(opt);
+        cur.end = lineStart + raw.length;
+        continue;
+      }
+      if (cur) runs.push(cur);
+      cur = key === "1" ? { options: [opt], start: lineStart, end: lineStart + raw.length } : null;
+      continue;
+    }
+    // 들여쓴 하위 줄(목록 항목의 부연)은 묶음을 끊지 않는다. 빈 줄·일반 문장은 끊는다.
+    if (cur && trimmed !== "" && /^\s{2,}\S/.test(raw)) continue;
+    if (cur) {
+      runs.push(cur);
+      cur = null;
+    }
   }
-  // 1부터 시작하는 연속 번호여야 선택지 (본문 번호 목록 오탐 줄이기 위해 결정 문구와 함께 쓴다)
-  const seq = out.filter((o, i) => o.key === String(i + 1));
-  return seq.length >= 2 ? seq.slice(0, maxOptions) : [];
+  if (cur) runs.push(cur);
+  return runs.filter((r) => r.options.length >= 2);
+}
+
+/** 선택지 = 마지막 번호 목록 묶음 (앞쪽 보고 항목 번호와 섞지 않는다). */
+export function extractChoices(text: string, maxOptions = 6): ChoiceOption[] {
+  const runs = findChoiceRuns(text);
+  const last = runs[runs.length - 1];
+  return last ? last.options.slice(0, maxOptions) : [];
 }
 
 /** 회신 등급. 결정 필요 > 오류 > 진행 중 > 결과. */
 export function classifyTier(text: string): DigestTier {
   const t = text.trim();
-  const tail = t.slice(-1500);
-  const hasChoices = extractChoices(tail).length >= 2;
-  if ((hasChoices && DECISION_WORD_RE.test(tail)) || (DECISION_WORD_RE.test(tail) && /\?\s*$/.test(t))) return "decision";
+  const runs = findChoiceRuns(t);
+  const last = runs[runs.length - 1];
+  // 결정 필요 = 마지막 번호 목록이 글 끝부분에 있고, 결정 요청 문구가 그 목록 바로 앞(400자)·뒤에 있을 때.
+  if (last && t.length - last.end <= 400) {
+    const near = t.slice(Math.max(0, last.start - 400));
+    if (DECISION_WORD_RE.test(near)) return "decision";
+  }
+  if (DECISION_WORD_RE.test(t.slice(-400)) && /\?\s*$/.test(t)) return "decision";
   if (ERROR_RE.test(t.slice(0, 2000))) return "error";
   if (PROGRESS_RE.test(t) && t.length < 400) return "progress";
   return "result";

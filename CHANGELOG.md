@@ -1,6 +1,8 @@
 ## [0.7.56] - 2026-10-29
 
 ### Fixed
+- Telegram choice buttons came from the wrong numbered list. A CAE reply had section headings "1. 점검 결과 / 2. 측정 결함 수정" before the real options "1. 설치본 a89 제거… (approve deletion) / 2. 미루기 / 3. 보류"; the buttons showed the headings, so the button labelled "1. 점검 결과" actually sent "1" = approve deletion. Choices now come only from the last contiguous numbered list, bold section headings are never options, and "decision needed" requires the request wording right next to that list.
+- A progress report with bold numbered headings and the word "승인대로" was flagged as a question (❓). A bare "승인" no longer counts; only request forms (승인 필요/요청/해 주세요…) do. Both real messages are kept as test fixtures.
 - Telegram hub now logs successful deliveries to `telegram-bridge.log`: `HUB SENT` (conversation, message id, part, buttons), `HUB SUMMARY ok`, `HUB PHOTO ok` / `HUB PHOTO failed`. In the first real 0.7.54 round trip (2026-10-29 16:08) routing and the turn were logged but there was no proof in the log that the summary and the two images reached the phone.
 
 ## [0.7.55] - 2026-10-29

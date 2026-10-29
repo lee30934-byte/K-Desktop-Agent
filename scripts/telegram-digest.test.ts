@@ -101,3 +101,34 @@ test("버튼 callback 인코딩 왕복 + 64바이트 + 변조 거부", () => {
   assert.equal(decodeApprovalCallback("a:tok:maybe"), null);
   assert.equal(decodeApprovalCallback(ap.replace(":y", ":n"))?.approve, false);
 });
+
+// v0.7.56 — 2026-10-29 실사용 오분류 2건 회귀 (원문 그대로)
+import { readFileSync } from "node:fs";
+const fx = (n: string) => readFileSync(new URL(`./fixtures/telegram/${n}`, import.meta.url), "utf8");
+
+test("실사용: 앞쪽 소제목 번호가 아니라 끝의 진짜 선택지를 버튼으로 (라벨-값 불일치 방지)", () => {
+  const t = fx("cae-20261029-1618-decision-after-sections.txt");
+  assert.equal(classifyTier(t), "decision");
+  const c = extractChoices(t);
+  assert.equal(c.length, 3);
+  assert.match(c[0].label, /^설치본 a89 제거/, "버튼 1 = 삭제 승인 (소제목 '점검 결과' 아님)");
+  assert.match(c[1].label, /^a91은 미루고/);
+  assert.equal(c[2].label, "보류");
+});
+
+test("실사용: 굵은 번호 소제목 + '승인대로' 보고는 결정 필요가 아님", () => {
+  const t = fx("cae-20261029-1621-report-numbered-headings.txt");
+  assert.notEqual(classifyTier(t), "decision");
+  assert.deepEqual(extractChoices(t), []);
+});
+
+test("굵은 소제목 사이 진짜 선택지가 섞여도 마지막 목록만", () => {
+  const t = "**1. 결과**\n내용\n\n**2. 다음**\n내용\n\n정해 주실 것\n1. 진행\n2. 보류";
+  assert.deepEqual(extractChoices(t).map((x) => x.label), ["진행", "보류"]);
+  assert.equal(classifyTier(t), "decision");
+});
+
+test("결정 문구가 목록에서 멀리 떨어져 있으면 결정 아님", () => {
+  const t = "승인이 필요합니다(지난 건).\n" + "보고 ".repeat(200) + "\n1. 빌드 성공\n2. 서명 확인";
+  assert.equal(classifyTier(t), "result");
+});
