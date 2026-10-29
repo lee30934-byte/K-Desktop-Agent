@@ -131,3 +131,27 @@ test("회신 머리표", () => {
   assert.equal(labelReply("완료", "CAE GUI", false), "[CAE GUI] 완료");
   assert.equal(labelReply("완료", "텔레그램", true), "완료");
 });
+
+import { seedRouteTargets } from "../src/telegramRouter.ts";
+
+test("기본 분배 대상: 폴더·제목으로 찾고, 트레이딩 봇 제외, 최신 대화 선택", () => {
+  const folders = [
+    { id: "f-cae", name: "설계해석 자동화", systemPrompt: "CAE 지침" },
+    { id: "f-kda", name: "KDA 개발" },
+    { id: "f-tr", name: "트레이딩 봇" },
+    { id: "f-tg", name: "텔레그램" },
+  ];
+  const convs = [
+    { id: "kda-new", title: "새 작업", folderId: "f-kda" },
+    { id: "cae-exec", title: "[CAE Exec] 수집", folderId: "f-cae" },
+    { id: "cae-gui", title: "[CAE GUI] UI", folderId: "f-cae" },
+    { id: "cae-sol", title: "[CAE Solver] 엔진", folderId: "f-cae" },
+    { id: "kda-old", title: "옛 작업", folderId: "f-kda" },
+    { id: "trade", title: "봇", folderId: "f-tr" },
+    { id: "tg", title: "📱 텔레그램", folderId: "f-tg" },
+  ];
+  const t = seedRouteTargets(folders, convs, "tg");
+  assert.deepEqual(t.map((x) => [x.label, x.convId]), [["CAE GUI", "cae-gui"], ["CAE Solver", "cae-sol"], ["KDA 개발", "kda-new"]]);
+  assert.ok(!t.some((x) => x.convId === "trade"), "트레이딩 봇 제외");
+  assert.match(t[0].description, /CAE 지침/);
+});

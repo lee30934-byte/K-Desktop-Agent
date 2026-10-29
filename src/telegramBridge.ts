@@ -15,7 +15,7 @@
  *  sidecar 는 살아 있는 turn 에 30초마다 turn_heartbeat 를 보내므로, 정상 장기 작업은 걸리지 않는다. */
 export const TELEGRAM_TURN_STALE_MS = 20 * 60 * 1000;
 /** 처리 중 도착 메시지 대기열 상한. 넘치면 거절 안내(무한 적체 방지). */
-export const TELEGRAM_QUEUE_MAX = 3;
+export const TELEGRAM_QUEUE_MAX = 8; // v0.7.54 — 대화별 동시 처리로 대기열이 대화 수만큼 필요
 /** 텔레그램 단일 메시지 4096자 제한 — 헤드룸 두고 4000자. */
 export const TELEGRAM_CHUNK = 4000;
 
@@ -37,6 +37,8 @@ export interface QueuedTelegramMessage {
   text: string;
   chatId: string;
   receivedAt: number;
+  /** v0.7.54 — 분배된 대상 대화 (없으면 📱 텔레그램 대화). */
+  convId?: string;
 }
 
 export interface StaleTelegramTurn extends TelegramTurnEntry {
@@ -67,6 +69,27 @@ export class TelegramTurnTracker {
   }
   delete(turnId: string | undefined): boolean {
     return turnId ? this.turns.delete(turnId) : false;
+  }
+
+  /** v0.7.54 — 대화별 동시성: 이 대화에서 진행 중인 텔레그램 턴이 있는지. */
+  hasConv(convId: string): boolean {
+    for (const t of this.turns.values()) if (t.convId === convId) return true;
+    return false;
+  }
+  /** 진행 중 턴 목록 (진행 메시지 틱용). */
+  entries(): Array<[string, TelegramTurnEntry]> {
+    return [...this.turns.entries()];
+  }
+  /** 대기열에서 지금 시작 가능한(대화가 비어 있는) 첫 메시지를 꺼낸다. 순서는 대화별로 보존. */
+  dequeueReady(isBusy: (convId: string | undefined) => boolean): QueuedTelegramMessage | undefined {
+    const blocked = new Set<string>();
+    for (let i = 0; i < this.queue.length; i++) {
+      const key = this.queue[i].convId ?? "";
+      if (blocked.has(key)) continue;
+      if (!isBusy(this.queue[i].convId)) return this.queue.splice(i, 1)[0];
+      blocked.add(key); // 같은 대화의 뒤 메시지가 앞지르지 않게
+    }
+    return undefined;
   }
 
   /** 해당 turn 의 이벤트를 받았음을 기록 (heartbeat 포함). */

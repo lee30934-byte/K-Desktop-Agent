@@ -105,3 +105,18 @@ test("(4) 회신 재시도: 1회 실패 후 성공 / 연속 실패 시 오류 �
   const r3 = await sendWithRetry(async () => {}, { sleep });
   assert.deepEqual(r3, { ok: true, attempts: 1 });
 });
+
+test("v0.7.54 대화별 동시성: hasConv / dequeueReady 는 바쁜 대화 건너뛰고 대화별 순서 보존", () => {
+  const t = new TelegramTurnTracker();
+  t.set("t1", entry({ convId: "cae" }));
+  assert.equal(t.hasConv("cae"), true);
+  assert.equal(t.hasConv("kda"), false);
+  t.enqueue({ text: "a", chatId: "c", receivedAt: 1, convId: "cae" });
+  t.enqueue({ text: "b", chatId: "c", receivedAt: 2, convId: "kda" });
+  t.enqueue({ text: "c", chatId: "c", receivedAt: 3, convId: "cae" });
+  const busy = (id?: string) => t.hasConv(id ?? "tg");
+  assert.equal(t.dequeueReady(busy)?.text, "b");
+  assert.equal(t.dequeueReady(busy), undefined, "cae 는 바쁨 → a,c 대기");
+  t.delete("t1");
+  assert.equal(t.dequeueReady(busy)?.text, "a", "같은 대화는 순서대로");
+});

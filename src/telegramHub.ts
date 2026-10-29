@@ -616,3 +616,12 @@ export class TelegramHub {
     return this.examples.length;
   }
 }
+
+/** 설정 화면 상태 카드가 읽는 현재 허브 (App 이 생성 시 등록). */
+let activeHub: TelegramHub | null = null;
+export function setActiveTelegramHub(h: TelegramHub | null): void {
+  activeHub = h;
+}
+export function getActiveTelegramHub(): TelegramHub | null {
+  return activeHub;
+}

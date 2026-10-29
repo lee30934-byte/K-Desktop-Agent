@@ -112,6 +112,8 @@ import {
   shouldRetryWithFreshSession,
   stripTrailingUserEcho,
 } from "./telegramBridge";
+import { TelegramHub, setActiveTelegramHub, type HubSettings } from "./telegramHub";
+import { seedRouteTargets, sanitizeTargets, type RouteTarget } from "./telegramRouter";
 import { useStableCallback } from "./utils/useStableCallback";
 // Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
 import {
@@ -749,6 +751,10 @@ export default function App() {
   // done/error 가 그 text 를 chatId 로 회신 + 엔트리 정리. 일반 turn 은 미등록이라 무영향.
   // v0.7.53 — Map 대신 TelegramTurnTracker: lastActivityAt(멈춘 turn 자동 해제) + 대기열 + 재시도 플래그.
   const telegramTurnsRef = useRef<TelegramTurnTracker>(new TelegramTurnTracker());
+  // v0.7.54 — 텔레그램 허브(분배·요약·버튼·진행·승인·inbox). 생성은 아래 useEffect 에서(의존 함수 정의 후).
+  const telegramHubRef = useRef<TelegramHub | null>(null);
+  // v0.7.54 — 텔레그램발 대화의 후속 턴(task-watch 등) 응답 누적: turnId → { convId, text }
+  const telegramFollowTextRef = useRef<Map<string, { convId: string; text: string }>>(new Map());
   // X-4 (v0.7.x) — KDA 자체 스케줄러 하트비트.
   // ScheduleWakeup(harness 소유, KDA 가 못 깨움) 대체. personal.db 의 schedules 테이블을
   // 60s 마다 직접 폴링해 도래분을 ⏰ 예약 conv 로 turn 주입. turnId → {scheduleId,title} 매핑.
@@ -1594,6 +1600,13 @@ export default function App() {
         {
           const tg = telegramTurnsRef.current.get(ev.id);
           if (tg) tg.text = ev.text;
+          else {
+            // v0.7.54 — 텔레그램에서 시작된 대화의 후속 턴(task-watch 완료 등)도 회신하려고 누적
+            const fc = resolveEventConv(ev);
+            if (fc && telegramHubRef.current?.followUps.chatFor(fc, Date.now())) {
+              telegramFollowTextRef.current.set(ev.id, { convId: fc, text: ev.text });
+            }
+          }
         }
         {
           const tw = taskWatchTurnsRef.current.get(ev.id);
@@ -1793,8 +1806,21 @@ export default function App() {
           if (tg) {
             telegramTurnsRef.current.delete(ev.id);
             telegramLogRef.current(`DONE turn=${ev.id} replyLen=${tg.text.length}`);
-            void deliverTelegramReplyRef.current(tg.chatId, tg.text);
+            const hub = telegramHubRef.current;
+            if (hub) void hub.deliverResult({ convId: tg.convId, chatId: tg.chatId, text: tg.text, turnId: ev.id });
+            else void deliverTelegramReplyRef.current(tg.chatId, tg.text);
             drainTelegramQueueRef.current();
+          } else {
+            const fu = telegramFollowTextRef.current.get(ev.id);
+            if (fu) {
+              telegramFollowTextRef.current.delete(ev.id);
+              const hub = telegramHubRef.current;
+              const chat = hub?.followUps.chatFor(fu.convId, Date.now());
+              if (hub && chat && fu.text.trim()) {
+                telegramLogRef.current(`FOLLOWUP turn=${ev.id} conv=${fu.convId} len=${fu.text.length}`);
+                void hub.deliverResult({ convId: fu.convId, chatId: chat, text: fu.text });
+              }
+            }
           }
         }
         // X-4 — 스케줄 turn 이면 busy gate 해제 + 완료 로그.
@@ -2335,6 +2361,24 @@ export default function App() {
         // An unreviewable payload is denied; there is no session-wide approval.
         const reviewable = detail.length <= 12_000 &&
           (request.kind === "command" ? !!request.command || !!request.networkApprovalContext : !!request.changes?.length);
+        // v0.7.54 — ⑥ 원격 승인: 텔레그램에서 시작된 턴이고 화면에 열린 대화가 아니면 텔레그램 버튼으로 묻는다.
+        // 1회용 토큰, 5분 무응답 = 거절, "전부 승인" 없음, 검토 불가(12,000자 초과 등) 요청은 기존처럼 자동 거절.
+        {
+          const tgTurn = telegramTurnsRef.current.get(request.id);
+          const hub = telegramHubRef.current;
+          if (!active && reviewable && tgTurn && hub && convId) {
+            const { result } = hub.requestApproval({ convId, chatId: tgTurn.chatId, detail });
+            void result.then((ok) => {
+              const decision = ok ? "accept" : "decline";
+              telegramLogRef.current(`APPROVAL ${decision} turn=${request.id} item=${request.itemId}`);
+              return invoke("codex_approval_response", {
+                id: request.id, token: request.token, threadId: request.threadId,
+                turnId: request.turnId, itemId: request.itemId, decision,
+              }).then(() => pushSystem(`Codex 요청 ${ok ? "승인" : "거절"}(텔레그램): ${request.itemId}`, ok ? "info" : "warn"));
+            }).catch((error) => pushSystem(`Codex 승인 응답 전달 실패: ${String(error)}`, "error"));
+            break;
+          }
+        }
         const accepted = active && reviewable && window.confirm(
           `Codex 실행 승인 요청 (이 명령 1회만)\n대화: ${convId}\n요청: ${request.threadId}/${request.turnId}/${request.itemId}\n\n${detail}\n\n승인하면 이 요청만 실행합니다.`,
         );
@@ -3034,7 +3078,9 @@ export default function App() {
     const resolved = resolveProviderSettings(pin, localStorage);
     const provider = resolved.provider;
     // 자동 모드는 대화에 저장된 모델도 무시하고 요청마다 다시 선택한다.
-    const autoChoice = provider === "codex"
+    // v0.7.54 — 📱 텔레그램 대화는 고정 모델(gpt-6-luna)이 자동 모드보다 우선, 추론 강도 low.
+    const isTelegramConv = !!convId && convId === localStorage.getItem("kda_telegram_conv_id") && !!pin.model;
+    const autoChoice = provider === "codex" && !isTelegramConv
       && shouldAutoSelectCodexModel(localStorage.getItem("kda_codex_model_mode"), localStorage.getItem("kda_active_model"))
       ? chooseCodexAutoModel(prompt)
       : undefined;
@@ -3065,7 +3111,7 @@ export default function App() {
     if (sm === "balanced" || sm === "strict") safeMode = sm;
     return {
       provider, model, apiKey, permissions, lockedTools, safeMode, autoChoice,
-      reasoningEffort: autoChoice?.reasoningEffort ?? loadReasoningEffort(),
+      reasoningEffort: autoChoice?.reasoningEffort ?? (isTelegramConv ? "low" : loadReasoningEffort()),
       // Phase 144 — "conversation" 이면 대화 고정값이 이겼다는 뜻. 로그/디버깅용.
       providerSource: resolved.source,
     };
@@ -3156,8 +3202,8 @@ export default function App() {
 
   // 텔레그램발 메시지를 전용 background conv 로 주입해 turn 실행.
   // v0.7.53 — 처리 중 도착 메시지는 버리지 않고 대기열에 넣는다(상한 초과 시에만 거절).
-  const enqueueTelegramMessage = useStableCallback((text: string, chatId: string, reason: string) => {
-    const r = telegramTurnsRef.current.enqueue({ text, chatId, receivedAt: Date.now() });
+  const enqueueTelegramMessage = useStableCallback((text: string, chatId: string, reason: string, convId?: string) => {
+    const r = telegramTurnsRef.current.enqueue({ text, chatId, receivedAt: Date.now(), convId });
     telegramLog(`QUEUE ${r.accepted ? "add" : "FULL"} pos=${r.position} reason=${reason} len=${text.length}`);
     void deliverTelegramReply(
       chatId,
@@ -3173,26 +3219,29 @@ export default function App() {
   const sendTelegramTurn = useStableCallback(async (
     text: string,
     chatId: string,
-    opts: { retryOf?: string; freshSession?: boolean; fromQueue?: boolean } = {},
+    opts: { retryOf?: string; freshSession?: boolean; fromQueue?: boolean; convId?: string } = {},
   ) => {
     if (!dbReadyRef.current) {
       void deliverTelegramReply(chatId, "⚠ KDA 가 아직 준비 중이에요. 잠시 후 다시 보내주세요.");
       telegramLog(`REJECT not-ready len=${text.length}`);
       return;
     }
-    // 동시 1턴만 — 진행 중이면 대기열로.
-    if (telegramTurnsRef.current.size > 0) {
-      if (opts.fromQueue || opts.freshSession) telegramTurnsRef.current.requeueFront({ text, chatId, receivedAt: Date.now() });
-      else enqueueTelegramMessage(text, chatId, "telegram-busy");
+    // v0.7.54 — 동시성은 대화별 1턴. 분배 대상 대화(opts.convId)가 있으면 그 대화, 없으면 📱 텔레그램 대화.
+    const targetConv = opts.convId || localStorage.getItem("kda_telegram_conv_id") || "";
+    if (targetConv && telegramTurnsRef.current.hasConv(targetConv)) {
+      if (opts.fromQueue || opts.freshSession) telegramTurnsRef.current.requeueFront({ text, chatId, receivedAt: Date.now(), convId: opts.convId });
+      else enqueueTelegramMessage(text, chatId, "telegram-busy", opts.convId);
       return;
     }
     let convId = "";
     let turnId = "";
     try {
+      // v0.7.54 — 분배 대상 대화가 지정됐고 실제로 있으면 그 대화로.
+      const routed = opts.convId && conversations.some((c) => c.id === opts.convId) ? opts.convId : "";
       // 전용 텔레그램 conv 확보 (없으면 생성). id 는 localStorage 에 영속.
-      convId = localStorage.getItem("kda_telegram_conv_id") || "";
+      convId = routed || localStorage.getItem("kda_telegram_conv_id") || "";
       const exists = convId && conversations.some((c) => c.id === convId);
-      if (!convId || !exists) {
+      if (!routed && (!convId || !exists)) {
         // DB 에 실제 존재하는지 확인 (state 미반영 케이스). 없으면 새로 생성.
         let inDb = false;
         if (convId) {
@@ -3205,6 +3254,17 @@ export default function App() {
           setConversations((prev) => [newConv, ...prev]);
           localStorage.setItem("kda_telegram_conv_id", convId);
         }
+      }
+
+      // v0.7.54 — 📱 텔레그램 대화를 빠른 경량 모델(Codex gpt-6-luna)로 고정 (미지정일 때 1회만, K 수동 지정은 존중).
+      if (!routed && localStorage.getItem("kda_tg_pin_luna") !== "false") {
+        try {
+          const pin = await getConversationProvider(convId);
+          if (!pin.provider) {
+            await updateConversationProvider(convId, "codex", localStorage.getItem("kda_tg_luna_model") || "gpt-6-luna");
+            telegramLog(`PIN conv=${convId} provider=codex model=gpt-6-luna`);
+          }
+        } catch (e) { telegramLog(`PIN failed ${String(e).slice(0, 120)}`); }
       }
 
       // 이전 대화 맥락 (prior 메시지만 — 방금 메시지는 send_message 의 message 로 따로 감).
@@ -3253,8 +3313,8 @@ export default function App() {
       }
       if (!claimConversationTurn(convId, turnId)) {
         // 같은 대화를 데스크톱에서 쓰는 중 — 대기열로 보내고 30초 주기 점검이 다시 시도한다.
-        if (opts.fromQueue || opts.freshSession) telegramTurnsRef.current.requeueFront({ text, chatId, receivedAt: Date.now() });
-        else enqueueTelegramMessage(text, chatId, "conversation-busy");
+        if (opts.fromQueue || opts.freshSession) telegramTurnsRef.current.requeueFront({ text, chatId, receivedAt: Date.now(), convId: opts.convId });
+        else enqueueTelegramMessage(text, chatId, "conversation-busy", opts.convId);
         return;
       }
       if (!opts.freshSession) queueMessageSave(userMsg, convId);
@@ -3308,14 +3368,83 @@ export default function App() {
   // v0.7.53 — 대기열 1건 처리. 진행 중 turn 이 있으면 아무것도 안 한다(주기 점검이 다시 부른다).
   const drainTelegramQueue = useStableCallback(() => {
     window.setTimeout(() => {
-      if (telegramTurnsRef.current.size > 0) return;
-      const next = telegramTurnsRef.current.dequeue();
+      // v0.7.54 — 대화별 동시성: 비어 있는 대화의 메시지부터 꺼낸다(같은 대화 순서는 보존).
+      const tgConv = localStorage.getItem("kda_telegram_conv_id") || "";
+      const next = telegramTurnsRef.current.dequeueReady((c) => telegramTurnsRef.current.hasConv(c || tgConv));
       if (!next) return;
-      telegramLog(`QUEUE drain left=${telegramTurnsRef.current.queueLength} waitedMs=${Date.now() - next.receivedAt}`);
-      void sendTelegramTurn(next.text, next.chatId, { fromQueue: true });
+      telegramLog(`QUEUE drain left=${telegramTurnsRef.current.queueLength} waitedMs=${Date.now() - next.receivedAt} conv=${next.convId ?? "tg"}`);
+      void sendTelegramTurn(next.text, next.chatId, { fromQueue: true, convId: next.convId });
     }, 1500);
   });
   drainTelegramQueueRef.current = drainTelegramQueue;
+
+  // ─── v0.7.54 텔레그램 허브 ─────────────────────────────────────────────
+  // 기능별 토글: localStorage "kda_tg_feat_<name>" === "false" 면 끔 (기본 켜짐 — 2026-10-29 K 승인 범위).
+  // 전부 끄면 v0.7.53 과 같은 동작(원문 회신 · 📱 텔레그램 대화 고정).
+  const readTelegramHubSettings = useStableCallback((): HubSettings => {
+    const on = (k: string) => localStorage.getItem(`kda_tg_feat_${k}`) !== "false";
+    const num = (k: string, d: number) => {
+      const v = parseInt(localStorage.getItem(k) || "", 10);
+      return Number.isFinite(v) && v >= 0 && v <= 23 ? v : d;
+    };
+    return {
+      routing: on("routing"), digest: on("digest"), buttons: on("buttons"), progress: on("progress"),
+      inbox: on("inbox"), approvals: on("approvals"),
+      quiet: { enabled: on("quiet"), startHour: num("kda_tg_quiet_start", 23), endHour: num("kda_tg_quiet_end", 7) },
+      pcName: (localStorage.getItem("kda_telegram_pc_name") || "").trim(),
+    };
+  });
+  const readTelegramRouteTargets = useStableCallback((): RouteTarget[] => {
+    const tgConv = localStorage.getItem("kda_telegram_conv_id") || "";
+    const existing = new Set(conversations.map((c) => c.id));
+    try {
+      const custom = JSON.parse(localStorage.getItem("kda_tg_route_targets") || "null");
+      if (Array.isArray(custom) && custom.length > 0) return sanitizeTargets(custom, existing, tgConv);
+    } catch { /* 깨진 설정 → 기본값 */ }
+    return seedRouteTargets(folders, conversations, tgConv);
+  });
+  useEffect(() => {
+    const tokenNow = () => (localStorage.getItem("kda_telegram_token") || "").trim();
+    telegramHubRef.current = new TelegramHub({
+      api: {
+        call: (method, payload) => invoke("telegram_call", { token: tokenNow(), method, payload }),
+        sendFile: (chatId, path, caption) => invoke("telegram_send_file", { token: tokenNow(), chatId, path, caption }),
+        download: (fileId, fileName, day) => invoke<string>("telegram_download_file", { token: tokenNow(), fileId, fileName, day }),
+        oneshot: (prompt) => invoke<string>("codex_oneshot", { prompt, model: localStorage.getItem("kda_tg_luna_model") || "gpt-6-luna", timeoutSecs: 20 }),
+      },
+      startTurn: (convId, text, chatId) => {
+        const tgConv = localStorage.getItem("kda_telegram_conv_id") || "";
+        return sendTelegramTurn(text, chatId, convId && convId !== tgConv ? { convId } : {});
+      },
+      targets: () => readTelegramRouteTargets(),
+      defaultTarget: () => ({ convId: localStorage.getItem("kda_telegram_conv_id") || "", label: "텔레그램" }),
+      settings: () => readTelegramHubSettings(),
+      now: () => Date.now(),
+      log: (line) => telegramLog(line),
+      store: { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) },
+      statusLines: () => [
+        `진행 중 턴 ${telegramTurnsRef.current.size}개 · 대기열 ${telegramTurnsRef.current.queueLength}개`,
+        `분배 대상 ${readTelegramRouteTargets().map((t) => t.label).join(", ") || "(없음)"}`,
+      ],
+    });
+    setActiveTelegramHub(telegramHubRef.current);
+    telegramLog("HUB ready");
+    return () => { telegramHubRef.current = null; setActiveTelegramHub(null); };
+  }, []);
+
+  // v0.7.54 — 1분 주기: 진행 메시지 갱신(5분 넘은 턴) + 조용한 시간 종료 후 보류 결과 일괄 전송.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const hub = telegramHubRef.current;
+      if (!hub || localStorage.getItem("kda_telegram_enabled") !== "true") return;
+      for (const [turnId, t] of telegramTurnsRef.current.entries()) {
+        void hub.tickProgress(turnId, t.convId, t.chatId, t.startedAt);
+      }
+      const chat = (localStorage.getItem("kda_telegram_allowed_chats") || "").split(",").map((x) => x.trim()).filter(Boolean)[0];
+      if (chat) void hub.tickDigest(chat);
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // v0.7.53 — 멈춘 텔레그램 turn 자동 해제 + 대기열 재시도 (30초 주기).
   // 판정은 경과시간이 아니라 "무이벤트 지속시간" — sidecar 는 살아있는 turn 에 30초마다 heartbeat 를
@@ -3330,12 +3459,13 @@ export default function App() {
         turnToConvMap.current.delete(t.turnId);
         turnProviderMap.current.delete(t.turnId);
         releaseConversationTurn(t.convId, t.turnId);
+        void telegramHubRef.current?.finishProgress(t.turnId, false);
         void deliverTelegramReply(
           t.chatId,
           `⚠ 이전 작업이 ${silentMin}분 동안 응답이 없어 정리했어요. 결과가 필요하면 다시 보내주세요.`,
         );
       }
-      if (telegramTurnsRef.current.size === 0 && telegramTurnsRef.current.queueLength > 0) drainTelegramQueue();
+      if (telegramTurnsRef.current.queueLength > 0) drainTelegramQueue();
     }, 30_000);
     return () => window.clearInterval(timer);
   }, []);
@@ -3375,8 +3505,9 @@ export default function App() {
           }
           for (const u of updates) {
             offset = (u.update_id ?? offset) + 1;
-            const msg = u.message;
-            const textMsg: string | undefined = msg?.text;
+            // v0.7.54 — 버튼(callback_query)·사진·파일도 받는다. 허용 chat 검증은 동일.
+            const msg = u.message ?? u.callback_query?.message;
+            const textMsg: string | undefined = u.callback_query ? `[button] ${u.callback_query.data ?? ""}` : (msg?.text ?? msg?.caption ?? (msg?.photo || msg?.document ? "[file]" : undefined));
             const fromChat = msg?.chat?.id != null ? String(msg.chat.id) : "";
             if (!textMsg || !fromChat) continue;
             // 화이트리스트 검증 — 미허용이면 무시 (보안). 화이트리스트 비어있으면 전부 차단.
@@ -3385,8 +3516,17 @@ export default function App() {
               telegramLog(`IGNORE chat=${fromChat} (not allowed)`);
               continue;
             }
-            telegramLog(`RECV update=${u.update_id} chat=${fromChat} len=${textMsg.length}`);
-            await sendTelegramTurn(textMsg, fromChat);
+            telegramLog(`RECV update=${u.update_id} chat=${fromChat} len=${textMsg.length}${u.callback_query ? " button" : ""}${msg?.photo || msg?.document ? " file" : ""}`);
+            const hub = telegramHubRef.current;
+            if (hub) {
+              try { await hub.handleUpdate(u); }
+              catch (e) {
+                telegramLog(`HUB error ${String(e).slice(0, 200)} — 기본 경로로 처리`);
+                if (msg?.text) await sendTelegramTurn(msg.text, fromChat);
+              }
+            } else if (msg?.text) {
+              await sendTelegramTurn(msg.text, fromChat);
+            }
           }
           if (updates.length > 0) {
             localStorage.setItem("kda_telegram_offset", String(offset));

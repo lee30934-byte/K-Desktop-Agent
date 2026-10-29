@@ -254,3 +254,45 @@ export function sanitizeTargets(targets: RouteTarget[], existingConvIds: Set<str
 export function labelReply(text: string, label: string, isDefault: boolean): string {
   return isDefault ? text : `[${label}] ${text}`;
 }
+
+/**
+ * v0.7.54 — 분배 대상 기본값 (2026-10-29 K 확정: CAE GUI·CAE Solver·KDA 개발·쇼츠·SIGILFALL, 트레이딩 봇 제외).
+ * 대화 id 를 고정 저장하지 않고 매번 폴더/제목으로 다시 찾는다 → 새 대화를 만들어도 그 폴더의
+ * 최신 대화로 자동 연결되고, 삭제된 대화는 자연히 빠진다(유지보수 부담 0).
+ * K 가 설정에서 직접 목록을 지정하면(customTargets) 그것을 우선한다.
+ */
+export interface RouteSpec {
+  folder: RegExp;
+  title?: RegExp;
+  label: string;
+  aliases: string[];
+}
+
+export const DEFAULT_ROUTE_SPECS: RouteSpec[] = [
+  { folder: /설계해석|CAE/i, title: /\[CAE GUI\]/i, label: "CAE GUI", aliases: ["cae", "gui", "해석"] },
+  { folder: /설계해석|CAE/i, title: /\[CAE Solver\]/i, label: "CAE Solver", aliases: ["solver", "솔버"] },
+  { folder: /^KDA/i, label: "KDA 개발", aliases: ["kda"] },
+  { folder: /쇼츠|shorts/i, label: "쇼츠", aliases: ["쇼츠", "shorts"] },
+  { folder: /SIGILFALL/i, label: "SIGILFALL", aliases: ["sigil", "시길"] },
+];
+
+export function seedRouteTargets(
+  folders: Array<{ id: string; name: string; systemPrompt?: string | null }>,
+  /** 최근 갱신 순(앞이 최신)으로 정렬된 대화 목록. */
+  conversations: Array<{ id: string; title: string; folderId?: string | null }>,
+  defaultConvId: string,
+  specs: RouteSpec[] = DEFAULT_ROUTE_SPECS,
+): RouteTarget[] {
+  const out: RouteTarget[] = [];
+  for (const spec of specs) {
+    const folder = folders.find((f) => spec.folder.test(f.name));
+    if (!folder) continue;
+    const conv = conversations.find(
+      (c) => c.folderId === folder.id && c.id !== defaultConvId && (!spec.title || spec.title.test(c.title)) && !out.some((o) => o.convId === c.id),
+    );
+    if (!conv) continue;
+    const desc = `${folder.name}: ${(folder.systemPrompt ?? "").replace(/\s+/g, " ").slice(0, 160)} / 대화: ${conv.title.slice(0, 40)}`;
+    out.push({ convId: conv.id, label: spec.label, aliases: spec.aliases, description: desc });
+  }
+  return out;
+}
