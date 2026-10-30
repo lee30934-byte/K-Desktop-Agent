@@ -120,6 +120,7 @@ export class MCPClient {
       let proc: ChildProcessWithoutNullStreams;
       try {
         proc = spawn(this.command, this.args, {
+          windowsHide: true,
           stdio: ["pipe", "pipe", "pipe"],
           env: childEnv,
           // shell: false — we want exact argv passing (paths may contain spaces).

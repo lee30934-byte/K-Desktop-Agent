@@ -1,3 +1,15 @@
+## [0.7.59] - 2026-10-30
+
+### Added
+- Connect K-Personal MCP to Codex and Gemini CLI per turn, using the same tool restrictions, safe mode and project policy as other KDA providers. Existing Codex consent and REA settings remain in effect.
+- Enable Anthropic API tool calls and tool-result rounds, preserving content blocks and rejecting truncated tool calls. OpenAI, OpenRouter and Gemini API paths keep their existing shared tool catalog.
+- Report MCP connection failure explicitly for REST providers. Gemini user settings are preserved; generated turn settings retain system restrictions.
+
+### Validation and limits
+- Common tool bridge checks: 13/13, including denied discovery/dispatch, Unicode arguments, Anthropic mock responses and Gemini settings preservation.
+- Claude CLI completed a real read-only window-list call. Codex discovered the tool but awaited individual consent; completed invocation remains unverified. Gemini live invocation remains unverified due to authentication and folder trust requirements. Paid REST model calls were not run.
+- Applies to supported CLI/API tool-calling paths; browser-based providers and models without tool calling are not covered. Anthropic API text is delivered after each complete response rather than streamed token by token.
+
 ## [0.7.58] - 2026-10-29
 
 Same features as 0.7.57 (auto-continue, failure capture without asking, standing approvals, install after approved release). 0.7.57 was tagged but never released: its CI release gate failed on the Windows runner.

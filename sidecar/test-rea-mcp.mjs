@@ -212,7 +212,7 @@ check("Claude 경로: 조건부 mcpConfig.rea + disallowed 병합 + 안내", () 
 });
 check("Codex 경로: thread config 로만 주입 (전역 codex mcp add 아님)", () => {
   assert.match(idx, /resolveReaForTurn\(msg\.projectProfile, codexAgentFlags, "codex"\)/);
-  assert.match(idx, /config: codexThreadConfig,/);
+  assert.ok(idx.includes('config: { ...codexThreadConfig, "mcp_servers.k-personal.command": codexBridge.command, "mcp_servers.k-personal.args": codexBridge.args },'));
   assert.match(idx, /\+ buildReaGuidance\(codexReaDecision\);/);
   assert.match(bridgeSrc, /threadId: input\.threadId, approvalPolicy: "on-request", sandbox: "danger-full-access", \.\.\.threadConfig/);
   assert.match(bridgeSrc, /\.\.\.\(input\.model \? \{ model: input\.model \} : \{\}\), \.\.\.threadConfig/);

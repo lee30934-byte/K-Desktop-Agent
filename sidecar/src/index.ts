@@ -8,6 +8,8 @@ import { runBrowserTurn } from "./browserProvider.js";
  */
 
 import process from "node:process";
+import { createToolBridge, geminiTurnSettings } from './globalTools.js';
+import { runAnthropicRound, type AnthropicMessage } from './anthropicTools.js';
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { TurnLifecycle } from "./turnLifecycle.js";
@@ -65,6 +67,7 @@ import {
 } from "./mcpClient.js";
 import {
   toOpenAITools,
+  toAnthropicTools,
   toGeminiFunctionDeclarations,
   namespacedToolName,
   dispatchModelToolCall,
@@ -4710,6 +4713,14 @@ function inspectCodexSessionFile(agentId: string): {
   }
 }
 
+function turnToolBridge(msg: UserMessage) {
+  const flags = loadAgentFlags();
+  const policy = buildToolFlags(msg.permissions, msg.lockedTools, msg.safeMode ?? 'off',
+    resolveProjectForbidden(msg.projectProfile, flags));
+  return createToolBridge(__dirname_local, PYTHON_EXE, K_PERSONAL_PATH,
+    [...policy.disallowed, ...flagGatedDisallowed(flags)]);
+}
+
 async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // 첨부 파일은 Claude 와 같은 방식으로 임시 폴더 + 안내 텍스트
   const { dir: attachmentsDir, guidance: attachmentsGuidance } =
@@ -4867,9 +4878,11 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   let turnKeepalive: ReturnType<typeof setInterval> | undefined;
   // Phase 122 (mem leak fix): finally 에서 손자 reap 위해 pid 를 try 밖에서 잡는다.
   let turnPid: number | undefined;
+  let codexBridge: ReturnType<typeof turnToolBridge> | undefined;
 
   try {
     turnLifecycle.assertRunning(msg.id);
+    codexBridge = turnToolBridge(msg);
     const proc = spawn(process.execPath, [path.join(__dirname_local, "codex-app-server-bridge.mjs")], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -4978,7 +4991,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
         threadId: effectiveAgentId ?? null,
         model: msg.model && msg.model !== "default" ? msg.model : null,
         effort: reasoning && VALID_REASONING_EFFORTS.has(reasoning) ? reasoning : null,
-        config: codexThreadConfig,
+        config: { ...codexThreadConfig, "mcp_servers.k-personal.command": codexBridge.command, "mcp_servers.k-personal.args": codexBridge.args },
       }) + "\n", "utf-8");
     }
 
@@ -5769,6 +5782,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
       handoffMd: `Codex 작업 실패: ${message}`,
     } as any);
   } finally {
+    if (codexBridge) { try { rmSync(codexBridge.dir, { recursive: true, force: true }); } catch {} }
     clearInterval(idleWatchdog); // idle 워치독 정리 — 정상/비정상 종료 모두
     clearInterval(turnKeepalive);
     logToFile("info", `Codex query end id=${msg.id}`);
@@ -5820,53 +5834,6 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 //   {"type":"tool_result","tool_id","status":"success"|"error","output","error?"}
 //   {"type":"error","severity":"warning"|"error","message"}
 //   {"type":"result","status","stats":{total_tokens,input_tokens,output_tokens,cached,tool_calls,duration_ms}}
-
-/**
- * ~/.gemini/settings.json 에 k-personal MCP 서버를 best-effort 등록.
- * 이미 같은 command/args 로 등록돼 있으면 no-op. 실패해도 turn 은 계속 (MCP 없이 텍스트만).
- */
-function ensureGeminiCliMcpRegistered(): void {
-  try {
-    const health = checkMCPHealth();
-    if (!health.serverPathExists || !health.pythonAvailable) {
-      logToFile("warn", `[gemini-cli] k-personal MCP 등록 skip — ${health.error ?? "health fail"}`);
-      return;
-    }
-    const dir = path.join(os.homedir(), ".gemini");
-    const file = path.join(dir, "settings.json");
-    let settings: Record<string, any> = {};
-    if (existsSync(file)) {
-      try {
-        settings = JSON.parse(readFileSync(file, "utf-8"));
-      } catch (e) {
-        // 파싱 불가면 K 의 기존 설정을 덮어쓰지 않음 (auth 설정 등 보존이 우선)
-        logToFile("warn", `[gemini-cli] settings.json parse 실패 — MCP 등록 skip (기존 파일 보존): ${e instanceof Error ? e.message : String(e)}`);
-        return;
-      }
-    }
-    const current = settings.mcpServers?.["k-personal"];
-    if (
-      current &&
-      current.command === PYTHON_EXE &&
-      Array.isArray(current.args) &&
-      current.args[0] === K_PERSONAL_PATH
-    ) {
-      return; // 이미 최신 — no-op
-    }
-    settings.mcpServers = {
-      ...(settings.mcpServers ?? {}),
-      "k-personal": {
-        command: PYTHON_EXE,
-        args: [K_PERSONAL_PATH],
-      },
-    };
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(file, JSON.stringify(settings, null, 2), "utf-8");
-    logToFile("info", `[gemini-cli] k-personal MCP 를 ${file} 에 등록 (command=${PYTHON_EXE})`);
-  } catch (e) {
-    logToFile("warn", `[gemini-cli] MCP 등록 실패 (무시하고 진행): ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
 
 // ─── Gemini CLI 구독 OAuth 내장 로그인 (Phase 135) ──────────────────────────
 // `gemini` CLI 는 codex 와 달리 `login` 서브커맨드가 없고, 비대화형(-p/stdin pipe)
@@ -6135,8 +6102,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
   );
   const promptBytes = Buffer.byteLength(promptWithHistory, "utf-8");
 
-  // k-personal MCP best-effort 등록 (settings.json) — spawn 전에 1회
-  ensureGeminiCliMcpRegistered();
+  // MCP settings are generated per turn below; user settings are never rewritten.
 
   // Phase 135 — 인증 체인: API 키 → 구독 OAuth 캐시 → fail-fast.
   // 비대화형 CLI 는 인증 없으면 로그인 플로우를 못 띄우고 exit 41 로 죽으므로
@@ -6176,15 +6142,19 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
   let turnKeepalive: ReturnType<typeof setInterval> | undefined;
   // Phase 122 (mem leak fix): finally 에서 손자 reap 위해 pid 를 try 밖에서 잡는다.
   let turnPid: number | undefined;
+  let geminiBridge: ReturnType<typeof turnToolBridge> | undefined;
 
   try {
     turnLifecycle.assertRunning(msg.id);
+    geminiBridge = turnToolBridge(msg);
+    const settingsFile = geminiTurnSettings(geminiBridge);
     const proc = spawn(GEMINI_CLI, args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
       windowsHide: true,
       env: {
         ...process.env,
+        GEMINI_CLI_SYSTEM_SETTINGS_PATH: settingsFile,
         KDA_CONVERSATION_ID: msg.conversation_id ?? "",
         // 인증 이중화 (Phase 135):
         //   api_key 있음 → GEMINI_API_KEY 주입 (Settings 의 Gemini REST 키 재사용)
@@ -6455,6 +6425,7 @@ async function handleViaGeminiCLI(msg: UserMessage): Promise<void> {
       handoffMd: `Gemini 작업 실패: ${message}`,
     } as any);
   } finally {
+    if (geminiBridge) { try { rmSync(geminiBridge.dir, { recursive: true, force: true }); } catch {} }
     clearInterval(idleWatchdog);
     clearInterval(turnKeepalive);
     logToFile("info", `Gemini CLI query end id=${msg.id}`);
@@ -6642,8 +6613,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     SYSTEM_PROMPT_REST + restSoulBlock + restFeatureGuidance + restProjectBlock + memory.content;
 
   // ─── Resolve permission policy & MCP tool catalog ──────────────────────
-  // Phase 84 — REST path 도 동일하게 SafeMode 적용. provider=anthropic-rest 는 tool 없으니 미영향이지만,
-  // openai/gemini/openrouter 는 disallowedSet 에 직접 박힘.
+  // REST providers all use the same SafeMode and per-tool restrictions.
   const restProjectForbidden = resolveProjectForbidden(msg.projectProfile, restAgentFlags);
   const permFlags = buildToolFlags(
     msg.permissions,
@@ -6664,9 +6634,8 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     ...flagGatedDisallowed(restAgentFlags),
   ]);
 
-  // Provider-side tool calling is currently scoped to OpenAI-shape and Gemini.
-  // Anthropic-via-REST keeps text-only single-shot for now (G1 scope decision).
-  const supportsTools = provider === "openai" || provider === "openrouter" || provider === "gemini";
+  // Every REST provider supported by KDA uses the same MCP permission catalog.
+  const supportsTools = ["openai", "openrouter", "gemini", "anthropic"].includes(provider);
 
   let mcp: { client: MCPClient; tools: MCPTool[] } | null = null;
   let knownToolNames = new Set<string>();
@@ -6687,6 +6656,10 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
     }
   }
 
+  if (supportsTools && !mcp) {
+    emit({ type: 'log', level: 'warn', message: `${provider}: K-Personal MCP 연결 실패 — 이번 턴은 도구를 사용할 수 없습니다.` });
+  }
+
   // ─── Initial messages array (provider-specific format) ────────────────
   // For OpenAI-shape: [{role:"system",...}, ...flattened, {role:"user", content: msg.content}]
   // For Gemini: contents[] with role "user"/"model"; system goes in systemInstruction.
@@ -6696,6 +6669,9 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
       .filter((m) => m.content && m.content.trim())
       .map<OpenAIMessage>((m) => ({ role: m.role, content: m.content })),
     { role: "user", content: msg.content },
+  ];
+  const anthropicMessages: AnthropicMessage[] = [
+    ...flattened.filter(m => m.content?.trim()), { role: 'user', content: msg.content },
   ];
   const geminiContents: GeminiContent[] = [
     ...flattened
@@ -6723,7 +6699,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
   );
 
   // Round 0 mirrors the legacy single-shot path; rounds 1..N append tool results and
-  // re-call the model. Anthropic stays at round 0 only.
+  // re-call the model, including Anthropic.
   try {
     while (roundsRun < MAX_TOOL_ROUNDS) {
       turnLifecycle.assertRunning(msg.id);
@@ -6733,7 +6709,7 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
       let endpoint: string;
       let headers: Record<string, string>;
       let body: Record<string, unknown>;
-      let runner: "openai" | "gemini" | "anthropic-singleshot";
+      let runner: "openai" | "gemini" | "anthropic";
 
       switch (provider) {
         case "anthropic": {
@@ -6743,17 +6719,16 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
           };
-          // Anthropic stays single-shot (G1 scope) — tools omitted, no loop.
+          // Anthropic tool_use/tool_result shares the common dispatch and permission loop.
           body = {
             model,
             max_tokens: 4096,
             system: restSystemPrompt,
-            messages: oaiMessages
-              .filter((m) => m.role !== "system" && typeof m.content === "string")
-              .map((m) => ({ role: m.role, content: m.content as string })),
+            messages: anthropicMessages,
+            ...(mcp ? { tools: toAnthropicTools(mcp.tools, disallowedSet) } : {}),
             stream: true,
           };
-          runner = "anthropic-singleshot";
+          runner = "anthropic";
           break;
         }
         case "openai": {
@@ -6805,54 +6780,11 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
         }
       }
 
-      // ─── Anthropic single-shot (legacy SSE handling, no tool calls) ────
-      if (runner === "anthropic-singleshot") {
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          const errText = await response.text().catch(() => "");
-          throw new Error(`HTTP ${response.status} ${response.statusText}: ${errText.slice(0, 800)}`);
-        }
-        if (!response.body) throw new Error("응답 body 가 비어있음 (스트리밍 미지원?)");
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let buffer = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buffer.indexOf("\n\n")) !== -1) {
-            const eventBlock = buffer.slice(0, sep);
-            buffer = buffer.slice(sep + 2);
-            const dataLines: string[] = [];
-            for (const line of eventBlock.split("\n")) {
-              if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
-            }
-            if (dataLines.length === 0) continue;
-            const data = dataLines.join("\n").trim();
-            if (!data || data === "[DONE]") continue;
-            try {
-              const parsed = JSON.parse(data);
-              const delta = parseStreamChunk(parsed, "anthropic");
-              if (delta.text) emit({ type: "assistant_delta", id: msg.id, text: delta.text });
-              if (typeof delta.inputTokens === "number") totalInputTokens = delta.inputTokens;
-              if (typeof delta.outputTokens === "number") totalOutputTokens = delta.outputTokens;
-            } catch (e) {
-              logToFile("warn", `REST anthropic SSE parse error: ${data.slice(0, 200)}`);
-            }
-          }
-        }
-        break; // single-shot — exit loop
-      }
-
       // ─── OpenAI / OpenRouter / Gemini round runner ────────────────────
-      const round = runner === "openai"
+      const round = runner === "anthropic"
+        ? await runAnthropicRound({ endpoint, headers, body, signal: controller.signal,
+            onDelta: { onText: t => emit({ type: 'assistant_delta', id: msg.id, text: t }) } })
+        : runner === "openai"
         ? await runOpenAIChatRound({
             endpoint, headers, body, signal: controller.signal,
             onDelta: { onText: (t) => emit({ type: "assistant_delta", id: msg.id, text: t }) },
@@ -6961,7 +6893,13 @@ async function handleViaRestAPI(msg: UserMessage, provider: Provider): Promise<v
       if (controller.signal.aborted) break;
 
       // Append assistant + tool messages so the next round sees the trace.
-      if (runner === "openai") {
+      if (runner === 'anthropic') {
+        if (!('content' in round)) throw new Error('Anthropic content unavailable');
+        anthropicMessages.push({ role: 'assistant', content: round.content as Record<string, unknown>[] });
+        anthropicMessages.push({ role: 'user', content: dispatched.map(d => ({
+          type: 'tool_result', tool_use_id: d.id, content: d.output, is_error: d.isError,
+        })) });
+      } else if (runner === "openai") {
         oaiMessages.push(buildOpenAIAssistantToolMessage(round.text, round.toolCalls));
         for (const d of dispatched) {
           oaiMessages.push(buildOpenAIToolResultMessage(d.id, d.output));

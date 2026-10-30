@@ -116,11 +116,11 @@ for (const [label, p] of [
     ng("GEMINI_API_KEY env 주입 누락");
   }
 
-  // MCP best-effort 등록
-  if (/function ensureGeminiCliMcpRegistered/.test(text) && /\.gemini[\\/"', ]+settings\.json|"\.gemini"/.test(text)) {
-    ok("ensureGeminiCliMcpRegistered (~/.gemini/settings.json) 박힘");
+  // Per-turn settings replace persistent user settings registration.
+  if (text.includes('geminiTurnSettings(geminiBridge)') && text.includes('GEMINI_CLI_SYSTEM_SETTINGS_PATH: settingsFile') && !text.includes('function ensureGeminiCliMcpRegistered')) {
+    ok('Gemini per-turn MCP settings wired; persistent registration removed');
   } else {
-    ng("ensureGeminiCliMcpRegistered 누락");
+    ng('Gemini per-turn MCP settings wiring missing');
   }
 
   // v1 stateless — handleViaGeminiCLI 안에서 resume 플래그를 쓰면 안 됨
