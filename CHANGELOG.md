@@ -1,3 +1,19 @@
+## [0.7.60] - 2026-10-30
+
+### Fixed
+- Auto-continue no longer stops on questions that do not need K's confirmation. On 2026-10-30, 0.7.59 held 12 of 16 question endings; 7 of those were false holds.
+  - Quoted phrases (e.g. a quoted "기록할까요?") are not treated as questions.
+  - Report sentences ("push/tag/release는 하지 않았습니다", "이미 공개 완료됐고", timestamped log lines) no longer count as confirmation reasons.
+  - Power-control detection requires a power target: "PowerShell" and "강제 종료하는 실행기" no longer match.
+  - CAE build/install slot cleanup questions inside standing approval 1 continue with a prompt that makes the model re-check the rule's conditions (dry-run exit 0, exact targets, protected builds excluded). Mixed with another reason, they still wait.
+  - Questions asking permission to record pitfalls continue, because pitfall recording is append-without-asking.
+- The auto-continue log records the standing rule used for CONTINUE.
+
+### Validation and limits
+- Auto-continue tests 13/13, including 16 real endings from 2026-10-30. The 5 genuine holds stay held: link and security change for listeners, A/B listening, and restart, deploy or test timing during a live broadcast.
+- Two mutations (bare `power` pattern, report-sentence filter removed) each fail 1 test.
+- Behaviour in live conversations is unverified until installed. The classifier still uses keywords; unfamiliar wording can still be misjudged.
+
 ## [0.7.59] - 2026-10-30
 
 ### Added

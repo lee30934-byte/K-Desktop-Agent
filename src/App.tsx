@@ -3245,7 +3245,7 @@ export default function App() {
         log(`LIMIT conv=${convId.slice(0, 8)} turn=${turnId} ask="${verdict.ask}" (연속 ${autoContinueChainRef.current.count(convId)}회 — K 대기)`);
         return;
       }
-      log(`CONTINUE conv=${convId.slice(0, 8)} turn=${turnId} n=${autoContinueChainRef.current.count(convId)} ask="${verdict.ask}"`);
+      log(`CONTINUE conv=${convId.slice(0, 8)} turn=${turnId} n=${autoContinueChainRef.current.count(convId)} ask="${verdict.ask}"${verdict.standing ? ` standing="${verdict.standing}"` : ""}`);
       setTimeout(() => {
         void handleSendMessage(buildAutoContinuePrompt(verdict), undefined, { conversationId: convId })
           .catch((err) => log(`SEND-ERROR conv=${convId.slice(0, 8)} ${String(err)}`));

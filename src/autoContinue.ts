@@ -30,6 +30,8 @@ export interface EndingVerdict {
   ask?: string;
   /** 확인 사유로 본 근거 (매칭된 문구) */
   evidence?: string;
+  /** v0.7.60 — unneeded 지만 [상시 승인 규칙] 범위로 보이는 경우 그 규칙 이름 (주입 문구에 조건 재확인을 넣는다) */
+  standing?: string;
 }
 
 // K 에게 결정을 넘기는 문구. "알려 주세요" 단독은 결과 보고 요청(사람 검증)과 섞여 있어 넣지 않는다.
@@ -50,7 +52,8 @@ const ASK_PATTERNS: RegExp[] = [
 
 // 확인 사유 ①~⑥ 단서. 넓게 잡는다 (애매하면 K 를 기다리는 쪽이 안전).
 const ALLOWED_CATEGORIES: Array<{ label: string; re: RegExp }> = [
-  { label: "① 전원 조작", re: /전원|재부팅|재시작|shutdown|reboot|절전|깨우|wake|power|PC\s*(를\s*)?(끄|켜)|종료(할|하|승인|해)/i },
+  // v0.7.60: bare "power"(PowerShell 오판), 대상 없는 "종료하"("강제 종료하는 실행기" 오판) 제거 — 전원 대상 명사가 있어야 함.
+  { label: "① 전원 조작", re: /전원|재부팅|재시작|shutdown|reboot|절전|깨우|\bwake\b|\bpower\s*(off|on|down)\b|(PC|컴퓨터|5080|LDW|시스템|윈도우|머신|서버)\s*\S{0,3}\s*(종료|끄|켜)/i },
   { label: "② 되돌리기 어려운 작업", re: /삭제|제거|지우|덮어쓰|덮어씌|폐기|초기화|되돌리기\s*어려|\bforce\b|--force|rm\s+-|reset\s+--hard|정리\s*승인|칸\s*정리/i },
   { label: "③ 배포·외부 공개", re: /태그|push|릴리[즈스]|배포|공개|업로드|게시|publish|release|deploy|발송|송금/i },
   { label: "④ 실자금·결제·보안·법적 위험", re: /저작권|약관|법적|불법|결제|요금|과금|크레딧|구매|실자금|주문|매수|매도|권한|로그인|토큰|비밀번호|인증|보안|api\s*키|secret/i },
@@ -64,9 +67,11 @@ export function classifyTurnEnding(text: string | undefined | null): EndingVerdi
   if (!body) return { kind: "none" };
   // 자동 이어가기로 생성된 메시지를 모델이 그대로 되풀이한 경우까지 질문으로 보지 않도록 제거.
   const tail = body.slice(-TAIL_CHARS).split("\n").filter((l) => !l.includes(AUTO_CONTINUE_MARK)).join("\n");
+  // v0.7.60: 인용 문구 안의 질문형("\"기록할까요?\" 라고 묻지 않습니다")은 질문이 아니다 (2026-10-30 00:03 오판).
+  const askScan = stripQuoted(tail);
   let ask: string | undefined;
   for (const re of ASK_PATTERNS) {
-    const m = re.exec(tail);
+    const m = re.exec(askScan);
     if (m) { ask = m[0]; break; }
   }
   // 끝에 번호 목록(2개 이상)이 있고 그 바로 앞에 "?" 로 끝나는 문장이 있으면 질문으로 본다.
@@ -81,12 +86,59 @@ export function classifyTurnEnding(text: string | undefined | null): EndingVerdi
   // 확인 사유는 "질문 문단 + 바로 앞 선택지 목록 + 그 뒤" 에서만 찾는다.
   // 앞쪽 보고 문장("업로드는 실행하지 않았습니다")이 질문과 무관하게 allowed 로 만드는 오판 방지
   // (2026-10-29 실측: "…업로드는 실행하지 않았습니다. 글꼴 대응법도 pitfall 로 기록할까요?").
-  const region = questionRegion(tail, ask);
+  // v0.7.60: 그 영역에서도 "이미 한 일/안 한 일" 보고 문장은 뺀다
+  // ("push·tag·release는 하지 않았습니다", "이미 공개 완료됐고", "00:02:03 재시작" 같은 로그 줄 — 2026-10-30 오판 5건).
+  const region = stripReportSentences(questionRegion(tail, ask), ask);
   for (const c of ALLOWED_CATEGORIES) {
     const m = c.re.exec(region);
-    if (m) return { kind: "allowed", ask, category: c.label, evidence: m[0] };
+    if (!m) continue;
+    // ② 단서가 [상시 승인 규칙] 1(CAE 빌드·설치 칸 순환 정리) 범위면 기다리지 않는다 — 조건 재확인은 주입 문구가 시킨다.
+    if (c.label.startsWith("②") && STANDING_CAE_SLOT.test(region) && !otherCategoryHit(region, c.label)) {
+      return { kind: "unneeded", ask, standing: "상시 승인 1 (CAE 빌드·설치 칸 순환 정리)", evidence: m[0] };
+    }
+    // "메모리 기록은 승인이 필요해 진행할 수 없습니다" 류 — 함정 기록은 묻지 않는 규칙이므로 ⑥ 이 아니다.
+    if (c.label.startsWith("⑥") && MEMORY_RECORD.test(region)) {
+      return { kind: "unneeded", ask, standing: "실패 자동 포착 (함정 기록은 묻지 않고 기존 파일에 append)", evidence: m[0] };
+    }
+    return { kind: "allowed", ask, category: c.label, evidence: m[0] };
   }
   return { kind: "unneeded", ask };
+}
+
+/** [상시 승인 규칙] 1 — "오래된 빌드/설치본 정리·삭제", "빌드 칸 정리/비우기". */
+const STANDING_CAE_SLOT = /((가장\s*)?오래된|이전|예전)\s*(빌드|설치본)[^\n]{0,40}(삭제|제거|지우|정리|비우)|(빌드|설치)[·\s]*(설치\s*)?칸[^\n]{0,40}(정리|비우|삭제|제거)|(설치본|빌드)\s*a\d+\s*(을|를)?\s*(제거|삭제)/;
+/** [실패 자동 포착] — 함정(pitfall) 기록은 묻지 않고 바로 append 하는 규칙. */
+const MEMORY_RECORD = /(함정|pitfall|메모리)[^\n]{0,40}(기록|저장|append)/i;
+
+function otherCategoryHit(region: string, except: string): boolean {
+  return ALLOWED_CATEGORIES.some((c) => c.label !== except && c.re.test(region));
+}
+
+/** 따옴표·백틱 안의 짧은 인용을 지운다 (질문 판정 전용). */
+function stripQuoted(s: string): string {
+  return s
+    .replace(/\\"/g, "")
+    .replace(/"[^"\n]{0,120}"/g, "")
+    .replace(/“[^”\n]{0,120}”/g, "")
+    .replace(/`[^`\n]{0,200}`/g, "");
+}
+
+// 이미 끝났거나 하지 않은 일을 보고하는 문장 — 앞으로 할 일(질문의 대상)이 아니다.
+const REPORT_SENTENCE = /(하지\s*않았|않았습니다|않았고|안\s*했습니다|손대지\s*않|건드리지\s*않|그대로\s*(입니다|이고|둡니다|두었|뒀|유지)|(상태|선택|선곡)\S{0,3}\s*유지|유지했|완료(했|됐|되었|된\s*상태)|끝났|마쳤|통과했|기록했|커밋했|반영했)/;
+// "- 00:02:03 재시작" 같은 시각으로 시작하는 진행 기록 줄
+const LOG_LINE = /^\s*[-*]?\s*\d{1,2}:\d{2}(:\d{2})?\b/;
+
+function stripReportSentences(region: string, ask: string): string {
+  return region
+    .split("\n")
+    .filter((line) => line.includes(ask) || !LOG_LINE.test(line))
+    .map((line) => {
+      if (line.includes(ask)) return line;
+      // 문장 단위로 나눠 보고 문장만 뺀다 (목록 항목 하나에 여러 문장이 있을 수 있음)
+      const parts = line.split(/(?<=[.!?。])\s+|(?<=다)\s*[,·]\s+|(?<=고)\s+(?=\S+[은는이가]\s)/);
+      return parts.filter((p) => !REPORT_SENTENCE.test(p)).join(" ");
+    })
+    .join("\n");
 }
 
 /** 질문이 들어 있는 마지막 문단부터 끝까지 + 그 직전 문단이 번호 목록이면 그것까지. */
@@ -113,6 +165,9 @@ export function buildAutoContinuePrompt(v: EndingVerdict): string {
   return [
     `${AUTO_CONTINUE_MARK} 직전 응답이 K님께 선택을 묻고 끝났습니다${v.ask ? ` (판정 근거: "${v.ask}")` : ""}.`,
     "KDA 검사기는 이 질문이 확인이 필요한 경우(① 전원 조작 ② 삭제·덮어쓰기 등 되돌리기 어려운 작업 ③ 태그 push·배포·외부 공개 ④ 실자금·결제·보안 권한 ⑤ 사람 눈으로만 판단 가능한 검증 ⑥ 모순·정보 부족으로 진행 불가)에 해당하지 않는다고 판정했습니다.",
+    ...(v.standing
+      ? [`이 질문은 K님이 미리 승인한 규칙 범위로 보입니다: ${v.standing}. 시스템 지침에 적힌 그 규칙의 조건${v.standing.includes("CAE") ? "(사전 점검 dry-run exit 0, 제거 대상이 규칙과 정확히 일치, 보호 대상 제외)" : ""}을 직접 확인해 모두 맞으면 묻지 말고 진행하고, 하나라도 어긋나면 어느 조건인지 밝히고 기다리세요.`]
+      : []),
     "추천안으로 정하고 이어서 끝까지 진행하세요. 보고에는 \"추천으로 정한 것(바꾸려면 말씀)\" 한 줄을 적습니다.",
     "단, 실제로 위 ①~⑥ 중 하나에 해당한다면 진행하지 말고 어느 항목인지 한 줄로 밝힌 뒤 K님을 기다리세요.",
   ].join("\n");
