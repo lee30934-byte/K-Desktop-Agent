@@ -14,6 +14,7 @@ entry=out/'browser-harness.ts'
 entry.write_text('''
 import { TelegramHub } from "ROOT/src/telegramHub";
 import { RemoteApprovalDispatcher } from "ROOT/src/remoteApproval";
+import { TelegramUpdateLedger, processTelegramUpdate } from "ROOT/src/telegramUpdateLedger";
 let now = Number(localStorage.getItem('probe-clock')) || Date.now(), mid=100;
 const chat='7203583138', conv='dddd1111-desktop';
 const responses=[], sent=[];
@@ -34,8 +35,15 @@ const hub=new TelegramHub({
  setTimeout:()=>0,
 });
 const dispatcher=new RemoteApprovalDispatcher();
+const ledger=TelegramUpdateLedger.fromStorage(()=>localStorage.getItem('probe-ledger'));
+const persistLedger=()=>localStorage.setItem('probe-ledger',JSON.stringify(ledger.toJSON()));
+const effect=()=>localStorage.setItem('probe-effects',String(Number(localStorage.getItem('probe-effects')||0)+1));
 Object.assign(window,{
  probe:{responses,sent,enable:()=>hub.handleUpdate({message:{chat:{id:chat},text:'/부재 36'}}),
+ effects:()=>Number(localStorage.getItem('probe-effects')||0),
+ crashClaim:()=>{ledger.claim({updateId:900,chatId:chat,text:'fixture',updatedAt:now});persistLedger();effect();},
+ runUpdate:(id)=>processTelegramUpdate({ledger,updateId:id,chatId:chat,text:'fixture',now,
+   persist:persistLedger,dispatch:async()=>effect(),notifyUncertain:async()=>true,acknowledge:()=>{}}),
  connected:()=>hub.chatFor(conv,now),clock:(value)=>{now=value;localStorage.setItem('probe-clock',String(now));},
  now:()=>now,request:()=>dispatcher.start({type:'codex_approval_request',id:'turn',token:'fake-rpc',threadId:'thread',
  turnId:'engine-turn',itemId:'item',kind:'command',command:['echo','safe'],cwd:'C:/fixture',conversation_id:conv,expiresAt:Date.now()+120000},
@@ -69,6 +77,12 @@ try:
   assert page.evaluate('probe.responses[0].content') is None
   page.get_by_role('button',name='✅ 승인',exact=True).click()
   assert page.evaluate('probe.responses.length')==1;checks.append('duplicate DOM click cannot send RPC twice')
+  page.evaluate('probe.runUpdate(800)');page.evaluate('probe.runUpdate(800)')
+  assert page.evaluate('probe.effects()')==1;checks.append('durable completed update executes only once')
+  page.evaluate('probe.crashClaim()');page.reload();page.evaluate('probe.runUpdate(900)')
+  assert page.evaluate('probe.effects()')==2;checks.append('processing claim after real reload is uncertain and never reexecuted')
+  page.evaluate('probe.runUpdate(800)');assert page.evaluate('probe.effects()')==2
+  checks.append('completed claim survives browser reload without reexecution')
   page.evaluate('probe.clock(probe.now()+7*3600000)');page.reload()
   assert page.evaluate('probe.connected()') is None;checks.append('expired subscription stays OFF after reload')
   assert not errors,errors

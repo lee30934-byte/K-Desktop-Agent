@@ -96,7 +96,7 @@ const K_FOLLOWUPS = "kda_tg_hub_followups";
 const K_ABSENCE = "kda_tg_hub_absence";
 const K_OUTBOX = "kda_tg_hub_outbox";
 const K_ABSENCE_DIGEST = "kda_tg_hub_absence_digest";
-interface ResultDelivery { convId: string; chatId: string; text: string; turnId?: string; forceSend?: boolean; noChoices?: boolean }
+interface ResultDelivery { convId: string; chatId: string; text: string; turnId?: string; forceSend?: boolean; noChoices?: boolean; decisionRequired?: boolean }
 interface AbsenceDigest { chatId: string; entries: Array<{ label: string; text: string; at: number }> }
 
 interface HeldResult {
@@ -207,6 +207,12 @@ export class TelegramHub {
     return chat && (!this.d.allowedChat || this.d.allowedChat(chat)) ? chat : undefined;
   }
 
+  /** An active, explicit subscription; ordinary follow-up bindings do not enable autonomy. */
+  activeAbsenceChatFor(convId: string | undefined, now: number): string | undefined {
+    const chat = absenceChat(this.absence, convId, now);
+    return chat && (!this.d.allowedChat || this.d.allowedChat(chat)) ? chat : undefined;
+  }
+
   instructionFor(convId: string | undefined, now: number): string {
     const chat = absenceChat(this.absence, convId, now);
     return chat && (!this.d.allowedChat || this.d.allowedChat(chat)) ? absenceInstruction(this.absence, convId, now) : '';
@@ -237,8 +243,16 @@ export class TelegramHub {
       await this.sendText(chatId, "다른 채팅의 부재 연결이 유지 중입니다.", undefined); return;
     }
     const now = this.d.now();
+    const activeTargets = this.d.activeConversations?.() ?? [];
+    if (!activeTargets.length) {
+      const existing = this.absence && now < this.absence.until && this.absence.chatId === chatId;
+      await this.sendText(chatId, existing
+        ? `새 연결 대상은 0건입니다. 기존 부재 연결 ${this.absence!.targets.length}건은 만료 시각까지 유지됩니다.`
+        : "부재 모드를 켜지 않았습니다. 연결 가능한 진행·복구 대기 작업이 0건입니다.", undefined);
+      return;
+    }
     this.absence = restoreAbsence({ chatId, startedAt: now, until: now + hours * 3600000,
-      targets: this.d.activeConversations?.() ?? [] }, now);
+      targets: activeTargets }, now);
     this.persist();
     const targets = this.absence?.targets ?? [];
     await this.sendText(chatId, this.absenceSaveFailed ? "⚠ 부재 연결 저장 실패 — 재시작 복원을 보장할 수 없습니다." :
@@ -547,13 +561,19 @@ export class TelegramHub {
     }
   }
 
+  /** Ambiguous updates are reported without executing or rerouting them. */
+  async notifyUncertainUpdate(chatId: string, updateId: number): Promise<boolean> {
+    return await this.sendText(chatId,
+      `⚠ 텔레그램 요청 #${updateId}의 실행 여부를 확정할 수 없습니다. 중복 실행을 막기 위해 보류했습니다. 대상 대화의 작업 상태를 확인한 뒤 필요하면 명령을 다시 보내 주세요.`, undefined) !== undefined;
+  }
+
   // ── 결과 회신 ───────────────────────────────────────────
   /**
    * 턴 결과 회신. App 의 done/error/stale 경로가 모두 이 함수를 부른다.
    * forceSend: 오류·중지 안내처럼 등급과 무관하게 즉시 보내야 하는 경우.
    */
   async deliverResult(r: ResultDelivery): Promise<void> {
-    if (!r.forceSend && this.absenceChatFor(r.convId, r.chatId)) {
+    if (!r.forceSend && !r.decisionRequired && this.absenceChatFor(r.convId, r.chatId)) {
       if (r.turnId) await this.finishProgress(r.turnId, true);
       const tier = classifyTier(r.text);
       if (tier === "result" || tier === "progress") {
@@ -640,8 +660,8 @@ export class TelegramHub {
       return mid !== undefined;
     }
 
-    const tier: DigestTier = r.forceSend ? "error" : classifyTier(raw);
-    const plan = deliveryPlan(tier, inQuietHours(s.quiet, new Date(this.d.now())));
+    const tier: DigestTier = r.decisionRequired ? "decision" : r.forceSend ? "error" : classifyTier(raw);
+    const plan = r.forceSend ? "send" : deliveryPlan(tier, inQuietHours(s.quiet, new Date(this.d.now())));
     if (plan === "skip") {
       this.note("SKIP-PROGRESS", `conv=${r.convId.slice(0, 8)} len=${raw.length}`);
       return true;

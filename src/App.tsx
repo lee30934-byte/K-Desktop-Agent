@@ -120,6 +120,7 @@ import { TelegramHub, setActiveTelegramHub, type HubSettings } from "./telegramH
 import { RemoteApprovalDispatcher } from "./remoteApproval";
 import { formatRemoteQuestions } from "./telegramAbsence";
 import { seedRouteTargets, sanitizeTargets, type RouteTarget } from "./telegramRouter";
+import { processTelegramUpdate, TelegramUpdateLedger } from "./telegramUpdateLedger";
 import { useStableCallback } from "./utils/useStableCallback";
 import { classifyTurnEnding, buildAutoContinuePrompt, AutoContinueChain, isAutoContinueMessage } from "./autoContinue";
 import { decideAutoUpdate, updaterVersionMatches, AUTO_UPDATE_POLL_MS } from "./autoUpdate";
@@ -763,6 +764,11 @@ export default function App() {
   // done/error 가 그 text 를 chatId 로 회신 + 엔트리 정리. 일반 turn 은 미등록이라 무영향.
   // v0.7.53 — Map 대신 TelegramTurnTracker: lastActivityAt(멈춘 turn 자동 해제) + 대기열 + 재시도 플래그.
   const telegramTurnsRef = useRef<TelegramTurnTracker>(new TelegramTurnTracker());
+  const telegramUpdateLedgerRef = useRef<TelegramUpdateLedger | null>(null);
+  if (!telegramUpdateLedgerRef.current) {
+    telegramUpdateLedgerRef.current = TelegramUpdateLedger.fromStorage(
+      () => localStorage.getItem("kda_telegram_update_ledger_v1"));
+  }
   // v0.7.54 — 텔레그램 허브(분배·요약·버튼·진행·승인·inbox). 생성은 아래 useEffect 에서(의존 함수 정의 후).
   const telegramHubRef = useRef<TelegramHub | null>(null);
   const remoteApprovalRef = useRef(new RemoteApprovalDispatcher());
@@ -1898,7 +1904,8 @@ export default function App() {
             telegramTurnsRef.current.delete(ev.id);
             telegramLogRef.current(`DONE turn=${ev.id} replyLen=${tg.text.length}`);
             const hub = telegramHubRef.current;
-            if (hub) void hub.deliverResult({ convId: tg.convId, chatId: tg.chatId, text: tg.text, turnId: ev.id });
+            if (hub) void hub.deliverResult({ convId: tg.convId, chatId: tg.chatId, text: tg.text, turnId: ev.id,
+              decisionRequired: !!hub.activeAbsenceChatFor(tg.convId, Date.now()) && classifyTurnEnding(tg.text).kind === "allowed" });
             else void deliverTelegramReplyRef.current(tg.chatId, tg.text);
             drainTelegramQueueRef.current();
           } else {
@@ -1909,7 +1916,8 @@ export default function App() {
               const chat = hub?.chatFor(fu.convId, Date.now());
               if (hub && chat && fu.text.trim()) {
                 telegramLogRef.current(`FOLLOWUP turn=${ev.id} conv=${fu.convId} len=${fu.text.length}`);
-                void hub.deliverResult({ convId: fu.convId, chatId: chat, text: fu.text });
+                void hub.deliverResult({ convId: fu.convId, chatId: chat, text: fu.text,
+                  decisionRequired: !!hub.activeAbsenceChatFor(fu.convId, Date.now()) && classifyTurnEnding(fu.text).kind === "allowed" });
               }
             }
           }
@@ -3311,11 +3319,17 @@ export default function App() {
 
   // 텔레그램발 메시지를 전용 background conv 로 주입해 turn 실행.
   // v0.7.53 — 처리 중 도착 메시지는 버리지 않고 대기열에 넣는다(상한 초과 시에만 거절).
-  // v0.7.57 — 자동 이어가기 실행기. 턴경계 self-nudge 토글(agent-flags "nudge")이 켜져 있을 때만 동작.
+  // Explicit absence subscriptions also enable bounded continuation of existing work.
   // 판정·주입 내역은 콘솔 로그와 ~/.kda/auto-continue.log 에 남긴다 (사후 검증용).
   autoContinueRunRef.current = (convId: string, turnId: string, text: string) => {
     const verdict = classifyTurnEnding(text);
     if (verdict.kind === "none") return;
+    const eligible = () => {
+      const control = conversationTurnGateRef.current;
+      const run = control.runs.get(convId);
+      return !control.allPaused && !control.paused.has(convId) && !control.isActive(convId) &&
+        run?.turnId === turnId && run.state === "completed";
+    };
     void (async () => {
       const stamp = new Date().toLocaleString("sv-SE");
       const log = (line: string) => {
@@ -3324,17 +3338,27 @@ export default function App() {
       };
       let flags: Record<string, boolean> = {};
       try { flags = await invoke<Record<string, boolean>>("get_agent_flags"); } catch { flags = {}; }
-      if (!flags?.nudge) return;
+      if (!eligible()) return;
+      const hub = telegramHubRef.current;
+      const absenceChat = hub?.activeAbsenceChatFor(convId, Date.now());
+      // Absence mode has its own code policy: the global self-nudge switch is irrelevant
+      // for the explicitly subscribed work set. Ordinary conversations keep the old toggle.
+      if (!flags?.nudge && !absenceChat) return;
       if (verdict.kind === "allowed") {
         log(`WAIT conv=${convId.slice(0, 8)} turn=${turnId} reason="${verdict.category}" evidence="${verdict.evidence}" ask="${verdict.ask}"`);
+        // The done handler already delivers this decision once, outside the digest.
         return;
       }
       if (!autoContinueChainRef.current.tryTake(convId)) {
         log(`LIMIT conv=${convId.slice(0, 8)} turn=${turnId} ask="${verdict.ask}" (연속 ${autoContinueChainRef.current.count(convId)}회 — K 대기)`);
+        if (absenceChat && hub) void hub.deliverResult({ convId, chatId: absenceChat,
+          decisionRequired: true, noChoices: true,
+          text: "자동 이어가기를 연속 시도했지만 다시 확인 요청으로 끝났습니다. 반복 실행을 멈췄습니다. 대화의 작업 상태를 확인해 주세요." });
         return;
       }
       log(`CONTINUE conv=${convId.slice(0, 8)} turn=${turnId} n=${autoContinueChainRef.current.count(convId)} ask="${verdict.ask}"${verdict.standing ? ` standing="${verdict.standing}"` : ""}`);
       setTimeout(() => {
+        if (!eligible() || (!flags?.nudge && !telegramHubRef.current?.activeAbsenceChatFor(convId, Date.now()))) return;
         void handleSendMessage(buildAutoContinuePrompt(verdict), undefined, { conversationId: convId })
           .catch((err) => log(`SEND-ERROR conv=${convId.slice(0, 8)} ${String(err)}`));
       }, 1500);
@@ -3643,6 +3667,7 @@ export default function App() {
       statusLines: () => [
         `전체 실행 중 ${conversationTurnGateRef.current.activeConversationIds().size}개 · 전체 예약 ${[...conversationTurnGateRef.current.queues.values()].reduce((n, q) => n + q.length, 0)}개`,
         `텔레그램 진행 중 턴 ${telegramTurnsRef.current.size}개 · 대기열 ${telegramTurnsRef.current.queueLength}개`,
+        `수신 원장 ${telegramUpdateLedgerRef.current?.blocked ? "복구 필요 · 자동 실행 보류" : `처리 ${telegramUpdateLedgerRef.current?.processingCount ?? 0}개 · 확인 필요 ${telegramUpdateLedgerRef.current?.uncertainCount ?? 0}개`}`,
         `분배 대상 ${readTelegramRouteTargets().map((t) => t.label).join(", ") || "(없음)"}`,
       ],
     });
@@ -3723,32 +3748,59 @@ export default function App() {
             lastPollError = "";
           }
           for (const u of updates) {
-            offset = (u.update_id ?? offset) + 1;
+            const updateId = Number(u.update_id);
+            if (!Number.isSafeInteger(updateId) || updateId < 0) {
+              telegramLog(`SKIP update with invalid id=${String(u.update_id).slice(0, 40)}`);
+              continue;
+            }
+            if (updateId < offset) continue;
             // v0.7.54 — 버튼(callback_query)·사진·파일도 받는다. 허용 chat 검증은 동일.
             const msg = u.message ?? u.callback_query?.message;
             const textMsg: string | undefined = u.callback_query ? `[button] ${u.callback_query.data ?? ""}` : (msg?.text ?? msg?.caption ?? (msg?.photo || msg?.document ? "[file]" : undefined));
             const fromChat = msg?.chat?.id != null ? String(msg.chat.id) : "";
-            if (!textMsg || !fromChat) continue;
+            if (!textMsg || !fromChat) {
+              offset = updateId + 1;
+              localStorage.setItem("kda_telegram_offset", String(offset));
+              continue;
+            }
             // 화이트리스트 검증 — 미허용이면 무시 (보안). 화이트리스트 비어있으면 전부 차단.
             if (allowed.size === 0 || !allowed.has(fromChat)) {
               logger.log(`[Telegram] 미허용 chat_id 무시: ${fromChat}`);
               telegramLog(`IGNORE chat=${fromChat} (not allowed)`);
+              offset = updateId + 1;
+              localStorage.setItem("kda_telegram_offset", String(offset));
               continue;
             }
             telegramLog(`RECV update=${u.update_id} chat=${fromChat} len=${textMsg.length}${u.callback_query ? " button" : ""}${msg?.photo || msg?.document ? " file" : ""}`);
-            const hub = telegramHubRef.current;
-            if (hub) {
-              try { await hub.handleUpdate(u); }
-              catch (e) {
-                telegramLog(`HUB error ${String(e).slice(0, 200)} — 기본 경로로 처리`);
-                if (msg?.text) await sendTelegramTurn(msg.text, fromChat);
-              }
-            } else if (msg?.text) {
-              await sendTelegramTurn(msg.text, fromChat);
+            const ledger = telegramUpdateLedgerRef.current!;
+            const disposition = await processTelegramUpdate({
+              ledger,
+              updateId,
+              chatId: fromChat,
+              text: textMsg,
+              now: Date.now(),
+              persist: () => localStorage.setItem("kda_telegram_update_ledger_v1", JSON.stringify(ledger.toJSON())),
+              dispatch: async () => {
+                const hub = telegramHubRef.current;
+                if (hub) await hub.handleUpdate(u);
+                else throw new Error("telegram_hub_unavailable");
+              },
+              notifyUncertain: async () => {
+                const hub = telegramHubRef.current;
+                return hub ? hub.notifyUncertainUpdate(fromChat, updateId) : false;
+              },
+              onDispatchError: (e) => telegramLog(`HOLD uncertain update=${updateId} reason=${e instanceof Error ? e.name : typeof e}`),
+              acknowledge: () => {
+                offset = updateId + 1;
+                localStorage.setItem("kda_telegram_offset", String(offset));
+              },
+            });
+            if (disposition === "inflight") {
+              telegramLog(`DEFER duplicate in-flight update=${updateId}`);
+              break;
             }
-          }
-          if (updates.length > 0) {
-            localStorage.setItem("kda_telegram_offset", String(offset));
+            if (disposition === "completed") telegramLog(`SKIP duplicate completed update=${updateId}`);
+            else if (disposition === "uncertain") telegramLog(`HOLD uncertain update=${updateId}`);
           }
         } catch (e) {
           if (cancelled) break;

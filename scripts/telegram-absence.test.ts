@@ -246,3 +246,34 @@ test('multiple model questions preserve their context and do not offer a mislead
   const t=fixture();await t.hub.deliverResult({convId:ID,chatId:CHAT,forceSend:true,noChoices:true,text:text+'\n1. a\n2. b'});
   assert.equal(t.sent[0].payload.reply_markup,undefined);
 });
+
+test('explicit decisions bypass absence batching and quiet hours with the decision icon',async()=>{
+  const t=fixture();await t.msg('/부재 36');t.sent.length=0;
+  t.setNow(new Date(2026,9,31,23,30).getTime());
+  await t.hub.deliverResult({convId:ID,chatId:CHAT,decisionRequired:true,text:'실행에 필요한 정보가 없습니다. K 확인 필요'});
+  assert.equal(t.text().length,1);assert.match(t.text()[0],/^❓/);
+  assert.equal(t.hub.heldCount,0);assert.equal(JSON.parse(t.store.get('kda_tg_hub_absence_digest')??'null'),null);
+});
+
+test('absence autonomy excludes ordinary followups and stops on expiry, disabled chat or OFF',async()=>{
+  const t=fixture();t.hub.followUps.mark(ID,CHAT,t.now());
+  assert.equal(t.hub.activeAbsenceChatFor(ID,t.now()),undefined);
+  await t.msg('/부재 36');assert.equal(t.hub.activeAbsenceChatFor(ID,t.now()),CHAT);
+  assert.equal(t.hub.activeAbsenceChatFor('unsubscribed',t.now()),undefined);
+  assert.equal(t.hub.activeAbsenceChatFor(ID,t.now()+36*HOUR),undefined);
+  t.allowed(false);assert.equal(t.hub.activeAbsenceChatFor(ID,t.now()),undefined);
+  t.allowed(true);await t.msg('/부재 종료');assert.equal(t.hub.activeAbsenceChatFor(ID,t.now()),undefined);
+});
+
+test('zero new targets never erase a live subscription or claim activation',async()=>{
+  const empty=fixture();empty.active([]);await empty.msg('/부재 36');
+  assert.match(empty.text().at(-1)!,/켜지 않았습니다/);
+  const t=fixture();await t.msg('/부재 36');t.active([]);await t.msg('/부재 36');
+  assert.equal(t.hub.activeAbsenceChatFor(ID,t.now()),CHAT);assert.match(t.text().at(-1)!,/기존 부재 연결/);
+});
+
+test('uncertain update notification is a warning and never launches a turn',async()=>{
+  const t=fixture();assert.equal(await t.hub.notifyUncertainUpdate(CHAT,42),true);
+  assert.match(t.text()[0],/#42/);assert.equal(t.turns.length,0);
+  t.failSend(true);assert.equal(await t.hub.notifyUncertainUpdate(CHAT,42),false);
+});

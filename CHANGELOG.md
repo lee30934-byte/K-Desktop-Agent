@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [0.7.67] - 2026-10-31
+
+### Fixed
+- Continue explicitly subscribed absence work through the bounded continuation policy even when general self-nudge is OFF; preserve user/global stops, newer turns, subscription expiry and OFF.
+- Deliver required absence decisions immediately, once, outside the ten-minute completion digest and quiet hours. Notify K when bounded continuation is exhausted.
+- Persist incoming Telegram update claims before dispatch and completion before advancing the offset; never reroute failed requests into another conversation or replay ambiguous commands after restart.
+- Preserve unresolved receive records on storage failure/capacity pressure and keep existing absence connections when no new active targets exist.
+
+### Validation
+- Production App callback tests, Hub/ledger fault tests, browser storage/reload/button tests and the normal release gate. Real phone callbacks and a continuous 24-hour soak are separate checks.
+
 ## [0.7.66] - 2026-10-31
 
 ### Added

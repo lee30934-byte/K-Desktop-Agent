@@ -265,6 +265,8 @@ const NODE_TEST_SUITES = [
   { file: "scripts/telegram-digest.test.ts", runner: "tsx" }, // v0.7.54
   { file: "scripts/telegram-hub.test.ts", runner: "tsx" }, // v0.7.54
   { file: "scripts/telegram-absence.test.ts", runner: "tsx" }, // bounded absence and safe request lifecycle
+  { file: "scripts/telegram-update-ledger.test.ts", runner: "tsx" }, // at-most-once update dispatch and crash uncertainty guard
+  { file: "scripts/absence-continuation.test.ts", runner: "tsx" }, // production App continuation, stop and decision delivery
   { file: "scripts/telegram-app.test.ts", runner: "tsx" }, // actual App handler with isolated transports
   { file: "scripts/auto-continue.test.ts", runner: "tsx" }, // v0.7.57
   { file: "scripts/auto-update.test.ts", runner: "tsx" }, // v0.7.57

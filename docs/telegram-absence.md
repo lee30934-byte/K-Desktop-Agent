@@ -10,6 +10,15 @@ Desktop-origin work previously had no general remote decision subscription. Foll
 - `/부재검증` sends a two-minute, harmless approval-button challenge. Clicking it checks live Bot transport and callback ownership only. It executes no command, file operation or power action. It does not prove a native execution RPC or 24 hours of uptime.
 - New turns for subscribed conversations receive the existing-work/recommendation instruction. Running engine prompts are not interrupted or rewritten. Existing approval exceptions remain in force.
 
+## v0.7.67 continuation and receive recovery
+
+- A live explicit absence subscription enables the existing bounded continuation policy even when the general self-nudge setting is OFF. Ordinary follow-up bindings do not enable it. Before injecting a continuation, verify the same completed turn still owns the context, no newer turn is active, no user/global pause exists, and the subscription has not expired or been disabled. At the retry bound, send K a decision notice rather than silently stalling.
+- Required end-of-turn decisions use the normal completion delivery once, bypass completion batching and quiet hours, and retain the decision icon. A zero-target subscribe request preserves an existing subscription; it cannot claim a new active subscription with no work.
+- Persist a Telegram update claim before dispatch and persist its result before advancing the offset. Replayed completed updates are skipped. After restart, incomplete claims become uncertain and require target-state inspection before K resends. Handler failure never starts a fallback turn in a different conversation.
+- Storage failures before dispatch prevent execution; failures after dispatch retain uncertainty. Unresolved records are never evicted to admit new commands. Corrupt/unreadable ledger storage blocks receive dispatch and records a polling error; repair requires inspecting the ledger and target conversations, not clearing it blindly. Ordinary result batching remains 10 minutes.
+
+Source tests exercise the actual production App continuation callback and completion delivery expressions, plus Hub and ledger behavior under stop/restart/quota/duplicate conditions. The isolated browser probe uses real browser storage and button events with mocked Bot/native transport. A real phone callback and a continuous 24-hour soak remain distinct checks.
+
 ## Request and delivery boundaries
 
 Desktop and Telegram-origin Codex execution/MCP requests use the same dispatcher. Legacy confirmations are routed before the background-dialog guard and retain the existing 30-second timeout. Structured inputs use the native request deadline and require an explicit, schema-valid JSON reply. Model questions are forwarded with all question/option text; multiple questions never become a misleading single-number button.

@@ -156,14 +156,14 @@ test("연속 주입 한도: 대화별 최대 횟수 후 중단, reset 후 다시
   assert.equal(c.tryTake("A"), true);
 });
 
-test("App 배선: 텍스트 수집·done 판정·실제 메시지 reset·nudge 토글 게이트·로그", () => {
+test("App 배선: 텍스트 수집·done 판정·실제 메시지 reset·로그", () => {
   const app = fs.readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(app, /autoContinueTextRef\.current\.set\(ev\.id, ev\.text\)/);
   assert.match(app, /autoContinueRunRef\.current\(convForTurn, ev\.id, finalText\)/);
   // stale done 판정 이후에만 실행 (stale 은 break 로 빠져야 함)
   assert.ok(app.indexOf("stale done 무시") < app.indexOf("autoContinueRunRef.current(convForTurn"));
   assert.match(app, /if \(targetId && !isAutoContinueMessage\(text\)\) autoContinueChainRef\.current\.reset\(targetId\)/);
-  assert.match(app, /if \(!flags\?\.nudge\) return;/);
+  // Nudge/absence gating is executed against the actual App callback in absence-continuation.test.ts.
   assert.match(app, /append_auto_continue_log/);
   const rs = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   assert.match(rs, /fn append_auto_continue_log\(/);
