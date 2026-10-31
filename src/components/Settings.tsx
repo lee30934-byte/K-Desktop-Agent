@@ -9,6 +9,7 @@ import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import CornerBrackets from "./CornerBrackets";
+import ApprovalToggle from "./ApprovalToggle";
 import type { WatchedFolder } from "../types";
 // Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기용)
 import { getPathMappings, type PathMapping } from "./SidePanel";
@@ -3259,6 +3260,21 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 에이전트 권한 섹션 */}
+          <section className="settings-section" data-tab="agent">
+            <div className="eyebrow">승인 방식</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">확인창 없이 자동 승인</div>
+                <div className="settings-row-desc">
+                  ON: 모든 대화의 Codex 도구 확인·명령·파일 승인 요청을 창 없이 처리합니다.
+                  OFF: 필요한 요청에 확인창을 표시합니다. 앱에서 Ctrl+Alt+A로도 전환합니다.
+                  새 설치의 기본값은 OFF이며 선택은 이 PC에 저장됩니다.
+                  입력이 필요한 질문·인증, 개별 도구 잠금, SafeMode 차단은 유지합니다.
+                </div>
+              </div>
+              <ApprovalToggle />
+            </div>
+          </section>
           <section className="settings-section" data-tab="agent">
             <div className="eyebrow">에이전트 권한</div>
             <div className="settings-row settings-row-vertical">

@@ -5154,6 +5154,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
               threadId: event.threadId,
               turnId: event.turnId,
               itemId: event.itemId,
+              expiresAt: event.expiresAt,
               command: event.command,
               cwd: event.cwd,
               changes: event.changes,

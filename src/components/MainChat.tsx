@@ -13,6 +13,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
+import ApprovalToggle from "./ApprovalToggle";
 import type { SendMode } from "../conversationControl";
 import type { ChatMessage, ConnectionStatus, FileAttachment } from "../types";
 import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFilters";
@@ -194,6 +195,7 @@ function MainChat({
           <div className="main-title display">SIGNAL ROUTING HUB</div>
         </div>
         <div className="main-header-right">
+          <ApprovalToggle />
           {activityPanel}
           <button
             className={`copy-chat-btn ${copyStatus === "copied" ? "copied" : ""}`}

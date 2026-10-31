@@ -1,0 +1,5 @@
+.approval-toggle-wrap { display: inline-flex; align-items: center; gap: var(--space-xs); }
+.approval-mode-toggle { color: var(--text-secondary); background: var(--bg-2); border: 1px solid var(--border-default); border-radius: 4px; padding: 6px 10px; cursor: pointer; white-space: nowrap; font: inherit; font-size: 12px; }
+.approval-mode-toggle[aria-checked="true"] { color: var(--accent); border-color: var(--accent); }
+.approval-mode-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.approval-toggle-wrap [role="alert"] { color: var(--warn); }

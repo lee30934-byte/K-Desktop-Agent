@@ -20,8 +20,9 @@ import type {
   RateLimitWindow,
 } from "./types";
 import ElicitationDialog from "./components/ElicitationDialog";
-import CodexElicitationDialog from "./components/CodexElicitationDialog";
-import type { CodexElicitationRequest } from "./types";
+import ApprovalRequests from "./components/ApprovalRequests";
+import { automaticResponse, approvalDetail, type ApprovalRequest } from "./approvalAutomation.mjs";
+import { readAutoApproval, useApprovalShortcut } from "./utils/useApprovalMode";
 import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
 import SidebarResizer from "./components/SidebarResizer";
@@ -462,7 +463,8 @@ export default function App() {
   // Phase 79 (v0.6.22) — Task State Manager: startup 시 끊긴 long_task 후보 (running + stale).
   // RecoveryBanner 가 K 에게 표시 + "복구" or "버림" 버튼.
   const [recoverableTasks, setRecoverableTasks] = useState<DBLongTask[]>([]);
-  const [codexElicitations, setCodexElicitations] = useState<CodexElicitationRequest[]>([]);
+  const [codexElicitations, setCodexElicitations] = useState<ApprovalRequest[]>([]);
+  useApprovalShortcut();
   const [elicitationRequest, setElicitationRequest] = useState<ElicitationRequest | null>(null);
   const elicitationResolveRef = useRef<((response: ElicitationResponse) => void) | null>(null);
   // Phase 50 — ask_user_question 추적용. 응답 시 어떤 turn 의 질문이었는지 기록 + multi-question
@@ -1508,7 +1510,7 @@ export default function App() {
     }
     // v0.7.57 — 실패·정지 턴은 자동 이어가기 대상이 아니다 (텍스트만 정리).
     if (["error", "turn_stopped"].includes(ev.type)) autoContinueTextRef.current.delete(event.turn_id ?? event.id);
-    const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "codex_elicitation_request", "codex_elicitation_resolved", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window"]);
+    const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "codex_elicitation_request", "codex_elicitation_resolved", "codex_approval_request", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window"]);
     const eventTurnId = event.turn_id ?? event.taskId ?? event.id;
     const taskWatchActivity = taskWatchTurnsRef.current.get(eventTurnId);
     if (taskWatchActivity) taskWatchActivity.lastActivityAt = Date.now();
@@ -2356,60 +2358,37 @@ export default function App() {
         break;
       }
 
-      case "codex_elicitation_request": {
+      // Execution and MCP confirmations share a nonblocking, per-request queue.
+      case "codex_elicitation_request":
+      case "codex_approval_request": {
         const convId = resolveEventConv(ev);
         if (!convId || convId !== ev.conversation_id) break;
-        setCodexElicitations(prev => prev.some(r => r.token === ev.token) ? prev : [...prev, ev]);
-        if (convId !== activeConversationIdRef.current) saveControlNotice(convId, "연결된 도구가 추가 승인을 기다립니다. 해당 대화를 열어 검토해 주세요.");
+        if (ev.type === "codex_approval_request" && !readAutoApproval() &&
+            convId !== activeConversationIdRef.current && automaticResponse({ ...ev, conversation_id: convId })) {
+          const tgTurn = telegramTurnsRef.current.get(ev.id);
+          const hub = telegramHubRef.current;
+          if (tgTurn && hub) {
+            const request = { ...ev, conversation_id: convId };
+            const { result } = hub.requestApproval({ convId, chatId: tgTurn.chatId, detail: approvalDetail(request) });
+            void result.then(async ok => {
+              const live = conversationTurnGateRef.current.accepts(convId, request.id) &&
+                conversationTurnGateRef.current.runs.get(convId)?.state !== "stopping" && Date.now() < request.expiresAt;
+              await invoke("codex_approval_response", { id: request.id, token: request.token,
+                threadId: request.threadId, turnId: request.turnId, itemId: request.itemId,
+                decision: ok && live ? "accept" : "decline" });
+            }).catch(() => {
+              setCodexElicitations(prev => prev.some(r => r.token === request.token) ? prev : [...prev, { ...request, conversation_id: convId }]);
+              saveControlNotice(convId, "승인 응답 전달 실패. 해당 대화에서 확인해 주세요.");
+            });
+            break;
+          }
+        }
+        setCodexElicitations(prev => prev.some(r => r.token === ev.token) ? prev : [...prev, { ...ev, conversation_id: convId }]);
+        if (!readAutoApproval() && convId !== activeConversationIdRef.current) saveControlNotice(convId, "추가 승인을 기다립니다. 해당 대화를 열어 검토해 주세요.");
         break;
       }
       case "codex_elicitation_resolved": {
         setCodexElicitations(prev => prev.filter(r => r.token !== ev.token || r.id !== ev.id));
-        break;
-      }
-      case "codex_approval_request": {
-        const request = ev;
-        const convId = resolveEventConv(ev);
-        const active = !!convId && convId === activeConversationIdRef.current;
-        const detail = request.networkApprovalContext
-          ? `네트워크: ${request.networkApprovalContext.protocol ?? "?"}://${request.networkApprovalContext.host ?? "?"}:${request.networkApprovalContext.port ?? "?"}`
-          : request.kind === "command"
-            ? `명령: ${Array.isArray(request.command) ? request.command.join(" ") : request.command ?? "(없음)"}\n작업 폴더: ${request.cwd ?? "(없음)"}`
-            : `파일 변경:\n${(request.changes ?? []).map((c) => `${c.kind}: ${c.path}\n${c.diff ?? ""}`).join("\n")}`;
-        // Background turns cannot borrow a click intended for the visible chat.
-        // An unreviewable payload is denied; there is no session-wide approval.
-        const reviewable = detail.length <= 12_000 &&
-          (request.kind === "command" ? !!request.command || !!request.networkApprovalContext : !!request.changes?.length);
-        // v0.7.54 — ⑥ 원격 승인: 텔레그램에서 시작된 턴이고 화면에 열린 대화가 아니면 텔레그램 버튼으로 묻는다.
-        // 1회용 토큰, 5분 무응답 = 거절, "전부 승인" 없음, 검토 불가(12,000자 초과 등) 요청은 기존처럼 자동 거절.
-        {
-          const tgTurn = telegramTurnsRef.current.get(request.id);
-          const hub = telegramHubRef.current;
-          if (!active && reviewable && tgTurn && hub && convId) {
-            const { result } = hub.requestApproval({ convId, chatId: tgTurn.chatId, detail });
-            void result.then((ok) => {
-              const decision = ok ? "accept" : "decline";
-              telegramLogRef.current(`APPROVAL ${decision} turn=${request.id} item=${request.itemId}`);
-              return invoke("codex_approval_response", {
-                id: request.id, token: request.token, threadId: request.threadId,
-                turnId: request.turnId, itemId: request.itemId, decision,
-              }).then(() => pushSystem(`Codex 요청 ${ok ? "승인" : "거절"}(텔레그램): ${request.itemId}`, ok ? "info" : "warn"));
-            }).catch((error) => pushSystem(`Codex 승인 응답 전달 실패: ${String(error)}`, "error"));
-            break;
-          }
-        }
-        const accepted = active && reviewable && window.confirm(
-          `Codex 실행 승인 요청 (이 명령 1회만)\n대화: ${convId}\n요청: ${request.threadId}/${request.turnId}/${request.itemId}\n\n${detail}\n\n승인하면 이 요청만 실행합니다.`,
-        );
-        const decision = accepted ? "accept" : "decline";
-        void invoke("codex_approval_response", {
-          id: request.id, token: request.token, threadId: request.threadId,
-          turnId: request.turnId, itemId: request.itemId, decision,
-        }).then(() => {
-          pushSystem(`Codex 요청 ${decision === "accept" ? "승인" : "거절"}: ${request.itemId}`, decision === "accept" ? "info" : "warn");
-        }).catch((error) => {
-          pushSystem(`Codex 승인 응답 전달 실패: ${String(error)}`, "error");
-        });
         break;
       }
 
@@ -5609,15 +5588,29 @@ export default function App() {
         </div>
       )}
 
-      {codexElicitations.filter(r => r.conversation_id === activeConversationId && r.expiresAt > Date.now()).slice(0, 1).map(request =>
-        <CodexElicitationDialog key={request.token} request={request} onResponse={async (r, action, content) => {
-          const active = r.conversation_id === activeConversationIdRef.current &&
-            conversationTurnGateRef.current.accepts(r.conversation_id, r.id) && Date.now() < r.expiresAt;
-          const safeAction = action === "accept" && !active ? "decline" : action;
-          await invoke("codex_elicitation_response", { id: r.id, token: r.token, threadId: r.threadId,
-            turnId: r.turnId, action: safeAction, content: safeAction === "accept" ? content : null });
-          setCodexElicitations(prev => prev.filter(p => p.token !== r.token));
-        }} />)}
+      <ApprovalRequests requests={codexElicitations} activeConversationId={activeConversationId}
+        isLive={r => turnToConvMap.current.get(r.id) === r.conversation_id &&
+          conversationTurnGateRef.current.accepts(r.conversation_id, r.id) &&
+          conversationTurnGateRef.current.runs.get(r.conversation_id)?.state !== "stopping"}
+        respond={async (r, reply) => {
+          // Recheck the owner at the final dispatch boundary, including background turns.
+          if (turnToConvMap.current.get(r.id) !== r.conversation_id ||
+              !conversationTurnGateRef.current.accepts(r.conversation_id, r.id) ||
+              conversationTurnGateRef.current.runs.get(r.conversation_id)?.state === "stopping" ||
+              Date.now() >= r.expiresAt) throw new Error("Approval request is no longer active");
+          if (r.type === "codex_elicitation_request") {
+            await invoke("codex_elicitation_response", { id: r.id, token: r.token, threadId: r.threadId,
+              turnId: r.turnId, action: reply.action, content: reply.content });
+          } else {
+            await invoke("codex_approval_response", { id: r.id, token: r.token, threadId: r.threadId,
+              turnId: r.turnId, itemId: r.itemId, decision: reply.action === "accept" ? "accept" : "decline" });
+          }
+        }}
+        onResolved={r => setCodexElicitations(prev => prev.filter(p => p.token !== r.token || p.id !== r.id))}
+        onAudit={(r, result) => {
+          // No commands, file diffs, form values or permission tokens in the audit trail.
+          logger.log(`[ApprovalMode] ${result} type=${r.type}`);
+        }} />
       <ElicitationDialog
         request={elicitationRequest}
         onResponse={handleElicitationResponse}

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { parseElicitationSchema, validateElicitationContent } from '../../sidecar/src/mcp-elicitation-schema.mjs';
 import type { CodexElicitationRequest } from '../types';
+import ApprovalToggle from './ApprovalToggle';
 
-export default function CodexElicitationDialog({ request, onResponse }: {
+export default function CodexElicitationDialog({ request, onResponse, deliveryError = false }: {
   request: CodexElicitationRequest;
+  deliveryError?: boolean;
   onResponse: (request: CodexElicitationRequest, action: 'accept' | 'decline' | 'cancel', content: Record<string, unknown> | null) => Promise<void>;
 }) {
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -44,6 +46,7 @@ export default function CodexElicitationDialog({ request, onResponse }: {
         }
       }}>
       <h3 id="codex-elicit-title">연결된 도구의 추가 승인</h3>
+      <ApprovalToggle />
       {request.traceId && <p className="elicitation-hint">요청 ID: {request.traceId}</p>}
       <p>요청 서버: <strong>{request.serverName}</strong></p>
       <p className="elicitation-message">{request.message}</p>
@@ -72,6 +75,7 @@ export default function CodexElicitationDialog({ request, onResponse }: {
       </div>
       {expired && <p role="alert">요청이 만료되었습니다. 승인할 수 없습니다.</p>}
       {error && <p role="alert">{error}</p>}
+      {deliveryError && <p role="alert">응답 전달 실패. 다시 시도하거나 거절해 주세요.</p>}
       <div className="elicitation-actions">
         <button type="button" className="elicitation-btn-cancel" disabled={busy} onClick={() => void respond('cancel')}>취소</button>
         <button type="button" className="elicitation-btn-cancel" disabled={busy} onClick={() => void respond('decline')}>거절</button>

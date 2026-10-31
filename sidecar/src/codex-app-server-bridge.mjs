@@ -184,9 +184,10 @@ function onServerMessage(message) {
       return;
     }
     const token = randomUUID();
+    const expiresAt = Date.now() + 120_000;
     const timer = setTimeout(() => decline(token), 120_000);
-    pending.set(token, { rpcId: message.id, timer, threadId, turnId, itemId: params.itemId });
-    emit({ type: "approval.requested", token, kind, threadId, turnId, itemId: params.itemId,
+    pending.set(token, { rpcId: message.id, timer, threadId, turnId, itemId: params.itemId, expiresAt });
+    emit({ type: "approval.requested", token, kind, threadId, turnId, itemId: params.itemId, expiresAt,
       command, cwd, changes, networkApprovalContext: params.networkApprovalContext ?? null,
       reason: params.reason ?? null });
     return;
@@ -321,6 +322,7 @@ inputReader.on("line", (line) => {
     if (value.type !== "approval") return;
     const entry = pending.get(value.token);
     if (!entry || entry.kind === "elicitation" || value.threadId !== entry.threadId || value.turnId !== entry.turnId || value.itemId !== entry.itemId) return;
+    if (Date.now() >= entry.expiresAt) { decline(value.token); return; }
     if (value.decision !== "accept" && value.decision !== "decline") return;
     pending.delete(value.token);
     clearTimeout(entry.timer);

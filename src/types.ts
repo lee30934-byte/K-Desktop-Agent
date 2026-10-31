@@ -88,6 +88,7 @@ type SidecarEventPayload =
       threadId: string;
       turnId: string;
       itemId: string;
+      expiresAt: number;
       command: string | string[] | null;
       cwd: string | null;
       changes: Array<{ path: string; kind: string; diff?: string }> | null;
@@ -583,3 +584,5 @@ export interface CodexElicitationRequest {
   id: string; token: string; threadId: string; turnId: string | null;
   conversation_id: string; serverName: string; message: string; schema: unknown; expiresAt: number;
 }
+
+export type CodexApprovalRequest = Extract<SidecarEvent, { type: 'codex_approval_request' }> & { conversation_id: string };

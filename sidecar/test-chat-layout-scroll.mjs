@@ -54,6 +54,7 @@ const COMPONENT_ROOT = {
   Settings: { cls: "settings-overlay", kind: "fixed" },
   ElicitationDialog: { cls: "elicitation-overlay", kind: "fixed" },
   CodexElicitationDialog: { cls: "elicitation-overlay", kind: "fixed" },
+  ApprovalRequests: { cls: "elicitation-overlay", kind: "fixed" },
   CommandPalette: { cls: "command-palette-overlay", kind: "fixed" },
   LibraryPanel: { inlineFixedIn: "src/components/LibraryPanel.tsx" },
   FolderInstructionsDialog: { inlineFixedIn: "src/components/FolderInstructionsDialog.tsx" },

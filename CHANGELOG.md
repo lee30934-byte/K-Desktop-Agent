@@ -1,3 +1,13 @@
+## [0.7.62] - 2026-10-31
+
+### Added
+- A persistent automatic approval switch in the chat header, settings and approval forms; Ctrl+Alt+A toggles it in the app. New installations default to OFF.
+- ON answers supported tool confirmation forms and Codex command/file requests across live conversations without opening a dialog. OFF restores manual review; existing narrow confirmed-read reuse remains active.
+
+### Fixed
+- Replace the blocking native command confirmation with a per-conversation dialog. Failed delivery returns to manual review, and stale, expired or stopped requests cannot acquire approval.
+- Input questions, authentication, SafeMode and individual tool restrictions keep their existing behavior. Arbitrary form values are never guessed.
+
 ## [0.7.61] - 2026-10-31
 
 ### Fixed
