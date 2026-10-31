@@ -331,6 +331,25 @@ export async function listRecoverableLongTasks(staleMs = 30_000): Promise<DBLong
   return rows;
 }
 
+// Queue attachments can exceed localStorage's quota. Keep the full workspace in SQLite.
+export async function loadConversationWorkspace(): Promise<string | null> {
+  const db = await initDB();
+  await db.execute("CREATE TABLE IF NOT EXISTS conversation_workspace (id INTEGER PRIMARY KEY CHECK (id = 1), snapshot TEXT NOT NULL)");
+  const rows = await db.select<Array<{ snapshot: string }>>("SELECT snapshot FROM conversation_workspace WHERE id = 1");
+  return rows[0]?.snapshot ?? null;
+}
+
+export async function getLongTask(id: string): Promise<DBLongTask | null> {
+  const db = await initDB();
+  const rows = await db.select<DBLongTask[]>("SELECT * FROM long_tasks WHERE id = ?", [id]);
+  return rows[0] ?? null;
+}
+
+export async function saveConversationWorkspace(snapshot: string): Promise<void> {
+  const db = await initDB();
+  await db.execute("INSERT OR REPLACE INTO conversation_workspace (id, snapshot) VALUES (1, ?)", [snapshot]);
+}
+
 /**
  * K 가 UI 에서 "버림" 선택 — status='abandoned' 로 mark.
  */

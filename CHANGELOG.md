@@ -1,3 +1,14 @@
+## [Unreleased]
+
+### Added
+- Add new/existing conversations to the task list; close inactive rows without deleting chats, with separate confirmed permanent deletion.
+- Restore the last conversation, task panel, task statuses and queued requests with attachments; resume eligible interrupted work from its stored request and durable evidence.
+- Recover an unresponsive execution engine from inside the app after confirmation. Stop the managed process tree, verify exit, preserve chats/reservations and pause automatic execution.
+
+### Fixed
+- Bound interrupt delivery waits and retain ownership when stop acknowledgement is missing. Prevent stale supervisor restarts from racing manual engine recovery.
+- Ignore duplicate MCP confirmation requests arriving after a manual reply, timeout or server resolution.
+
 ## [0.7.62] - 2026-10-31
 
 ### Added

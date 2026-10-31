@@ -52,6 +52,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     const auto = process.env.KDA_TEST_ESSENTIAL === '1' && c.auto;
     assert.deepEqual(value.result, auto ? { action: 'accept', content: { confirm_read: true } } : { action: 'decline', content: null });
     replies++;
+    // Repeat after resolution too: manual responses can arrive between duplicate requests.
+    if (c.duplicate) send({ id: value.id, method: 'mcpServer/elicitation/request', params: {
+      ...context, serverName: 'k-personal', mode: 'form', message: c.name, requestedSchema: schema,
+    } });
     if (c.item) send({ method: 'item/completed', params: { ...context, item: c.item } });
     if (c.parallel) send({ method: 'item/completed', params: { ...context, item: { ...read, id: 'second' } } });
     index++;

@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import Composer from "../src/components/Composer";
 import TaskActivityPanel from "../src/components/TaskActivityPanel";
+import ActionConfirmation from "../src/components/ActionConfirmation";
 import { ConversationControl, type SendMode } from "../src/conversationControl";
 import "../src/index.css";
 import "../src/App.css";
@@ -13,12 +14,24 @@ const calls: { conversationId: string; text: string; mode?: SendMode }[] = [];
 function Preview() {
   const [id, setId] = useState("a"); const [, update] = useState(0);
   const paint = () => update(n => n + 1);
-  (window as any).preview = { calls, stop: () => { control.stopping(id); paint(); } };
+  const [recoveries, setRecoveries] = useState(0);
+  const [confirmation, setConfirmation] = useState<string | null>(null);
+  (window as any).preview = { calls, recoveries, stop: () => { control.stopping(id); paint(); },
+    finish: () => { control.finish("c", "c-turn", "completed"); paint(); } };
   const queued = control.peek(id);
   return <div style={{ maxWidth: 1100, margin: "55px auto", padding: 24 }}>
+    {confirmation && <ActionConfirmation title={confirmation === "recover" ? "실행 엔진 복구" : "대화 영구 삭제"}
+      detail="다른 대화도 중단됩니다. 실행 엔진을 복구할까요?" confirmLabel="확인"
+      onCancel={() => setConfirmation(null)} onConfirm={() => {
+        if (confirmation === "recover") setRecoveries(n => n + 1); else { control.forget(confirmation); paint(); }
+        setConfirmation(null);
+      }} />}
     <h1 style={{ fontSize: 22, marginBottom: 16 }}>KDA · 대화별 작업 제어</h1>
     <nav style={{ display: "flex", gap: 12, marginBottom: 18 }}>{conversations.map(c => <button key={c.id} onClick={() => setId(c.id)} aria-pressed={id === c.id}>{c.title}</button>)}</nav>
-    <TaskActivityPanel runs={[...control.runs.values()]} queues={control.queues} paused={control.paused} allPaused={control.allPaused} conversations={conversations}
+    <TaskActivityPanel tracked={[...control.tracked]} runs={[...control.runs.values()]} queues={control.queues} paused={control.paused} allPaused={control.allPaused} conversations={[...conversations, { id: "idle", title: "보존한 기존 대화" }]}
+      onNew={() => { control.tracked.add("new"); paint(); }} onAdd={id => { control.tracked.add(id); paint(); }}
+      onClose={id => { control.forget(id); paint(); }} onDelete={setConfirmation}
+      onRecover={() => setConfirmation("recover")}
       onSelect={setId} onStop={target => { control.stopping(target); paint(); }} onStopAll={() => { control.allPaused = true; for (const c of conversations) { control.pause(c.id); control.stopping(c.id); } paint(); }} onResume={() => { control.resume(id); paint(); }} onResumeAutomation={() => { control.allPaused = false; paint(); }} />
     <div className="message message-assistant" style={{ minHeight: 180, padding: 24 }}>
       대화별 실행 상태를 확인하고 있습니다. 추가 상황이나 방향 변경은 아래 입력창에서 전달할 수 있습니다.

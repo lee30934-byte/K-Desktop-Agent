@@ -98,6 +98,7 @@ function decline(key, reason = "timeout") {
   const entry = pending.get(key);
   if (!entry) return;
   pending.delete(key);
+  autoResolved.add(entry.rpcId);
   clearTimeout(entry.timer);
   send({ id: entry.rpcId, result: entry.kind === "elicitation"
     ? { action: "decline", content: null } : { decision: "decline" } });
@@ -123,6 +124,9 @@ function onServerMessage(message) {
     if (typeof message.id !== "string" && !Number.isSafeInteger(message.id)) {
       diagnostic(trace, "invalid_request", true); return;
     }
+    if (autoResolved.has(message.id) || [...pending.values()].some(e => e.rpcId === message.id)) {
+      diagnostic(trace, "duplicate_request", true); return;
+    }
     // turnId is optional in Codex 0.158. The process and RPC ID bind requests
     // lacking it to this KDA turn. Mismatching non-null IDs are never accepted.
     const valid = !finished && params && threadId && params.threadId === threadId &&
@@ -136,15 +140,12 @@ function onServerMessage(message) {
         params?.turnId != null && turnId && params.turnId !== turnId ? "request_turn_mismatch" :
         !["form", "openai/form", "openaiForm"].includes(params?.mode) ? "unsupported_mode" :
         !parseElicitationSchema(params?.requestedSchema) ? "unsupported_schema" : "invalid_request", true);
+      autoResolved.add(message.id);
       send({ id: message.id, result: { action: "decline", content: null } });
       emit({ type: "provider.notice", code: "mcp_elicitation_declined",
         message: "연결된 도구의 요청 형식·대화 정보를 확인할 수 없어 거절했습니다. URL 인증과 지원하지 않는 입력 형식은 승인되지 않으며 대화는 계속됩니다." });
       return;
     }
-    if ([...pending.values()].some(e => e.rpcId === message.id)) {
-      diagnostic(trace, "duplicate_request"); return;
-    }
-    if (autoResolved.has(message.id)) { diagnostic(trace, "duplicate_request", true); return; }
     const content = redundantReadContent(params);
     if (content && validateElicitationContent(params.requestedSchema, content)) {
       autoResolved.add(message.id);
@@ -195,6 +196,7 @@ function onServerMessage(message) {
   if (method === "serverRequest/resolved") {
     for (const [token, entry] of pending) {
       if (entry.rpcId === params.requestId) {
+        autoResolved.add(entry.rpcId);
         clearTimeout(entry.timer);
         pending.delete(token);
         if (entry.kind === "elicitation") {
@@ -313,6 +315,7 @@ inputReader.on("line", (line) => {
         decline(value.token, "invalid_content"); return;
       }
       pending.delete(value.token);
+      autoResolved.add(entry.rpcId);
       clearTimeout(entry.timer);
       send({ id: entry.rpcId, result: { action: value.action, content: value.action === "accept" ? value.content : null } });
       diagnostic(entry, `${value.action}_forwarded`, true);

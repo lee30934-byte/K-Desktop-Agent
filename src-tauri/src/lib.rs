@@ -2,6 +2,7 @@ mod task_watch_recovery;
 mod browser_host;
 mod browser_host_bridge;
 mod media_preview;
+mod execution_recovery;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -30,6 +31,12 @@ static WATCHED_FOLDERS: OnceLock<Arc<RwLock<HashMap<String, WatchedFolder>>>> = 
 
 /// sidecar 를 의도적으로 종료시키는 중(reload/quit)인지 여부. true 면 stdout EOF 에서 재시작하지 않음.
 static INTENTIONAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+static EXECUTION_RECOVERY: AtomicBool = AtomicBool::new(false);
+static SIDECAR_GENERATION: AtomicU64 = AtomicU64::new(0);
+struct ExecutionRecoveryGuard;
+impl Drop for ExecutionRecoveryGuard {
+    fn drop(&mut self) { EXECUTION_RECOVERY.store(false, Ordering::SeqCst); }
+}
 /// 연속 재시작 시도 횟수. 성공 신호(stdout 첫 메시지) 수신 시 0 으로 리셋.
 static RESTART_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 /// 재시작 최대 횟수. 초과 시 영구 실패로 UI 알림.
@@ -59,6 +66,7 @@ static RESPAWN_TX: OnceLock<mpsc::UnboundedSender<RespawnRequest>> = OnceLock::n
 struct RespawnRequest {
     delay_secs: u64,
     attempt: u32,
+    generation: u64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -419,9 +427,10 @@ async fn interrupt(id: String) -> Result<(), String> {
     let payload = serde_json::json!({ "type": "interrupt", "id": id });
     let line = format!("{}\n", payload);
     let tx_holder = get_tx_holder().clone();
-    let guard = tx_holder.lock().await;
+    let guard = tokio::time::timeout(Duration::from_secs(2), tx_holder.lock()).await
+        .map_err(|_| "정지 전송 대기 초과 · 실행 엔진 복구를 사용하세요".to_string())?;
     let tx = guard.as_ref().ok_or("sidecar not initialized")?;
-    tx.send(line).await.map_err(|e| e.to_string())?;
+    tx.try_send(line).map_err(|e| format!("정지 전송 실패 · 실행 엔진 복구 가능: {e}"))?;
     Ok(())
 }
 
@@ -619,6 +628,11 @@ async fn safety_stats_reset() -> Result<(), String> {
 
 #[tauri::command]
 async fn reload_sidecar(app: AppHandle) -> Result<(), String> {
+    if EXECUTION_RECOVERY.swap(true, Ordering::SeqCst) {
+        return Err("실행 엔진 복구가 이미 진행 중입니다".into());
+    }
+    let _recovery_guard = ExecutionRecoveryGuard;
+    SIDECAR_GENERATION.fetch_add(1, Ordering::SeqCst);
     log_lifecycle("sidecar.log", "reload_sidecar requested");
     // 의도적 종료: stdout EOF 에서 자동 재시작 금지. spawn_sidecar 진입 시 다시 false 로.
     INTENTIONAL_SHUTDOWN.store(true, Ordering::SeqCst);
@@ -628,20 +642,19 @@ async fn reload_sidecar(app: AppHandle) -> Result<(), String> {
     // 1. 기존 프로세스 kill
     let child_holder = get_child_holder().clone();
     {
-        let mut guard = child_holder.lock().await;
-        if let Some(mut child) = guard.take() {
-            // node.exe 만 죽이면 claude.exe 손자가 고아로 남으므로 트리 통째 회수 후 start_kill.
-            if let Some(pid) = child.id() {
-                tree_kill_sidecar_pid(pid);
-            }
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+        let mut guard = tokio::time::timeout(Duration::from_secs(3), child_holder.lock()).await
+            .map_err(|_| "실행 엔진 핸들 대기 초과 · 종료 확인 실패".to_string())?;
+        if let Some(child) = guard.as_mut() {
+            execution_recovery::stop_process_tree(child).await?;
+            guard.take();
+            SIDECAR_PID.store(0, Ordering::SeqCst);
         }
     }
     // 2. 기존 채널 제거
     {
         let tx_holder = get_tx_holder().clone();
-        let mut tx_guard = tx_holder.lock().await;
+        let mut tx_guard = tokio::time::timeout(Duration::from_secs(3), tx_holder.lock()).await
+            .map_err(|_| "실행 엔진 채널 해제 시간 초과".to_string())?;
         *tx_guard = None;
     }
     // 3. 프론트에 알림
@@ -652,6 +665,17 @@ async fn reload_sidecar(app: AppHandle) -> Result<(), String> {
     // 4. 재기동
     spawn_sidecar(app).await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Out-of-band recovery: does not depend on Node consuming its stdin queue.
+#[tauri::command]
+async fn recover_execution(app: AppHandle) -> Result<(), String> {
+    let result = reload_sidecar(app).await;
+    log_lifecycle("sidecar.log", &match &result {
+        Ok(()) => "execution recovery: process tree stopped; replacement spawned".to_string(),
+        Err(error) => format!("execution recovery: HOLD: {error}"),
+    });
+    result
 }
 
 #[tauri::command]
@@ -4986,7 +5010,7 @@ async fn spawn_sidecar(app: AppHandle) -> Result<(), String> {
 
         // supervisor 태스크에 요청만 전송 (재귀 회피 — spawn_sidecar 를 직접 await 하지 않음).
         if let Some(tx) = RESPAWN_TX.get() {
-            let _ = tx.send(RespawnRequest { delay_secs, attempt });
+            let _ = tx.send(RespawnRequest { delay_secs, attempt, generation: SIDECAR_GENERATION.load(Ordering::SeqCst) });
         } else {
             log_lifecycle("sidecar.log", "respawn supervisor not initialized — cannot recover");
         }
@@ -5391,6 +5415,15 @@ pub fn run_with_options(start_minimized: bool) {
                         continue;
                     }
                     tokio::time::sleep(Duration::from_secs(req.delay_secs)).await;
+                    if EXECUTION_RECOVERY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                        continue;
+                    }
+                    let _recovery_guard = ExecutionRecoveryGuard;
+                    if INTENTIONAL_SHUTDOWN.load(Ordering::SeqCst) ||
+                        req.generation != SIDECAR_GENERATION.load(Ordering::SeqCst) {
+                        log_lifecycle("sidecar.log", "supervisor: obsolete respawn skipped after engine recovery");
+                        continue;
+                    }
                     log_lifecycle(
                         "sidecar.log",
                         &format!("supervisor respawning (attempt #{})", req.attempt),
@@ -5461,7 +5494,7 @@ pub fn run_with_options(start_minimized: bool) {
                             let _ = child.start_kill();
                         } else if let Some(tx) = RESPAWN_TX.get() {
                             let attempt = RESTART_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
-                            let _ = tx.send(RespawnRequest { delay_secs: 1, attempt });
+                            let _ = tx.send(RespawnRequest { delay_secs: 1, attempt, generation: SIDECAR_GENERATION.load(Ordering::SeqCst) });
                         }
                         continue;
                     }
@@ -5497,7 +5530,7 @@ pub fn run_with_options(start_minimized: bool) {
                         let _ = child.start_kill();
                     } else if let Some(tx) = RESPAWN_TX.get() {
                         let attempt = RESTART_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
-                        let _ = tx.send(RespawnRequest { delay_secs: 1, attempt });
+                        let _ = tx.send(RespawnRequest { delay_secs: 1, attempt, generation: SIDECAR_GENERATION.load(Ordering::SeqCst) });
                     }
                 }
             });
@@ -5524,6 +5557,7 @@ pub fn run_with_options(start_minimized: bool) {
             codex_elicitation_response,
             interrupt,
             reload_sidecar,
+            recover_execution,
             ping_sidecar,
             get_system_memory_status,
             // Phase 69 (v0.6.13) — frontend → sidecar.log echo bridge

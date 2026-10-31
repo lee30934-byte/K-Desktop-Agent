@@ -20,6 +20,22 @@ const fixture = path.join(run, "fake-cli.cjs");
 fs.writeFileSync(fixture, `
 const fs = require('node:fs');
 if (process.argv.includes('--version')) { console.log('codex fixture 1.0'); process.exit(0); }
+if (process.argv.includes('app-server')) {
+  const emit = e => console.log(JSON.stringify(e));
+  require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+    const value=JSON.parse(line);
+    if(value.method==='initialize') emit({id:value.id,result:{}});
+    if(value.method==='thread/start'||value.method==='thread/resume') emit({id:value.id,result:{thread:{id:'fixture-session-'+process.pid}}});
+    if(value.method==='turn/start') {
+      emit({id:value.id,result:{turn:{id:'fixture-turn'}}});
+      emit({method:'item/completed',params:{item:{type:'agentMessage',id:'answer',text:'fixture-pid='+process.pid}}});
+      const done=()=>emit({method:'turn/completed',params:{turn:{id:'fixture-turn',status:'completed'}}});
+      if(JSON.stringify(value.params).includes('KDA_TEST_HOLD')) {
+        const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(path.join(run, "release"))})){clearInterval(timer);done();}},25);
+      } else done();
+    }
+  });
+} else {
 let input = '';
 process.stdin.on('data', c => input += c);
 process.stdin.on('end', () => {
@@ -37,6 +53,7 @@ process.stdin.on('end', () => {
     },25);
   } else done();
 });
+}
 `);
 const cli = path.join(run, "fake-cli.cmd");
 fs.writeFileSync(cli, '@echo off\r\n"' + process.execPath + '" "' + fixture + '" %*\r\n');
@@ -76,7 +93,7 @@ try {
   assert.equal(alive(Number(a.text.match(/fixture-pid=(\d+)/)[1])), false);
   assert.equal(alive(Number(b.text.match(/fixture-pid=(\d+)/)[1])), true); checks.push("stop acknowledgement follows actual process exit and leaves other chat alive");
   send({ type: "interrupt", id: "b1" }); await event("turn_stopped", "b1");
-  start("early", "c", "KDA_TEST_EARLY_DONE"); await event("assistant_delta", "early");
+  start("early", "c", "KDA_TEST_EARLY_DONE", undefined, "claude"); await event("assistant_delta", "early");
   start("early-duplicate", "c", "normal"); await event("error", "early-duplicate");
   assert.equal(events.some(e => e.id === "early" && e.type === "done"), false); checks.push("provider completion does not release a still-running process");
   send({ type: "interrupt", id: "early" }); await event("turn_stopped", "early");

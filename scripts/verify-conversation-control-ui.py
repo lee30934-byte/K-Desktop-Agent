@@ -44,6 +44,34 @@ with sync_playwright() as p:
     expect(page.get_by_role("button", name="지금 반영", exact=True).last).to_be_disabled()
     expect(page.locator(".composer-steering-bar")).to_contain_text("실제 종료")
     checks.append("new steering disabled until actual stop acknowledgement")
+    expect(page.get_by_role("button", name="목록에서 닫기", exact=True).first).to_be_disabled()
+    page.evaluate("window.preview.finish()")
+    page.get_by_role("button", name="목록에서 닫기", exact=True).last.click()
+    expect(page.locator(".task-activity-row")).to_have_count(2)
+    checks.append("running conversations cannot close; completed rows close without deleting chats")
+    page.get_by_role("button", name="기존 대화 추가", exact=True).click()
+    page.get_by_role("combobox", name="작업 목록에 추가할 대화").select_option("idle")
+    expect(page.locator(".task-activity-row")).to_have_count(3)
+    page.get_by_role("button", name="새 대화 추가", exact=True).click()
+    expect(page.locator(".task-activity-row")).to_have_count(4)
+    checks.append("new and existing conversation controls add tracked rows")
+    page.get_by_role("button", name="정지 불응 시 실행 엔진 복구", exact=True).click()
+    expect(page.get_by_role("alertdialog")).to_be_visible()
+    page.keyboard.press("Escape")
+    assert page.evaluate("window.preview.recoveries") == 0
+    if not page.locator(".task-activity-popover").is_visible():
+        page.locator(".task-activity-toggle").click()
+    page.get_by_role("button", name="정지 불응 시 실행 엔진 복구", exact=True).click()
+    page.get_by_role("alertdialog").get_by_role("button", name="확인", exact=True).click()
+    assert page.evaluate("window.preview.recoveries") == 1
+    # Pointer-down outside the popover may close it while the app confirmation remains usable.
+    if not page.locator(".task-activity-popover").is_visible():
+        page.locator(".task-activity-toggle").click()
+    checks.append("engine recovery needs explicit confirmation and cancel has no effect")
+    assert page.evaluate("localStorage.getItem('kda_task_panel_open_v1')") == "1"
+    page.reload()
+    expect(page.locator(".task-activity-popover")).to_be_visible()
+    checks.append("task panel open state restored after reload")
     page.set_viewport_size({"width": 720, "height": 900})
     page.screenshot(path=str(out / "compact.png"), full_page=True)
     assert not errors, errors

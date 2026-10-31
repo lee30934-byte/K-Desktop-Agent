@@ -13,10 +13,11 @@ export interface PendingSend {
 export interface RunView {
   conversationId: string;
   turnId: string;
-  state: "running" | "stopping" | "stopped" | "completed" | "failed";
+  state: "running" | "stopping" | "stopped" | "completed" | "failed" | "interrupted";
   startedAt: number;
   updatedAt: number;
   detail: string;
+  stopError?: string;
 }
 
 /** All queue / pause decisions use the originating conversation, never the visible tab. */
@@ -25,10 +26,12 @@ export class ConversationControl extends ConversationTurnGate {
   readonly queues = new Map<string, PendingSend[]>();
   readonly paused = new Set<string>();
   readonly pauseReasons = new Map<string, "user" | "failure" | "legacy">();
+  readonly tracked = new Set<string>();
   allPaused = false;
 
   override claim(conversationId: string, turnId: string): boolean {
     if (!super.claim(conversationId, turnId)) return false;
+    this.tracked.add(conversationId);
     this.runs.set(conversationId, { conversationId, turnId, state: "running", startedAt: Date.now(), updatedAt: Date.now(), detail: "작업 시작" });
     return true;
   }
@@ -46,6 +49,11 @@ export class ConversationControl extends ConversationTurnGate {
     const run = this.runs.get(conversationId);
     if (id && run) this.runs.set(conversationId, { ...run, state: "stopping", detail: "실제 종료를 확인하고 있습니다", updatedAt: Date.now() });
     return id;
+  }
+  stopFailed(conversationId: string, turnId: string, error: string): void {
+    const run = this.runs.get(conversationId);
+    if (run?.turnId !== turnId || !this.accepts(conversationId, turnId)) return;
+    this.runs.set(conversationId, { ...run, state: "stopping", stopError: error, detail: "종료 확인 지연 · 엔진 복구 가능" });
   }
   finish(conversationId: string, turnId: string, state: "stopped" | "completed" | "failed", retryScheduled = false): boolean {
     if (!super.release(conversationId, turnId)) return false;
@@ -85,6 +93,12 @@ export class ConversationControl extends ConversationTurnGate {
     if (Array.isArray(snapshot)) for (const row of snapshot) {
       if (Array.isArray(row) && typeof row[0] === "string" && ["user", "failure", "legacy"].includes(row[1])) this.pause(row[0], row[1]);
     }
+  }
+  forget(conversationId: string): boolean {
+    if (this.isActive(conversationId) || this.queues.has(conversationId)) return false;
+    this.tracked.delete(conversationId);
+    this.runs.delete(conversationId);
+    return true;
   }
 }
 

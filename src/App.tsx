@@ -29,6 +29,9 @@ import SidebarResizer from "./components/SidebarResizer";
 import SidePanel, { type SidePanelItem } from "./components/SidePanel";
 import { ConversationControl, buildSteeringMessage, type PendingSend, type SendMode } from "./conversationControl";
 import TaskActivityPanel from "./components/TaskActivityPanel";
+import ActionConfirmation from "./components/ActionConfirmation";
+import { saveWorkspace, restoreWorkspace, startupRecoveryCandidates, recoveryAttachments, ACTIVE_CONVERSATION_KEY } from "./conversationWorkspace";
+import { loadConversationWorkspace, saveConversationWorkspace, getLongTask } from "./db";
 import { ConversationMessageWriter } from "./messagePersistence";
 import { dispatchAvailableWatches } from "./utils/taskWatchDispatch";
 import { settleWatchFailure, watchBlockReason, watchBlockLabel, watchRecoveryPrompt, persistWatchResult, visibleWaitingWatches, waitingWatchKey, type WaitingWatch, type ReadyWatch, type WatchDelivery } from "./utils/taskWatchRecovery";
@@ -803,6 +806,15 @@ export default function App() {
   const stopGenerationRef = useRef(new Map<string, number>());
   const allStopGenerationRef = useRef(0);
   const dispatchedTurnIdsRef = useRef(new Set<string>());
+  const workspaceReadyRef = useRef(false);
+  const startupLoadStartedRef = useRef(false);
+  const workspaceWritesRef = useRef<Promise<void>>(Promise.resolve());
+  const [workspaceSaveError, setWorkspaceSaveError] = useState(false);
+  const startupActiveIdRef = useRef<string | null>(null);
+  const autoResumeTaskQueueRef = useRef<Array<{ task: DBLongTask; reason: string; queuedAt: number }>>([]);
+  const [recoveringExecution, setRecoveringExecution] = useState(false);
+  const [controlConfirmation, setControlConfirmation] = useState<{ kind: "recover" | "delete"; id?: string } | null>(null);
+  const recoveringExecutionRef = useRef(false);
   const syncControl = useCallback(() => {
     const control = conversationTurnGateRef.current;
     setStreamingConvIds(control.activeConversationIds());
@@ -818,6 +830,15 @@ export default function App() {
       localStorage.setItem("kda_paused_conversations_v1", JSON.stringify([...control.paused]));
       localStorage.setItem("kda_pause_reasons_v2", JSON.stringify(control.pauseSnapshot()));
     } catch {}
+    if (workspaceReadyRef.current) saveWorkspace(control, {
+      getItem: key => localStorage.getItem(key),
+      setItem: (_key, snapshot) => {
+        workspaceWritesRef.current = workspaceWritesRef.current.catch(() => {}).then(() => saveConversationWorkspace(snapshot));
+        void workspaceWritesRef.current.then(() => setWorkspaceSaveError(false), error => {
+          logger.error("[Workspace] 작업 목록·예약 저장 실패", error); setWorkspaceSaveError(true);
+        });
+      },
+    });
   }, []);
   useEffect(() => {
     try {
@@ -854,7 +875,9 @@ export default function App() {
     let manifestPretty = task.manifest_json ?? "(no manifest_json)";
     try {
       if (task.manifest_json) {
-        manifestPretty = JSON.stringify(JSON.parse(task.manifest_json), null, 2);
+        const manifest = JSON.parse(task.manifest_json);
+        if (Array.isArray(manifest?.attachments)) manifest.attachments = manifest.attachments.map(({ base64, ...metadata }: Record<string, unknown>) => ({ ...metadata, data: "reattached from saved bytes" }));
+        manifestPretty = JSON.stringify(manifest, null, 2);
       }
     } catch {
       // Old builds may have persisted non-JSON metadata. Keep the raw text.
@@ -864,7 +887,7 @@ export default function App() {
     return [
       "[KDA AUTO-RESUME]",
       "",
-      "The previous Codex response stream was interrupted before response.completed.",
+      "The previous execution was interrupted before its durable completion record.",
       "Do not try to continue the broken websocket stream. Start from durable state.",
       "",
       "Recovery target:",
@@ -891,7 +914,9 @@ export default function App() {
   }, []);
 
   const queueLongTaskAutoResume = useStableCallback((task: DBLongTask, reason: string) => {
-    if (task.conversation_id && conversationTurnGateRef.current.paused.has(task.conversation_id)) return;
+    if (task.status === "completed" || task.status === "abandoned") return;
+    const control = conversationTurnGateRef.current;
+    if (task.conversation_id && control.paused.has(task.conversation_id) && control.pauseReasons.get(task.conversation_id) !== "failure") return;
     if (!readLocalBool(LS_AUTO_RESUME_LONG_TASKS, true)) {
       logger.log(`[AutoResume] disabled by localStorage; task=${task.id}`);
       return;
@@ -912,7 +937,9 @@ export default function App() {
     localStorage.setItem(attemptsKey, String((Number.isFinite(attempts) ? attempts : 0) + 1));
 
     autoResumeQueuedTaskIdsRef.current.add(task.id);
-    setPendingLongTaskAutoResume({ task, reason, queuedAt: Date.now() });
+    if (task.conversation_id && control.pauseReasons.get(task.conversation_id) === "failure") { control.resume(task.conversation_id); syncControl(); }
+    autoResumeTaskQueueRef.current.push({ task, reason, queuedAt: Date.now() });
+    setControlVersion(v => v + 1);
     logger.warn(`[AutoResume] queued task=${task.id} reason=${reason}`);
   });
 
@@ -1356,6 +1383,9 @@ export default function App() {
 
   // ─── DB 초기화 및 대화 목록 로드 ─────────────────────
   useEffect(() => {
+    // StrictMode must not restore a second stale snapshot over a newly claimed owner.
+    if (startupLoadStartedRef.current) return;
+    startupLoadStartedRef.current = true;
     (async () => {
       try {
         await initDB();
@@ -1364,6 +1394,13 @@ export default function App() {
           getAllFolders(),
         ]);
         setConversations(convs);
+        const validIds = new Set(convs.map(c => c.id));
+        const snapshot = await loadConversationWorkspace();
+        restoreWorkspace(conversationTurnGateRef.current, { getItem: key => snapshot ?? localStorage.getItem(key), setItem: () => {} }, validIds);
+        workspaceReadyRef.current = true;
+        const savedActive = localStorage.getItem(ACTIVE_CONVERSATION_KEY);
+        if (savedActive && validIds.has(savedActive)) startupActiveIdRef.current = savedActive;
+        syncControl();
         setFolders(fols.map((f) => ({
           id: f.id,
           name: f.name,
@@ -1380,10 +1417,13 @@ export default function App() {
         // status='running' 인데 updated_at 이 30초+ 지난 row = sidecar normal completion 안 박힘
         // = KDA 강제 종료 / OS reboot / sidecar crash 로 끊긴 작업. K 에게 RecoveryBanner 로 알림.
         try {
-          const recoverable = await listRecoverableLongTasks(30_000);
+          const recoverable = await listRecoverableLongTasks(-1);
           if (recoverable.length > 0) {
             logger.log(`[App] 복구 가능한 long_tasks ${recoverable.length}개 발견 — 배너 표시`);
             setRecoverableTasks(recoverable);
+            for (const task of startupRecoveryCandidates(recoverable, conversationTurnGateRef.current, validIds)) {
+              queueLongTaskAutoResume(task, "application_restart");
+            }
             // Startup stale rows are ambiguous: a previous turn may have
             // completed successfully but failed to finalize the long_task row.
             // Keep these as a recovery banner only. Live disconnect events
@@ -1543,12 +1583,15 @@ export default function App() {
         conversationTurnGateRef.current.stopping(eventConversationId);
         syncControl();
       } else if (ev.type === "interrupt_warning" || ev.type === "interrupt_rejected") {
+        conversationTurnGateRef.current.stopFailed(eventConversationId, eventTurnId, event.message);
+        syncControl();
         if (eventConversationId === activeConversationIdRef.current) pushSystem(event.message, "warn");
         if (ev.type === "interrupt_rejected") rejectStopWaiters(eventTurnId, new Error(event.message));
       }
       return;
     }
     if ((ev.type === "done" || ev.type === "error") && eventConversationId) {
+      void finalizeLongTask(eventTurnId, ev.type === "done" ? "completed" : "failed").catch(err => logger.warn(`[turn journal] ${err}`));
       if (typeof event.agentId === "string" && event.agentId) sessionIdsRef.current.set(eventConversationId, event.agentId);
       for (const message of messageCacheRef.current.get(eventConversationId)?.values() ?? []) {
         if (message.role === "assistant" && message.streaming) queueMessageSave({ ...message, streaming: false }, eventConversationId);
@@ -2153,7 +2196,7 @@ export default function App() {
          turnToConvMap.current.delete(ev.id);
        }
         if (convForErr && ev.id && !failedWatch) {
-          conversationTurnGateRef.current.finish(convForErr, ev.id, "failed");
+          conversationTurnGateRef.current.finish(convForErr, ev.id, "failed", autoResumeQueuedTaskIdsRef.current.has(ev.id));
           syncControl();
         }
         // Phase 17 / Phase 144 (v0.7.20) — --resume target 이 없어진 경우 자동 회복:
@@ -2273,6 +2316,8 @@ export default function App() {
       case "long_task_started": {
         const e = ev as any;
         if (!e.taskId || !e.kind) break;
+        // The dispatch journal owns root-turn recovery; provider subtasks keep their own rows.
+        if (dispatchedTurnIdsRef.current.has(String(e.taskId))) break;
         insertLongTask({
           id: String(e.taskId),
           kind: String(e.kind),
@@ -2286,7 +2331,7 @@ export default function App() {
       case "long_task_evidence": {
         const e = ev as any;
         if (!e.taskId) break;
-        updateLongTaskEvidence(String(e.taskId), e.manifest ?? null).catch((err) =>
+        updateLongTaskEvidence(String(e.taskId), dispatchedTurnIdsRef.current.has(String(e.taskId)) ? null : e.manifest ?? null).catch((err) =>
           logger.warn(`[long_task_evidence] update 실패: ${err}`),
         );
         break;
@@ -2295,6 +2340,7 @@ export default function App() {
       case "long_task_done": {
         const e = ev as any;
         if (!e.taskId) break;
+        if (dispatchedTurnIdsRef.current.has(String(e.taskId))) break;
         const status = (e.status === "failed" || e.status === "abandoned" ? e.status : "completed") as
           | "completed"
           | "failed"
@@ -2400,16 +2446,19 @@ export default function App() {
         logger.warn(`[Recovery] sidecar 가 session_recovery_triggered emit — reason=${e.reason} taskId=${e.taskId ?? "(없음)"}`);
         // Recovery event can arrive while the task is still fresh; fetch every running task and prefer taskId.
         listRecoverableLongTasks(-1)
-          .then((tasks) => {
+          .then(async (tasks) => {
             if (tasks.length > 0) {
               logger.log(`[Recovery] ${tasks.length}개 복구 후보 — 배너 표시`);
               setRecoverableTasks(tasks);
-              const target =
-                (e.taskId ? tasks.find((t) => t.id === String(e.taskId)) : null) ??
-                tasks[0];
+              const exactId = typeof e.taskId === "string" ? e.taskId : typeof eventTurnId === "string" ? eventTurnId : null;
+              const target = exactId ? tasks.find(t => t.id === exactId) ?? await getLongTask(exactId) : null;
               if (target) {
                 queueLongTaskAutoResume(target, String(e.reason ?? "session_recovery_triggered"));
               }
+            }
+            else if (typeof e.taskId === "string") {
+              const exact = await getLongTask(e.taskId);
+              if (exact) queueLongTaskAutoResume(exact, String(e.reason ?? "session_recovery_triggered"));
             }
           })
           .catch((err) => logger.warn(`[Recovery] listRecoverableLongTasks 실패: ${err}`));
@@ -2626,13 +2675,18 @@ export default function App() {
       waiter.timer = window.setTimeout(() => {
         const remaining = stopWaitersRef.current.get(turnId)?.filter((w) => w !== waiter) ?? [];
         if (remaining.length) stopWaitersRef.current.set(turnId, remaining); else stopWaitersRef.current.delete(turnId);
-        reject(new Error("종료 확인이 지연되고 있습니다. 작업 잠금과 추가 지시는 유지됩니다."));
+        control.stopFailed(conversationId, turnId, "30초 이내 종료 확인 없음");
+        syncControl();
+        reject(new Error("종료 확인이 지연됩니다. 작업 현황의 ‘실행 엔진 복구’를 사용할 수 있습니다. 작업 잠금과 예약은 유지됩니다."));
       }, 30_000);
       stopWaitersRef.current.set(turnId, [...(stopWaitersRef.current.get(turnId) ?? []), waiter]);
       // A locally preparing request has not reached the sidecar yet. Its final
       // owner check will acknowledge cancellation without ever spawning a process.
       if (dispatchedTurnIdsRef.current.has(turnId)) {
-        void invoke("interrupt", { id: turnId }).catch((err) => rejectStopWaiters(turnId, new Error(String(err))));
+        void invoke("interrupt", { id: turnId }).catch((err) => {
+          control.stopFailed(conversationId, turnId, String(err)); syncControl();
+          rejectStopWaiters(turnId, new Error(String(err)));
+        });
       }
     });
   });
@@ -2663,6 +2717,7 @@ export default function App() {
   });
 
   const sendOwnedMessage = useStableCallback(async (payload: Record<string, any>) => {
+    if (recoveringExecutionRef.current) throw new Error("실행 엔진 복구 중입니다.");
     const id = payload.id as string;
     const conversationId = turnToConvMap.current.get(id);
     if (!conversationId || payload.conversationId !== conversationId) throw new Error("대화 소유권이 일치하지 않아 전송을 차단했습니다.");
@@ -2673,6 +2728,10 @@ export default function App() {
     if (control.runs.get(conversationId)?.state === "stopping") { await finishStoppedTurn(conversationId, id); return; }
     await flushMessageSaves(conversationId);
     if (control.runs.get(conversationId)?.state === "stopping") { await finishStoppedTurn(conversationId, id); return; }
+    await insertLongTask({ id, kind: "conversation_turn", conversationId, title: conversation?.title,
+      manifest: { recoveryVersion: 1, request: payload.message, provider: payload.provider, model: payload.model, attachments: payload.attachments } });
+    if (!control.accepts(conversationId, id) || recoveringExecutionRef.current) throw new Error("복구 또는 종료된 실행의 전송을 차단했습니다.");
+    if (control.runs.get(conversationId)?.state === "stopping") { await finishStoppedTurn(conversationId, id); return; }
     dispatchedTurnIdsRef.current.add(id);
     await invoke("send_message", {
       ...payload,
@@ -2682,6 +2741,7 @@ export default function App() {
   });
 
   const handleSendMessage = useStableCallback(async (text: string, files?: FileAttachment[], options?: { conversationId?: string; fromQueue?: string; mode?: SendMode }) => {
+    if (recoveringExecutionRef.current) throw new Error("실행 엔진 복구 중입니다. 잠시 후 다시 시도하세요.");
     const targetId = options?.conversationId ?? activeConversationIdRef.current;
     // v0.7.57 — K 의 실제 메시지가 오면 그 대화의 자동 이어가기 연속 카운터 reset.
     if (targetId && !isAutoContinueMessage(text)) autoContinueChainRef.current.reset(targetId);
@@ -4062,6 +4122,8 @@ export default function App() {
 
   const stopConversation = useStableCallback(async (id: string) => {
     stopGenerationRef.current.set(id, (stopGenerationRef.current.get(id) ?? 0) + 1);
+    autoResumeTaskQueueRef.current = autoResumeTaskQueueRef.current.filter(entry => entry.task.conversation_id !== id);
+    setPendingLongTaskAutoResume(prev => prev?.task.conversation_id === id ? null : prev);
     const control = conversationTurnGateRef.current;
     // Preserve ordinary reservations for explicit resume; cancel replacement instructions.
     for (const item of control.queues.get(id) ?? []) if (item.mode === "steer") control.remove(id, item.id);
@@ -4078,6 +4140,7 @@ export default function App() {
     control.allPaused = true;
     autoResumeManualStoppedRef.current = true;
     autoResumeQueuedTaskIdsRef.current.clear();
+    autoResumeTaskQueueRef.current = [];
     setPendingLongTaskAutoResume(null);
     setPendingResume(null);
     try { localStorage.setItem(LS_AUTO_RESUME_MANUAL_STOPPED, "1"); } catch {}
@@ -4085,6 +4148,41 @@ export default function App() {
     for (const id of ids) control.pause(id);
     syncControl();
     await Promise.allSettled([...ids].map((id) => stopConversation(id)));
+  });
+  const recoverExecution = useStableCallback(async () => {
+    if (recoveringExecutionRef.current) return;
+    recoveringExecutionRef.current = true;
+    setRecoveringExecution(true);
+    const control = conversationTurnGateRef.current;
+    allStopGenerationRef.current++;
+    control.allPaused = true;
+    autoResumeManualStoppedRef.current = true;
+    autoResumeTaskQueueRef.current = [];
+    setPendingLongTaskAutoResume(null);
+    setPendingResume(null);
+    localStorage.setItem(LS_AUTO_RESUME_MANUAL_STOPPED, "1");
+    const runs = [...control.runs.values()].filter(r => control.isActive(r.conversationId));
+    for (const run of runs) {
+      stopGenerationRef.current.set(run.conversationId, (stopGenerationRef.current.get(run.conversationId) ?? 0) + 1);
+      control.pause(run.conversationId);
+      control.stopping(run.conversationId);
+      for (const q of control.queues.get(run.conversationId) ?? []) if (q.mode === "steer") control.remove(run.conversationId, q.id);
+    }
+    syncControl();
+    try {
+      await flushMessageSaves();
+      await workspaceWritesRef.current;
+      await invoke("recover_execution");
+      const results = await Promise.allSettled(runs.map(r => finishStoppedTurn(r.conversationId, r.turnId)));
+      const failure = results.find(r => r.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+      pushSystem("실행 엔진 복구 완료 · 대화와 예약을 보존했습니다. 자동 실행은 보류 중입니다.", "info");
+    } catch (error) {
+      for (const run of runs) control.stopFailed(run.conversationId, run.turnId, String(error));
+      pushSystem(`실행 엔진 복구 확인 실패: ${String(error)}. 잠금과 자동 실행 보류를 유지합니다.`, "error");
+    } finally {
+      recoveringExecutionRef.current = false; setRecoveringExecution(false); syncControl();
+    }
   });
   const resumeConversationQueue = useStableCallback((id: string) => {
     const control = conversationTurnGateRef.current;
@@ -4114,6 +4212,8 @@ export default function App() {
         }
       }
       setConversations((prev) => [newConv, ...prev]);
+      conversationTurnGateRef.current.tracked.add(id);
+      syncControl();
       setActiveConversationId(id);
       activeConversationIdRef.current = id;
       setMessages([]);
@@ -4299,11 +4399,14 @@ export default function App() {
       }
       await flushMessageSaves(id);
       await deleteConversation(id);
+      conversationTurnGateRef.current.forget(id);
+      syncControl();
       setConversations((prev) => prev.filter((c) => c.id !== id));
 
       // 삭제된 대화가 현재 활성 대화면 초기화
       if (activeConversationId === id) {
         setActiveConversationId(null);
+        localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
         activeConversationIdRef.current = null;
         setMessages([]);
         refreshBaselineRef.current = 0;
@@ -4538,6 +4641,7 @@ export default function App() {
   useEffect(() => {
     const control = conversationTurnGateRef.current;
     for (const [id] of control.queues) {
+      if (control.runs.get(id)?.state === "interrupted") continue;
       if (!control.canAutoRun(id) || steeringBusyRef.current.has(id)) continue;
       const next = control.peek(id);
       if (next) void handleSendMessage(next.text, next.files, { conversationId: id, fromQueue: next.id, mode: next.mode }).catch((err) => { control.pause(id); syncControl(); saveControlNotice(id, String(err)); });
@@ -4545,11 +4649,37 @@ export default function App() {
   }, [controlVersion, handleSendMessage]);
 
   useEffect(() => {
-    if (!pendingLongTaskAutoResume || isStreaming || !dbReady) return;
+    if (!dbReady || !startupActiveIdRef.current) return;
+    const id = startupActiveIdRef.current;
+    startupActiveIdRef.current = null;
+    void handleSelectConversation(id);
+  }, [dbReady, handleSelectConversation]);
+
+  useEffect(() => {
+    if (dbReady && activeConversationId) {
+      try { localStorage.setItem(ACTIVE_CONVERSATION_KEY, activeConversationId); } catch {}
+    }
+  }, [dbReady, activeConversationId]);
+
+  useEffect(() => {
+    if (pendingLongTaskAutoResume || !dbReady || status !== "connected") return;
+    const index = autoResumeTaskQueueRef.current.findIndex(entry => {
+      const id = entry.task.conversation_id;
+      return !!id && conversationTurnGateRef.current.canAutoRun(id);
+    });
+    if (index >= 0) setPendingLongTaskAutoResume(autoResumeTaskQueueRef.current.splice(index, 1)[0]);
+  }, [controlVersion, dbReady, status, pendingLongTaskAutoResume]);
+
+  const pendingRecoveryCanRun = !!pendingLongTaskAutoResume?.task.conversation_id &&
+    conversationTurnGateRef.current.canAutoRun(pendingLongTaskAutoResume.task.conversation_id);
+  useEffect(() => {
+    if (!pendingLongTaskAutoResume || !dbReady || recoveringExecution || !pendingRecoveryCanRun) return;
 
     const { task, reason } = pendingLongTaskAutoResume;
     const targetConvId = task.conversation_id;
     if (!targetConvId || conversationTurnGateRef.current.paused.has(targetConvId)) return;
+    const stopGeneration = stopGenerationRef.current.get(targetConvId) ?? 0;
+    const globalGeneration = allStopGenerationRef.current;
 
     const timer = window.setTimeout(async () => {
       if (!conversationTurnGateRef.current.canAutoRun(targetConvId)) return;
@@ -4562,22 +4692,21 @@ export default function App() {
       }
 
       setPendingLongTaskAutoResume(null);
-      setRecoverableTasks((prev) => prev.filter((t) => t.id !== task.id));
-
       try {
+        if ((stopGenerationRef.current.get(targetConvId) ?? 0) !== stopGeneration || allStopGenerationRef.current !== globalGeneration) return;
+        const prompt = buildLongTaskAutoResumePrompt(task, reason);
+        saveControlNotice(targetConvId, `중단된 ${task.kind} 작업을 저장된 요청과 진행 기록에서 이어갑니다.`);
+        await handleSendMessage(prompt, recoveryAttachments(task), { conversationId: targetConvId });
         await finalizeLongTask(
           task.id,
           "failed",
-          `KDA auto-resume queued after ${reason}; replacement Codex turn will continue from durable status.`,
+          `KDA recovery dispatched after ${reason}; replacement continues from durable status.`,
         );
+        setRecoverableTasks((prev) => prev.filter((t) => t.id !== task.id));
       } catch (err) {
-        logger.warn(`[AutoResume] finalize old task failed id=${task.id}: ${err}`);
+        logger.warn(`[AutoResume] recovery dispatch failed id=${task.id}: ${err}`);
+        saveControlNotice(targetConvId, `자동 복구 보류: ${String(err)}`);
       }
-
-      const prompt = buildLongTaskAutoResumePrompt(task, reason);
-      pushSystem(`KDA auto-resume: interrupted ${task.kind} task will continue from checkpoint.`, "warn");
-      logger.warn(`[AutoResume] sending resume prompt for task=${task.id}`);
-      void handleSendMessage(prompt, [], { conversationId: targetConvId }).catch((err) => saveControlNotice(targetConvId, String(err)));
     }, 1500);
 
     return () => window.clearTimeout(timer);
@@ -4588,6 +4717,8 @@ export default function App() {
     handleSelectConversation,
     handleSendMessage,
     isStreaming,
+    recoveringExecution,
+    pendingRecoveryCanRun,
     pendingLongTaskAutoResume,
   ]);
 
@@ -5305,6 +5436,18 @@ export default function App() {
       {/* Phase 38 (v0.5.26) — 사이드바 폭 조절 handle. Sidebar 우측 가장자리, drag 로 200~600px */}
       <SidebarResizer width={sidebarWidth} onChange={setSidebarWidth} />
 
+      {controlConfirmation && <ActionConfirmation
+        title={controlConfirmation.kind === "recover" ? "실행 엔진 복구" : "대화 영구 삭제"}
+        detail={controlConfirmation.kind === "recover"
+          ? "실행 엔진을 강제 종료하고 재시작합니다. 다른 대화의 실행도 모두 중단됩니다. 대화와 예약은 보존하고 자동 실행은 보류합니다. 분리된 외부 작업은 계속될 수 있습니다."
+          : `‘${conversations.find(c => c.id === controlConfirmation.id)?.title ?? "대화"}’의 메시지를 영구 삭제합니다. 목록에서만 빼려면 ‘목록에서 닫기’를 사용하세요.`}
+        confirmLabel={controlConfirmation.kind === "recover" ? "모든 대화 실행 중단 후 복구" : "영구 삭제"}
+        onCancel={() => setControlConfirmation(null)}
+        onConfirm={() => {
+          const action = controlConfirmation; setControlConfirmation(null);
+          if (action.kind === "recover") void recoverExecution();
+          else if (action.id) void handleDeleteConversation(action.id);
+        }} />}
       <Sidebar
         conversations={conversations}
         folders={folders}
@@ -5409,6 +5552,12 @@ export default function App() {
         // v0.7.49 — 대기/정체 배너는 채팅창 안(입력창 위)에 그린다. 종전엔 .app 그리드의
         // 직계 자식(grid-area 없음)이라 암묵 행을 만들어 왼쪽 아래에 끼고 채팅창 높이를 줄였다.
         notices={<>
+        {workspaceSaveError && <div role="alert" className="task-automation-paused">작업 목록·예약 저장 실패 · 재시작 전 저장 공간과 로그를 확인해 주세요.</div>}
+        {([...conversationTurnGateRef.current.runs.values()].some(r => r.state === "stopping" && r.stopError) || recoveringExecution) &&
+          <div role="alert" className="task-automation-paused" style={{ padding: "10px 12px" }}>
+            <span>{recoveringExecution ? "실행 엔진 복구 중 · 자동 실행 보류" : "정지 확인이 지연됩니다. 앱 안에서 실행 엔진을 복구할 수 있습니다."}</span>
+            <button disabled={recoveringExecution} onClick={() => setControlConfirmation({ kind: "recover" })}>실행 엔진 복구</button>
+          </div>}
         {visibleTaskWatchWaiting.length > 0 && (
           <div role="status" className="task-watch-waiting" style={{ padding: "8px 12px", color: "var(--warn)", background: "var(--bg-2)", fontSize: "0.85em" }}>
             <button className="settings-btn" style={{ float: "right", padding: "2px 8px", fontSize: "0.85em" }} onClick={dismissTaskWatchWaiting} title="이 알림 숨김 · 작업 감시는 계속됨">✕</button>
@@ -5455,6 +5604,7 @@ export default function App() {
         )}
         </>}
         activityPanel={<TaskActivityPanel
+        tracked={[...conversationTurnGateRef.current.tracked]}
         runs={[...conversationTurnGateRef.current.runs.values()]}
         queues={conversationTurnGateRef.current.queues}
         paused={conversationTurnGateRef.current.paused}
@@ -5463,6 +5613,12 @@ export default function App() {
         onSelect={handleSelectConversation}
         onStop={stopConversation}
         onStopAll={handleHardStop}
+        onNew={() => { void handleNewConversation(); }}
+        onAdd={id => { conversationTurnGateRef.current.tracked.add(id); syncControl(); }}
+        onClose={id => { if (conversationTurnGateRef.current.forget(id)) syncControl(); }}
+        onDelete={id => setControlConfirmation({ kind: "delete", id })}
+        onRecover={() => setControlConfirmation({ kind: "recover" })}
+        recovering={recoveringExecution}
         onResume={resumeConversationQueue}
         onResumeAutomation={() => { conversationTurnGateRef.current.allPaused = false; autoResumeManualStoppedRef.current = false; localStorage.removeItem(LS_AUTO_RESUME_MANUAL_STOPPED); syncControl(); }}
         />}

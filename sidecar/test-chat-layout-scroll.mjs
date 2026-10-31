@@ -45,6 +45,7 @@ for (const line of body) {
 }
 // 컴포넌트 → 근거(루트가 grid-area 또는 fixed 인 것을 확인한 클래스).
 const COMPONENT_ROOT = {
+  ActionConfirmation: { inlineFixedIn: "src/components/ActionConfirmation.tsx" },
   UpdateChecker: { cls: "update-banner", kind: "fixed" },
   SidebarResizer: { cls: "sidebar-resizer", kind: "fixed" },
   Sidebar: { cls: "sidebar", kind: "area" },
