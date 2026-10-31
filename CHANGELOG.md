@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.7.63] - 2026-10-31
+
 ### Added
 - Add new/existing conversations to the task list; close inactive rows without deleting chats, with separate confirmed permanent deletion.
 - Restore the last conversation, task panel, task statuses and queued requests with attachments; resume eligible interrupted work from its stored request and durable evidence.
