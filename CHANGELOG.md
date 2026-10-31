@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+## [0.7.69] - 2026-11-01
+
+### Added
+- Telegram command ledger (command center step 2). Each command received from Telegram gets a number (`#n`) and the acknowledgement shows it.
+  - A split command keeps one state per room: sent, running, decision waiting, done or error.
+  - States change only from what actually happened: the turn started or failed to start, or the room replied (classified by the existing digest tier).
+  - Replies and short follow-ups continue the same `#n` instead of opening a new line. Choice buttons mark the room as running.
+  - Stored with the other hub data, so `/현황` survives a KDA restart. Lines older than 48 hours are dropped; at most 40 are kept.
+- `/현황` (also `/board`, `/jobs`), command center step 3. One message lists recent commands with each room's state, how long ago it changed and the start of its last reply, plus the number of decisions waiting. `/도움` lists it.
+
+### Validation and limits
+- Tests: ledger 5/5, hub 31/31, router 21/21. Covered: split command updated by real replies to done and decision waiting, reply continuation keeps the same `#n`, start failure recorded as error and persisted, 48-hour pruning, restore keeps numbering, corrupt storage ignored.
+- Mutations: not updating on replies fails 1 test. Opening a new line for replies fails 1 test.
+- A room's reply updates that room's most recent command line, so a reply to an unrelated desktop-started turn in the same room can also update it. Real phone round trip is unverified until installed.
+
 ## [0.7.68] - 2026-11-01
 
 ### Added

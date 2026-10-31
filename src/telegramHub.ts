@@ -36,6 +36,7 @@ import {
   type QuietHours,
   type DigestTier,
 } from "./telegramDigest";
+import { CommandLedger, formatBoard, tierToState } from "./telegramLedger";
 
 /** v0.7.68 — /방 으로 고른 방이 유지되는 시간. */
 export const ROOM_PIN_MS = 10 * 60 * 1000;
@@ -99,6 +100,7 @@ const K_FOLLOWUPS = "kda_tg_hub_followups";
 const K_ABSENCE = "kda_tg_hub_absence";
 const K_OUTBOX = "kda_tg_hub_outbox";
 const K_ABSENCE_DIGEST = "kda_tg_hub_absence_digest";
+const K_LEDGER = "kda_tg_hub_ledger";
 interface ResultDelivery { convId: string; chatId: string; text: string; turnId?: string; forceSend?: boolean; noChoices?: boolean; decisionRequired?: boolean }
 interface AbsenceDigest { chatId: string; entries: Array<{ label: string; text: string; at: number }> }
 
@@ -138,6 +140,8 @@ function shortToken(): string {
 export class TelegramHub {
   readonly replyMap: ReplyMap;
   readonly followUps: FollowUpRegistry;
+  /** v0.7.69 — 명령 장부 (/현황). */
+  readonly ledger: CommandLedger;
   private absence: AbsenceSession | null;
   private absenceSaveFailed = false;
   private absenceDigest: AbsenceDigest | null;
@@ -162,6 +166,7 @@ export class TelegramHub {
   constructor(private readonly d: HubDeps) {
     this.replyMap = ReplyMap.fromJSON(this.readJson(K_REPLYMAP));
     this.followUps = FollowUpRegistry.fromJSON(this.readJson(K_FOLLOWUPS), d.now());
+    this.ledger = CommandLedger.fromJSON(this.readJson(K_LEDGER), d.now());
     this.absence = restoreAbsence(this.readJson(K_ABSENCE), d.now());
     const digest = this.readJson(K_ABSENCE_DIGEST);
     this.absenceDigest = digest && typeof digest.chatId === "string" && Array.isArray(digest.entries)
@@ -194,6 +199,7 @@ export class TelegramHub {
       this.d.store.set(K_ABSENCE, JSON.stringify(this.absence));
       this.d.store.set(K_OUTBOX, JSON.stringify(this.outbox));
       this.d.store.set(K_ABSENCE_DIGEST, JSON.stringify(this.absenceDigest));
+      this.d.store.set(K_LEDGER, JSON.stringify(this.ledger.toJSON()));
       this.absenceSaveFailed = false;
     } catch (e) {
       this.absenceSaveFailed = true;
@@ -372,6 +378,10 @@ export class TelegramHub {
     }
     if (/^\/(도움|help|start)(?:@\S+)?(?:\s|$)/i.test(trimmed)) return this.cmdHelp(chatId);
     if (/^\/(분배|route)(?:@\S+)?(?:\s|$)/i.test(trimmed)) return this.cmdRoutes(chatId);
+    if (/^\/(현황|board|jobs)(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
+      await this.sendText(chatId, formatBoard(this.ledger.recent(this.d.now()).filter((e) => e.chatId === chatId), this.d.now()), undefined);
+      return;
+    }
     const room = /^\/(방|room)(?:@\S+)?(?:\s+(\S+))?\s*$/i.exec(trimmed);
     if (room) return this.cmdRoom(chatId, room[2]);
     const mv = /^\/(이동|move)\s+@?(\S+)\s*$/i.exec(trimmed);
@@ -435,19 +445,26 @@ export class TelegramHub {
     const decision = decisions[0];
     this.note("ROUTE", `conv=${decision.convId.slice(0, 8)} by=${decision.source}${decision.confidence != null ? ` conf=${decision.confidence}` : ""}${decision.note ? ` note=${decision.note}` : ""}`);
     this.lastInbound = { text: decision.text, chatId, convId: decision.convId };
+    // 답장·짧은 후속답은 새 명령이 아니라 그 방의 진행 중 명령을 잇는 것 → 같은 #번호 유지
+    const cont = decision.source === "reply" || decision.source === "sticky" ? this.ledger.report(decision.convId, "sent", this.d.now()) : undefined;
+    const entry = cont ?? this.ledger.open(chatId, text, [{ convId: decision.convId, label: decision.label }], this.d.now());
+    this.persist();
     if (decision.convId !== def.convId) {
       this.followUps.mark(decision.convId, chatId, this.d.now());
       this.persist();
-      await this.sendText(chatId, `→ [${decision.label}]로 전달${decision.source === "ai" ? " (자동 분류)" : ""}. 잘못됐으면 /이동 별칭`, decision.convId);
+      await this.sendText(chatId, `→ [${decision.label}]로 전달 #${entry.id}${decision.source === "ai" ? " (자동 분류)" : ""}. 잘못됐으면 /이동 별칭`, decision.convId);
     } else if (decision.note && decision.note.startsWith("classify-failed")) {
       await this.sendText(chatId, "ℹ 자동 분류 실패 — 📱 텔레그램 대화에서 처리합니다.", def.convId);
     }
     try {
       await this.d.startTurn(decision.convId, decision.text, chatId);
+      this.ledger.mark(entry.id, decision.convId, "running", this.d.now());
     } catch (e) {
       this.note("START-FAILED", String(e).slice(0, 160));
+      this.ledger.mark(entry.id, decision.convId, "error", this.d.now(), `시작 실패: ${String(e)}`);
       await this.sendText(chatId, `⚠ 처리 시작 실패: ${String(e).slice(0, 200)}`, undefined);
     }
+    this.persist();
   }
 
   /** v0.7.68 — 복합 명령: 대상별로 나눠 각각 턴 시작, 접수 확인은 1건. 한 대상 실패가 나머지를 막지 않는다. */
@@ -456,23 +473,27 @@ export class TelegramHub {
       this.note("ROUTE", `conv=${d.convId.slice(0, 8)} by=${d.source}${d.confidence != null ? ` conf=${d.confidence}` : ""}${d.note ? ` note=${d.note}` : ""}`);
       if (d.convId !== def.convId) this.followUps.mark(d.convId, chatId, this.d.now());
     }
+    const entry = this.ledger.open(chatId, text, decisions.map((d) => ({ convId: d.convId, label: d.label })), this.d.now());
     this.persist();
     // /이동 은 원문 전체를 한 대화로 다시 보내는 용도로 남긴다.
     this.lastInbound = { text, chatId, convId: decisions[0].convId };
     const preview = (d: RouteDecision) => d.text.split("\n\n[텔레그램 복합 명령")[0].replace(/\s+/g, " ").slice(0, 60);
     await this.sendText(
       chatId,
-      ["→ 나눠서 전달 (자동 분류):", ...decisions.map((d) => `- [${d.label}] ${preview(d)}`), "잘못됐으면 /이동 별칭 (원문 전체를 그 대화로)"].join("\n"),
+      [`→ 나눠서 전달 #${entry.id} (자동 분류):`, ...decisions.map((d) => `- [${d.label}] ${preview(d)}`), "잘못됐으면 /이동 별칭 (원문 전체를 그 대화로)"].join("\n"),
       undefined,
     );
     for (const d of decisions) {
       try {
         await this.d.startTurn(d.convId, d.text, chatId);
+        this.ledger.mark(entry.id, d.convId, "running", this.d.now());
       } catch (e) {
         this.note("START-FAILED", `${d.convId.slice(0, 8)} ${String(e).slice(0, 140)}`);
+        this.ledger.mark(entry.id, d.convId, "error", this.d.now(), `시작 실패: ${String(e)}`);
         await this.sendText(chatId, `⚠ [${d.label}] 처리 시작 실패: ${String(e).slice(0, 200)}`, undefined);
       }
     }
+    this.persist();
   }
 
   private async handleCallback(cq: any): Promise<void> {
@@ -528,6 +549,7 @@ export class TelegramHub {
         return;
       }
       await answer(`${ch.key}번 전달`);
+      this.ledger.report(t.convId, "running", this.d.now(), `${ch.key}번 선택`);
       this.note("CHOICE", `conv=${t.convId.slice(0, 8)} key=${ch.key}`);
       this.followUps.mark(t.convId, chatId, this.d.now());
       this.persist();
@@ -574,6 +596,7 @@ export class TelegramHub {
         "- 그냥 보내면 주제에 맞는 대화로 자동 분배됩니다.",
         "- 여러 작업을 한 메시지로 보내면 대화별로 나눠 각각 전달합니다 (예: CAE는 … 음악공유방은 …).",
         "- @별칭 내용 → 그 대화로 바로 (/분배 로 별칭 확인). @1, @2 처럼 번호도 됩니다.",
+        "- /현황 → 최근 명령(#번호)이 방마다 진행/결정 대기/완료 중 어디인지",
         "- /방 → 방 버튼 목록, 누르면 다음 메시지 1건이 그 방으로 (/방 2 처럼 번호로도)",
         "- 봇 메시지에 답장 → 그 메시지를 보낸 대화로",
         "- 요약 메시지에 '자세히' 답장 → 원문",
@@ -662,6 +685,8 @@ export class TelegramHub {
    * forceSend: 오류·중지 안내처럼 등급과 무관하게 즉시 보내야 하는 경우.
    */
   async deliverResult(r: ResultDelivery): Promise<void> {
+    // v0.7.69 — 명령 장부: 이 방의 가장 최근 명령 줄을 실제 회신 내용으로 갱신
+    if (this.ledger.report(r.convId, r.decisionRequired ? "decision" : tierToState(classifyTier(r.text)), this.d.now(), r.text)) this.persist();
     if (!r.forceSend && !r.decisionRequired && this.absenceChatFor(r.convId, r.chatId)) {
       if (r.turnId) await this.finishProgress(r.turnId, true);
       const tier = classifyTier(r.text);

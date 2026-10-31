@@ -355,3 +355,44 @@ test("/방: 목록이 바뀐 뒤의 옛 버튼은 무시", async () => {
   assert.equal(t.turns.length, 0);
   assert.ok(!t.texts().some((x) => x.startsWith("📌 다음 메시지는")));
 });
+
+// ── v0.7.69 명령 장부 · /현황 ───────────────────────────────────────
+test("/현황: 복합 명령 #번호 → 각 방 회신에 따라 진행/결정 대기/완료로 바뀜", async () => {
+  const t = mk({}, { oneshot: async () => JSON.stringify({ parts: [
+    { pick: 1, text: "Cae d4진행해", confidence: 0.9 },
+    { pick: 2, text: "KDA 빌드 확인해", confidence: 0.9 },
+  ] }) });
+  await t.hub.handleUpdate(msgU("Cae d4진행해 KDA 빌드 확인해"));
+  assert.ok(t.texts().some((x) => x.startsWith("→ 나눠서 전달 #1")));
+  await t.hub.handleUpdate(msgU("/현황"));
+  assert.match(t.texts().at(-1)!, /\[CAE GUI\] ⏳ 진행[\s\S]*\[KDA 개발\] ⏳ 진행/);
+  await t.hub.deliverResult({ convId: CAE.convId, chatId: CHAT, text: "D4 완료했습니다. 시험 12/12 통과." });
+  await t.hub.deliverResult({ convId: KDA.convId, chatId: CHAT, text: "릴리즈 준비 완료\n\n1. 지금 태그 push\n2. 내일 push\n\n번호로 알려 주세요." });
+  await t.hub.handleUpdate(msgU("/현황"));
+  const board = t.texts().at(-1)!;
+  assert.match(board, /\[CAE GUI\] ✅ 완료/);
+  assert.match(board, /\[KDA 개발\] ❓ 결정 대기/);
+  assert.match(board, /결정 대기 1건/);
+  assert.equal(t.turns.length, 2, "/현황 은 턴을 만들지 않음");
+});
+
+test("장부: 단일 명령은 '→ [방]로 전달 #n', 답장으로 이어 보내면 같은 #n 유지", async () => {
+  const t = mk();
+  await t.hub.handleUpdate(msgU("UI 가 너무 어둡다"));
+  assert.match(t.texts()[0], /→ \[CAE GUI\]로 전달 #1/);
+  const mid = await t.hub.sendText(CHAT, "어두운 원인 확인했습니다. 진행할까요?", CAE.convId);
+  await t.hub.handleUpdate(msgU("응 진행해", { reply_to_message: { message_id: mid } }));
+  const now = (t.hub as any).d.now();
+  assert.deepEqual(t.hub.ledger.recent(now).map((e) => e.id), [1], "답장은 새 줄을 만들지 않음");
+  assert.equal(t.hub.ledger.recent(now)[0].legs[0].state, "running", "답장으로 다시 시작 → 진행");
+});
+
+test("장부: 시작 실패는 오류로 남고, KDA 재시작(새 허브) 뒤에도 /현황 유지", async () => {
+  const t = mk({}, { oneshot: async () => '{"pick":2,"confidence":0.9}' });
+  (t.hub as any).d.startTurn = async () => { throw new Error("engine down"); };
+  await t.hub.handleUpdate(msgU("빌드해"));
+  await t.hub.handleUpdate(msgU("/현황"));
+  assert.match(t.texts().at(-1)!, /\[KDA 개발\] ⚠ 오류 · 0분 전 — 시작 실패: Error: engine down/);
+  const saved = t.store.get("kda_tg_hub_ledger");
+  assert.ok(saved && saved.includes("engine down"), "장부가 저장소에 저장됨");
+});
