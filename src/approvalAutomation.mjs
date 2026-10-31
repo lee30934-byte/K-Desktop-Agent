@@ -7,6 +7,9 @@ export const APPROVAL_MODE_EVENT = 'kda-approval-mode-changed';
 // preference, credential, text answer or consent from a schema default.
 export function automaticConfirmation(schema) {
   const fields = parseElicitationSchema(schema);
+  // A valid empty form asks for accept/decline only. MCP tool-use consent
+  // often has no boolean input; accepting it supplies an empty object.
+  if (fields?.length === 0) return validateElicitationContent(schema, {}) ? {} : null;
   if (fields?.length !== 1) return null;
   const field = fields[0];
   if (field.type !== 'boolean' || !field.required ||

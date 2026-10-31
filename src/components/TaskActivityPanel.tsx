@@ -17,7 +17,6 @@ interface Props {
   onNew?: () => void;
   onAdd?: (id: string) => void;
   onClose?: (id: string) => void;
-  onDelete?: (id: string) => void;
   onRecover?: () => void;
   recovering?: boolean;
 }
@@ -79,7 +78,6 @@ export default function TaskActivityPanel(props: Props) {
             {busy && <button onClick={() => props.onStop(id)}>{run?.state === "stopping" ? "정지 재요청" : "이 대화 정지"}</button>}
             {!busy && queue.length > 0 && <button onClick={() => props.onResume(id)}>예약 이어서 실행</button>}
             {props.onClose && <button disabled={busy || queue.length > 0} onClick={() => props.onClose?.(id)} title="대화는 보존하고 작업 목록에서만 닫기">목록에서 닫기</button>}
-            {props.onDelete && <button disabled={busy || queue.length > 0} onClick={() => props.onDelete?.(id)}>대화 삭제</button>}
           </div>
         </div>;
       })}</div>

@@ -813,7 +813,7 @@ export default function App() {
   const startupActiveIdRef = useRef<string | null>(null);
   const autoResumeTaskQueueRef = useRef<Array<{ task: DBLongTask; reason: string; queuedAt: number }>>([]);
   const [recoveringExecution, setRecoveringExecution] = useState(false);
-  const [controlConfirmation, setControlConfirmation] = useState<{ kind: "recover" | "delete"; id?: string } | null>(null);
+  const [controlConfirmation, setControlConfirmation] = useState<{ kind: "recover" } | null>(null);
   const recoveringExecutionRef = useRef(false);
   const syncControl = useCallback(() => {
     const control = conversationTurnGateRef.current;
@@ -5437,16 +5437,13 @@ export default function App() {
       <SidebarResizer width={sidebarWidth} onChange={setSidebarWidth} />
 
       {controlConfirmation && <ActionConfirmation
-        title={controlConfirmation.kind === "recover" ? "실행 엔진 복구" : "대화 영구 삭제"}
-        detail={controlConfirmation.kind === "recover"
-          ? "실행 엔진을 강제 종료하고 재시작합니다. 다른 대화의 실행도 모두 중단됩니다. 대화와 예약은 보존하고 자동 실행은 보류합니다. 분리된 외부 작업은 계속될 수 있습니다."
-          : `‘${conversations.find(c => c.id === controlConfirmation.id)?.title ?? "대화"}’의 메시지를 영구 삭제합니다. 목록에서만 빼려면 ‘목록에서 닫기’를 사용하세요.`}
-        confirmLabel={controlConfirmation.kind === "recover" ? "모든 대화 실행 중단 후 복구" : "영구 삭제"}
+        title="실행 엔진 복구"
+        detail="실행 엔진을 강제 종료하고 재시작합니다. 다른 대화의 실행도 모두 중단됩니다. 대화와 예약은 보존하고 자동 실행은 보류합니다. 분리된 외부 작업은 계속될 수 있습니다."
+        confirmLabel="모든 대화 실행 중단 후 복구"
         onCancel={() => setControlConfirmation(null)}
         onConfirm={() => {
-          const action = controlConfirmation; setControlConfirmation(null);
-          if (action.kind === "recover") void recoverExecution();
-          else if (action.id) void handleDeleteConversation(action.id);
+          setControlConfirmation(null);
+          void recoverExecution();
         }} />}
       <Sidebar
         conversations={conversations}
@@ -5616,7 +5613,6 @@ export default function App() {
         onNew={() => { void handleNewConversation(); }}
         onAdd={id => { conversationTurnGateRef.current.tracked.add(id); syncControl(); }}
         onClose={id => { if (conversationTurnGateRef.current.forget(id)) syncControl(); }}
-        onDelete={id => setControlConfirmation({ kind: "delete", id })}
         onRecover={() => setControlConfirmation({ kind: "recover" })}
         recovering={recoveringExecution}
         onResume={resumeConversationQueue}

@@ -58,6 +58,14 @@ try:
         errors = []
         page.on('pageerror', lambda e: errors.append(str(e)))
         page.goto(f'http://127.0.0.1:{server.server_port}/')
+        page.evaluate('''() => {
+          window.dialogMounts=0;
+          new MutationObserver(records => {
+            for (const record of records) for (const node of record.addedNodes) {
+              if (node.nodeType===1 && (node.matches('[role="dialog"]') || node.querySelector('[role="dialog"]'))) window.dialogMounts++;
+            }
+          }).observe(document.getElementById('root'), {childList:true,subtree:true});
+        }''')
         css = '\n'.join(x for x in (root/'src/index.css').read_text(encoding='utf-8').splitlines() if not x.startswith('@import'))
         page.add_style_tag(content=css+(root/'src/App.css').read_text(encoding='utf-8'))
         page.add_style_tag(content='*,*::before,*::after{animation:none!important;transition:none!important}')
@@ -131,6 +139,35 @@ try:
         page.wait_for_function('window.responses.length===1')
         expect(page.get_by_role('dialog')).to_have_count(0)
         checks.append('File approval ON executes without modal')
+        # The installed-app failure: tool-use consent can have no input fields.
+        empty = request('empty', schema={'type':'object','properties':{}},
+            message='Allow the k-personal MCP server to run tool "ui_find"?')
+        page.evaluate('window.dialogMounts=0')
+        show([empty], enabled=True)
+        page.wait_for_function('window.responses.length===1')
+        expect(page.get_by_role('dialog')).to_have_count(0)
+        assert page.evaluate('window.responses[0].content') == {}
+        assert page.evaluate('window.attempts') == 1
+        assert page.evaluate('window.dialogMounts') == 0
+        checks.append('Empty tool confirmation ON replies with {} exactly once and never mounts a dialog')
+        page.evaluate('window.dialogMounts=0')
+        show([{**empty,'token':'empty-bg','conversation_id':'b'}], enabled=True)
+        page.wait_for_function('window.responses.length===1')
+        assert page.evaluate('window.responses[0].content') == {}
+        assert page.evaluate('window.dialogMounts') == 0
+        checks.append('Empty confirmation in another conversation auto-continues without a modal')
+        show([{**empty,'token':'empty-off'}])
+        expect(page.get_by_role('dialog')).to_be_visible()
+        assert page.evaluate('window.attempts') == 0
+        page.get_by_role('button', name='이 요청만 승인', exact=True).click()
+        page.wait_for_function('window.responses.length===1')
+        assert page.evaluate('window.responses[0].content') == {}
+        checks.append('Empty confirmation OFF remains manual and delivers the empty object')
+        show([request('requires-input',schema={'type':'object','properties':{'answer':{'type':'string','default':'yes'}},'required':['answer']})], enabled=True)
+        expect(page.get_by_role('dialog')).to_be_visible()
+        assert page.evaluate('window.attempts') == 0
+        expect(page.get_by_role('button', name='이 요청만 승인', exact=True)).to_be_disabled()
+        checks.append('Input questions remain manual under ON without inventing a default answer')
         show([request('expired',expiresAt=0),request('stop',id='stopped'),request('forged',conversation_id='forged')], enabled=True)
         page.wait_for_timeout(100)
         assert page.evaluate('window.attempts') == 0

@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+## [0.7.64] - 2026-10-31
+
+### Fixed
+- Remove permanent conversation deletion from the task activity list, including its callback and confirmation route. Closing an inactive row preserves the conversation.
+- Automatically accept valid empty tool confirmation forms when automatic approval is ON. Preserve manual handling when OFF or when actual input is required; reject invalid, expired, mismatched and replayed requests.
+
 ## [0.7.63] - 2026-10-31
 
 ### Added
