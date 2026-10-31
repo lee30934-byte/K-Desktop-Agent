@@ -257,3 +257,35 @@ test("v0.7.56 성공 전송·요약·사진도 로그에 남는다 (감시 증�
   assert.ok(t.logs.some((l) => /^HUB PHOTO ok conv=7e8845d0 file=a\.png/.test(l)));
   assert.ok(t.logs.some((l) => /^HUB PHOTO failed conv=7e8845d0 file=missing\.png/.test(l)));
 });
+
+// ── v0.7.68 여러 대상 분배 ─────────────────────────────────────────
+test("복합 명령: 대상별로 나눠 턴 2개 + 접수 확인 1건 + 후속 회신 등록", async () => {
+  const t = mk({}, { oneshot: async () => JSON.stringify({ parts: [
+    { pick: 1, text: "Cae d4진행해", confidence: 0.9 },
+    { pick: 2, text: "KDA 빌드 확인해", confidence: 0.9 },
+  ] }) });
+  await t.hub.handleUpdate(msgU("Cae d4진행해 KDA 빌드 확인해"));
+  assert.deepEqual(t.turns.map((x) => x.convId), [CAE.convId, KDA.convId]);
+  assert.match(t.turns[0].text, /^Cae d4진행해\n\n\[텔레그램 복합 명령/);
+  const acks = t.texts().filter((x) => x.startsWith("→ 나눠서 전달"));
+  assert.equal(acks.length, 1);
+  assert.match(acks[0], /\[CAE GUI\] Cae d4진행해/);
+  assert.match(acks[0], /\[KDA 개발\] KDA 빌드 확인해/);
+  assert.ok(!acks[0].includes("[텔레그램 복합 명령"), "접수 확인에는 원문 참고 꼬리를 넣지 않는다");
+  assert.equal(t.logs.filter((l) => l.includes("HUB ROUTE") && l.includes("split")).length, 2);
+});
+
+test("복합 명령: 한 대상 시작 실패가 다른 대상을 막지 않는다", async () => {
+  const t = mk({}, { oneshot: async () => JSON.stringify({ parts: [
+    { pick: 1, text: "a 해", confidence: 0.9 },
+    { pick: 2, text: "b 해", confidence: 0.9 },
+  ] }) });
+  const orig = (t.hub as any).d.startTurn;
+  (t.hub as any).d.startTurn = async (convId: string, text: string) => {
+    if (convId === CAE.convId) throw new Error("busy");
+    return orig(convId, text);
+  };
+  await t.hub.handleUpdate(msgU("a 해 b 해"));
+  assert.deepEqual(t.turns.map((x) => x.convId), [KDA.convId]);
+  assert.ok(t.texts().some((x) => /⚠ \[CAE GUI\] 처리 시작 실패/.test(x)));
+});

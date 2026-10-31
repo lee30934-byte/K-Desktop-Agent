@@ -11,7 +11,7 @@ import { parseElicitationSchema, validateElicitationContent } from "../sidecar/s
 import { absenceChat, absenceInstruction, restoreAbsence, ABSENCE_DEFAULT_HOURS, ABSENCE_MAX_HOURS,
   type AbsenceSession, type AbsenceTarget } from "./telegramAbsence";
 import {
-  decideRoute,
+  decideRoutes,
   findTargetByAlias,
   labelReply,
   ReplyMap,
@@ -401,11 +401,11 @@ export class TelegramHub {
   private async route(text: string, chatId: string, replyToId?: number): Promise<void> {
     const s = this.d.settings();
     const def = this.d.defaultTarget();
-    let decision: RouteDecision;
+    let decisions: RouteDecision[];
     if (!s.routing) {
-      decision = { convId: def.convId, label: def.label, source: "default", text };
+      decisions = [{ convId: def.convId, label: def.label, source: "default", text }];
     } else {
-      decision = await decideRoute({
+      decisions = await decideRoutes({
         text,
         replyToConvId: this.replyMap.lookup(replyToId),
         lastReply: this.lastReply,
@@ -416,6 +416,11 @@ export class TelegramHub {
         examples: this.examples,
       });
     }
+    if (decisions.length > 1) {
+      await this.routeSplit(decisions, text, chatId, def);
+      return;
+    }
+    const decision = decisions[0];
     this.note("ROUTE", `conv=${decision.convId.slice(0, 8)} by=${decision.source}${decision.confidence != null ? ` conf=${decision.confidence}` : ""}${decision.note ? ` note=${decision.note}` : ""}`);
     this.lastInbound = { text: decision.text, chatId, convId: decision.convId };
     if (decision.convId !== def.convId) {
@@ -430,6 +435,31 @@ export class TelegramHub {
     } catch (e) {
       this.note("START-FAILED", String(e).slice(0, 160));
       await this.sendText(chatId, `⚠ 처리 시작 실패: ${String(e).slice(0, 200)}`, undefined);
+    }
+  }
+
+  /** v0.7.68 — 복합 명령: 대상별로 나눠 각각 턴 시작, 접수 확인은 1건. 한 대상 실패가 나머지를 막지 않는다. */
+  private async routeSplit(decisions: RouteDecision[], text: string, chatId: string, def: { convId: string; label: string }): Promise<void> {
+    for (const d of decisions) {
+      this.note("ROUTE", `conv=${d.convId.slice(0, 8)} by=${d.source}${d.confidence != null ? ` conf=${d.confidence}` : ""}${d.note ? ` note=${d.note}` : ""}`);
+      if (d.convId !== def.convId) this.followUps.mark(d.convId, chatId, this.d.now());
+    }
+    this.persist();
+    // /이동 은 원문 전체를 한 대화로 다시 보내는 용도로 남긴다.
+    this.lastInbound = { text, chatId, convId: decisions[0].convId };
+    const preview = (d: RouteDecision) => d.text.split("\n\n[텔레그램 복합 명령")[0].replace(/\s+/g, " ").slice(0, 60);
+    await this.sendText(
+      chatId,
+      ["→ 나눠서 전달 (자동 분류):", ...decisions.map((d) => `- [${d.label}] ${preview(d)}`), "잘못됐으면 /이동 별칭 (원문 전체를 그 대화로)"].join("\n"),
+      undefined,
+    );
+    for (const d of decisions) {
+      try {
+        await this.d.startTurn(d.convId, d.text, chatId);
+      } catch (e) {
+        this.note("START-FAILED", `${d.convId.slice(0, 8)} ${String(e).slice(0, 140)}`);
+        await this.sendText(chatId, `⚠ [${d.label}] 처리 시작 실패: ${String(e).slice(0, 200)}`, undefined);
+      }
     }
   }
 
@@ -514,6 +544,7 @@ export class TelegramHub {
       [
         "🤖 사용법",
         "- 그냥 보내면 주제에 맞는 대화로 자동 분배됩니다.",
+        "- 여러 작업을 한 메시지로 보내면 대화별로 나눠 각각 전달합니다 (예: CAE는 … 음악공유방은 …).",
         "- @별칭 내용 → 그 대화로 바로 (/분배 로 별칭 확인)",
         "- 봇 메시지에 답장 → 그 메시지를 보낸 대화로",
         "- 요약 메시지에 '자세히' 답장 → 원문",

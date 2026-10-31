@@ -87,7 +87,53 @@ export function buildClassifierPrompt(message: string, targets: RouteTarget[], e
     message.slice(0, 1500),
     "",
     'Answer with ONLY one JSON object, no prose: {"pick": <session number>, "confidence": <0..1>}',
+    // v0.7.68 — 한 메시지에 여러 작업 지시가 섞인 경우 (2026-10-31 실측: "Cae는 … 음악공유방은 … Treblo는 …" 가
+    // 한 곳만 고르는 형식 때문에 General 로 떨어졌다).
+    "If the message gives separate instructions for two or more different sessions, split it instead:",
+    '{"parts": [{"pick": <session number>, "text": "<that instruction, copied in the original language>", "confidence": <0..1>}, ...]}',
   ].join("\n");
+}
+
+export interface ClassifiedPart {
+  target: RouteTarget | null;
+  text: string;
+  confidence: number;
+}
+
+/**
+ * v0.7.68 — 분할 응답 파싱. {"parts":[...]} 형식만 처리한다(단일 형식은 parseClassifierReply).
+ * 항목 하나라도 형식이 틀리면 null → 호출측이 단일 형식으로 재해석/기본 대화로 강등.
+ */
+export function parseClassifierParts(raw: string, targets: RouteTarget[]): ClassifiedPart[] | null {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start || !/"parts"\s*:/.test(raw)) return null;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  const parts = (obj as { parts?: unknown }).parts;
+  if (!Array.isArray(parts) || parts.length === 0) return null;
+  const out: ClassifiedPart[] = [];
+  for (const p of parts) {
+    const o = p as { pick?: unknown; text?: unknown; confidence?: unknown };
+    const pick = typeof o.pick === "number" ? o.pick : Number(o.pick);
+    const conf = typeof o.confidence === "number" ? o.confidence : Number(o.confidence);
+    const text = typeof o.text === "string" ? o.text.trim() : "";
+    if (!Number.isInteger(pick) || pick < 0 || pick > targets.length) return null;
+    if (!Number.isFinite(conf) || conf < 0 || conf > 1) return null;
+    if (!text) return null;
+    out.push({ target: pick === 0 ? null : targets[pick - 1], text, confidence: conf });
+  }
+  return out;
+}
+
+/** 나눠 보낸 몫에 붙이는 원문 참고 (대상 대화가 전체 맥락을 잃지 않게). */
+export function splitPartText(part: string, original: string): string {
+  const o = original.replace(/\s+/g, " ").trim();
+  return `${part}\n\n[텔레그램 복합 명령에서 이 대화 몫만 나눠 보냈습니다. 원문: "${o.length > 300 ? o.slice(0, 300) + "…" : o}"]`;
 }
 
 /** 분류기 응답 파싱. 형식이 틀리거나 범위 밖이면 null (→ 기본 대화). pick 0 은 기본 대화. */
@@ -128,6 +174,56 @@ export interface RouteInput {
 
 function asDecision(t: { convId: string; label: string }, source: RouteSource, text: string, extra: Partial<RouteDecision> = {}): RouteDecision {
   return { convId: t.convId, label: t.label, source, text, ...extra };
+}
+
+/**
+ * v0.7.68 — 여러 대상 분배. 답장·@별칭·짧은 후속답은 decideRoute 와 똑같이 1개.
+ * AI 분류가 {"parts":[...]} 로 2개 이상의 서로 다른 대상을 확신도 이상으로 고른 경우에만 여러 개를 돌려준다.
+ * 확신도 미달·General 몫은 기본 대화 한 건으로 모은다. 결과가 대상 1개로 줄면 원문 전체를 그 대상에 보낸다.
+ */
+export async function decideRoutes(input: RouteInput): Promise<RouteDecision[]> {
+  const { text, targets, defaultTarget } = input;
+  // AI 단계 전의 결정(답장·별칭·후속답)이나 분류기 없음 → 기존 단일 결정
+  const pre = await decideRoute({ ...input, classify: undefined });
+  if (pre.source !== "default" || !input.classify || targets.length === 0) {
+    return [input.classify && pre.source === "default" ? await decideRoute(input) : pre];
+  }
+  let raw: string;
+  try {
+    raw = await input.classify(buildClassifierPrompt(text, targets, input.examples ?? []));
+  } catch (e) {
+    return [asDecision(defaultTarget, "default", text, { note: `classify-failed: ${String(e).slice(0, 120)}` })];
+  }
+  const parts = parseClassifierParts(raw, targets);
+  if (!parts) return [await decideRoute({ ...input, classify: async () => raw })];
+
+  const groups = new Map<string, { t: { convId: string; label: string }; texts: string[]; conf: number }>();
+  const add = (t: { convId: string; label: string }, part: string, conf: number) => {
+    const g = groups.get(t.convId) ?? { t, texts: [], conf: 1 };
+    g.texts.push(part);
+    g.conf = Math.min(g.conf, conf);
+    groups.set(t.convId, g);
+  };
+  for (const p of parts) {
+    if (p.target && p.confidence >= ROUTER_MIN_CONFIDENCE) add(p.target, p.text, p.confidence);
+    else add(defaultTarget, p.text, p.confidence);
+  }
+  const list = [...groups.values()];
+  const routed = list.filter((g) => g.t.convId !== defaultTarget.convId);
+  if (routed.length === 0) {
+    return [asDecision(defaultTarget, "default", text, { note: "ai-picked-general" })];
+  }
+  if (list.length === 1) {
+    // 한 대상뿐 — 나눌 필요 없이 원문 전체를 보낸다.
+    return [asDecision(list[0].t, "ai", text, { confidence: list[0].conf })];
+  }
+  return list.map((g, i) => {
+    const isDef = g.t.convId === defaultTarget.convId;
+    return asDecision(g.t, isDef ? "default" : "ai", splitPartText(g.texts.join("\n"), text), {
+      confidence: g.conf,
+      note: `split ${i + 1}/${list.length}${isDef ? " general-part" : ""}`,
+    });
+  });
 }
 
 export async function decideRoute(input: RouteInput): Promise<RouteDecision> {

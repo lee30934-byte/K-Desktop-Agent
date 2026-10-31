@@ -155,3 +155,91 @@ test("기본 분배 대상: 폴더·제목으로 찾고, 트레이딩 봇 제외
   assert.ok(!t.some((x) => x.convId === "trade"), "트레이딩 봇 제외");
   assert.match(t[0].description, /CAE 지침/);
 });
+
+// ── v0.7.68 여러 대상 분배 ─────────────────────────────────────────
+import { decideRoutes, parseClassifierParts, splitPartText } from "../src/telegramRouter.ts";
+
+// 2026-10-31 실제로 General 로 떨어진 복합 명령 (telegram-bridge.log 17:07~17:20, by=default ai-picked-general)
+const REAL_COMPOUND = "Cae d4진행해 음악공유방 아바타 리스트를 늘려 Treblo 정확히 어디까지 진행됐는지 보고해";
+const LISTEN: RouteTarget = { convId: "c-listen", label: "음악공유방", aliases: ["방"], description: "음악 공유방" };
+const TREBLO: RouteTarget = { convId: "c-treblo", label: "Treblo", aliases: ["treblo"], description: "음악 생성" };
+const T4 = [CAE, KDA, LISTEN, TREBLO];
+const base4 = { targets: T4, defaultTarget: DEF, now: 1_000_000 };
+
+test("분할 응답 파싱: 정상 / 항목 하나라도 틀리면 null / 단일 형식은 null", () => {
+  const ok = parseClassifierParts('{"parts":[{"pick":1,"text":"d4진행해","confidence":0.9},{"pick":4,"text":"어디까지","confidence":0.8}]}', T4);
+  assert.equal(ok?.length, 2);
+  assert.equal(ok?.[0].target?.convId, "c-cae");
+  assert.equal(ok?.[1].text, "어디까지");
+  assert.equal(parseClassifierParts('{"parts":[{"pick":9,"text":"x","confidence":0.9}]}', T4), null, "범위 밖");
+  assert.equal(parseClassifierParts('{"parts":[{"pick":1,"text":"","confidence":0.9}]}', T4), null, "빈 몫");
+  assert.equal(parseClassifierParts('{"parts":[{"pick":1,"text":"a","confidence":2}]}', T4), null, "확신도 범위 밖");
+  assert.equal(parseClassifierParts('{"pick":1,"confidence":0.9}', T4), null, "단일 형식");
+  assert.equal(parseClassifierParts("{broken", T4), null);
+});
+
+test("프롬프트가 분할 형식을 안내한다", () => {
+  assert.match(buildClassifierPrompt(REAL_COMPOUND, T4), /"parts"/);
+});
+
+test("실측 복합 명령: 세 대상으로 나눠 각각 자기 몫 + 원문 참고", async () => {
+  const classify = async () => JSON.stringify({ parts: [
+    { pick: 1, text: "Cae d4진행해", confidence: 0.92 },
+    { pick: 3, text: "음악공유방 아바타 리스트를 늘려", confidence: 0.95 },
+    { pick: 4, text: "Treblo 정확히 어디까지 진행됐는지 보고해", confidence: 0.9 },
+  ] });
+  const ds = await decideRoutes({ ...base4, text: REAL_COMPOUND, classify });
+  assert.deepEqual(ds.map((d) => d.convId), ["c-cae", "c-listen", "c-treblo"]);
+  assert.ok(ds.every((d) => d.source === "ai"));
+  assert.match(ds[1].text, /^음악공유방 아바타 리스트를 늘려\n\n\[텔레그램 복합 명령/);
+  assert.ok(ds.every((d) => d.text.includes(REAL_COMPOUND)), "원문 참고 포함");
+  assert.equal(ds[2].note, "split 3/3");
+});
+
+test("분할: 확신도 미달·General 몫은 기본 대화 한 건으로 모은다", async () => {
+  const classify = async () => JSON.stringify({ parts: [
+    { pick: 1, text: "d4 진행", confidence: 0.9 },
+    { pick: 0, text: "5080 상태", confidence: 0.9 },
+    { pick: 4, text: "음악 확인", confidence: 0.3 },
+  ] });
+  const ds = await decideRoutes({ ...base4, text: "d4 진행, 5080 상태, 음악 확인", classify });
+  assert.deepEqual(ds.map((d) => d.convId), ["c-cae", "c-tg"]);
+  assert.match(ds[1].text, /^5080 상태\n음악 확인\n\n\[/);
+  assert.match(ds[1].note!, /general-part/);
+});
+
+test("분할했지만 대상이 하나뿐이면 원문 전체를 그 대상에 / 전부 General 이면 기본 대화", async () => {
+  let ds = await decideRoutes({ ...base4, text: "CAE 두 가지", classify: async () =>
+    '{"parts":[{"pick":1,"text":"a","confidence":0.9},{"pick":1,"text":"b","confidence":0.8}]}' });
+  assert.equal(ds.length, 1); assert.equal(ds[0].convId, "c-cae"); assert.equal(ds[0].text, "CAE 두 가지");
+  ds = await decideRoutes({ ...base4, text: "안녕", classify: async () => '{"parts":[{"pick":0,"text":"안녕","confidence":0.9}]}' });
+  assert.equal(ds.length, 1); assert.equal(ds[0].convId, "c-tg"); assert.equal(ds[0].note, "ai-picked-general");
+});
+
+test("기존 단일 형식·답장·별칭·분류 실패는 예전과 같은 1건", async () => {
+  let ds = await decideRoutes({ ...base4, text: "화면 어두워", classify: async () => '{"pick":1,"confidence":0.9}' });
+  assert.equal(ds.length, 1); assert.equal(ds[0].convId, "c-cae"); assert.equal(ds[0].source, "ai");
+  ds = await decideRoutes({ ...base4, text: "@kda 빌드", classify: async () => { throw new Error("must not call"); } });
+  assert.equal(ds[0].source, "alias"); assert.equal(ds[0].text, "빌드");
+  ds = await decideRoutes({ ...base4, text: "1", replyToConvId: "c-listen", classify: async () => { throw new Error("x"); } });
+  assert.equal(ds[0].source, "reply");
+  ds = await decideRoutes({ ...base4, text: "뭔가", classify: async () => { throw new Error("timeout"); } });
+  assert.equal(ds[0].convId, "c-tg"); assert.match(ds[0].note!, /classify-failed/);
+});
+
+test("splitPartText: 긴 원문은 300자로 자른다", () => {
+  const s = splitPartText("몫", "가".repeat(400));
+  assert.ok(s.includes("가".repeat(300) + "…"));
+  assert.ok(!s.includes("가".repeat(301)));
+});
+
+// 2026-11-01 실제 분류 모델(codex_oneshot, gpt-6-luna, reasoning low) 응답 그대로 — 10-31 복합 명령 2건
+const LIVE_REPLY_0 = "{\"parts\":[{\"pick\":1,\"text\":\"Cae d4진행해\",\"confidence\":0.99},{\"pick\":3,\"text\":\"음악공유방 아바타 리스트를 늘려\",\"confidence\":0.99},{\"pick\":4,\"text\":\"Treblo 정확히 어디까지 진행됐는지 보고해\",\"confidence\":0.99}]}";
+const LIVE_REPLY_1 = "{\"parts\":[{\"pick\":1,\"text\":\"Cae는 슬롯정리 승인\",\"confidence\":0.98},{\"pick\":3,\"text\":\"음악공유방은 아바타케릭 진행중일텐데?? 다했다면 캐릭터 커스터 마이징 가능하게 헤어스타일이나 얼굴모양 종류들 늘이기\",\"confidence\":0.99},{\"pick\":4,\"text\":\"Treblo는 오늘자 음악이 완성됐는지 확인해\",\"confidence\":0.99}]}";
+test("실측 모델 응답: 복합 명령 2건 모두 CAE·음악공유방·Treblo 3곳으로 분배", async () => {
+  const T = [CAE, { ...KDA, label: "CAE Solver" }, LISTEN, TREBLO];
+  for (const raw of [LIVE_REPLY_0, LIVE_REPLY_1]) {
+    const ds = await decideRoutes({ targets: T, defaultTarget: DEF, now: 1, text: "원문", classify: async () => raw });
+    assert.deepEqual(ds.map((d) => d.label), ["CAE GUI", "음악공유방", "Treblo"]);
+  }
+});

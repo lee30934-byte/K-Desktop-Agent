@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+## [0.7.68] - 2026-11-01
+
+### Added
+- Telegram multi-target routing. A message carrying instructions for several work sessions (for example "CAE는 … 음악공유방은 … Treblo는 …") is split per session. Each session receives only its part plus the original as reference. One combined acknowledgement lists every target.
+  - Before: the classifier could pick only one session, so such messages fell to the default Telegram conversation (2026-10-31 log: 5 compound messages routed `by=default note=ai-picked-general`).
+  - General or low-confidence parts are grouped into the default conversation. If splitting yields one target, that target gets the whole original message. Reply-to, @alias and short follow-ups behave as before.
+  - A start failure in one target does not block the others. `/이동` still resends the whole original to one conversation.
+- `/도움` mentions compound commands.
+
+### Validation and limits
+- Router and hub tests 43/43, including the real 2026-10-31 compound messages and live `gpt-6-luna` classifier replies.
+  - Live check on 2026-11-01: both compound messages split into CAE GUI, 음악공유방 and Treblo (confidence 0.98–0.99). "UI 가 너무 어둡다" still returned the single-pick format. "5080 상태 알려줘" went to General.
+- Mutation (ignoring split replies) fails 4 tests.
+- Real phone round trip is unverified until installed. Split quality depends on the classifier model. Command tracking and `/현황` are planned for later releases.
+
 ## [0.7.67] - 2026-10-31
 
 ### Fixed
