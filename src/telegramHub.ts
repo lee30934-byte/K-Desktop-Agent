@@ -83,6 +83,7 @@ export interface HubDeps {
 
 export const PROGRESS_FIRST_MS = 5 * 60 * 1000;
 export const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+export const ABSENCE_DIGEST_WINDOW_MS = 10 * 60 * 1000;
 export const MAX_IMAGES_PER_REPLY = 5;
 const SUMMARY_MIN_CHARS = 600; // 이보다 짧으면 요약하지 않고 원문
 const CHUNK = 4000;
@@ -94,7 +95,9 @@ const K_HELD = "kda_tg_hub_held";
 const K_FOLLOWUPS = "kda_tg_hub_followups";
 const K_ABSENCE = "kda_tg_hub_absence";
 const K_OUTBOX = "kda_tg_hub_outbox";
+const K_ABSENCE_DIGEST = "kda_tg_hub_absence_digest";
 interface ResultDelivery { convId: string; chatId: string; text: string; turnId?: string; forceSend?: boolean; noChoices?: boolean }
+interface AbsenceDigest { chatId: string; entries: Array<{ label: string; text: string; at: number }> }
 
 interface HeldResult {
   label: string;
@@ -134,6 +137,8 @@ export class TelegramHub {
   readonly followUps: FollowUpRegistry;
   private absence: AbsenceSession | null;
   private absenceSaveFailed = false;
+  private absenceDigest: AbsenceDigest | null;
+  private absenceDigestTimer: unknown;
   private outbox: ResultDelivery[] = [];
   private flushingOutbox = false;
   private delivering = new Set<ResultDelivery>();
@@ -153,6 +158,10 @@ export class TelegramHub {
     this.replyMap = ReplyMap.fromJSON(this.readJson(K_REPLYMAP));
     this.followUps = FollowUpRegistry.fromJSON(this.readJson(K_FOLLOWUPS), d.now());
     this.absence = restoreAbsence(this.readJson(K_ABSENCE), d.now());
+    const digest = this.readJson(K_ABSENCE_DIGEST);
+    this.absenceDigest = digest && typeof digest.chatId === "string" && Array.isArray(digest.entries)
+      ? { chatId: digest.chatId, entries: digest.entries.filter((x: any) => x && typeof x.label === "string" && typeof x.text === "string" && Number.isFinite(x.at)).slice(-100) }
+      : null;
     const outbox = this.readJson(K_OUTBOX);
     this.outbox = Array.isArray(outbox) ? outbox.filter(r => r && typeof r.convId === "string" &&
       typeof r.chatId === "string" && typeof r.text === "string") : [];
@@ -179,6 +188,7 @@ export class TelegramHub {
       this.d.store.set(K_FOLLOWUPS, JSON.stringify(this.followUps.toJSON()));
       this.d.store.set(K_ABSENCE, JSON.stringify(this.absence));
       this.d.store.set(K_OUTBOX, JSON.stringify(this.outbox));
+      this.d.store.set(K_ABSENCE_DIGEST, JSON.stringify(this.absenceDigest));
       this.absenceSaveFailed = false;
     } catch (e) {
       this.absenceSaveFailed = true;
@@ -543,9 +553,54 @@ export class TelegramHub {
    * forceSend: 오류·중지 안내처럼 등급과 무관하게 즉시 보내야 하는 경우.
    */
   async deliverResult(r: ResultDelivery): Promise<void> {
+    if (!r.forceSend && this.absenceChatFor(r.convId, r.chatId)) {
+      if (r.turnId) await this.finishProgress(r.turnId, true);
+      const tier = classifyTier(r.text);
+      if (tier === "result" || tier === "progress") {
+        this.queueAbsenceDigest(r);
+        return;
+      }
+      await this.flushAbsenceDigest("긴급 알림 전에 요약을 전송했습니다.");
+    }
     const pending = { ...r };
     this.outbox.push(pending); this.persist();
     await this.deliverPending(pending);
+  }
+
+  private absenceChatFor(convId: string, chatId: string): boolean {
+    return this.absence?.chatId === chatId && !!absenceChat(this.absence, convId, this.d.now()) &&
+      (!this.d.allowedChat || this.d.allowedChat(chatId));
+  }
+
+  private queueAbsenceDigest(r: ResultDelivery): void {
+    if (!this.absenceDigest || this.absenceDigest.chatId !== r.chatId) this.absenceDigest = { chatId: r.chatId, entries: [] };
+    const { label } = this.labelOf(r.convId);
+    this.absenceDigest.entries.push({ label, text: r.text.trim() || "(빈 응답)", at: this.d.now() });
+    this.absenceDigest.entries = this.absenceDigest.entries.slice(-100);
+    this.persist();
+    if (this.absenceDigestTimer !== undefined) return;
+    const set = this.d.setTimeout ?? ((fn, ms) => globalThis.setTimeout(fn, ms));
+    this.absenceDigestTimer = set(() => {
+      this.absenceDigestTimer = undefined;
+      void this.flushAbsenceDigest();
+    }, ABSENCE_DIGEST_WINDOW_MS);
+    this.note("ABSENCE-DIGEST-QUEUED", `count=${this.absenceDigest.entries.length}`);
+  }
+
+  private async flushAbsenceDigest(reason?: string): Promise<void> {
+    const digest = this.absenceDigest;
+    if (!digest?.entries.length) return;
+    this.absenceDigest = null;
+    this.absenceDigestTimer = undefined;
+    this.persist();
+    const body = digest.entries.map((e, i) => `${i + 1}. [${e.label}]\n${fallbackSummary(e.text, 500)}`).join("\n\n");
+    const text = `📋 부재중 작업 요약 · ${digest.entries.length}건${reason ? `\n${reason}` : ""}\n\n${body}`;
+    const mid = await this.sendText(digest.chatId, text, undefined);
+    if (mid === undefined) {
+      this.absenceDigest = digest;
+      this.persist();
+      this.note("ABSENCE-DIGEST-FAILED", `count=${digest.entries.length}`);
+    } else this.note("ABSENCE-DIGEST-SENT", `count=${digest.entries.length}`);
   }
 
   private async deliverPending(r: ResultDelivery): Promise<boolean> {
@@ -777,6 +832,7 @@ export class TelegramHub {
   /** 1분 주기 호출. 조용한 시간이 끝났고 보류분이 있으면 한 번에 보낸다. */
   async tickDigest(chatId: string): Promise<void> {
     await this.flushOutbox();
+    if (this.absenceDigest?.chatId === chatId && this.absenceDigest.entries.length) await this.flushAbsenceDigest();
     if (this.held.length === 0) return;
     if (inQuietHours(this.d.settings().quiet, new Date(this.d.now()))) return;
     const items = this.held.splice(0, this.held.length);

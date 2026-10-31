@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { TelegramHub, APPROVAL_TIMEOUT_MS, type HubSettings } from '../src/telegramHub.ts';
+import { TelegramHub, ABSENCE_DIGEST_WINDOW_MS, APPROVAL_TIMEOUT_MS, type HubSettings } from '../src/telegramHub.ts';
 import { FollowUpRegistry, ROUTER_FOLLOWUP_MS } from '../src/telegramRouter.ts';
 import { restoreAbsence, formatRemoteQuestions } from '../src/telegramAbsence.ts';
 import { RemoteApprovalDispatcher } from '../src/remoteApproval.ts';
@@ -64,6 +64,21 @@ test('recommended-progress instruction is limited to subscribed work/time and pr
   assert.match(t.hub.instructionFor(ID,t.now()),/미응답은 승인으로 해석하지 않는다/);
   assert.equal(t.hub.instructionFor('unrelated',t.now()),'');assert.equal(t.hub.instructionFor(ID,t.now()+36*HOUR),'');
   t.allowed(false);assert.equal(t.hub.instructionFor(ID,t.now()),'');
+});
+
+test('absence batches completion notices while decisions and failures stay immediate',async()=>{
+  assert.equal(ABSENCE_DIGEST_WINDOW_MS,10*60*1000);
+  const t=fixture();await t.msg('/부재 36');
+  await t.hub.deliverResult({convId:ID,chatId:CHAT,text:'첫 작업이 완료되었습니다.'});
+  await t.hub.deliverResult({convId:ID,chatId:CHAT,text:'두 번째 작업도 완료되었습니다.'});
+  assert.equal(t.text().filter(x=>x.includes('부재중 작업 요약')).length,0);
+  t.advance(ABSENCE_DIGEST_WINDOW_MS);
+  await drain();
+  const digest=t.text().find(x=>x.includes('부재중 작업 요약'))!;
+  assert.match(digest,/2건/);assert.match(digest,/첫 작업/);assert.match(digest,/두 번째 작업/);
+  await t.hub.deliverResult({convId:ID,chatId:CHAT,text:'결정이 필요합니다.\n1. 보류\n2. 진행\n번호로 선택해 주세요.'});
+  assert.match(t.text().at(-1)!,/❓/);
+  assert.match(t.text().at(-2)!,/부재중 작업 요약/);
 });
 
 test('invalid duration, corrupt/future state, deleted chat and OFF fail closed',async()=>{
