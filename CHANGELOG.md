@@ -1,3 +1,14 @@
+## [0.7.61] - 2026-10-31
+
+### Fixed
+- Treat a task instruction as authorization for its necessary, recoverable steps across supported KDA providers. Reuse exact existing and standing approvals instead of repeatedly asking for general permission to continue.
+- Suppress a redundant Codex MCP read-confirmation form only for an explicitly confirmed, allowlisted read call in the current thread and turn. Unknown, stale, ambiguous, write and additional-input requests retain their confirmation flow. Existing command approvals and tool restrictions remain in place.
+- Set `KDA_ESSENTIAL_APPROVALS=0` before sidecar startup to disable redundant-read reuse.
+
+### Validation and limits
+- Offline protocol tests cover 12 request scenarios with reuse enabled and disabled, including duplicate responses and risky or unrelated requests. Existing approval, elicitation lifecycle and shared autonomy-policy tests remain required.
+- Live interaction and installed-bundle verification are recorded separately in the release evidence; source tests alone do not establish installed behavior.
+
 ## [0.7.60] - 2026-10-30
 
 ### Fixed

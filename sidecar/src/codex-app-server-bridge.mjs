@@ -1,6 +1,7 @@
 // One Codex app-server process per KDA turn. Stdout speaks the existing Codex
 // exec JSONL event format plus approval.requested; stdin accepts start/approval.
-// No approval is inferred from KDA permission settings or a previous turn.
+// No approval is inherited from a previous turn. KDA can suppress an exact,
+// redundant confirm_read form for an already-confirmed active read call.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import readline from "node:readline";
@@ -29,6 +30,32 @@ let finished = false;
 const calls = new Map();
 const pending = new Map();
 const items = new Map();
+let essentialApprovals = false;
+const autoResolved = new Set();
+// Keep this explicit: arbitrary evaluate, UI actions, writes and new tools ask.
+const readConfirmationTools = new Set([
+  "fm_list_directory", "fm_file_info", "fm_recent_files", "fm_search_files",
+  "fm_disk_usage", "fm_operation_log", "fm_list_backups", "db_todo_list",
+  "db_note_search", "db_note_list", "db_habit_list", "app_list_registered",
+  "app_list_running", "ui_dump_tree", "ui_find", "ui_get_text", "ui_list_windows",
+  "web_snapshot", "web_get_text", "web_url", "cc_screenshot",
+  "cc_screenshot_region", "cc_mouse_position", "cc_screen_size", "cc_list_windows",
+  "clip_get", "clip_snippet_list",
+]);
+
+function redundantReadContent(params) {
+  if (!essentialApprovals || params.serverName !== "k-personal") return null;
+  const fields = parseElicitationSchema(params.requestedSchema);
+  if (fields?.length !== 1 || fields[0].name !== "confirm_read" ||
+      fields[0].type !== "boolean" || !fields[0].required) return null;
+  // Elicitation has no itemId. Ambiguous concurrent calls must still ask.
+  const active = [...items.values()].filter(i => i.type === "mcpToolCall" && i.server === "k-personal");
+  if (active.length !== 1) return null;
+  const call = active[0];
+  if (call._threadId !== threadId || call._turnId !== turnId ||
+      !readConfirmationTools.has(call.tool) || call.arguments?.confirm_read !== true) return null;
+  return { confirm_read: true };
+}
 
 function send(value) {
   if (!server?.stdin?.writable) throw new Error("Codex app-server stdin closed");
@@ -117,6 +144,14 @@ function onServerMessage(message) {
     if ([...pending.values()].some(e => e.rpcId === message.id)) {
       diagnostic(trace, "duplicate_request"); return;
     }
+    if (autoResolved.has(message.id)) { diagnostic(trace, "duplicate_request", true); return; }
+    const content = redundantReadContent(params);
+    if (content && validateElicitationContent(params.requestedSchema, content)) {
+      autoResolved.add(message.id);
+      send({ id: message.id, result: { action: "accept", content } });
+      diagnostic(trace, "confirmed_read_reused", true);
+      return;
+    }
     if (!turnId && params.turnId) turnId = params.turnId;
     const token = randomUUID();
     const expiresAt = Date.now() + 120_000;
@@ -174,7 +209,7 @@ function onServerMessage(message) {
     return;
   }
   if (method === "item/started" && params.item) {
-    items.set(params.item.id, params.item);
+    items.set(params.item.id, { ...params.item, _threadId: params.threadId, _turnId: params.turnId });
     emit({ type: "item.started", item: mapItem(params.item) });
     return;
   }
@@ -208,6 +243,7 @@ function onServerMessage(message) {
 }
 
 async function start(input) {
+  essentialApprovals = input.essentialApprovals === true;
   if (server) throw new Error("bridge already started");
   const codex = input.codex;
   if (typeof codex !== "string" || !codex || typeof input.prompt !== "string") throw new Error("invalid bridge start");
