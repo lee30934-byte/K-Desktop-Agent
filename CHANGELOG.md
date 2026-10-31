@@ -8,11 +8,14 @@
   - General or low-confidence parts are grouped into the default conversation. If splitting yields one target, that target gets the whole original message. Reply-to, @alias and short follow-ups behave as before.
   - A start failure in one target does not block the others. `/이동` still resends the whole original to one conversation.
 - `/도움` mentions compound commands.
+- Quick room selection without typing room names:
+  - Number aliases: every routing target gets `@1`, `@2`, … in `/분배` order, alongside its configured aliases. `/분배` now shows the numbers.
+  - `/방` shows the rooms as buttons (0 = default conversation). Tapping one sends the next message only to that room, valid for 10 minutes. `/방 2` selects by number. Reply-to still wins, the selection is used once, and a stale button from a changed list is ignored.
 
 ### Validation and limits
-- Router and hub tests 43/43, including the real 2026-10-31 compound messages and live `gpt-6-luna` classifier replies.
+- Router and hub tests 49/49 (room selection: number alias, `/방` buttons, one-shot, 10-minute expiry, reply priority, stale button), including the real 2026-10-31 compound messages and live `gpt-6-luna` classifier replies.
   - Live check on 2026-11-01: both compound messages split into CAE GUI, 음악공유방 and Treblo (confidence 0.98–0.99). "UI 가 너무 어둡다" still returned the single-pick format. "5080 상태 알려줘" went to General.
-- Mutation (ignoring split replies) fails 4 tests.
+- Mutations: ignoring split replies fails 4 tests. Disabling the selected room fails 2. Dropping number aliases fails 1.
 - Real phone round trip is unverified until installed. Split quality depends on the classifier model. Command tracking and `/현황` are planned for later releases.
 
 ## [0.7.67] - 2026-10-31

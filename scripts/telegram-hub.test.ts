@@ -289,3 +289,69 @@ test("복합 명령: 한 대상 시작 실패가 다른 대상을 막지 않는�
   assert.deepEqual(t.turns.map((x) => x.convId), [KDA.convId]);
   assert.ok(t.texts().some((x) => /⚠ \[CAE GUI\] 처리 시작 실패/.test(x)));
 });
+
+// ── v0.7.68 방 고르기: 번호 별칭 · /방 버튼 ─────────────────────────────
+const cbU = (data: string, mid = 500) => ({ update_id: 3, callback_query: { id: "cqr", data, message: { message_id: mid, chat: { id: Number(CHAT) } } } });
+const noClassify = async () => { throw new Error("분류기를 부르면 안 됨"); };
+
+test("/분배: 번호와 @번호 별칭이 보이고 기존 별칭도 유지", async () => {
+  const t = mk();
+  await t.hub.handleUpdate(msgU("/분배"));
+  const txt = t.texts()[0];
+  assert.match(txt, /- 1\. CAE GUI — @1 @cae/);
+  assert.match(txt, /- 2\. KDA 개발 — @2 @kda/);
+  assert.equal(t.turns.length, 0);
+});
+
+test("@번호: 분류기 없이 그 방으로, 머리말은 떼고 전달", async () => {
+  const t = mk({}, { oneshot: noClassify });
+  await t.hub.handleUpdate(msgU("@2 빌드 상태 봐줘"));
+  assert.deepEqual(t.turns, [{ convId: KDA.convId, text: "빌드 상태 봐줘" }]);
+});
+
+test("/방: 버튼 목록(0=기본 대화) → 누르면 다음 메시지 1건만 그 방으로", async () => {
+  let calls = 0;
+  const t = mk({}, { oneshot: async () => { calls++; return '{"pick":2,"confidence":0.9}'; } });
+  await t.hub.handleUpdate(msgU("/방"));
+  const kb = (t.sent.at(-1)!.payload.reply_markup as any).inline_keyboard;
+  assert.deepEqual(kb.map((r: any) => r[0].text), ["0. 텔레그램", "1. CAE GUI", "2. KDA 개발"]);
+  assert.equal(t.turns.length, 0, "/방 자체는 턴을 만들지 않음");
+  await t.hub.handleUpdate(cbU(kb[1][0].callback_data));
+  assert.ok(t.texts().some((x) => /📌 다음 메시지는 \[CAE GUI\]로/.test(x)));
+  assert.ok(t.sent.some((s) => s.method === "editMessageReplyMarkup"), "버튼 제거");
+  await t.hub.handleUpdate(msgU("KDA 얘기처럼 보이는 내용"));
+  assert.deepEqual(t.turns.at(-1), { convId: CAE.convId, text: "KDA 얘기처럼 보이는 내용" });
+  assert.equal(calls, 0, "고른 방이 있으면 분류기를 부르지 않음");
+  await t.hub.handleUpdate(msgU("그 다음 메시지"));
+  assert.equal(t.turns.at(-1)!.convId, KDA.convId, "1건 쓰고 나면 다시 자동 분류");
+  assert.equal(calls, 1);
+});
+
+test("/방 2: 번호로 바로 고르기 / 없는 번호는 안내만", async () => {
+  const t = mk({}, { oneshot: noClassify });
+  await t.hub.handleUpdate(msgU("/방 9"));
+  assert.match(t.texts().at(-1)!, /'9' 번 방이 없어요/);
+  await t.hub.handleUpdate(msgU("/방 2"));
+  await t.hub.handleUpdate(msgU("이거 해줘"));
+  assert.deepEqual(t.turns, [{ convId: KDA.convId, text: "이거 해줘" }]);
+});
+
+test("/방: 10분 지나면 고른 방은 풀리고, 답장은 고른 방보다 우선", async () => {
+  const t = mk({}, { oneshot: async () => '{"pick":2,"confidence":0.9}' });
+  await t.hub.handleUpdate(msgU("/방 1"));
+  t.advance(11 * 60 * 1000);
+  await t.hub.handleUpdate(msgU("늦게 보낸 메시지"));
+  assert.equal(t.turns.at(-1)!.convId, KDA.convId, "만료 → 자동 분류");
+  // 답장 우선: 봇이 KDA 대화로 보낸 메시지에 답장
+  await t.hub.handleUpdate(msgU("/방 1"));
+  const mid = await t.hub.sendText(CHAT, "KDA 결과", KDA.convId);
+  await t.hub.handleUpdate(msgU("이건 KDA 로", { reply_to_message: { message_id: mid } }));
+  assert.equal(t.turns.at(-1)!.convId, KDA.convId);
+});
+
+test("/방: 목록이 바뀐 뒤의 옛 버튼은 무시", async () => {
+  const t = mk({}, { oneshot: noClassify });
+  await t.hub.handleUpdate(cbU("room:1:zzzzzzzz"));
+  assert.equal(t.turns.length, 0);
+  assert.ok(!t.texts().some((x) => x.startsWith("📌 다음 메시지는")));
+});

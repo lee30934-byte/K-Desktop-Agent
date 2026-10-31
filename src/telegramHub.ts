@@ -37,6 +37,9 @@ import {
   type DigestTier,
 } from "./telegramDigest";
 
+/** v0.7.68 — /방 으로 고른 방이 유지되는 시간. */
+export const ROOM_PIN_MS = 10 * 60 * 1000;
+
 export interface HubApi {
   /** Bot API 호출 (Rust telegram_call). 결과 JSON. */
   call(method: string, payload: Record<string, unknown>): Promise<any>;
@@ -147,6 +150,8 @@ export class TelegramHub {
   private fullText = new Map<number, string>();
   private lastReply: { convId: string; at: number } | undefined;
   private lastInbound: { text: string; chatId: string; convId: string } | undefined;
+  /** v0.7.68 — /방 으로 고른 방. 다음 메시지 1건만 그 방으로 (10분 안). */
+  private pinned: { convId: string; label: string; chatId: string; until: number } | undefined;
   private progressMsgs = new Map<string, { chatId: string; messageId: number; convId: string }>();
   private approvals = new Map<string, PendingApproval>();
   private inputs = new Map<string, { chatId: string; messageId?: number; schema: unknown; expiresAt: number;
@@ -219,7 +224,8 @@ export class TelegramHub {
   }
 
   private routingTargets(): RouteTarget[] {
-    const targets = [...this.d.targets()];
+    // v0.7.68 — /분배 목록 순서대로 번호 별칭(@1, @2 …)을 자동으로 붙인다. 설정의 별칭은 그대로 유지.
+    const targets = this.d.targets().map((t, i) => (t.aliases.includes(String(i + 1)) ? t : { ...t, aliases: [...t.aliases, String(i + 1)] }));
     if (this.absence && this.d.now() < this.absence.until) for (const t of this.absence.targets) {
       if (!targets.some(x => x.convId === t.convId)) targets.push({ ...t, aliases: [], description: t.label });
     }
@@ -366,6 +372,8 @@ export class TelegramHub {
     }
     if (/^\/(도움|help|start)(?:@\S+)?(?:\s|$)/i.test(trimmed)) return this.cmdHelp(chatId);
     if (/^\/(분배|route)(?:@\S+)?(?:\s|$)/i.test(trimmed)) return this.cmdRoutes(chatId);
+    const room = /^\/(방|room)(?:@\S+)?(?:\s+(\S+))?\s*$/i.exec(trimmed);
+    if (room) return this.cmdRoom(chatId, room[2]);
     const mv = /^\/(이동|move)\s+@?(\S+)\s*$/i.exec(trimmed);
     if (mv) return this.cmdMove(chatId, mv[2]);
 
@@ -402,7 +410,11 @@ export class TelegramHub {
     const s = this.d.settings();
     const def = this.d.defaultTarget();
     let decisions: RouteDecision[];
-    if (!s.routing) {
+    const pin = this.pinned && this.pinned.chatId === chatId && this.d.now() < this.pinned.until && replyToId === undefined ? this.pinned : undefined;
+    this.pinned = undefined;
+    if (pin) {
+      decisions = [{ convId: pin.convId, label: pin.label, source: "pinned", text }];
+    } else if (!s.routing) {
       decisions = [{ convId: def.convId, label: def.label, source: "default", text }];
     } else {
       decisions = await decideRoutes({
@@ -490,6 +502,22 @@ export class TelegramHub {
       return;
     }
 
+    const rm = /^room:(\d+):([0-9a-zA-Z-]{1,8})$/.exec(data);
+    if (rm && chatId) {
+      const t = this.roomList()[Number(rm[1])];
+      if (!t || t.convId.slice(0, 8) !== rm[2]) {
+        await answer("방 목록이 바뀌었어요. /방 으로 다시 열어 주세요.");
+        return;
+      }
+      await answer(`${t.label} 선택`);
+      if (typeof cq?.message?.message_id === "number") {
+        void this.d.api
+          .call("editMessageReplyMarkup", { chat_id: chatId, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } })
+          .catch(() => {});
+      }
+      return this.pinRoom(chatId, t);
+    }
+
     const ch = decodeChoiceCallback(data);
     if (ch && chatId) {
       const all = [...this.routingTargets(), { ...this.d.defaultTarget(), aliases: [], description: "" }];
@@ -545,7 +573,8 @@ export class TelegramHub {
         "🤖 사용법",
         "- 그냥 보내면 주제에 맞는 대화로 자동 분배됩니다.",
         "- 여러 작업을 한 메시지로 보내면 대화별로 나눠 각각 전달합니다 (예: CAE는 … 음악공유방은 …).",
-        "- @별칭 내용 → 그 대화로 바로 (/분배 로 별칭 확인)",
+        "- @별칭 내용 → 그 대화로 바로 (/분배 로 별칭 확인). @1, @2 처럼 번호도 됩니다.",
+        "- /방 → 방 버튼 목록, 누르면 다음 메시지 1건이 그 방으로 (/방 2 처럼 번호로도)",
         "- 봇 메시지에 답장 → 그 메시지를 보낸 대화로",
         "- 요약 메시지에 '자세히' 답장 → 원문",
         "- /이동 별칭 → 직전 메시지를 다른 대화로 다시 보내고 분류기에 학습",
@@ -561,9 +590,38 @@ export class TelegramHub {
   private async cmdRoutes(chatId: string): Promise<void> {
     const ts = this.d.targets();
     const lines = ["🧭 분배 대상", `- (기본) ${this.d.defaultTarget().label}`];
-    for (const t of ts) lines.push(`- ${t.label}${t.aliases.length ? ` — @${t.aliases.join(" @")}` : ""}`);
+    ts.forEach((t, i) => lines.push(`- ${i + 1}. ${t.label} — @${i + 1}${t.aliases.filter((a) => a !== String(i + 1)).map((a) => ` @${a}`).join("")}`));
+    if (ts.length > 0) lines.push("방 이름 대신 @번호 를 앞에 붙이거나, /방 으로 버튼을 눌러 고를 수 있어요.");
     if (ts.length === 0) lines.push("(분배 허용 대화 없음 — KDA 설정에서 추가)");
     await this.sendText(chatId, lines.join("\n"), undefined);
+  }
+
+  /** v0.7.68 — /방 : 방 버튼 목록. /방 2 : 2번 방을 바로 고름. 고른 방으로 다음 메시지 1건이 갑니다. */
+  private async cmdRoom(chatId: string, arg?: string): Promise<void> {
+    const list = this.roomList();
+    if (arg !== undefined) {
+      const n = Number(arg.replace(/^@/, ""));
+      const t = Number.isInteger(n) ? list[n] : undefined;
+      if (!t) {
+        await this.sendText(chatId, `'${arg}' 번 방이 없어요. /방 으로 목록을 보세요.`, undefined);
+        return;
+      }
+      return this.pinRoom(chatId, t);
+    }
+    const rows = list.map((t, i) => [{ text: `${i}. ${t.label}`.slice(0, 40), callback_data: `room:${i}:${t.convId.slice(0, 8)}` }]);
+    await this.sendText(chatId, "📌 보낼 방을 고르세요. 다음 메시지 1건이 그 방으로 갑니다 (10분 안).", undefined, { inline_keyboard: rows });
+  }
+
+  /** 0 = 기본 대화, 1.. = /분배 순서. */
+  private roomList(): Array<{ convId: string; label: string }> {
+    const def = this.d.defaultTarget();
+    return [{ convId: def.convId, label: def.label }, ...this.routingTargets().map((t) => ({ convId: t.convId, label: t.label }))];
+  }
+
+  private async pinRoom(chatId: string, t: { convId: string; label: string }): Promise<void> {
+    this.pinned = { convId: t.convId, label: t.label, chatId, until: this.d.now() + ROOM_PIN_MS };
+    this.note("PIN", `conv=${t.convId.slice(0, 8)}`);
+    await this.sendText(chatId, `📌 다음 메시지는 [${t.label}]로 보냅니다 (10분 안).`, undefined);
   }
 
   private async cmdMove(chatId: string, alias: string): Promise<void> {

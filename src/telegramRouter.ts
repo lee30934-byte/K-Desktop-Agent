@@ -16,7 +16,7 @@ export interface RouteTarget {
   description: string;
 }
 
-export type RouteSource = "reply" | "alias" | "sticky" | "ai" | "default";
+export type RouteSource = "reply" | "alias" | "sticky" | "ai" | "default" | "pinned";
 
 export interface RouteDecision {
   convId: string;
