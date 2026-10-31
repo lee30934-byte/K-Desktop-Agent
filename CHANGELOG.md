@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+## [0.7.65] - 2026-10-31
+
+### Added
+- Add explicit Telegram absence subscriptions for existing desktop work with a 36-hour default and 48-hour maximum. `/부재 종료` turns the subscription off without stopping work.
+- Add `/부재검증` for a harmless, expiring phone-button challenge and show whole-app active/queued work and unsent results in `/상태`.
+
+### Fixed
+- Preserve follow-up bindings and unsent results across restart; expire subscriptions and invalidate old execution approvals safely.
+- Route desktop and Telegram decisions through the same dispatcher with exact conversation/turn ownership, deadline and duplicate checks.
+- Retain v0.7.64 empty-confirmation handling and task-list close-only behavior.
+
+### Validation
+- Source regression tests and isolated browser storage/reload/button tests cover simulated 30-hour restoration. Installed phone transport and 24-hour uptime remain separate verification steps.
+
 ## [0.7.64] - 2026-10-31
 
 ### Fixed

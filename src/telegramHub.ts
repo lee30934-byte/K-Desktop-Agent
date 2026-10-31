@@ -7,6 +7,9 @@
  *  - 결정 필요·오류는 조용한 시간에도 즉시 보낸다(규칙 판정, telegramDigest).
  *  - 기능별 설정이 꺼져 있으면 v0.7.53 과 같은 동작(원문 회신, 📱 텔레그램 대화 고정).
  */
+import { parseElicitationSchema, validateElicitationContent } from "../sidecar/src/mcp-elicitation-schema.mjs";
+import { absenceChat, absenceInstruction, restoreAbsence, ABSENCE_DEFAULT_HOURS, ABSENCE_MAX_HOURS,
+  type AbsenceSession, type AbsenceTarget } from "./telegramAbsence";
 import {
   decideRoute,
   findTargetByAlias,
@@ -73,6 +76,8 @@ export interface HubDeps {
   store: KeyValueStore;
   /** /상태 에 붙일 앱 상태 줄 (폴링·대기열 등). */
   statusLines?(): string[];
+  activeConversations?(): AbsenceTarget[];
+  allowedChat?(chatId: string): boolean;
   setTimeout?(fn: () => void, ms: number): unknown;
 }
 
@@ -86,6 +91,10 @@ const FULLTEXT_MAX = 100;
 const K_REPLYMAP = "kda_tg_hub_replymap";
 const K_EXAMPLES = "kda_tg_hub_examples";
 const K_HELD = "kda_tg_hub_held";
+const K_FOLLOWUPS = "kda_tg_hub_followups";
+const K_ABSENCE = "kda_tg_hub_absence";
+const K_OUTBOX = "kda_tg_hub_outbox";
+interface ResultDelivery { convId: string; chatId: string; text: string; turnId?: string; forceSend?: boolean; noChoices?: boolean }
 
 interface HeldResult {
   label: string;
@@ -98,6 +107,7 @@ interface PendingApproval {
   messageId?: number;
   resolve: (ok: boolean) => void;
   done: boolean;
+  expiresAt: number;
 }
 
 function chunks(text: string): string[] {
@@ -121,7 +131,12 @@ function shortToken(): string {
 
 export class TelegramHub {
   readonly replyMap: ReplyMap;
-  readonly followUps = new FollowUpRegistry();
+  readonly followUps: FollowUpRegistry;
+  private absence: AbsenceSession | null;
+  private absenceSaveFailed = false;
+  private outbox: ResultDelivery[] = [];
+  private flushingOutbox = false;
+  private delivering = new Set<ResultDelivery>();
   private examples: RouteExample[];
   private held: HeldResult[];
   private fullText = new Map<number, string>();
@@ -129,11 +144,18 @@ export class TelegramHub {
   private lastInbound: { text: string; chatId: string; convId: string } | undefined;
   private progressMsgs = new Map<string, { chatId: string; messageId: number; convId: string }>();
   private approvals = new Map<string, PendingApproval>();
+  private inputs = new Map<string, { chatId: string; messageId?: number; schema: unknown; expiresAt: number;
+    resolve: (value: Record<string, unknown> | null) => void }>();
   /** 최근 분배·오류 기록 (상태 카드/ /분배 용). */
   readonly recent: Array<{ at: number; kind: string; detail: string }> = [];
 
   constructor(private readonly d: HubDeps) {
     this.replyMap = ReplyMap.fromJSON(this.readJson(K_REPLYMAP));
+    this.followUps = FollowUpRegistry.fromJSON(this.readJson(K_FOLLOWUPS), d.now());
+    this.absence = restoreAbsence(this.readJson(K_ABSENCE), d.now());
+    const outbox = this.readJson(K_OUTBOX);
+    this.outbox = Array.isArray(outbox) ? outbox.filter(r => r && typeof r.convId === "string" &&
+      typeof r.chatId === "string" && typeof r.text === "string") : [];
     const ex = this.readJson(K_EXAMPLES);
     this.examples = Array.isArray(ex) ? ex.filter((e) => e && typeof e.text === "string" && typeof e.convId === "string") : [];
     const h = this.readJson(K_HELD);
@@ -154,7 +176,12 @@ export class TelegramHub {
       this.d.store.set(K_REPLYMAP, JSON.stringify(this.replyMap.toJSON()));
       this.d.store.set(K_EXAMPLES, JSON.stringify(this.examples.slice(-50)));
       this.d.store.set(K_HELD, JSON.stringify(this.held.slice(-50)));
+      this.d.store.set(K_FOLLOWUPS, JSON.stringify(this.followUps.toJSON()));
+      this.d.store.set(K_ABSENCE, JSON.stringify(this.absence));
+      this.d.store.set(K_OUTBOX, JSON.stringify(this.outbox));
+      this.absenceSaveFailed = false;
     } catch (e) {
+      this.absenceSaveFailed = true;
       this.d.log(`HUB persist-failed ${String(e).slice(0, 120)}`);
     }
   }
@@ -164,16 +191,61 @@ export class TelegramHub {
     this.d.log(`HUB ${kind} ${detail}`);
   }
 
+  /** Uses the frozen desktop subscription before the normal follow-up binding. */
+  chatFor(convId: string | undefined, now: number): string | undefined {
+    const chat = absenceChat(this.absence, convId, now) ?? this.followUps.chatFor(convId, now);
+    return chat && (!this.d.allowedChat || this.d.allowedChat(chat)) ? chat : undefined;
+  }
+
+  instructionFor(convId: string | undefined, now: number): string {
+    const chat = absenceChat(this.absence, convId, now);
+    return chat && (!this.d.allowedChat || this.d.allowedChat(chat)) ? absenceInstruction(this.absence, convId, now) : '';
+  }
+
+  private routingTargets(): RouteTarget[] {
+    const targets = [...this.d.targets()];
+    if (this.absence && this.d.now() < this.absence.until) for (const t of this.absence.targets) {
+      if (!targets.some(x => x.convId === t.convId)) targets.push({ ...t, aliases: [], description: t.label });
+    }
+    return targets;
+  }
+
+  private async cmdAbsence(chatId: string, argument: string): Promise<void> {
+    if (/^(off|종료|끄기)$/i.test(argument)) {
+      if (this.absence && this.absence.chatId !== chatId) {
+        await this.sendText(chatId, "다른 채팅의 부재 연결은 변경할 수 없습니다.", undefined); return;
+      }
+      this.absence = null; this.persist();
+      await this.sendText(chatId, this.absenceSaveFailed ? "⚠ 종료 저장 실패 — 재시작 후 상태 재확인 필요" : "부재 알림 연결을 종료했습니다. 작업 정지·승인 설정은 유지됩니다.", undefined);
+      return;
+    }
+    const hours = argument ? Number(argument) : ABSENCE_DEFAULT_HOURS;
+    if (!Number.isFinite(hours) || hours < 1 || hours > ABSENCE_MAX_HOURS) {
+      await this.sendText(chatId, "사용법: /부재 36 (1~48시간) 또는 /부재 종료", undefined); return;
+    }
+    if (this.absence && this.d.now() < this.absence.until && this.absence.chatId !== chatId) {
+      await this.sendText(chatId, "다른 채팅의 부재 연결이 유지 중입니다.", undefined); return;
+    }
+    const now = this.d.now();
+    this.absence = restoreAbsence({ chatId, startedAt: now, until: now + hours * 3600000,
+      targets: this.d.activeConversations?.() ?? [] }, now);
+    this.persist();
+    const targets = this.absence?.targets ?? [];
+    await this.sendText(chatId, this.absenceSaveFailed ? "⚠ 부재 연결 저장 실패 — 재시작 복원을 보장할 수 없습니다." :
+      `부재 알림 ${hours}시간 · 현재 작업 ${targets.length}개 연결\n${targets.map(t => `- ${t.label}`).join("\n")}\n기존 작업의 결과·결정 요청을 전달합니다. 새 작업 시작이나 별도 승인은 포함하지 않습니다.`, undefined);
+  }
+
   private labelOf(convId: string): { label: string; isDefault: boolean } {
     const def = this.d.defaultTarget();
     if (convId === def.convId) return { label: def.label, isDefault: true };
-    const t = this.d.targets().find((x) => x.convId === convId);
+    const t = this.routingTargets().find((x) => x.convId === convId);
     return { label: t ? t.label : convId.slice(0, 8), isDefault: false };
   }
 
   // ── 송신 ────────────────────────────────────────────────
   /** 텍스트 전송. 마지막 조각에 버튼. 보낸 message_id 들을 대화에 연결. 실패해도 throw 하지 않고 false. */
   async sendText(chatId: string, text: string, convId: string | undefined, replyMarkup?: unknown, full?: string): Promise<number | undefined> {
+    if (this.d.allowedChat && !this.d.allowedChat(chatId)) return undefined;
     const parts = chunks(text);
     let lastId: number | undefined;
     for (let i = 0; i < parts.length; i++) {
@@ -190,11 +262,11 @@ export class TelegramHub {
             res = await this.d.api.call("sendMessage", payload);
           } catch (e2) {
             this.note("SEND-FAILED", String(e2).slice(0, 160));
-            return lastId;
+            return undefined;
           }
         } else {
           this.note("SEND-FAILED", String(e).slice(0, 160));
-          return lastId;
+          return undefined;
         }
       }
       const mid = res?.result?.message_id;
@@ -216,11 +288,15 @@ export class TelegramHub {
   // ── 수신 ────────────────────────────────────────────────
   /** 허용 chat 검증은 호출부(App)가 이미 했다고 가정. */
   async handleUpdate(u: any): Promise<void> {
-    if (u?.callback_query) return this.handleCallback(u.callback_query);
+    if (u?.callback_query) {
+      const chat = String(u.callback_query?.message?.chat?.id ?? "");
+      if (this.d.allowedChat && !this.d.allowedChat(chat)) return;
+      return this.handleCallback(u.callback_query);
+    }
     const msg = u?.message;
     if (!msg) return;
     const chatId = msg.chat?.id != null ? String(msg.chat.id) : "";
-    if (!chatId) return;
+    if (!chatId || (this.d.allowedChat && !this.d.allowedChat(chatId))) return;
     const s = this.d.settings();
 
     // 첨부 (④)
@@ -249,7 +325,21 @@ export class TelegramHub {
 
     // 명령
     const trimmed = text.trim();
+    const absenceCommand = /^\/(부재|absence)(?:@\S+)?(?:\s+(.*))?$/i.exec(trimmed);
+    if (absenceCommand) return this.cmdAbsence(chatId, (absenceCommand[2] ?? "").trim());
     if (/^\/(상태|status)(?:@\S+)?(?:\s|$)/i.test(trimmed)) return this.cmdStatus(chatId);
+    if (/^\/(부재검증|absence_test)(?:@\S+)?\s*$/i.test(trimmed)) {
+      const convId = this.d.defaultTarget().convId;
+      const probe = this.requestApproval({ convId, chatId, timeoutMs: 120000,
+        detail: "부재 운영 송수신 검증입니다. 승인 버튼은 이 검증에만 응답하며 명령·파일·전원 작업을 실행하지 않습니다." });
+      void probe.result.then(ok => {
+        this.note("ABSENCE-PROBE", ok ? "PASS phone-callback" : "HOLD declined-or-expired");
+        return this.deliverResult({ convId, chatId, forceSend: true,
+          text: ok ? "✅ 휴대폰 승인 버튼 왕복 PASS. 명령 실행은 하지 않았습니다. 설치 버전·부재 연결은 /상태로 확인하세요."
+            : "⚠ 휴대폰 승인 버튼 왕복 HOLD — 거절·만료·전송 실패. 실제 명령은 실행하지 않았습니다." });
+      });
+      return;
+    }
     if (/^\/(도움|help|start)(?:@\S+)?(?:\s|$)/i.test(trimmed)) return this.cmdHelp(chatId);
     if (/^\/(분배|route)(?:@\S+)?(?:\s|$)/i.test(trimmed)) return this.cmdRoutes(chatId);
     const mv = /^\/(이동|move)\s+@?(\S+)\s*$/i.exec(trimmed);
@@ -257,6 +347,24 @@ export class TelegramHub {
 
     // "자세히" 답장 → 원문
     const replyToId: number | undefined = msg.reply_to_message?.message_id;
+    if (replyToId !== undefined) {
+      const input = [...this.inputs.entries()].find(([, p]) => p.chatId === chatId && p.messageId === replyToId);
+      if (input) {
+        const [token, p] = input;
+        if (this.d.now() >= p.expiresAt || !this.d.settings().approvals) {
+          this.inputs.delete(token); p.resolve(null);
+          await this.sendText(chatId, "입력 요청이 만료됐거나 원격승인이 꺼졌습니다. 실행하지 않고 보류합니다.", undefined); return;
+        }
+        if (/^(취소|거절|cancel)$/i.test(trimmed)) { this.inputs.delete(token); p.resolve(null); return; }
+        let value: unknown;
+        try { value = JSON.parse(trimmed); } catch { value = null; }
+        if (!validateElicitationContent(p.schema, value)) {
+          await this.sendText(chatId, "입력 형식이 맞지 않습니다. 원래 입력 요청에 JSON으로 답장하거나 '취소'로 답장해 주세요.", undefined); return;
+        }
+        this.inputs.delete(token); p.resolve(value as Record<string, unknown>);
+        await this.sendText(chatId, "입력 응답을 전달했습니다 (해당 요청 1회만).", undefined); return;
+      }
+    }
     if (replyToId !== undefined && /^(자세히|전문|원문|full)$/i.test(trimmed)) {
       const full = this.fullText.get(replyToId);
       await this.sendText(chatId, full ?? "원문을 찾지 못했어요 (오래됐거나 KDA 재시작 후).", this.replyMap.lookup(replyToId));
@@ -278,7 +386,7 @@ export class TelegramHub {
         replyToConvId: this.replyMap.lookup(replyToId),
         lastReply: this.lastReply,
         now: this.d.now(),
-        targets: this.d.targets(),
+        targets: this.routingTargets(),
         defaultTarget: def,
         classify: (p) => this.d.api.oneshot(p),
         examples: this.examples,
@@ -288,6 +396,7 @@ export class TelegramHub {
     this.lastInbound = { text: decision.text, chatId, convId: decision.convId };
     if (decision.convId !== def.convId) {
       this.followUps.mark(decision.convId, chatId, this.d.now());
+      this.persist();
       await this.sendText(chatId, `→ [${decision.label}]로 전달${decision.source === "ai" ? " (자동 분류)" : ""}. 잘못됐으면 /이동 별칭`, decision.convId);
     } else if (decision.note && decision.note.startsWith("classify-failed")) {
       await this.sendText(chatId, "ℹ 자동 분류 실패 — 📱 텔레그램 대화에서 처리합니다.", def.convId);
@@ -309,15 +418,16 @@ export class TelegramHub {
     const ap = decodeApprovalCallback(data);
     if (ap) {
       const p = this.approvals.get(ap.token);
-      if (!p || p.done) {
+      if (!p || p.done || this.d.now() >= p.expiresAt || p.chatId !== chatId || p.messageId !== cq?.message?.message_id) {
         await answer("이미 처리됐거나 만료된 요청입니다.");
         return;
       }
       p.done = true;
       this.approvals.delete(ap.token);
-      p.resolve(ap.approve);
-      this.note("APPROVAL", `${ap.approve ? "accept" : "decline"} token=${ap.token}`);
-      await answer(ap.approve ? "승인했습니다 (이 요청 1회만)" : "거절했습니다");
+      const accepted = ap.approve && this.d.settings().approvals;
+      p.resolve(accepted);
+      this.note("APPROVAL", `${accepted ? "accept" : "decline"} token=${ap.token}`);
+      await answer(accepted ? "승인했습니다 (이 요청 1회만)" : "거절했습니다 (원격승인 꺼짐 포함)");
       if (p.messageId !== undefined) {
         void this.d.api
           .call("editMessageReplyMarkup", { chat_id: p.chatId, message_id: p.messageId, reply_markup: { inline_keyboard: [] } })
@@ -328,8 +438,9 @@ export class TelegramHub {
 
     const ch = decodeChoiceCallback(data);
     if (ch && chatId) {
-      const all = [...this.d.targets(), { ...this.d.defaultTarget(), aliases: [], description: "" }];
-      const t = all.find((x) => x.convId.slice(0, 8) === ch.convPrefix);
+      const all = [...this.routingTargets(), { ...this.d.defaultTarget(), aliases: [], description: "" }];
+      const matching = all.filter((x) => x.convId.slice(0, 8) === ch.convPrefix);
+      const t = matching.length === 1 && this.replyMap.lookup(cq?.message?.message_id) === matching[0].convId ? matching[0] : undefined;
       if (!t) {
         await answer("대상 대화를 찾지 못했어요.");
         return;
@@ -337,6 +448,7 @@ export class TelegramHub {
       await answer(`${ch.key}번 전달`);
       this.note("CHOICE", `conv=${t.convId.slice(0, 8)} key=${ch.key}`);
       this.followUps.mark(t.convId, chatId, this.d.now());
+      this.persist();
       // 버튼 제거(중복 클릭 방지)
       if (typeof cq?.message?.message_id === "number") {
         void this.d.api
@@ -359,10 +471,13 @@ export class TelegramHub {
     const onoff = (b: boolean) => (b ? "켜짐" : "꺼짐");
     const lines = [
       "📊 KDA 텔레그램 상태",
+      this.absence && this.d.now() < this.absence.until
+        ? `부재 연결 ${this.absence.targets.length}개 · 만료 ${new Date(this.absence.until).toLocaleString("ko-KR")} · 저장 ${this.absenceSaveFailed ? "실패" : "정상"}`
+        : "부재 연결 꺼짐",
       ...(this.d.statusLines?.() ?? []),
       `분배 ${onoff(s.routing)} · 요약 ${onoff(s.digest)} · 버튼 ${onoff(s.buttons)} · 진행알림 ${onoff(s.progress)} · 파일받기 ${onoff(s.inbox)} · 원격승인 ${onoff(s.approvals)}`,
       `조용한 시간 ${s.quiet.enabled ? `${s.quiet.startHour}시~${s.quiet.endHour}시` : "꺼짐"} · 보류된 결과 ${this.held.length}건`,
-      `진행 중 알림 ${this.progressMsgs.size}건 · 승인 대기 ${this.approvals.size}건`,
+      `진행 중 알림 ${this.progressMsgs.size}건 · 승인 대기 ${this.approvals.size + this.inputs.size}건 · 재전송 대기 ${this.outbox.length}건`,
     ];
     const rec = this.recent.slice(-5).map((r) => `- ${new Date(r.at).toLocaleTimeString("ko-KR", { hour12: false })} ${r.kind} ${r.detail}`);
     if (rec.length) lines.push("최근 기록:", ...rec);
@@ -380,6 +495,8 @@ export class TelegramHub {
         "- 요약 메시지에 '자세히' 답장 → 원문",
         "- /이동 별칭 → 직전 메시지를 다른 대화로 다시 보내고 분류기에 학습",
         "- /상태 → 브리지 상태와 최근 기록",
+        "- /부재 36 → 현재 작업만 36시간 알림 연결 (재시작 복원), /부재 종료",
+        "- /부재검증 → 명령 실행 없는 휴대폰 승인 버튼 왕복 시험",
         "- 사진·파일을 보내면 미니PC inbox 에 저장 후 경로를 함께 전달",
       ].join("\n"),
       undefined,
@@ -410,6 +527,7 @@ export class TelegramHub {
     this.persist();
     this.note("MOVE", `to=${t.convId.slice(0, 8)} learned=${this.examples.length}`);
     this.followUps.mark(t.convId, chatId, this.d.now());
+    this.persist();
     this.lastInbound = { ...last, convId: t.convId };
     await this.sendText(chatId, `↪ [${t.label}]로 다시 보냅니다. 다음부터 비슷한 메시지는 이쪽으로 분류합니다.`, t.convId);
     try {
@@ -424,7 +542,36 @@ export class TelegramHub {
    * 턴 결과 회신. App 의 done/error/stale 경로가 모두 이 함수를 부른다.
    * forceSend: 오류·중지 안내처럼 등급과 무관하게 즉시 보내야 하는 경우.
    */
-  async deliverResult(r: { convId: string; chatId: string; text: string; turnId?: string; forceSend?: boolean }): Promise<void> {
+  async deliverResult(r: ResultDelivery): Promise<void> {
+    const pending = { ...r };
+    this.outbox.push(pending); this.persist();
+    await this.deliverPending(pending);
+  }
+
+  private async deliverPending(r: ResultDelivery): Promise<boolean> {
+    if (this.delivering.has(r)) return false;
+    if (this.d.allowedChat && !this.d.allowedChat(r.chatId)) return false;
+    this.delivering.add(r);
+    try {
+      if (!await this.deliverResultNow(r)) return false;
+      this.outbox = this.outbox.filter(x => x !== r); this.persist();
+      return true;
+    } finally { this.delivering.delete(r); }
+  }
+
+  private async flushOutbox(): Promise<void> {
+    if (this.flushingOutbox) return;
+    this.flushingOutbox = true;
+    try {
+      for (const r of [...this.outbox]) {
+        if (this.d.allowedChat && !this.d.allowedChat(r.chatId)) continue;
+        if (this.delivering.has(r)) continue;
+        if (!await this.deliverPending(r)) break;
+      }
+    } finally { this.flushingOutbox = false; }
+  }
+
+  private async deliverResultNow(r: ResultDelivery): Promise<boolean> {
     const s = this.d.settings();
     const { label, isDefault } = this.labelOf(r.convId);
     if (r.turnId) await this.finishProgress(r.turnId, true);
@@ -432,30 +579,31 @@ export class TelegramHub {
     const raw = r.text && r.text.trim() ? r.text : "(빈 응답)";
 
     if (!s.digest) {
-      const mid = await this.sendText(r.chatId, pc + labelReply(raw, label, isDefault), r.convId, this.choiceMarkup(r.convId, raw), raw);
+      const mid = await this.sendText(r.chatId, pc + labelReply(raw, label, isDefault), r.convId, r.noChoices ? undefined : this.choiceMarkup(r.convId, raw), raw);
       if (mid !== undefined) this.lastReply = { convId: r.convId, at: this.d.now() };
-      await this.sendImages(r.chatId, r.convId, label, raw);
-      return;
+      if (mid !== undefined) await this.sendImages(r.chatId, r.convId, label, raw);
+      return mid !== undefined;
     }
 
     const tier: DigestTier = r.forceSend ? "error" : classifyTier(raw);
     const plan = deliveryPlan(tier, inQuietHours(s.quiet, new Date(this.d.now())));
     if (plan === "skip") {
       this.note("SKIP-PROGRESS", `conv=${r.convId.slice(0, 8)} len=${raw.length}`);
-      return;
+      return true;
     }
     const body = await this.summarize(label, tier, raw);
     if (plan === "hold") {
       this.held.push({ label, summary: body, at: this.d.now() });
       this.persist();
       this.note("HOLD", `conv=${r.convId.slice(0, 8)} quiet`);
-      return;
+      return true;
     }
     const icon = tier === "error" ? "❌ " : tier === "decision" ? "❓ " : "✅ ";
-    const markup = tier === "decision" ? this.choiceMarkup(r.convId, raw) : undefined;
+    const markup = tier === "decision" && !r.noChoices ? this.choiceMarkup(r.convId, raw) : undefined;
     const mid = await this.sendText(r.chatId, pc + icon + labelReply(body, label, isDefault), r.convId, markup, raw);
     if (mid !== undefined) this.lastReply = { convId: r.convId, at: this.d.now() };
-    await this.sendImages(r.chatId, r.convId, label, raw);
+    if (mid !== undefined) await this.sendImages(r.chatId, r.convId, label, raw);
+    return mid !== undefined;
   }
 
   private choiceMarkup(convId: string, text: string): unknown | undefined {
@@ -547,16 +695,40 @@ export class TelegramHub {
       .catch(() => {});
   }
 
+  /** Reply-to plus exact chat binding; defaults are never filled in for the user. */
+  requestInput(req: { convId: string; chatId: string; detail: string; schema: unknown; timeoutMs?: number }):
+      { token: string; result: Promise<Record<string, unknown> | null> } | null {
+    const fields = parseElicitationSchema(req.schema);
+    if (!this.d.settings().approvals || !fields) return null;
+    const token = shortToken();
+    const timeoutMs = Math.max(1, Math.min(req.timeoutMs ?? APPROVAL_TIMEOUT_MS, APPROVAL_TIMEOUT_MS));
+    const result = new Promise<Record<string, unknown> | null>(resolve => {
+      const p = { chatId: req.chatId, schema: req.schema, resolve, expiresAt: this.d.now() + timeoutMs,
+        messageId: undefined as number | undefined };
+      this.inputs.set(token, p);
+      const details = fields.map(f => `${f.name}: ${f.type}${f.required ? " (필수)" : ""}${f.options ? ` [${f.options.map(o => o.value).join(", ")}]` : ""}`).join("\n");
+      void this.sendText(req.chatId, `❓ [${this.labelOf(req.convId).label}] 입력 요청 (${Math.ceil(timeoutMs / 1000)}초 후 만료)\n${req.detail}\n${details}\n이 메시지에 JSON 객체로 답장해 주세요. 거절은 '취소'.`, req.convId).then(mid => {
+        p.messageId = mid;
+        if (mid === undefined && this.inputs.delete(token)) resolve(null);
+      });
+      const st = this.d.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+      st(() => { if (this.inputs.delete(token)) { resolve(null);
+        void this.sendText(req.chatId, "⌛ 입력 요청 만료 — 자동 승인하지 않고 보류했습니다.", undefined); } }, timeoutMs);
+    });
+    return { token, result };
+  }
+
   // ── 원격 승인 (⑥) ──────────────────────────────────────
   /** 텔레그램 승인 요청. 버튼 응답 또는 5분 무응답(거절)으로 끝난다. 설정이 꺼져 있으면 즉시 false. */
-  requestApproval(req: { convId: string; chatId: string; detail: string }): { token: string; result: Promise<boolean> } {
+  requestApproval(req: { convId: string; chatId: string; detail: string; timeoutMs?: number }): { token: string; result: Promise<boolean> } {
     const token = shortToken();
     if (!this.d.settings().approvals) return { token, result: Promise.resolve(false) };
     const { label } = this.labelOf(req.convId);
+    const timeoutMs = Math.max(1, Math.min(req.timeoutMs ?? APPROVAL_TIMEOUT_MS, APPROVAL_TIMEOUT_MS));
     const result = new Promise<boolean>((resolve) => {
-      const p: PendingApproval = { chatId: req.chatId, resolve, done: false };
+      const p: PendingApproval = { chatId: req.chatId, resolve, done: false, expiresAt: this.d.now() + timeoutMs };
       this.approvals.set(token, p);
-      const text = `🔐 [${label}] 실행 승인 요청 (이 요청 1회만, ${APPROVAL_TIMEOUT_MS / 60000}분 후 자동 거절)\n\n${req.detail.slice(0, 3500)}`;
+      const text = `🔐 [${label}] 실행 승인 요청 (이 요청 1회만, ${Math.ceil(timeoutMs / 1000)}초 후 자동 거절)\n\n${req.detail.slice(0, 3500)}`;
       const markup = {
         inline_keyboard: [[
           { text: "✅ 승인", callback_data: encodeApprovalCallback(token, true) },
@@ -581,7 +753,7 @@ export class TelegramHub {
         if (p.messageId !== undefined) {
           void this.d.api.call("editMessageText", { chat_id: p.chatId, message_id: p.messageId, text: `⌛ [${label}] 승인 요청 시간 초과 — 거절됨` }).catch(() => {});
         }
-      }, APPROVAL_TIMEOUT_MS);
+      }, timeoutMs);
     });
     this.note("APPROVAL", `request token=${token} conv=${req.convId.slice(0, 8)}`);
     return { token, result };
@@ -589,6 +761,8 @@ export class TelegramHub {
 
   /** 데스크톱에서 먼저 답했을 때 텔레그램 버튼 무효화. */
   cancelApproval(token: string, decidedOnDesktop: boolean): void {
+    const input = this.inputs.get(token);
+    if (input) { this.inputs.delete(token); input.resolve(null); return; }
     const p = this.approvals.get(token);
     if (!p || p.done) return;
     p.done = true;
@@ -602,6 +776,7 @@ export class TelegramHub {
   // ── 아침 요약 (⑤) ──────────────────────────────────────
   /** 1분 주기 호출. 조용한 시간이 끝났고 보류분이 있으면 한 번에 보낸다. */
   async tickDigest(chatId: string): Promise<void> {
+    await this.flushOutbox();
     if (this.held.length === 0) return;
     if (inQuietHours(this.d.settings().quiet, new Date(this.d.now()))) return;
     const items = this.held.splice(0, this.held.length);

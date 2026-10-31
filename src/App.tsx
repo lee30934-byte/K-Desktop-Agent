@@ -21,7 +21,7 @@ import type {
 } from "./types";
 import ElicitationDialog from "./components/ElicitationDialog";
 import ApprovalRequests from "./components/ApprovalRequests";
-import { automaticResponse, approvalDetail, type ApprovalRequest } from "./approvalAutomation.mjs";
+import { automaticResponse, type ApprovalRequest } from "./approvalAutomation.mjs";
 import { readAutoApproval, useApprovalShortcut } from "./utils/useApprovalMode";
 import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
@@ -117,6 +117,8 @@ import {
   stripTrailingUserEcho,
 } from "./telegramBridge";
 import { TelegramHub, setActiveTelegramHub, type HubSettings } from "./telegramHub";
+import { RemoteApprovalDispatcher } from "./remoteApproval";
+import { formatRemoteQuestions } from "./telegramAbsence";
 import { seedRouteTargets, sanitizeTargets, type RouteTarget } from "./telegramRouter";
 import { useStableCallback } from "./utils/useStableCallback";
 import { classifyTurnEnding, buildAutoContinuePrompt, AutoContinueChain, isAutoContinueMessage } from "./autoContinue";
@@ -763,6 +765,7 @@ export default function App() {
   const telegramTurnsRef = useRef<TelegramTurnTracker>(new TelegramTurnTracker());
   // v0.7.54 — 텔레그램 허브(분배·요약·버튼·진행·승인·inbox). 생성은 아래 useEffect 에서(의존 함수 정의 후).
   const telegramHubRef = useRef<TelegramHub | null>(null);
+  const remoteApprovalRef = useRef(new RemoteApprovalDispatcher());
   // v0.7.54 — 텔레그램발 대화의 후속 턴(task-watch 등) 응답 누적: turnId → { convId, text }
   const telegramFollowTextRef = useRef<Map<string, { convId: string; text: string }>>(new Map());
   // v0.7.57 — 자동 이어가기: 턴별 마지막 답변 텍스트 + 대화별 연속 주입 카운터.
@@ -1546,6 +1549,7 @@ export default function App() {
   const handleSidecarEvent = (ev: SidecarEvent) => {
     const event = ev as any;
     if (["done", "error", "turn_stopping", "turn_stopped"].includes(ev.type)) {
+      if (typeof event.id === "string") remoteApprovalRef.current.resolvedTurn(event.id);
       setCodexElicitations(prev => prev.filter(r => r.id !== event.id));
     }
     // v0.7.57 — 실패·정지 턴은 자동 이어가기 대상이 아니다 (텍스트만 정리).
@@ -1604,6 +1608,35 @@ export default function App() {
       void finishStoppedTurn(eventConversationId, eventTurnId, event.agentId).catch((err) => rejectStopWaiters(eventTurnId, new Error(String(err))));
       return;
     }
+    // Remote prompts must be handled before the background-dialog guard.
+    if (eventConversationId && ["ask_user_question", "elicitation_request"].includes(ev.type)) {
+      const hub = telegramHubRef.current;
+      const chatId = hub?.chatFor(eventConversationId, Date.now()) ?? telegramTurnsRef.current.get(eventTurnId)?.chatId;
+      if (hub && chatId) {
+        if (ev.type === "ask_user_question") {
+          const text = formatRemoteQuestions((ev as any).questions);
+          void hub.deliverResult({ convId: eventConversationId, chatId, forceSend: true, noChoices: true,
+            text: text ?? "⚠ 작업의 질문 형식을 해석하지 못했습니다. 해당 대화의 확인이 필요합니다." });
+          saveControlNotice(eventConversationId, "질문을 텔레그램으로 전달했습니다. 사용자 답변을 기다립니다.");
+        } else {
+          const e = ev as any;
+          remoteApprovalRef.current.startConfirmation({ id: eventTurnId, token: e.id,
+            convId: eventConversationId, detail: `${e.title}\n${e.message}` }, chatId, hub,
+            () => conversationTurnGateRef.current.accepts(eventConversationId, eventTurnId) &&
+              conversationTurnGateRef.current.runs.get(eventConversationId)?.state !== "stopping",
+            async confirmed => {
+              await invoke("elicitation_response", { id: e.id, confirmed });
+              if (!confirmed) void hub.deliverResult({ convId: eventConversationId, chatId, forceSend: true,
+                text: "⚠ 도구 확인 거절 또는 시간 초과 — 자동 실행하지 않고 보류했습니다." });
+            }, () => {
+              saveControlNotice(eventConversationId, "원격 도구 확인 전달 실패 — 실행 보류");
+              void hub.deliverResult({ convId: eventConversationId, chatId, forceSend: true,
+                text: "⚠ 원격 도구 확인 전달 실패 — 실행 보류" });
+            });
+        }
+        return;
+      }
+    }
     if (eventConversationId && eventConversationId !== activeConversationIdRef.current &&
         ["model_context_window", "ask_user_question", "elicitation_request"].includes(ev.type)) {
       // Never show another conversation's interactive prompt over the visible chat.
@@ -1660,7 +1693,7 @@ export default function App() {
           else {
             // v0.7.54 — 텔레그램에서 시작된 대화의 후속 턴(task-watch 완료 등)도 회신하려고 누적
             const fc = resolveEventConv(ev);
-            if (fc && telegramHubRef.current?.followUps.chatFor(fc, Date.now())) {
+            if (fc && telegramHubRef.current?.chatFor(fc, Date.now())) {
               telegramFollowTextRef.current.set(ev.id, { convId: fc, text: ev.text });
             }
           }
@@ -1873,7 +1906,7 @@ export default function App() {
             if (fu) {
               telegramFollowTextRef.current.delete(ev.id);
               const hub = telegramHubRef.current;
-              const chat = hub?.followUps.chatFor(fu.convId, Date.now());
+              const chat = hub?.chatFor(fu.convId, Date.now());
               if (hub && chat && fu.text.trim()) {
                 telegramLogRef.current(`FOLLOWUP turn=${ev.id} conv=${fu.convId} len=${fu.text.length}`);
                 void hub.deliverResult({ convId: fu.convId, chatId: chat, text: fu.text });
@@ -2133,6 +2166,14 @@ export default function App() {
       }
 
       case "error": {
+        const remoteConv = resolveEventConv(ev);
+        const remoteHub = telegramHubRef.current;
+        const remoteChat = remoteHub?.chatFor(remoteConv ?? undefined, Date.now());
+        if (remoteHub && remoteConv && remoteChat && !telegramTurnsRef.current.get(ev.id)) {
+          if (ev.id) telegramFollowTextRef.current.delete(ev.id);
+          void remoteHub.deliverResult({ convId: remoteConv, chatId: remoteChat, forceSend: true,
+            text: `⚠ 처리 실패: ${(ev as any).message ?? "알 수 없는 오류"}` });
+        }
         const failedWatch = ev.id ? taskWatchTurnsRef.current.get(ev.id) : undefined;
         // Phase 127 (v0.6.82) — 텔레그램 turn 이 실패하면 폰으로 에러 회신 + 엔트리 정리.
         {
@@ -2409,31 +2450,38 @@ export default function App() {
       case "codex_approval_request": {
         const convId = resolveEventConv(ev);
         if (!convId || convId !== ev.conversation_id) break;
-        if (ev.type === "codex_approval_request" && !readAutoApproval() &&
-            convId !== activeConversationIdRef.current && automaticResponse({ ...ev, conversation_id: convId })) {
-          const tgTurn = telegramTurnsRef.current.get(ev.id);
-          const hub = telegramHubRef.current;
-          if (tgTurn && hub) {
-            const request = { ...ev, conversation_id: convId };
-            const { result } = hub.requestApproval({ convId, chatId: tgTurn.chatId, detail: approvalDetail(request) });
-            void result.then(async ok => {
-              const live = conversationTurnGateRef.current.accepts(convId, request.id) &&
-                conversationTurnGateRef.current.runs.get(convId)?.state !== "stopping" && Date.now() < request.expiresAt;
-              await invoke("codex_approval_response", { id: request.id, token: request.token,
-                threadId: request.threadId, turnId: request.turnId, itemId: request.itemId,
-                decision: ok && live ? "accept" : "decline" });
-            }).catch(() => {
-              setCodexElicitations(prev => prev.some(r => r.token === request.token) ? prev : [...prev, { ...request, conversation_id: convId }]);
-              saveControlNotice(convId, "승인 응답 전달 실패. 해당 대화에서 확인해 주세요.");
+        const hub = telegramHubRef.current;
+        const tgTurn = telegramTurnsRef.current.get(ev.id);
+        const remoteChat = tgTurn?.chatId ?? hub?.chatFor(convId, Date.now());
+        if ((!readAutoApproval() || !automaticResponse({ ...ev, conversation_id: convId })) && remoteChat && hub) {
+          const request = { ...ev, conversation_id: convId };
+          const routed = remoteApprovalRef.current.start(request, remoteChat, hub,
+            () => conversationTurnGateRef.current.accepts(convId, request.id) &&
+              conversationTurnGateRef.current.runs.get(convId)?.state !== "stopping",
+            async reply => {
+              if (request.type === "codex_elicitation_request") {
+                await invoke("codex_elicitation_response", { id: request.id, token: request.token,
+                  threadId: request.threadId, turnId: request.turnId, action: reply.action, content: reply.content });
+              } else {
+                await invoke("codex_approval_response", { id: request.id, token: request.token,
+                  threadId: request.threadId, turnId: request.turnId, itemId: request.itemId,
+                  decision: reply.action === "accept" ? "accept" : "decline" });
+              }
+            }, () => {
+              setCodexElicitations(prev => prev.some(r => r.token === request.token) ? prev : [...prev, request]);
+              saveControlNotice(convId, "원격 응답 전달 실패. 해당 대화에서 확인해 주세요.");
+              void hub.deliverResult({ convId, chatId: remoteChat, forceSend: true, text: "⚠ 원격 응답 전달 실패 — 작업을 보류하고 데스크톱 확인이 필요합니다." });
             });
-            break;
-          }
+          if (routed) break;
+          void hub.deliverResult({ convId, chatId: remoteChat, forceSend: true,
+            text: "⚠ 이 입력 요청은 원격 처리가 지원되지 않습니다. 자동 승인하지 않고 데스크톱 확인을 기다립니다." });
         }
         setCodexElicitations(prev => prev.some(r => r.token === ev.token) ? prev : [...prev, { ...ev, conversation_id: convId }]);
         if (!readAutoApproval() && convId !== activeConversationIdRef.current) saveControlNotice(convId, "추가 승인을 기다립니다. 해당 대화를 열어 검토해 주세요.");
         break;
       }
       case "codex_elicitation_resolved": {
+        remoteApprovalRef.current.resolved(ev.id, ev.token);
         setCodexElicitations(prev => prev.filter(r => r.token !== ev.token || r.id !== ev.id));
         break;
       }
@@ -2735,7 +2783,8 @@ export default function App() {
     dispatchedTurnIdsRef.current.add(id);
     await invoke("send_message", {
       ...payload,
-      folderSystemPrompt: payload.folderSystemPrompt ?? folder?.systemPrompt,
+      folderSystemPrompt: [payload.folderSystemPrompt ?? folder?.systemPrompt,
+        telegramHubRef.current?.instructionFor(conversationId, Date.now())].filter(Boolean).join("\n\n") || undefined,
       projectProfile: payload.projectProfile ?? folder?.projectProfile,
     });
   });
@@ -3563,6 +3612,13 @@ export default function App() {
     } catch { /* 깨진 설정 → 기본값 */ }
     return seedRouteTargets(folders, conversations, tgConv);
   });
+  const readTelegramActiveConversations = useStableCallback(() => {
+    const control = conversationTurnGateRef.current;
+    const ids = new Set([...control.tracked, ...control.activeConversationIds(), ...control.queues.keys()]);
+    return [...ids].filter(id => conversations.some(c => c.id === id) && !control.allPaused &&
+      !control.paused.has(id) && !["stopping", "stopped"].includes(control.runs.get(id)?.state ?? ""))
+      .map(convId => ({ convId, label: conversations.find(c => c.id === convId)?.title ?? convId.slice(0, 8) }));
+  });
   useEffect(() => {
     const tokenNow = () => (localStorage.getItem("kda_telegram_token") || "").trim();
     telegramHubRef.current = new TelegramHub({
@@ -3582,8 +3638,11 @@ export default function App() {
       now: () => Date.now(),
       log: (line) => telegramLog(line),
       store: { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) },
+      activeConversations: () => readTelegramActiveConversations(),
+      allowedChat: chatId => (localStorage.getItem("kda_telegram_allowed_chats") || "").split(",").map(s => s.trim()).includes(chatId),
       statusLines: () => [
-        `진행 중 턴 ${telegramTurnsRef.current.size}개 · 대기열 ${telegramTurnsRef.current.queueLength}개`,
+        `전체 실행 중 ${conversationTurnGateRef.current.activeConversationIds().size}개 · 전체 예약 ${[...conversationTurnGateRef.current.queues.values()].reduce((n, q) => n + q.length, 0)}개`,
+        `텔레그램 진행 중 턴 ${telegramTurnsRef.current.size}개 · 대기열 ${telegramTurnsRef.current.queueLength}개`,
         `분배 대상 ${readTelegramRouteTargets().map((t) => t.label).join(", ") || "(없음)"}`,
       ],
     });

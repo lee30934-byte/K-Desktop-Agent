@@ -96,6 +96,8 @@ export function classifyTier(text: string): DigestTier {
     if (DECISION_WORD_RE.test(near)) return "decision";
   }
   if (DECISION_WORD_RE.test(t.slice(-400)) && /\?\s*$/.test(t)) return "decision";
+  // A pending approval without numbered choices is still urgent during quiet hours.
+  if (/(승인|확인|결정|판단)(이|을|가)?\s*필요(합니다|해요|한|$)|(?:승인|확인)(?:을)?\s*요청(?:합니다|드립니다)/.test(t.slice(-400))) return "decision";
   if (ERROR_RE.test(t.slice(0, 2000))) return "error";
   if (PROGRESS_RE.test(t) && t.length < 400) return "progress";
   return "result";

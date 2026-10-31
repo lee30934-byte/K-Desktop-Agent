@@ -46,6 +46,12 @@ test("등급: 결정 > 오류 > 진행 > 결과", () => {
   assert.equal(classifyTier("확인한 내용\n1. 빌드 성공\n2. 서명 확인"), "result");
 });
 
+test('번호·물음표 없는 현재 승인 대기도 야간 즉시 전송',()=>{
+  assert.equal(classifyTier('준비 완료. 배포 전 승인이 필요합니다.'),'decision');
+  assert.equal(classifyTier('최종 화면의 확인을 요청드립니다.'),'decision');
+  assert.equal(classifyTier('승인대로 완료했습니다.'),'result');
+});
+
 test("이미지 경로 추출: 마크다운/백틱/맨 경로, 역슬래시 정규화, 중복 제거", () => {
   const t = [
     "![미리보기](C:/Users/lee30/.kda/previews/a.png)",

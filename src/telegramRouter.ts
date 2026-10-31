@@ -34,7 +34,7 @@ export const ROUTER_MIN_CONFIDENCE = 0.6;
 /** 짧은 후속답을 직전 대화로 고정하는 시간. */
 export const ROUTER_STICKY_MS = 10 * 60 * 1000;
 /** 텔레그램발 대화의 후속 결과(task-watch 등)를 텔레그램으로 회신하는 기간. */
-export const ROUTER_FOLLOWUP_MS = 6 * 60 * 60 * 1000;
+export const ROUTER_FOLLOWUP_MS = 48 * 60 * 60 * 1000;
 /** 답장 매핑 보관 개수 상한 (메모리 무한 증가 방지). */
 export const ROUTER_REPLY_MAP_MAX = 500;
 
@@ -226,6 +226,20 @@ export class FollowUpRegistry {
   }
   forget(convId: string): void {
     this.map.delete(convId);
+  }
+  toJSON(): Array<[string, { chatId: string; until: number }]> {
+    return [...this.map.entries()];
+  }
+  static fromJSON(rows: unknown, now: number): FollowUpRegistry {
+    const registry = new FollowUpRegistry();
+    if (Array.isArray(rows)) for (const row of rows.slice(-500)) {
+      if (!Array.isArray(row) || typeof row[0] !== "string") continue;
+      const e = row[1];
+      if (!e || typeof e.chatId !== "string" || !/^-?\d+$/.test(e.chatId) ||
+          !Number.isFinite(e.until) || e.until <= now || e.until > now + ROUTER_FOLLOWUP_MS) continue;
+      registry.map.set(row[0], { chatId: e.chatId, until: e.until });
+    }
+    return registry;
   }
   get size(): number {
     return this.map.size;
