@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [0.7.66] - 2026-10-31
+
+### Added
+- Batch subscribed absence completion notices into a Telegram digest every 10 minutes; decisions and failures stay immediate.
+
 ## [0.7.65] - 2026-10-31
 
 ### Added
