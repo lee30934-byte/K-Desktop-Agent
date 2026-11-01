@@ -123,6 +123,7 @@ import { seedRouteTargets, sanitizeTargets, type RouteTarget } from "./telegramR
 import { processTelegramUpdate, TelegramUpdateLedger } from "./telegramUpdateLedger";
 import { useStableCallback } from "./utils/useStableCallback";
 import { classifyTurnEnding, buildAutoContinuePrompt, AutoContinueChain, isAutoContinueMessage } from "./autoContinue";
+import { isCommandCenterDispatch } from "./telegramLedger";
 import { decideAutoUpdate, updaterVersionMatches, AUTO_UPDATE_POLL_MS } from "./autoUpdate";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch as relaunchApp } from "@tauri-apps/plugin-process";
@@ -4097,7 +4098,17 @@ export default function App() {
           w.status === "timeout"
             ? `\n⚠ 감시 조건이 확인되지 않은 채 타임아웃으로 깨어났습니다 (${w.note}). 작업이 실제로 끝났는지 먼저 확인하세요.`
             : `\n(감시 발화: ${w.note})`;
-        const text =
+        // v0.7.69 — 커맨드센터 전달: cc-dispatch-* 마커는 "완료 신호"가 아니라 텔레그램 방이 넘긴 지시다.
+        // 허브에 등록해 결과가 텔레그램으로 돌아오게 하고(#번호), 대상 방에는 지시로 보낸다.
+        const isDispatch = isCommandCenterDispatch(w.id);
+        let dispatchNo: number | null = null;
+        if (isDispatch) {
+          try { dispatchNo = (await telegramHubRef.current?.noteDispatch(convId, w.prompt ?? "", w.file || w.id)) ?? null; }
+          catch (e) { taskWatchLog(`DISPATCH hub-note failed ${String(e).slice(0, 120)}`); }
+        }
+        const text = isDispatch
+          ? `📨 텔레그램 방(커맨드센터)에서 이 대화로 넘긴 지시입니다${dispatchNo != null ? ` (#${dispatchNo})` : ""}. 이 대화의 프로젝트 원장·규칙대로 진행하고 결과를 보고하세요.\n\n${w.prompt ?? ""}`
+          :
           `⏳ 감시하던 장기 작업 "${w.title}" 이(가) 완료 신호를 보냈습니다.${statusNote}\n\n` +
           (w.prompt ? `${w.prompt}\n\n` : "") + watchRecoveryPrompt(w) +
           `이어서 진행하세요. 추가로 또 다른 장기 작업을 기다려야 하면 ~/.kda/task-watch/ 에 새 마커를 등록하세요.`;

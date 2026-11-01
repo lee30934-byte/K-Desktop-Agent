@@ -455,3 +455,26 @@ test("묶음: 한 방짜리 명령은 예전처럼 즉시 회신", async () => {
   assert.equal(t.texts().length, before + 1);
   assert.match(t.texts().at(-1)!, /^✅/);
 });
+
+// ── v0.7.69 커맨드센터 전달 (텔레그램 방 → 다른 방) ──────────────────────
+test("전달: 텔레그램 방이 넘긴 지시 → 결과 회신 등록 + #번호 + 접수 확인, 같은 마커 재시도는 1번만", async () => {
+  const t = mk({ quiet: { enabled: false, startHour: 23, endHour: 7 } }, { oneshot: async () => '{"pick":0,"confidence":0.95}' });
+  await t.hub.handleUpdate(msgU("5080 상태 알려줘", {}));
+  assert.equal(t.turns.at(-1)!.convId, DEF.convId, "전제: 5080 질문은 텔레그램 방으로");            // 텔레그램 방(기본)과 대화한 적이 있어야 채팅을 안다
+  assert.equal(t.hub.chatFor(CAE.convId, (t.hub as any).d.now()), undefined, "전달 전엔 CAE 결과가 텔레그램으로 안 감");
+  const n1 = await t.hub.noteDispatch(CAE.convId, "D4 진행해", "cc-dispatch-1");
+  const n2 = await t.hub.noteDispatch(CAE.convId, "D4 진행해", "cc-dispatch-1");
+  assert.equal(n1, n2, "재시도는 같은 #번호");
+  assert.equal(t.texts().filter((x) => x.includes("텔레그램 방에서 넘김")).length, 1);
+  assert.ok(t.texts().at(-1)!.includes(`→ [CAE GUI]로 전달 #${n1} (텔레그램 방에서 넘김): D4 진행해`), t.texts().at(-1));
+  assert.equal(t.hub.chatFor(CAE.convId, (t.hub as any).d.now()), CHAT, "전달 후 CAE 결과가 텔레그램으로 돌아옴");
+  await t.hub.deliverResult({ convId: CAE.convId, chatId: CHAT, text: "D4 완료했습니다." });
+  await t.hub.handleUpdate(msgU("/현황"));
+  { const b = t.texts().at(-1)!; assert.ok(b.includes(`#${n1} `) && b.includes("[CAE GUI] ✅ 완료"), b); }
+});
+
+test("전달: 텔레그램을 한 번도 안 쓴 상태면 기록하지 않고 null", async () => {
+  const t = mk();
+  assert.equal(await t.hub.noteDispatch(CAE.convId, "x", "cc-dispatch-2"), null);
+  assert.equal(t.sent.length, 0);
+});

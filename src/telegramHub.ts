@@ -150,6 +150,8 @@ export class TelegramHub {
   readonly ledger: CommandLedger;
   /** v0.7.69 — 복합 명령 결과 묶음 (명령 #번호 → 모인 결과). */
   private bundles = new Map<number, Bundle>();
+  /** v0.7.69 — 이미 기록한 전달 마커 id → #번호 (재시도 중복 방지). */
+  private dispatched = new Map<string, number>();
   private absence: AbsenceSession | null;
   private absenceSaveFailed = false;
   private absenceDigest: AbsenceDigest | null;
@@ -633,6 +635,31 @@ export class TelegramHub {
     if (ts.length > 0) lines.push("방 이름 대신 @번호 를 앞에 붙이거나, /방 으로 버튼을 눌러 고를 수 있어요.");
     if (ts.length === 0) lines.push("(분배 허용 대화 없음 — KDA 설정에서 추가)");
     await this.sendText(chatId, lines.join("\n"), undefined);
+  }
+
+  /**
+   * v0.7.69 — 커맨드센터 전달(5단계): 텔레그램 방(기본 대화)의 에이전트가 다른 방으로 지시를 넘길 때(App 이
+   * cc-dispatch-* task-watch 마커를 발화시킬 때) 호출. 그 방의 결과가 텔레그램으로 돌아오도록 후속 회신에 등록하고,
+   * 명령 장부에 #번호를 남기고, 텔레그램에 접수 확인을 보낸다. 텔레그램 채팅을 모르면(한 번도 안 쓴 경우) null.
+   */
+  async noteDispatch(convId: string, text: string, key?: string): Promise<number | null> {
+    // 대상 방이 바빠 주입이 미뤄졌다 재시도되면 같은 마커로 다시 불린다 → 한 번만 기록·안내
+    if (key && this.dispatched.has(key)) return this.dispatched.get(key)!;
+    const def = this.d.defaultTarget();
+    const chatId = this.chatFor(def.convId, this.d.now()) ?? this.lastInbound?.chatId;
+    if (!chatId) {
+      this.note("DISPATCH-NOCHAT", `conv=${convId.slice(0, 8)}`);
+      return null;
+    }
+    const label = this.routingTargets().find((t) => t.convId === convId)?.label ?? this.labelOf(convId).label;
+    this.followUps.mark(convId, chatId, this.d.now());
+    const entry = this.ledger.open(chatId, text, [{ convId, label }], this.d.now());
+    this.ledger.mark(entry.id, convId, "running", this.d.now());
+    this.persist();
+    if (key) { this.dispatched.set(key, entry.id); if (this.dispatched.size > 200) this.dispatched.delete(this.dispatched.keys().next().value as string); }
+    this.note("DISPATCH", `#${entry.id} conv=${convId.slice(0, 8)}`);
+    await this.sendText(chatId, `→ [${label}]로 전달 #${entry.id} (텔레그램 방에서 넘김): ${text.replace(/\s+/g, " ").slice(0, 60)}`, convId);
+    return entry.id;
   }
 
   /** v0.7.68 — /방 : 방 버튼 목록. /방 2 : 2번 방을 바로 고름. 고른 방으로 다음 메시지 1건이 갑니다. */

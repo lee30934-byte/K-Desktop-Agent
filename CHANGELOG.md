@@ -13,10 +13,14 @@
   - If 20 minutes pass after the first result while some rooms are still working, the collected results are sent and the unfinished rooms are named.
   - Decision requests and errors are still sent immediately and separately. If such a message finishes the last room, the collected results follow right away.
   - The bundle goes through the normal delivery path (summary, quiet hours, resend queue) and is stored, so a restart keeps it. Absence mode keeps its own digest. Single-room commands reply as before.
+- Command center dispatch, step 5. The Telegram room's agent can now hand an instruction to another project conversation instead of refusing it.
+  - A task-watch marker whose id starts with `cc-dispatch-` (written by `~/.kda/remote/cc-dispatch.py`) is injected into the target conversation as a forwarded instruction, not as a "completed watch" notice.
+  - The hub registers that conversation for Telegram follow-up, opens a ledger line `#n` and sends `→ [room]로 전달 #n (텔레그램 방에서 넘김)`, so its results come back to Telegram and appear in `/현황`.
+  - A deferred and retried marker is recorded once. If Telegram was never used, nothing is recorded.
 - `/현황` (also `/board`, `/jobs`), command center step 3. One message lists recent commands with each room's state, how long ago it changed and the start of its last reply, plus the number of decisions waiting. `/도움` lists it.
 
 ### Validation and limits
-- Tests: ledger 5/5, hub 35/35, router 21/21. Bundles: both rooms finished → one message, decision immediate then bundle, 20-minute partial bundle naming the unfinished room, error not bundled, single-room unchanged. Covered: split command updated by real replies to done and decision waiting, reply continuation keeps the same `#n`, start failure recorded as error and persisted, 48-hour pruning, restore keeps numbering, corrupt storage ignored.
+- Tests: ledger 6/6, hub 37/37, router 21/21. Dispatch covered: follow-up registration, `#n` acknowledgement, retry recorded once, no-chat returns null, result reflected in `/현황`, and App wiring. Bundles: both rooms finished → one message, decision immediate then bundle, 20-minute partial bundle naming the unfinished room, error not bundled, single-room unchanged. Covered: split command updated by real replies to done and decision waiting, reply continuation keeps the same `#n`, start failure recorded as error and persisted, 48-hour pruning, restore keeps numbering, corrupt storage ignored.
 - Mutations: not updating on replies fails 1 test. Opening a new line for replies fails 1 test. Disabling bundling fails 3, removing the flush after a final decision fails 1, removing the 20-minute timer fails 1.
 - A room's reply updates that room's most recent command line, so a reply to an unrelated desktop-started turn in the same room can also update it. Real phone round trip is unverified until installed.
 

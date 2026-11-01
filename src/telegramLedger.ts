@@ -140,3 +140,9 @@ export function formatBoard(entries: LedgerEntry[], now: number): string {
   if (waiting) lines.push("", `❓ 결정 대기 ${waiting}건 — 해당 방 메시지에 답장하거나 버튼을 눌러 주세요.`);
   return lines.join("\n");
 }
+
+/** v0.7.69 — 텔레그램 방이 다른 방으로 넘긴 지시(task-watch 마커 id 접두어). ~/.kda/remote/cc-dispatch.ps1 이 만든다. */
+export const CC_DISPATCH_PREFIX = "cc-dispatch-";
+export function isCommandCenterDispatch(watchId: string | undefined | null): boolean {
+  return typeof watchId === "string" && watchId.startsWith(CC_DISPATCH_PREFIX);
+}

@@ -57,3 +57,15 @@ test("/현황 표시: 방별 상태·결정 대기 개수, 비었으면 안내",
   assert.match(txt, /결정 대기 1건/);
   assert.match(formatBoard([], 0), /명령이 없어요/);
 });
+
+import fs from "node:fs";
+import { isCommandCenterDispatch } from "../src/telegramLedger.ts";
+test("전달 마커 판별 + App 배선 (task-watch 발화 시 허브 등록, 지시 문구)", () => {
+  assert.equal(isCommandCenterDispatch("cc-dispatch-20261101-1"), true);
+  assert.equal(isCommandCenterDispatch("kda-v0768-release-ci"), false);
+  assert.equal(isCommandCenterDispatch(undefined), false);
+  const app = fs.readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /const isDispatch = isCommandCenterDispatch\(w\.id\);/);
+  assert.match(app, /noteDispatch\(convId, w\.prompt \?\? "", w\.file \|\| w\.id\)/);
+  assert.match(app, /텔레그램 방\(커맨드센터\)에서 이 대화로 넘긴 지시입니다/);
+});
