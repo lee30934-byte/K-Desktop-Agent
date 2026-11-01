@@ -396,3 +396,62 @@ test("장부: 시작 실패는 오류로 남고, KDA 재시작(새 허브) 뒤�
   const saved = t.store.get("kda_tg_hub_ledger");
   assert.ok(saved && saved.includes("engine down"), "장부가 저장소에 저장됨");
 });
+
+// ── v0.7.69 묶음 보고 ─────────────────────────────────────────────
+const splitTwo = () => mk({ quiet: { enabled: false, startHour: 23, endHour: 7 } }, { oneshot: async (p: string) => p.includes("You route")
+  ? JSON.stringify({ parts: [{ pick: 1, text: "Cae d4진행해", confidence: 0.9 }, { pick: 2, text: "KDA 빌드 확인해", confidence: 0.9 }] })
+  : "요약" });
+
+test("묶음: 두 방 결과가 다 오면 한 메시지로 (개별 결과는 따로 안 보냄)", async () => {
+  const t = splitTwo();
+  await t.hub.handleUpdate(msgU("Cae d4진행해 KDA 빌드 확인해"));
+  const before = t.texts().length;
+  await t.hub.deliverResult({ convId: CAE.convId, chatId: CHAT, text: "D4 완료했습니다. 시험 12/12 통과." });
+  assert.equal(t.texts().length, before, "첫 결과는 모아 둠");
+  await t.hub.deliverResult({ convId: KDA.convId, chatId: CHAT, text: "빌드 정상입니다. exit 0." });
+  const sentNow = t.texts().slice(before);
+  assert.equal(sentNow.length, 1);
+  assert.match(sentNow[0], /📦 #1 결과 묶음 \(2개 방\)/);
+  assert.match(sentNow[0], /\[CAE GUI\]\nD4 완료했습니다/);
+  assert.match(sentNow[0], /\[KDA 개발\]\n빌드 정상입니다/);
+  assert.ok(!t.store.get("kda_tg_hub_bundles")!.includes("D4"), "보낸 뒤 묶음 비움");
+});
+
+test("묶음: 결정 요청은 즉시 따로, 그 방으로 끝났으면 모아 둔 결과도 바로", async () => {
+  const t = splitTwo();
+  await t.hub.handleUpdate(msgU("Cae d4진행해 KDA 빌드 확인해"));
+  const before = t.texts().length;
+  await t.hub.deliverResult({ convId: CAE.convId, chatId: CHAT, text: "D4 완료했습니다." });
+  await t.hub.deliverResult({ convId: KDA.convId, chatId: CHAT, text: "릴리즈 준비 완료\n\n1. 지금 태그 push\n2. 내일 push\n\n번호로 알려 주세요." });
+  const sentNow = t.texts().slice(before);
+  assert.equal(sentNow.length, 2);
+  assert.match(sentNow[0], /^❓/, "결정 요청 먼저 즉시");
+  assert.match(sentNow[1], /📦 #1 결과 묶음 \(1개 방\)[\s\S]*\[CAE GUI\]/);
+});
+
+test("묶음: 20분 지나도 안 끝난 방이 있으면 모인 것만 보내고 남은 방 표시 / 오류는 즉시", async () => {
+  const t = splitTwo();
+  await t.hub.handleUpdate(msgU("Cae d4진행해 KDA 빌드 확인해"));
+  const before = t.texts().length;
+  await t.hub.deliverResult({ convId: CAE.convId, chatId: CHAT, text: "D4 완료했습니다." });
+  assert.ok(t.store.get("kda_tg_hub_bundles")!.includes("D4"), "모아 둔 결과는 저장(재시작 대비)");
+  t.advance(19 * 60 * 1000);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(t.texts().length, before, "19분엔 아직");
+  t.advance(2 * 60 * 1000);
+  await new Promise((r) => setImmediate(r));
+  const sentNow = t.texts().slice(before);
+  assert.equal(sentNow.length, 1);
+  assert.match(sentNow[0], /📦 #1 결과 묶음 \(1개 방 · 아직 진행: KDA 개발\)/);
+  await t.hub.deliverResult({ convId: KDA.convId, chatId: CHAT, text: "❌ 빌드 실패: exit code 1" });
+  assert.match(t.texts().at(-1)!, /^❌/, "오류는 묶지 않고 즉시");
+});
+
+test("묶음: 한 방짜리 명령은 예전처럼 즉시 회신", async () => {
+  const t = mk({ quiet: { enabled: false, startHour: 23, endHour: 7 } });
+  await t.hub.handleUpdate(msgU("UI 가 너무 어둡다"));
+  const before = t.texts().length;
+  await t.hub.deliverResult({ convId: CAE.convId, chatId: CHAT, text: "밝기 올렸습니다." });
+  assert.equal(t.texts().length, before + 1);
+  assert.match(t.texts().at(-1)!, /^✅/);
+});

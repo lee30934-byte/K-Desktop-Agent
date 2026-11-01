@@ -8,11 +8,16 @@
   - States change only from what actually happened: the turn started or failed to start, or the room replied (classified by the existing digest tier).
   - Replies and short follow-ups continue the same `#n` instead of opening a new line. Choice buttons mark the room as running.
   - Stored with the other hub data, so `/현황` survives a KDA restart. Lines older than 48 hours are dropped; at most 40 are kept.
+- Bundled reports for split commands, command center step 4.
+  - When a command was split across rooms, ordinary results are collected and sent as one message, `📦 #n 결과 묶음`, once every room has finished.
+  - If 20 minutes pass after the first result while some rooms are still working, the collected results are sent and the unfinished rooms are named.
+  - Decision requests and errors are still sent immediately and separately. If such a message finishes the last room, the collected results follow right away.
+  - The bundle goes through the normal delivery path (summary, quiet hours, resend queue) and is stored, so a restart keeps it. Absence mode keeps its own digest. Single-room commands reply as before.
 - `/현황` (also `/board`, `/jobs`), command center step 3. One message lists recent commands with each room's state, how long ago it changed and the start of its last reply, plus the number of decisions waiting. `/도움` lists it.
 
 ### Validation and limits
-- Tests: ledger 5/5, hub 31/31, router 21/21. Covered: split command updated by real replies to done and decision waiting, reply continuation keeps the same `#n`, start failure recorded as error and persisted, 48-hour pruning, restore keeps numbering, corrupt storage ignored.
-- Mutations: not updating on replies fails 1 test. Opening a new line for replies fails 1 test.
+- Tests: ledger 5/5, hub 35/35, router 21/21. Bundles: both rooms finished → one message, decision immediate then bundle, 20-minute partial bundle naming the unfinished room, error not bundled, single-room unchanged. Covered: split command updated by real replies to done and decision waiting, reply continuation keeps the same `#n`, start failure recorded as error and persisted, 48-hour pruning, restore keeps numbering, corrupt storage ignored.
+- Mutations: not updating on replies fails 1 test. Opening a new line for replies fails 1 test. Disabling bundling fails 3, removing the flush after a final decision fails 1, removing the 20-minute timer fails 1.
 - A room's reply updates that room's most recent command line, so a reply to an unrelated desktop-started turn in the same room can also update it. Real phone round trip is unverified until installed.
 
 ## [0.7.68] - 2026-11-01

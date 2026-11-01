@@ -40,6 +40,11 @@ import { CommandLedger, formatBoard, tierToState } from "./telegramLedger";
 
 /** v0.7.68 — /방 으로 고른 방이 유지되는 시간. */
 export const ROOM_PIN_MS = 10 * 60 * 1000;
+/** v0.7.69 — 복합 명령 결과 묶음: 첫 결과 후 이 시간이 지나면 모인 것만이라도 보낸다. */
+export const BUNDLE_WAIT_MS = 20 * 60 * 1000;
+
+interface BundleItem { convId: string; label: string; text: string }
+interface Bundle { entryId: number; chatId: string; firstAt: number; items: BundleItem[] }
 
 export interface HubApi {
   /** Bot API 호출 (Rust telegram_call). 결과 JSON. */
@@ -101,6 +106,7 @@ const K_ABSENCE = "kda_tg_hub_absence";
 const K_OUTBOX = "kda_tg_hub_outbox";
 const K_ABSENCE_DIGEST = "kda_tg_hub_absence_digest";
 const K_LEDGER = "kda_tg_hub_ledger";
+const K_BUNDLES = "kda_tg_hub_bundles";
 interface ResultDelivery { convId: string; chatId: string; text: string; turnId?: string; forceSend?: boolean; noChoices?: boolean; decisionRequired?: boolean }
 interface AbsenceDigest { chatId: string; entries: Array<{ label: string; text: string; at: number }> }
 
@@ -142,6 +148,8 @@ export class TelegramHub {
   readonly followUps: FollowUpRegistry;
   /** v0.7.69 — 명령 장부 (/현황). */
   readonly ledger: CommandLedger;
+  /** v0.7.69 — 복합 명령 결과 묶음 (명령 #번호 → 모인 결과). */
+  private bundles = new Map<number, Bundle>();
   private absence: AbsenceSession | null;
   private absenceSaveFailed = false;
   private absenceDigest: AbsenceDigest | null;
@@ -167,6 +175,13 @@ export class TelegramHub {
     this.replyMap = ReplyMap.fromJSON(this.readJson(K_REPLYMAP));
     this.followUps = FollowUpRegistry.fromJSON(this.readJson(K_FOLLOWUPS), d.now());
     this.ledger = CommandLedger.fromJSON(this.readJson(K_LEDGER), d.now());
+    const bundles = this.readJson(K_BUNDLES);
+    if (Array.isArray(bundles)) for (const b of bundles as Bundle[]) {
+      if (b && typeof b.entryId === "number" && typeof b.chatId === "string" && typeof b.firstAt === "number" && Array.isArray(b.items)) {
+        this.bundles.set(b.entryId, b);
+        this.scheduleBundleTimeout(b);
+      }
+    }
     this.absence = restoreAbsence(this.readJson(K_ABSENCE), d.now());
     const digest = this.readJson(K_ABSENCE_DIGEST);
     this.absenceDigest = digest && typeof digest.chatId === "string" && Array.isArray(digest.entries)
@@ -200,6 +215,7 @@ export class TelegramHub {
       this.d.store.set(K_OUTBOX, JSON.stringify(this.outbox));
       this.d.store.set(K_ABSENCE_DIGEST, JSON.stringify(this.absenceDigest));
       this.d.store.set(K_LEDGER, JSON.stringify(this.ledger.toJSON()));
+      this.d.store.set(K_BUNDLES, JSON.stringify([...this.bundles.values()]));
       this.absenceSaveFailed = false;
     } catch (e) {
       this.absenceSaveFailed = true;
@@ -686,7 +702,9 @@ export class TelegramHub {
    */
   async deliverResult(r: ResultDelivery): Promise<void> {
     // v0.7.69 — 명령 장부: 이 방의 가장 최근 명령 줄을 실제 회신 내용으로 갱신
-    if (this.ledger.report(r.convId, r.decisionRequired ? "decision" : tierToState(classifyTier(r.text)), this.d.now(), r.text)) this.persist();
+    const tier0 = r.decisionRequired ? "decision" : classifyTier(r.text);
+    const entry = this.ledger.report(r.convId, tierToState(tier0), this.d.now(), r.text);
+    if (entry) this.persist();
     if (!r.forceSend && !r.decisionRequired && this.absenceChatFor(r.convId, r.chatId)) {
       if (r.turnId) await this.finishProgress(r.turnId, true);
       const tier = classifyTier(r.text);
@@ -696,9 +714,29 @@ export class TelegramHub {
       }
       await this.flushAbsenceDigest("긴급 알림 전에 요약을 전송했습니다.");
     }
+    // v0.7.69 — 여러 방으로 나뉜 명령의 일반 결과는 모아서 1건으로. 결정 요청·오류는 그대로 즉시.
+    if (entry && entry.legs.length > 1 && !r.forceSend && tier0 === "result") {
+      if (r.turnId) await this.finishProgress(r.turnId, true);
+      const label = entry.legs.find((l) => l.convId === r.convId)?.label ?? this.labelOf(r.convId).label;
+      let b = this.bundles.get(entry.id);
+      if (!b) {
+        b = { entryId: entry.id, chatId: r.chatId, firstAt: this.d.now(), items: [] };
+        this.bundles.set(entry.id, b);
+        this.scheduleBundleTimeout(b);
+      }
+      b.items = b.items.filter((x) => x.convId !== r.convId).concat({ convId: r.convId, label, text: r.text });
+      this.persist();
+      this.note("BUNDLE", `#${entry.id} conv=${r.convId.slice(0, 8)} items=${b.items.length}/${entry.legs.length}`);
+      if (entry.legs.every((l) => l.state === "done" || l.state === "decision" || l.state === "error")) await this.flushBundle(entry.id, "all");
+      return;
+    }
     const pending = { ...r };
     this.outbox.push(pending); this.persist();
     await this.deliverPending(pending);
+    // 결정 요청·오류로 마지막 방이 끝났으면 모아 둔 결과도 이어서 보낸다 (20분 기다리지 않음)
+    if (entry && this.bundles.has(entry.id) && entry.legs.every((l) => l.state === "done" || l.state === "decision" || l.state === "error")) {
+      await this.flushBundle(entry.id, "all");
+    }
   }
 
   private absenceChatFor(convId: string, chatId: string): boolean {
@@ -793,6 +831,31 @@ export class TelegramHub {
     if (mid !== undefined) this.lastReply = { convId: r.convId, at: this.d.now() };
     if (mid !== undefined) await this.sendImages(r.chatId, r.convId, label, raw);
     return mid !== undefined;
+  }
+
+  private scheduleBundleTimeout(b: Bundle): void {
+    const st = this.d.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+    const left = Math.max(0, b.firstAt + BUNDLE_WAIT_MS - this.d.now());
+    st(() => { void this.flushBundle(b.entryId, "timeout"); }, left);
+  }
+
+  /** 모인 결과를 한 메시지로 — 기존 전달 경로(요약·조용한 시간·재전송)를 그대로 탄다. */
+  private async flushBundle(entryId: number, why: "all" | "timeout"): Promise<void> {
+    const b = this.bundles.get(entryId);
+    if (!b) return;
+    this.bundles.delete(entryId);
+    this.persist();
+    if (b.items.length === 0) return;
+    const entry = this.ledger.recent(this.d.now(), 40).find((e) => e.id === entryId);
+    const waiting = entry ? entry.legs.filter((l) => l.state === "sent" || l.state === "running").map((l) => l.label) : [];
+    const head = `📦 #${entryId} 결과 묶음 (${b.items.length}개 방${waiting.length ? ` · 아직 진행: ${waiting.join(", ")}` : ""})`;
+    const parts = b.items.map((x) => `[${x.label}]\n${x.text.trim()}`);
+    const tail = "방별로 이어서 시키려면 @번호 를 앞에 붙이거나 /방 으로 고르세요.";
+    this.note("BUNDLE-FLUSH", `#${entryId} items=${b.items.length} why=${why}`);
+    const def = this.d.defaultTarget();
+    const pending: ResultDelivery = { convId: def.convId, chatId: b.chatId, text: [head, ...parts, tail].join("\n\n"), noChoices: true };
+    this.outbox.push(pending); this.persist();
+    await this.deliverPending(pending);
   }
 
   private choiceMarkup(convId: string, text: string): unknown | undefined {
