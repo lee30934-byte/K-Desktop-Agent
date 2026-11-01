@@ -59,6 +59,9 @@ test("우선순위: 답장 > 별칭 > 후속답 > AI > 기본", async () => {
   // 별칭: 머리말 제거
   d = await decideRoute({ ...base, text: "@해석 밝기 올려", classify });
   assert.equal(d.source, "alias"); assert.equal(d.convId, "c-cae"); assert.equal(d.text, "밝기 올려");
+  // v0.7.70 — @0 은 기본(텔레그램) 대화, AI 분류를 거치지 않음
+  d = await decideRoute({ ...base, text: "@0 음악방에 전달해줘", classify });
+  assert.equal(d.source, "alias"); assert.equal(d.convId, base.defaultTarget.convId); assert.equal(d.text, "음악방에 전달해줘");
   // 후속답은 직전 회신 대화로 (AI 호출 안 함)
   let called = 0;
   d = await decideRoute({ ...base, text: "2", lastReply: { convId: "c-cae", at: base.now - 60_000 }, classify: async () => { called++; return ""; } });

@@ -92,6 +92,18 @@ export class TelegramTurnTracker {
     return undefined;
   }
 
+  /**
+   * v0.7.70 — 대기열 꺼내기. 텔레그램 턴뿐 아니라 데스크톱·후속 턴이 잡은 대화(isClaimed)도 바쁜 것으로 본다.
+   * 텔레그램 턴만 보면 맨 앞 메시지가 claim 실패 → 맨 앞 복귀를 반복해, 뒤에 있는 다른 대화 메시지가
+   * 영영 시작되지 않는다(2026-11-01 실사용: CAE GUI 가 바쁜 동안 음악공유방 #2·#4 정체).
+   */
+  dequeueStartable(isClaimed: (convId: string) => boolean, defaultConv: string): QueuedTelegramMessage | undefined {
+    return this.dequeueReady((c) => {
+      const conv = c || defaultConv;
+      return this.hasConv(conv) || isClaimed(conv);
+    });
+  }
+
   /** 해당 turn 의 이벤트를 받았음을 기록 (heartbeat 포함). */
   touch(turnId: string | undefined, now: number): void {
     const t = turnId ? this.turns.get(turnId) : undefined;

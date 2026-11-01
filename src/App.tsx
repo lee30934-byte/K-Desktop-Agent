@@ -3604,7 +3604,8 @@ export default function App() {
     window.setTimeout(() => {
       // v0.7.54 — 대화별 동시성: 비어 있는 대화의 메시지부터 꺼낸다(같은 대화 순서는 보존).
       const tgConv = localStorage.getItem("kda_telegram_conv_id") || "";
-      const next = telegramTurnsRef.current.dequeueReady((c) => telegramTurnsRef.current.hasConv(c || tgConv));
+      // v0.7.70 — 데스크톱·후속 턴이 잡고 있는 대화도 바쁜 것으로 본다(11-01 실사용 #2·#4 정체).
+      const next = telegramTurnsRef.current.dequeueStartable((conv) => conversationTurnGateRef.current.isActive(conv), tgConv);
       if (!next) return;
       telegramLog(`QUEUE drain left=${telegramTurnsRef.current.queueLength} waitedMs=${Date.now() - next.receivedAt} conv=${next.convId ?? "tg"}`);
       void sendTelegramTurn(next.text, next.chatId, { fromQueue: true, convId: next.convId });

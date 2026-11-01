@@ -630,7 +630,7 @@ export class TelegramHub {
 
   private async cmdRoutes(chatId: string): Promise<void> {
     const ts = this.d.targets();
-    const lines = ["🧭 분배 대상", `- (기본) ${this.d.defaultTarget().label}`];
+    const lines = ["🧭 분배 대상", `- 0. (기본) ${this.d.defaultTarget().label} — @0`];
     ts.forEach((t, i) => lines.push(`- ${i + 1}. ${t.label} — @${i + 1}${t.aliases.filter((a) => a !== String(i + 1)).map((a) => ` @${a}`).join("")}`));
     if (ts.length > 0) lines.push("방 이름 대신 @번호 를 앞에 붙이거나, /방 으로 버튼을 눌러 고를 수 있어요.");
     if (ts.length === 0) lines.push("(분배 허용 대화 없음 — KDA 설정에서 추가)");

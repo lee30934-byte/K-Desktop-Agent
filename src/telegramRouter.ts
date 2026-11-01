@@ -238,6 +238,8 @@ export async function decideRoute(input: RouteInput): Promise<RouteDecision> {
   // 2) @별칭
   const ap = parseAliasPrefix(text);
   if (ap) {
+    // v0.7.70 — @0 = 기본(텔레그램) 대화. /방 의 0번 버튼과 같은 뜻.
+    if (ap.alias === "0") return asDecision(defaultTarget, "alias", ap.rest.length > 0 ? ap.rest : text);
     const t = findTargetByAlias(ap.alias, targets);
     if (t) return asDecision(t, "alias", ap.rest.length > 0 ? ap.rest : text);
   }

@@ -120,3 +120,19 @@ test("v0.7.54 대화별 동시성: hasConv / dequeueReady 는 바쁜 대화 건�
   t.delete("t1");
   assert.equal(t.dequeueReady(busy)?.text, "a", "같은 대화는 순서대로");
 });
+
+test("v0.7.70 dequeueStartable: 데스크톱이 잡은 대화는 건너뛰고 뒤의 다른 대화를 시작 (11-01 실사용 정체)", () => {
+  const t = new TelegramTurnTracker();
+  t.enqueue({ text: "cae1", chatId: "c", receivedAt: 1, convId: "cae" });
+  t.enqueue({ text: "music", chatId: "c", receivedAt: 2, convId: "music" });
+  t.enqueue({ text: "cae2", chatId: "c", receivedAt: 3, convId: "cae" });
+  t.enqueue({ text: "tg", chatId: "c", receivedAt: 4 });
+  const claimed = new Set(["cae", "tgconv"]);
+  const isClaimed = (id: string) => claimed.has(id);
+  assert.equal(t.dequeueStartable(isClaimed, "tgconv")?.text, "music", "텔레그램 턴이 없어도 claim 된 cae 는 건너뜀");
+  assert.equal(t.dequeueStartable(isClaimed, "tgconv"), undefined, "convId 없는 메시지는 기본 대화 claim 을 따름");
+  claimed.clear();
+  assert.equal(t.dequeueStartable(isClaimed, "tgconv")?.text, "cae1", "풀리면 같은 대화 순서대로");
+  t.set("t1", entry({ convId: "cae" }));
+  assert.equal(t.dequeueStartable(isClaimed, "tgconv")?.text, "tg", "텔레그램 턴 진행 중인 cae 도 건너뜀");
+});

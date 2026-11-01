@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+## [0.7.70] - 2026-11-01
+
+### Fixed
+- Telegram queue no longer stalls behind a busy room. The queue drain only knew about Telegram turns, so a room busy with a desktop or follow-up turn was taken again every 30 seconds, failed to start and went back to the front, and messages for other rooms behind it never started (found in phone test: `#2`/`#4` for the music room waited while CAE GUI worked). The drain now also skips rooms claimed by any turn.
+- `@0` now means the default Telegram room, matching the 0 button of `/방`. Before, `@0` was not an alias and the message went through AI classification. `/분배` shows `0. (기본) … — @0`.
+
 ## [0.7.69] - 2026-11-01
 
 ### Added
