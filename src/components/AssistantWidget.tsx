@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
+import VoiceCallPanel from "./VoiceCallPanel";
 import DotBridgePanel from "./DotBridgePanel";
-import type { DotHandlers } from "../dotBridge";
+import type { VoiceHandlers } from "../voiceControl";
 import type { ChatMessage, Conversation } from "../types";
 import "./AssistantWidget.css";
 
@@ -21,7 +21,7 @@ function readSetting(key: string, fallback = "") {
 }
 interface Props {
   conversationId: string | null;
-  handlers: DotHandlers;
+  handlers: VoiceHandlers;
   conversations: Conversation[];
   messages: ChatMessage[];
   runningIds: Set<string>;
@@ -33,8 +33,7 @@ interface Props {
 /** View-only layout state; minimizing never unmounts the DOT dispatcher. */
 export default function AssistantWidget(props: Props) {
   const [layout, setLayout] = useState<Layout>(readLayout);
-  const [actionError, setActionError] = useState("");
-  const [opening, setOpening] = useState(false);
+  const [voiceTarget, setVoiceTarget] = useState<{ id: string; title: string } | null>(null);
   const panel = useRef<HTMLElement>(null);
   const drag = useRef<{ id: number; x: number; y: number; origin: Position } | null>(null);
   const recent = [...props.conversations].sort((a, b) => b.lastActive - a.lastActive).slice(0, 3);
@@ -82,11 +81,9 @@ export default function AssistantWidget(props: Props) {
     const box = panel.current!.getBoundingClientRect(), step = event.shiftKey ? 40 : 12;
     setLayout(previous => ({ ...previous, position: bounded({ x: box.x + delta[0] * step, y: box.y + delta[1] * step }) }));
   }
-  async function call() {
-    setOpening(true); setActionError("");
-    try { await invoke("open_external_webview", { url: "https://chatgpt.com/", label: "kda-assistant-call", title: "ChatGPT 통화" }); }
-    catch (e) { setActionError(`ChatGPT 열기 실패: ${String(e)}`); }
-    finally { setOpening(false); }
+  function call() {
+    if (!props.conversationId || voiceTarget) return;
+    setVoiceTarget({ id: props.conversationId, title: props.conversations.find(c => c.id === props.conversationId)?.title ?? "현재 대화" });
   }
   function telegram() {
     const id = readSetting("kda_telegram_conv_id");
@@ -99,17 +96,17 @@ export default function AssistantWidget(props: Props) {
       onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null; }}
       onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }} onKeyDown={keyMove}>
       <span className="assistant-widget-avatar" aria-hidden="true">🤖</span>
-      <div className="assistant-widget-identity"><strong>K 비서</strong><span><i className={running ? "working" : ""} />{running ? `${running}개 작업 진행 중` : "지시를 기다리고 있어요"}</span></div>
+      <div className="assistant-widget-identity"><strong>K 비서</strong><span><i className={running ? "working" : ""} />{voiceTarget ? "음성통화 제어 열림" : running ? `${running}개 작업 진행 중` : "지시를 기다리고 있어요"}</span></div>
       <button type="button" className="assistant-widget-icon" aria-label={layout.minimized ? "비서 창 펼치기" : "비서 창 최소화"}
         title={layout.minimized ? "펼치기" : "최소화"} onClick={() => setLayout(previous => ({ ...previous, minimized: !previous.minimized }))}>{layout.minimized ? "↗" : "−"}</button>
     </div>
     <div className="assistant-widget-body" hidden={layout.minimized}>
       <div className="assistant-widget-actions">
-        <button type="button" disabled={opening} onClick={() => void call()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3 2 6c0 8 8 16 16 16l3-3-5-4-3 2c-3-1-5-3-6-6l2-3Z" /></svg>통화하기 <span>↗</span></button>
+        <button type="button" disabled={!props.conversationId || !!voiceTarget} onClick={call}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3 2 6c0 8 8 16 16 16l3-3-5-4-3 2c-3-1-5-3-6-6l2-3Z" /></svg>{voiceTarget ? "음성통화 열림" : "통화하기"}</button>
         <button type="button" onClick={telegram}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 18-7-5 18-5-7-8-4Zm8 4 10-11" /></svg>Telegram</button>
       </div>
-      <p className="assistant-widget-hint">ChatGPT를 열어 통화를 시작하세요.</p>
-      {actionError && <p className="assistant-widget-error" role="alert">{actionError}</p>}
+      <p className="assistant-widget-hint">Codex 로그인으로 비서와 음성 대화 · 명령·진행 확인·정지</p>
+      {voiceTarget && <VoiceCallPanel conversationId={voiceTarget.id} title={voiceTarget.title} handlers={props.handlers} onClose={() => setVoiceTarget(null)} />}
       <section className="assistant-widget-section">
         <h3>연결 컴퓨터</h3>
         <button type="button" className="assistant-widget-computer" onClick={props.onSettings}>

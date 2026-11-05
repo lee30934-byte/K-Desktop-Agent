@@ -1,0 +1,231 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
+import { VoiceCommandGate, voiceFeedback, explicitVoiceControl } from '../src/voiceControl.ts';
+import { VoiceSession, isVoiceCallActive, type VoiceEvent, type VoiceTransport } from '../src/voiceSession.ts';
+// @ts-ignore Runtime module is deliberately dependency-light.
+import { VoiceHost, CodexVoiceSession, voiceError } from '../sidecar/src/codex-voice.mjs';
+
+const tick = () => new Promise(r => setTimeout(r, 10));
+const handlers = (calls: any[] = []) => ({
+  status: async (id: string) => { calls.push(['status', id]); return { run: { state: 'running' } }; },
+  send: async (id: string, text: string, mode: string) => { calls.push(['send', id, text, mode]); },
+  stop: async (id: string) => { calls.push(['stop', id]); },
+  stopAll: async () => { calls.push(['stop_all']); },
+});
+test('explicit final controls distinguish stopping work, all work, and speech without guessing other utterances', () => {
+  assert.equal(explicitVoiceControl('이 대화의 현재 작업을 멈춰 줘.'), 'stop');
+  assert.equal(explicitVoiceControl('전체 작업 멈춰'), 'stop_all');
+  assert.equal(explicitVoiceControl('말 그만해'), 'silence');
+  for (const text of ['현재 작업 어디까지 됐어?', '멈추지 말고 계속해', '코드를 수정해줘', '작업 멈추는 방법 알려줘']) assert.equal(explicitVoiceControl(text), null);
+});
+test('status does not steer work; sends queue by default, explicit steer uses the existing path', async () => {
+  const calls: any[] = [], gate = new VoiceCommandGate('session', 'locked-conversation', handlers(calls));
+  await gate.execute('status', { action: 'status', text: '' });
+  await gate.execute('send', { action: 'send', text: 'open editor' });
+  await gate.execute('steer', { action: 'steer', text: 'change direction' });
+  assert.deepEqual(calls, [['status', 'locked-conversation'], ['send', 'locked-conversation', 'open editor', 'queue'], ['send', 'locked-conversation', 'change direction', 'steer']]);
+});
+test('duplicate/invalid/cross-target/closed commands cannot execute or approve anything', async () => {
+  const calls: any[] = [], gate = new VoiceCommandGate('session', 'locked', handlers(calls));
+  const c = { action: 'send', text: 'once' };
+  await gate.execute('1', c); await gate.execute('1', c);
+  for (const value of [{ action: 'approve', text: '' }, { action: 'send', text: '' }, { ...c, conversationId: 'other' }, []])
+    await assert.rejects(gate.execute(crypto.randomUUID(), value));
+  gate.close(); await assert.rejects(gate.execute('late', c));
+  assert.deepEqual(calls, [['send', 'locked', 'once', 'queue']]);
+});
+test('stop preempts a pending send and cancels older queued instructions; status remains responsive', async () => {
+  const calls: any[] = []; let finish!: () => void;
+  const pending = new Promise<void>(r => { finish = r; });
+  const gate = new VoiceCommandGate('session', 'locked', { ...handlers(calls), send: async (_id, text) => { calls.push(text); if (text === 'first') await pending; } });
+  const first = gate.execute('first', { action: 'send', text: 'first' }); await tick();
+  const old = gate.execute('old', { action: 'send', text: 'old' });
+  await tick();
+  await gate.execute('stop', { action: 'stop', text: '' });
+  await gate.execute('status', { action: 'status', text: '' });
+  finish(); await first;
+  assert.equal((await old as any).state, 'cancelled');
+  assert.deepEqual(calls, ['first', ['stop', 'locked'], ['status', 'locked']]);
+});
+test('manual stop barrier is retained and failed stop is never reported as confirmed', async () => {
+  const gate = new VoiceCommandGate('session', 'locked', { ...handlers(), canSend: () => false, stop: async () => { throw Error('not stopped'); } });
+  assert.equal((await gate.execute('send', { action: 'send', text: 'blocked' }) as any).state, 'cancelled');
+  await assert.rejects(gate.execute('stop', { action: 'stop', text: '' }), /not stopped/);
+});
+test('global stop uses the existing global handler and blocks pending older commands', async () => {
+  const calls: any[] = [], gate = new VoiceCommandGate('session', 'locked', handlers(calls));
+  assert.equal((await gate.execute('stop-all', { action: 'stop_all', text: '' }) as any).state, 'stopped');
+  assert.deepEqual(calls, [['stop_all']]);
+});
+test('feedback strips code, URLs, keys, sensitive lines and bounds speech', () => {
+  const value = voiceFeedback('결과 완료\n```sh\nsecret\n```\nhttps://example.test/path\nAPI_KEY=sk-secret\nC:/private/file.txt\n'+ '가'.repeat(900));
+  assert.ok(!/secret|https:|private|```/.test(value)); assert.ok(value.length <= 400);
+  assert.ok(!voiceError('Bearer abcdefghijklmnopqrstuvwxyz0123456789').includes('abcdefghijklmnopqrstuvwxyz'));
+});
+
+function fakeServer() {
+  const server: any = new EventEmitter(); server.stdout = new PassThrough(); server.stderr = new PassThrough();
+  const sent: any[] = [];
+  server.stdin = new Writable({ write(chunk, _encoding, cb) { sent.push(JSON.parse(chunk.toString())); cb(); } });
+  return { server, sent };
+}
+test('native broker binds dynamic replies and never approves unknown execution', async () => {
+  const { server, sent } = fakeServer(), events: any[] = [];
+  const session = new CodexVoiceSession('codex', (e: any) => events.push(e), () => server);
+  session.threadId = 'voice-thread';
+  const rpc = { id: 1, method: 'item/tool/call', params: { threadId: 'voice-thread', turnId: 'turn', callId: 'call', tool: 'kda_control', arguments: { action: 'status', text: '' } } };
+  session.receive(rpc); session.receive(rpc);
+  assert.equal(events.length, 1); assert.equal(events[0].kind, 'command');
+  session.reply('wrong-token', { state: 'submitted' }); assert.equal(sent.length, 0);
+  session.reply(events[0].token, { state: 'submitted' }); session.reply(events[0].token, { state: 'submitted' });
+  assert.equal(sent.length, 1); assert.equal(sent[0].id, 1); assert.equal(sent[0].result.success, true);
+  session.receive({ id: 2, method: 'item/commandExecution/requestApproval', params: { threadId: 'voice-thread' } });
+  assert.equal(session.closed, true); assert.equal(sent.length, 1); assert.equal(events[1].kind, 'error');
+});
+test('native broker rejects wrong thread/tool and closes before forwarding native work', () => {
+  for (const msg of [
+    { id: 1, method: 'item/tool/call', params: { threadId: 'other', tool: 'kda_control' } },
+    { id: 2, method: 'item/tool/call', params: { threadId: 'voice-thread', tool: 'shell' } },
+    { method: 'item/started', params: { threadId: 'voice-thread', item: { type: 'commandExecution' } } },
+  ]) {
+    const { server, sent } = fakeServer(), events: any[] = [];
+    const session = new CodexVoiceSession('codex', (e: any) => events.push(e), () => server); session.threadId = 'voice-thread';
+    session.receive(msg); assert.equal(session.closed, true); assert.equal(sent.length, 0); assert.equal(events[0].kind, 'error');
+  }
+});
+
+test('native start disables inherited MCP, installs only the KDA dynamic tool and rejects an escalated sandbox', async () => {
+  for (const policy of ['readOnly', 'dangerFullAccess']) {
+    const { server, sent } = fakeServer();
+    const session = new CodexVoiceSession('codex', () => {}, () => server);
+    session.request = async (method: string, params: any) => {
+      sent.push({ method, params });
+      if (method === 'config/read') return { config: { mcp_servers: { private: { enabled: true } } } };
+      if (method === 'thread/start') return { thread: { id: 'voice-thread' }, approvalPolicy: 'untrusted', sandbox: { type: policy } };
+      return {};
+    };
+    if (policy === 'readOnly') await session.start('v=0', 'voice-id');
+    else await assert.rejects(session.start('v=0', 'voice-id'), /정책/);
+    const config = sent.find(v => v.method === 'thread/start').params;
+    assert.equal(config.config['mcp_servers.private.enabled'], false);
+    assert.equal(config.config['features.shell_tool'], false);
+    assert.equal(config.config['features.multi_agent'], false);
+    assert.deepEqual(config.dynamicTools.map((t: any) => t.name), ['kda_control']);
+    assert.equal(sent.some(v => v.method === 'thread/realtime/start'), policy === 'readOnly');
+    if (policy === 'readOnly') assert.equal(sent.find(v => v.method === 'thread/realtime/start').params.version, 'v3');
+    session.close();
+  }
+});
+test('host allows one call, rejects cross-session replies/stops, and discards replies after teardown', async () => {
+  const instances: any[] = [], events: any[] = [];
+  class Session {
+    closed = false; replies: any[] = [];
+    constructor() { instances.push(this); }
+    async start() {}
+    close() { this.closed = true; }
+    reply(...v: any[]) { this.replies.push(v); }
+  }
+  const host = new VoiceHost('codex', (e: any) => events.push(e), Session);
+  const start = { type: 'voice_start', sessionId: crypto.randomUUID(), conversationId: 'conversation', sdp: 'v=0\r\n' };
+  host.receive(start); host.receive(start); assert.equal(instances.length, 1); assert.equal(events[0].kind, 'error');
+  host.receive({ type: 'voice_stop', sessionId: crypto.randomUUID() }); assert.equal(instances[0].closed, false);
+  host.receive({ type: 'voice_reply', sessionId: crypto.randomUUID(), token: 'unknown', result: {} }); assert.equal(instances[0].replies.length, 0);
+  host.dispose(); assert.equal(instances[0].closed, true);
+  host.receive({ type: 'voice_reply', sessionId: start.sessionId, token: 'late', result: {} }); assert.equal(instances[0].replies.length, 0);
+});
+
+function fakeMedia() {
+  const track: any = { enabled: true, readyState: 'live', onended: null, stop() { this.readyState = 'ended'; } };
+  const stream: any = { getTracks: () => [track], getAudioTracks: () => [track] };
+  const peers: any[] = [], audios: any[] = [];
+  class Peer {
+    connectionState = 'new'; iceGatheringState = 'complete'; remoteDescription: any = null; localDescription: any = null;
+    channel: any = { readyState: 'open', close() {} };
+    constructor() { peers.push(this); }
+    addTrack() {} createDataChannel() { return this.channel; }
+    async createOffer() { return { type: 'offer', sdp: 'v=0' }; }
+    async setLocalDescription(d: any) { this.localDescription = d; }
+    async setRemoteDescription(d: any) { this.remoteDescription = d; }
+    close() { this.connectionState = 'closed'; }
+  }
+  class Audio {
+    muted = false; srcObject: any = null; paused = false;
+    constructor() { audios.push(this); } async play() {} pause() { this.paused = true; }
+  }
+  Object.defineProperty(globalThis, 'RTCPeerConnection', { configurable: true, value: Peer });
+  Object.defineProperty(globalThis, 'Audio', { configurable: true, value: Audio });
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: async () => stream } } });
+  return { track, stream, peers, audios };
+}
+test('browser never transmits before actual media+session handshake, binds target, and releases all media on close', async () => {
+  const media = fakeMedia(), calls: any[] = [], views: any[] = [], messages: any[] = [];
+  let receive!: (e: VoiceEvent) => void; let unlistened = false;
+  const transport: VoiceTransport = { listen: async fn => { receive = fn; return () => { unlistened = true; }; },
+    start: async (...v) => { messages.push(['start', ...v]); }, stop: async id => { messages.push(['stop', id]); },
+    reply: async (...v) => { messages.push(['reply', ...v]); }, speak: async () => {} };
+  const session = new VoiceSession('locked', handlers(calls), transport, v => views.push(v));
+  await session.start(); assert.equal(media.track.enabled, false); assert.equal(isVoiceCallActive(), true);
+  await session.start(); assert.equal(media.peers.length, 1);
+  media.peers[0].connectionState = 'connected'; media.peers[0].onconnectionstatechange();
+  assert.equal(media.track.enabled, false); assert.ok(!views.some(v => v.phase === 'connected'));
+  session.receive({ type: 'session.started' }); assert.equal(media.track.enabled, true); assert.equal(views.at(-1).phase, 'connected');
+  receive({ sessionId: 'wrong', kind: 'command', token: 'x', command: { action: 'send', text: 'bad' }, createdAt: Date.now() });
+  const event: VoiceEvent = { sessionId: session.id, kind: 'command', token: crypto.randomUUID(), command: { action: 'send', text: 'once' }, createdAt: Date.now() };
+  receive(event); receive(event); await tick();
+  assert.equal(calls.filter(v => v[0] === 'send').length, 1); assert.equal(messages.filter(v => v[0] === 'reply').length, 1);
+  session.setMuted(true); assert.equal(media.track.enabled, false); session.setMuted(false); assert.equal(media.track.enabled, true);
+  session.silence(); assert.equal(media.audios[0].muted, true); assert.equal(calls.filter(v => v[0] === 'stop').length, 0);
+  session.end(); assert.equal(media.track.readyState, 'ended'); assert.equal(media.audios[0].srcObject, null); assert.equal(unlistened, true); assert.equal(isVoiceCallActive(), false);
+  receive({ ...event, token: 'late' }); await tick(); assert.equal(calls.filter(v => v[0] === 'send').length, 1);
+});
+test('closing while permission is pending stops a late microphone stream and never starts a backend', async () => {
+  const media = fakeMedia(), events: any[] = []; let resolve!: (value: unknown) => void;
+  navigator.mediaDevices.getUserMedia = () => new Promise(r => { resolve = r; }) as any;
+  const transport: VoiceTransport = { listen: async () => () => {}, start: async () => { events.push('start'); }, stop: async () => {}, reply: async () => {}, speak: async () => {} };
+  const s = new VoiceSession('locked', handlers(), transport, () => {});
+  const pending = s.start(); s.end(); resolve(media.stream); await pending;
+  assert.equal(media.track.readyState, 'ended'); assert.deepEqual(events, []); assert.equal(isVoiceCallActive(), false);
+});
+test('microphone denial is visible and clears the active-call/update lock', async () => {
+  fakeMedia(); navigator.mediaDevices.getUserMedia = async () => { throw Error('permission denied'); };
+  const views: any[] = [];
+  const transport: VoiceTransport = { listen: async () => () => {}, start: async () => { throw Error('must not start'); }, stop: async () => {}, reply: async () => {}, speak: async () => {} };
+  await new VoiceSession('locked', handlers(), transport, v => views.push(v)).start();
+  assert.equal(views.at(-1).phase, 'error'); assert.match(views.at(-1).message, /permission denied/); assert.equal(isVoiceCallActive(), false);
+});
+
+test('explicit final stop reaches KDA without a model delegation, coalesces its later delegation and never treats silence as task stop', async () => {
+  const media = fakeMedia(), calls: any[] = [], spoken: string[] = [], replies: any[] = [];
+  let receive!: (event: VoiceEvent) => void, running = true;
+  const transport: VoiceTransport = { listen: async fn => { receive = fn; return () => {}; }, start: async () => {}, stop: async () => {},
+    reply: async (_id, _token, result) => { replies.push(result); }, speak: async (_id, text) => { spoken.push(text); } };
+  const session = new VoiceSession('locked', { ...handlers(calls), status: async () => ({ run: running ? { state: 'running' } : null, paused: !running }),
+    stop: async () => { calls.push('stop'); running = false; } }, transport, () => {});
+  await session.start(); media.peers[0].connectionState = 'connected'; session.receive({ type: 'session.started' });
+  session.receive({ type: 'input_transcript.added', item: { text: '작업 멈춰' } }); await tick(); assert.equal(calls.length, 0);
+  const event = { type: 'turn.done', turn: { id: 'utterance-1', role: 'user', transcript: '이 대화의 현재 작업을 멈춰 줘.' } };
+  session.receive(event); session.receive(event); await tick(); assert.deepEqual(calls, ['stop']); assert.match(spoken[0], /정지했습니다/);
+  receive({ sessionId: session.id, kind: 'command', token: crypto.randomUUID(), createdAt: Date.now(), command: { action: 'stop', text: '' } });
+  await tick(); assert.deepEqual(calls, ['stop']); assert.equal(replies[0].state, 'stopped');
+  receive({ sessionId: session.id, kind: 'command', token: crypto.randomUUID(), createdAt: Date.now(), command: { action: 'stop_all', text: '' } });
+  await tick(); assert.equal(replies[1].state, 'error');
+  session.receive({ type: 'turn.done', turn: { id: 'utterance-2', role: 'user', transcript: '말 그만해' } });
+  receive({ sessionId: session.id, kind: 'command', token: crypto.randomUUID(), createdAt: Date.now(), command: { action: 'stop', text: '' } });
+  await tick(); assert.equal(replies[2].state, 'error'); assert.deepEqual(calls, ['stop']); session.end();
+});
+
+test('a streaming answer present at call start still produces its final feedback, and approvals are announced', async () => {
+  const media = fakeMedia(), spoken: string[] = [];
+  let answer: any = { id: 'a', streaming: true, text: 'partial' }, approvalPending = false;
+  const transport: VoiceTransport = { listen: async () => () => {}, start: async () => {}, stop: async () => {}, reply: async () => {}, speak: async (_id, text) => { spoken.push(text); } };
+  const session: any = new VoiceSession('locked', { ...handlers(), status: async () => ({ run: { state: 'running' }, approvalPending, latestAssistant: answer }) }, transport, () => {});
+  await session.start(); media.peers[0].connectionState = 'connected'; session.receive({ type: 'session.started' }); await tick();
+  assert.deepEqual(spoken, []);
+  answer = { ...answer, streaming: false, text: '검증 결과 실패. 화면을 확인하세요.' };
+  await session.pollStatus(); assert.match(spoken[0], /실패/);
+  approvalPending = true; await session.pollStatus(); assert.match(spoken[1], /승인/);
+  session.silence(); answer = { id: 'b', streaming: false, text: 'new answer' }; await session.pollStatus();
+  assert.equal(spoken.length, 2); session.end();
+});

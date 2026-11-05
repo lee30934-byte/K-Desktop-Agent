@@ -1,4 +1,5 @@
 import { BrowserHostClient, type BrowserAction } from "./browserHost.js";
+import { VoiceHost } from "./codex-voice.mjs";
 import { runBrowserTurn } from "./browserProvider.js";
 /**
  * K Desktop Agent — Node Sidecar (Phase 4: Claude Code CLI 연동)
@@ -7033,6 +7034,7 @@ const rl = readline.createInterface({
 });
 
 const browserHost = new BrowserHostClient(rawEmit);
+const voiceHost = new VoiceHost(CODEX_CLI, rawEmit);
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -7059,6 +7061,7 @@ rl.on("line", (line) => {
   }
 
   if (browserHost.receive(msg)) return;
+  if (voiceHost.receive(msg)) return;
   switch (msg.type) {
     case "codex_elicitation_response": {
       const v = msg as Record<string, unknown>;
@@ -7371,6 +7374,7 @@ rl.on("line", (line) => {
 });
 
 rl.on("close", () => {
+  voiceHost.dispose();
   browserHost.dispose();
   log("info", "stdin closed, exiting");
   process.exit(0);

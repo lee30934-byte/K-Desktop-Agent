@@ -2789,6 +2789,39 @@ async fn list_mcp_tools(refresh: Option<bool>) -> Result<(), String> {
     Ok(())
 }
 
+// Voice transport only. Work commands stay in the existing frontend turn gate.
+#[tauri::command]
+async fn voice_control(action: String, session_id: String, conversation_id: Option<String>, sdp: Option<String>, token: Option<String>, result: Option<serde_json::Value>, text: Option<String>) -> Result<(), String> {
+    uuid::Uuid::parse_str(&session_id).map_err(|_| "invalid voice session")?;
+    let payload = match action.as_str() {
+        "start" => {
+            let conversation = conversation_id.ok_or("missing conversation")?;
+            uuid::Uuid::parse_str(&conversation).map_err(|_| "invalid conversation")?;
+            let offer = sdp.ok_or("missing SDP")?;
+            if !offer.starts_with("v=0") || offer.len() > 100_000 { return Err("invalid SDP".into()); }
+            serde_json::json!({"type":"voice_start","sessionId":session_id,"conversationId":conversation,"sdp":offer})
+        },
+        "stop" => serde_json::json!({"type":"voice_stop","sessionId":session_id}),
+        "speak" => {
+            let text = text.ok_or("missing feedback")?;
+            if text.trim().is_empty() || text.chars().count() > 1200 { return Err("invalid feedback".into()); }
+            serde_json::json!({"type":"voice_speak","sessionId":session_id,"text":text})
+        },
+        "reply" => {
+            let token = token.ok_or("missing command token")?;
+            uuid::Uuid::parse_str(&token).map_err(|_| "invalid command token")?;
+            let result = result.ok_or("missing command result")?;
+            if !result.is_object() || result.to_string().len() > 16_000 { return Err("invalid command result".into()); }
+            serde_json::json!({"type":"voice_reply","sessionId":session_id,"token":token,"result":result})
+        },
+        _ => return Err("unsupported voice action".into()),
+    };
+    let tx_holder = get_tx_holder().clone();
+    let guard = tx_holder.lock().await;
+    let tx = guard.as_ref().ok_or("sidecar not initialized")?;
+    tx.send(format!("{}\n", payload)).await.map_err(|e| e.to_string())
+}
+
 // ────────── Phase 67c (v0.6.2) — KDA 커스텀 도구 plugin 관리 ──────────
 //
 // K 가 Settings 의 "새 도구 만들기" 로 박는 커스텀 도구는 K-Personal-MCP/modules/kda_plugins/
@@ -5623,6 +5656,7 @@ pub fn run_with_options(start_minimized: bool) {
             install_kpersonal_mcp,
             // Phase 67 (v0.6.2) — MCP 도구 인스펙터 + 카탈로그 + 커스텀 도구 plugin 빌더
             list_mcp_tools,
+            voice_control,
             list_kda_plugins,
             read_kda_plugin,
             save_kda_plugin,

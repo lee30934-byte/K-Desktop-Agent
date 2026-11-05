@@ -3,13 +3,14 @@ import asyncio
 import datetime
 import functools
 import json
+import os
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE = ROOT / 'evidence/assistant-widget-20261105'
+EVIDENCE = ROOT / os.environ.get('KDA_WIDGET_EVIDENCE', 'evidence/assistant-widget-20261105')
 KEY = 'kda_assistant_widget_v1'
 
 
@@ -30,6 +31,7 @@ async def main():
             browser = await playwright.chromium.launch(channel='msedge', headless=True)
             try:
                 page = await browser.new_page(viewport={'width': 1440, 'height': 900})
+                await page.add_init_script("navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('fixture microphone denied','NotAllowedError')}")
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 await page.goto(f'http://127.0.0.1:{server.server_port}/review.html')
                 widget = page.get_by_role('complementary', name='K 비서', exact=True)
@@ -43,12 +45,13 @@ async def main():
                 await page.screenshot(path=str(EVIDENCE / 'expanded.png'))
 
                 await page.get_by_role('button', name='통화하기', exact=False).click()
-                assert await page.evaluate('window.actions[0].open') == 'https://chatgpt.com/'
-                await page.evaluate('window.failOpen=true')
-                await page.get_by_role('button', name='통화하기', exact=False).click()
-                await page.get_by_role('alert').filter(has_text='ChatGPT 열기 실패').wait_for()
-                await page.evaluate('window.failOpen=false')
-                checks.append('call opens ChatGPT via native intent and reports opening failure')
+                await page.get_by_role('region', name='AI 비서 음성통화').wait_for()
+                await page.get_by_role('alert').filter(has_text='fixture microphone denied').wait_for()
+                assert not await page.evaluate('window.actions.some(a=>a.open)')
+                assert await page.get_by_role('button', name='다시 연결', exact=True).is_visible()
+                await page.screenshot(path=str(EVIDENCE / 'voice-panel.png'))
+                await page.get_by_role('button', name='음성통화 닫기', exact=True).click()
+                checks.append('call opens internal voice controls; microphone failure is visible, resources close, and no external navigation occurs')
 
                 await page.get_by_role('button', name='Telegram', exact=True).click()
                 assert await page.evaluate('window.actions[window.actions.length-1].settings') is True

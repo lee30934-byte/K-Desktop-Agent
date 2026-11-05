@@ -5,6 +5,7 @@ import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import Sidebar from "./components/Sidebar";
 import MainChat from "./components/MainChat";
 import AssistantWidget from "./components/AssistantWidget";
+import { isVoiceCallActive } from "./voiceSession";
 import MetricsPanel from "./components/MetricsPanel";
 import Settings from "./components/Settings";
 import type {
@@ -3384,7 +3385,7 @@ export default function App() {
     try { raw = await invoke<string | null>("auto_update_request_read"); } catch { return; }
     if (raw == null) { autoUpdateIdleSinceRef.current = null; return; }
     const now = Date.now();
-    const busy = conversationTurnGateRef.current.activeConversationIds().size > 0 ||
+    const busy = isVoiceCallActive() || conversationTurnGateRef.current.activeConversationIds().size > 0 ||
       taskWatchTurnsRef.current.size > 0 || telegramTurnsRef.current.size > 0;
     if (busy) autoUpdateIdleSinceRef.current = null;
     else if (autoUpdateIdleSinceRef.current == null) autoUpdateIdleSinceRef.current = now;
@@ -3424,6 +3425,7 @@ export default function App() {
             await finish("mismatch", { detail: `업데이터가 찾은 버전=${update?.version ?? "없음"} — 설치하지 않음` });
             return;
           }
+          if (isVoiceCallActive()) { autoUpdateIdleSinceRef.current = null; return; }
           await update.downloadAndInstall();
           void invoke("auto_update_log", { line: `[${new Date().toLocaleString("sv-SE")}] INSTALLED-RELAUNCH requested=${d.version}` }).catch(() => {});
           await relaunchApp();
@@ -5736,6 +5738,7 @@ export default function App() {
           conversations={conversations} messages={messages} runningIds={streamingConvIds}
           computerConnected={mcpState.connected} onSelect={id => { void handleSelectConversation(id); }} onSettings={openSettings}
           handlers={{
+          stopAll: async () => { await handleHardStop(); },
           canSend: r => r.createdAt > Math.max(dotGlobalStopAtRef.current, dotStoppedAtRef.current.get(r.conversationId) ?? 0),
           status: async id => {
             const control = conversationTurnGateRef.current;
@@ -5743,6 +5746,7 @@ export default function App() {
             const answers = page.filter(m => m.role === "assistant");
             const answer = answers[answers.length - 1];
             return { conversationId: id, run: control.runs.get(id) ?? null,
+              approvalPending: codexElicitations.some(r => r.conversation_id === id && Date.now() < r.expiresAt),
               paused: control.paused.has(id) || control.allPaused,
               queued: control.queues.get(id)?.length ?? 0,
               latestAssistant: answer ? { id: answer.id, timestamp: answer.timestamp,

@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-const evidence = 'evidence/assistant-widget-20261105';
+const evidence = process.env.KDA_WIDGET_EVIDENCE || 'evidence/assistant-widget-20261105';
 mkdirSync(evidence, { recursive: true });
 await build({
   stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
@@ -10,6 +10,7 @@ await build({
     window.actions=[];window.requests=[];window.replies=[];window.running=false;
     window.info={enabled:false,conversationId:null,session:null,root:'C:/fixture/dot-bridge',adapterPath:null};
     window.dotInvoke=async(command,args)=>{
+      if(command==='voice_control'){window.actions.push({voice:args.action,sessionId:args.sessionId});return;}
       if(command==='dot_bridge_info')return {...window.info};
       if(command==='dot_bridge_pair'){
         window.info=args.conversationId?{...window.info,enabled:true,conversationId:args.conversationId,
@@ -42,6 +43,8 @@ await build({
   bundle: true, format: 'iife', outfile: `${evidence}/widget-fixture.js`,
   define: { 'process.env.NODE_ENV': '"production"' },
   plugins: [{ name: 'native-fixture', setup(build) {
+    build.onResolve({filter:/^@tauri-apps\/api\/event$/},()=>({path:'event',namespace:'mock-event'}));
+    build.onLoad({filter:/.*/,namespace:'mock-event'},()=>({contents:'export const listen=async(name,fn)=>{window.voiceListener=fn;return()=>{window.voiceListener=null}};',loader:'js'}));
     build.onResolve({filter:/^@tauri-apps\/api\/core$/},()=>({path:'fixture',namespace:'mock'}));
     build.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:'export const invoke=(command,args)=>window.dotInvoke(command,args);',loader:'js'}));
   }}],

@@ -97,7 +97,8 @@ async function appHandlers(deps: Record<string,unknown>) {
     }ts.forEachChild(node,walk);
   }walk(source);assert.ok(expression);
   const js=ts.transpile(`(${expression})`,{target:ts.ScriptTarget.ES2020});
-  return new Function(...Object.keys(deps),`return ${js}`)(...Object.values(deps));
+  const scope={codexElicitations:[],...deps};
+  return new Function(...Object.keys(scope),`return ${js}`)(...Object.values(scope));
 }
 test('actual App handlers pin target id and propagate an unconfirmed stop as failure',async()=>{
   const sent:any[]=[];let active=true;
@@ -117,4 +118,18 @@ test('actual App manual/global stop timestamps invalidate older queued voice wor
   assert.equal(h.canSend(req('send',{conversationId:'paired',createdAt:29})),false);
   assert.equal(h.canSend(req('send',{conversationId:'paired',createdAt:31})),true);
   assert.equal(h.canSend(req('send',{conversationId:'other',createdAt:19})),false);
+});
+
+test('actual voice global stop uses the same App stop handler without changing approvals',async()=>{
+  let calls=0;
+  const h=await appHandlers({handleHardStop:async()=>{calls++;}});
+  await h.stopAll();assert.equal(calls,1);
+});
+
+test('actual status identifies pending approval only for the pinned conversation',async()=>{
+  const control={runs:new Map(),paused:new Set(),allPaused:false,queues:new Map()};
+  const h=await appHandlers({conversationTurnGateRef:{current:control},activeConversationIdRef:{current:'paired'},messagesRef:{current:[]},
+    getMessagesForView:async()=>({messages:[]}),codexElicitations:[{conversation_id:'paired',expiresAt:Date.now()+60000}]});
+  assert.equal((await h.status('paired')).approvalPending,true);
+  assert.equal((await h.status('other')).approvalPending,false);
 });
