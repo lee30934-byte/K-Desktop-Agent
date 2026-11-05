@@ -1,0 +1,137 @@
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
+import DotBridgePanel from "./DotBridgePanel";
+import type { DotHandlers } from "../dotBridge";
+import type { ChatMessage, Conversation } from "../types";
+import "./AssistantWidget.css";
+
+const STORAGE = "kda_assistant_widget_v1";
+type Position = { x: number; y: number };
+type Layout = { position: Position | null; minimized: boolean };
+function readLayout(): Layout {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE) || "null");
+    const p = saved?.position;
+    return { minimized: saved?.minimized === true, position: Number.isFinite(p?.x) && Number.isFinite(p?.y) ? p : null };
+  } catch { return { position: null, minimized: false }; }
+}
+function readSetting(key: string, fallback = "") {
+  try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+}
+interface Props {
+  conversationId: string | null;
+  handlers: DotHandlers;
+  conversations: Conversation[];
+  messages: ChatMessage[];
+  runningIds: Set<string>;
+  computerConnected: boolean;
+  onSelect: (id: string) => void;
+  onSettings: () => void;
+}
+
+/** View-only layout state; minimizing never unmounts the DOT dispatcher. */
+export default function AssistantWidget(props: Props) {
+  const [layout, setLayout] = useState<Layout>(readLayout);
+  const [actionError, setActionError] = useState("");
+  const [opening, setOpening] = useState(false);
+  const panel = useRef<HTMLElement>(null);
+  const drag = useRef<{ id: number; x: number; y: number; origin: Position } | null>(null);
+  const recent = [...props.conversations].sort((a, b) => b.lastActive - a.lastActive).slice(0, 3);
+  const answers = props.messages.filter(m => m.role === "assistant" && !m.streaming && m.content.trim());
+  const answer = answers[answers.length - 1];
+  const running = props.runningIds.size;
+  function bounded(p: Position): Position {
+    const box = panel.current?.getBoundingClientRect();
+    return { x: Math.max(8, Math.min(p.x, window.innerWidth - (box?.width ?? 300) - 8)),
+      y: Math.max(8, Math.min(p.y, window.innerHeight - (box?.height ?? 48) - 8)) };
+  }
+  useLayoutEffect(() => {
+    const fit = () => setLayout(previous => {
+      if (!previous.position) return previous;
+      const p = bounded(previous.position);
+      return p.x === previous.position.x && p.y === previous.position.y ? previous : { ...previous, position: p };
+    });
+    const observer = new ResizeObserver(fit);
+    if (panel.current) observer.observe(panel.current);
+    window.addEventListener("resize", fit);
+    fit();
+    return () => { observer.disconnect(); window.removeEventListener("resize", fit); };
+  }, []);
+  useLayoutEffect(() => {
+    try { localStorage.setItem(STORAGE, JSON.stringify(layout)); } catch { /* Layout still works with storage disabled. */ }
+  }, [layout]);
+  function startDrag(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    const box = panel.current!.getBoundingClientRect();
+    drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, origin: { x: box.x, y: box.y } };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+  function moveDrag(event: PointerEvent<HTMLDivElement>) {
+    const d = drag.current;
+    if (!d || d.id !== event.pointerId) return;
+    const position = bounded({ x: d.origin.x + event.clientX - d.x, y: d.origin.y + event.clientY - d.y });
+    setLayout(previous => ({ ...previous, position }));
+  }
+  function keyMove(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "Home") { event.preventDefault(); setLayout(previous => ({ ...previous, position: null })); return; }
+    const delta = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[event.key];
+    if (!delta) return;
+    event.preventDefault();
+    const box = panel.current!.getBoundingClientRect(), step = event.shiftKey ? 40 : 12;
+    setLayout(previous => ({ ...previous, position: bounded({ x: box.x + delta[0] * step, y: box.y + delta[1] * step }) }));
+  }
+  async function call() {
+    setOpening(true); setActionError("");
+    try { await invoke("open_external_webview", { url: "https://chatgpt.com/", label: "kda-assistant-call", title: "ChatGPT 통화" }); }
+    catch (e) { setActionError(`ChatGPT 열기 실패: ${String(e)}`); }
+    finally { setOpening(false); }
+  }
+  function telegram() {
+    const id = readSetting("kda_telegram_conv_id");
+    if (id && props.conversations.some(c => c.id === id)) props.onSelect(id);
+    else props.onSettings();
+  }
+  const positionStyle = layout.position ? { left: layout.position.x, top: layout.position.y, right: "auto" } : undefined;
+  return createPortal(<aside ref={panel} aria-label="K 비서" className={`assistant-widget${layout.minimized ? " is-minimized" : ""}`} style={positionStyle}>
+    <div className="assistant-widget-handle" tabIndex={0} role="group" aria-label="비서 창 이동 · 방향키 이동 · Home 기본 위치"
+      onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null; }}
+      onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }} onKeyDown={keyMove}>
+      <span className="assistant-widget-avatar" aria-hidden="true">🤖</span>
+      <div className="assistant-widget-identity"><strong>K 비서</strong><span><i className={running ? "working" : ""} />{running ? `${running}개 작업 진행 중` : "지시를 기다리고 있어요"}</span></div>
+      <button type="button" className="assistant-widget-icon" aria-label={layout.minimized ? "비서 창 펼치기" : "비서 창 최소화"}
+        title={layout.minimized ? "펼치기" : "최소화"} onClick={() => setLayout(previous => ({ ...previous, minimized: !previous.minimized }))}>{layout.minimized ? "↗" : "−"}</button>
+    </div>
+    <div className="assistant-widget-body" hidden={layout.minimized}>
+      <div className="assistant-widget-actions">
+        <button type="button" disabled={opening} onClick={() => void call()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3 2 6c0 8 8 16 16 16l3-3-5-4-3 2c-3-1-5-3-6-6l2-3Z" /></svg>통화하기 <span>↗</span></button>
+        <button type="button" onClick={telegram}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 18-7-5 18-5-7-8-4Zm8 4 10-11" /></svg>Telegram</button>
+      </div>
+      <p className="assistant-widget-hint">ChatGPT를 열어 통화를 시작하세요.</p>
+      {actionError && <p className="assistant-widget-error" role="alert">{actionError}</p>}
+      <section className="assistant-widget-section">
+        <h3>연결 컴퓨터</h3>
+        <button type="button" className="assistant-widget-computer" onClick={props.onSettings}>
+          <span className="assistant-widget-device" aria-hidden="true">▣</span>
+          <span><strong>{readSetting("kda_telegram_pc_name", "이 컴퓨터")}</strong><small>{props.computerConnected ? "컴퓨터 도구 연결됨" : "컴퓨터 도구 연결 안 됨"}</small></span>
+          <i className={`assistant-widget-dot${props.computerConnected ? " online" : ""}`} />
+        </button>
+      </section>
+      <section className="assistant-widget-section">
+        <h3>최근 활동</h3>
+        {recent.length ? recent.map(c => <button type="button" key={c.id} className="assistant-widget-activity" onClick={() => props.onSelect(c.id)}>
+          <i className={`assistant-widget-dot${props.runningIds.has(c.id) ? " online" : ""}`} /><span>{c.title}</span><small>{props.runningIds.has(c.id) ? "진행 중" : "대화"}</small>
+        </button>) : <p className="assistant-widget-empty">아직 활동이 없습니다.</p>}
+      </section>
+      <section className="assistant-widget-section">
+        <h3>결과물 <span>현재 대화</span></h3>
+        {answer && props.conversationId ? <button type="button" className="assistant-widget-result" onClick={() => props.onSelect(props.conversationId!)}>
+          <strong>최근 답변 <span>↗</span></strong><span>{answer.content.replace(/[#*`]/g, "").slice(0, 110)}</span>
+        </button> : <p className="assistant-widget-empty">아직 결과물이 없습니다.</p>}
+      </section>
+      <div className="assistant-widget-connection"><DotBridgePanel conversationId={props.conversationId} handlers={props.handlers} /></div>
+      <button type="button" className="assistant-widget-reset" onClick={() => setLayout(previous => ({ ...previous, position: null }))}>오른쪽 위로 되돌리기</button>
+    </div>
+  </aside>, document.body);
+}

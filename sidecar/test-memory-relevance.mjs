@@ -33,6 +33,7 @@ const {
   scorePitfalls, scorePitfallsV2, buildV2Index, buildQueryGroups,
   selectPitfallInjection, pitfallOneLiner, tokenizeForIndex,
   INJECT_FULL_K, INJECT_INDEX_K, TRIGGERED_BODY_MAX_CHARS, buildWorkContextQuery,
+  estimateInjectionBytes, INJECT_BUDGET_BYTES,
 } = await import(pathToFileURL(DIST).href);
 
 const RECALL_MIN = 0.80;        // 실측 92.3% 기준, 코퍼스 변동 여유 12pp
@@ -83,6 +84,26 @@ const ok = (c, m) => { if (c) { pass++; console.log(`✅ ${m}`); } else { fail++
   const unrelated = scorePitfallsV2(cands, "large");
   ok(relevant[0]?.file === "pitfall_rg_abcd.md", "ripgrep 질의는 rg 파일명에 작은 가산을 준다");
   ok(unrelated[0]?.score === unrelated[1]?.score, "large 는 rg 파일명에 부분문자열 가산을 주지 않는다");
+}
+
+// Four long full bodies alone exceed the cap before any index is added.
+// Exercise actual selection with deterministic long records, without changing live-recall gates.
+{
+  const cands = [...Array.from({ length: 55 }, (_, i) => ({
+    file: `pitfall_capacity_${String(i).padStart(2, "0")}.md`,
+    body: "release capacity ".repeat(450),
+  })), ...Array.from({ length: 200 }, (_, i) => ({
+    file: `pitfall_background_${i}.md`, body: "unrelated background topic",
+  }))];
+  const selected = selectPitfallInjection(cands, "release capacity");
+  const ranked = scorePitfallsV2(cands, "release capacity");
+  const bodyOf = (file) => cands.find(c => c.file === file)?.body ?? "";
+  ok(estimateInjectionBytes(selected.full, selected.index, bodyOf) <= INJECT_BUDGET_BYTES,
+    "긴 본문 4개만으로 cap을 넘겨도 실제 선택 결과는 예산 이내");
+  ok(selected.full.length === 3 && selected.index[0]?.file === ranked[3]?.file,
+    "예산 초과 시 네 번째 본문을 첫 요약으로 내려 순위와 회상을 보존");
+  ok(selected.index.length > 0 && selected.index.length <= INJECT_INDEX_K,
+    "본문 크기 때문에 관련 인덱스 전체가 사라지지 않는다");
 }
 
 // ── 3. 실데이터 회상 + 음성 대조 ───────────────────────────────────

@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+## [0.7.71] - 2026-11-05
+
+### Added
+- Floating assistant card in the upper-right corner, with drag movement, compact minimize/restore shortcut and saved position. Keyboard movement and viewport bounds keep the card reachable.
+- Call shortcut opens ChatGPT; Telegram opens its existing conversation or settings. The card shows computer-tool connectivity, recent conversations and the current conversation's latest completed answer.
+- Opt-in DOT bridge to one explicitly paired KDA conversation, with status, instruction, receipt and acknowledged stop requests. Pairing survives tab switches and minimization; app restart requires re-pairing. Existing task ownership and approval paths remain in force.
+
+### Fixed
+- Keep the memory injection within its existing budget when four long full records alone exceed the cap. Demote the last full record to a summary so useful related-memory summaries remain available; retain the live recall and budget release gates.
+- Preserve Codex command/MCP failures and exit status through sidecar events, message persistence and tool badges. Distinguish successful control actions whose follow-up screen observation failed, without repeating the action.
+
+### Validation and limits
+- Full local release gate: 11 PASS, 317 regression assertions and 218 Node tests. Assistant UI: 14 checks in an isolated headless browser; native DOT bridge: 5 tests from the preserved prior validation.
+- Actual ChatGPT DOT registration, voice round trip and measured stop latency remain unverified. The call button opens ChatGPT and does not embed a voice session. The external K-Personal-MCP snapshot fix is not included in this release.
+
 ## [0.7.70] - 2026-11-01
 
 ### Fixed

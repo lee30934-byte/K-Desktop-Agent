@@ -482,7 +482,7 @@ export const INJECT_INDEX_K = Number(process.env.KDA_MEM_INDEX_K ?? 45);
 /**
  * v0.7.50 — pitfall 주입 바이트 예산 (Tier A 본문 + Tier B 한 줄). 종전엔 개수(4+45)만 고정이라
  * 메모리가 늘면 예산을 넘었다 (2026-10-23 실측 24.1KB > 24KB, memory 849개). 넘으면 Tier B 를
- * 낮은 순위부터 덜어낸다. Tier A(실행 가능한 본문)는 건드리지 않는다.
+ * 낮은 순위부터 덜어낸다. Tier A 본문만으로도 넘으면 마지막 본문을 Tier B 요약으로 내린다.
  */
 export const INJECT_BUDGET_BYTES = Number(process.env.KDA_MEM_INJECT_BUDGET ?? 24 * 1024);
 
@@ -630,9 +630,14 @@ export function selectPitfallInjection(
   const scored = scorePitfallsV2(candidates, query, index);
   const full = scored.slice(0, fullK);
   const tierB = scored.slice(fullK, fullK + indexK);
-  // v0.7.50 — 바이트 예산 강제: 넘으면 Tier B 를 끝(낮은 순위)부터 제거.
+  // Full bodies can exceed the budget on their own (4*6000 + headers > 24 KiB).
+  // Preserve lower-ranked recall as summaries instead of discarding every index entry.
   const bodies = new Map(candidates.map((c) => [c.file, c.body]));
   const bodyOf = (file: string) => bodies.get(file) ?? "";
+  while (full.length > 0 && estimateInjectionBytes(full, [], bodyOf) > INJECT_BUDGET_BYTES) {
+    tierB.unshift(full.pop()!);
+  }
+  tierB.splice(indexK);
   while (tierB.length > 0 && estimateInjectionBytes(full, tierB, bodyOf) > INJECT_BUDGET_BYTES) tierB.pop();
   return { full, index: tierB };
 }

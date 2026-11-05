@@ -1,5 +1,6 @@
 import { memo, useState, useEffect, type ReactNode, isValidElement } from "react";
 import ReactMarkdown from "react-markdown";
+import { toolResultOutcome } from "../toolResultOutcome";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { open } from "@tauri-apps/plugin-shell";
@@ -772,6 +773,8 @@ function ToolMessageView({
   message: Extract<ChatMessage, { role: "tool" }>;
   onFilterToggle?: (kind: "risk" | "category", value: string) => void;
 }) {
+  const outcome = toolResultOutcome(message.toolName, message.toolOutput ?? "", message.status);
+  const displayStatus = message.status === "pending" ? "pending" : outcome.status;
   // Phase 85 (v0.6.28) — risk 배지. sidecar 가 분류 못 한 도구는 risk=undefined → 배지 숨김.
   const riskBadge = message.risk ? RISK_BADGES[message.risk.level] : null;
   const isHighRisk = message.risk?.level === "high" || message.risk?.level === "critical";
@@ -981,8 +984,8 @@ function ToolMessageView({
       }
     >
       <summary className="msg-tool-summary">
-        <span className={`tool-pill tool-pill-${message.status}`}>
-          {statusLabel(message.status)}
+        <span className={`tool-pill tool-pill-${displayStatus}`} title={outcome.observationWarning ? "동작은 완료됐으나 화면 읽기에 실패했습니다. 같은 동작을 반복하지 말고 화면 조회만 다시 확인하세요." : undefined}>
+          {outcome.observationWarning ? "완료 · 화면 읽기 실패" : statusLabel(displayStatus)}
         </span>
         <span className="mono msg-tool-name">{message.toolName}</span>
         {riskBadge && message.risk && (

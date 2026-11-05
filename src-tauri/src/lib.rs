@@ -1,3 +1,4 @@
+mod dot_bridge;
 mod task_watch_recovery;
 mod browser_host;
 mod browser_host_bridge;
@@ -5551,6 +5552,10 @@ pub fn run_with_options(start_minimized: bool) {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            dot_bridge::dot_bridge_info,
+            dot_bridge::dot_bridge_pair,
+            dot_bridge::dot_bridge_poll,
+            dot_bridge::dot_bridge_reply,
             browser_host::browser_host_request,
             send_message,
             codex_approval_response,

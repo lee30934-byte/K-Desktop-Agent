@@ -4,6 +4,7 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import Sidebar from "./components/Sidebar";
 import MainChat from "./components/MainChat";
+import AssistantWidget from "./components/AssistantWidget";
 import MetricsPanel from "./components/MetricsPanel";
 import Settings from "./components/Settings";
 import type {
@@ -22,6 +23,7 @@ import type {
 import ElicitationDialog from "./components/ElicitationDialog";
 import ApprovalRequests from "./components/ApprovalRequests";
 import { automaticResponse, type ApprovalRequest } from "./approvalAutomation.mjs";
+import { toolResultOutcome } from "./toolResultOutcome";
 import { readAutoApproval, useApprovalShortcut } from "./utils/useApprovalMode";
 import CommandPalette from "./components/CommandPalette";
 import { UpdateChecker } from "./components/UpdateChecker";
@@ -686,6 +688,8 @@ export default function App() {
   const currentTurnIdRef = useRef<string | null>(null);
   const currentTurnStartedAtRef = useRef<number>(0);
   const messagesRef = useRef<ChatMessage[]>([]);
+  const dotStoppedAtRef = useRef(new Map<string, number>());
+  const dotGlobalStopAtRef = useRef(0);
   useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
   useEffect(() => { dbReadyRef.current = dbReady; }, [dbReady]);
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
@@ -1885,10 +1889,13 @@ export default function App() {
         const isActiveConv = convForTurn === activeConversationIdRef.current;
         const toolMessageId = ev.id + "-tool-" + ev.tool_id;
         const previous = convForTurn ? messageCacheRef.current.get(convForTurn)?.get(toolMessageId) : undefined;
+        const resultToolName = previous?.role === "tool" && previous.toolName ? previous.toolName : ev.name ?? "";
         const updatedToolMsg: ChatMessage = {
           ...(previous?.role === "tool" ? previous : { id: toolMessageId, role: "tool", toolId: ev.tool_id, toolName: "", content: "", timestamp: Date.now() }),
           role: "tool", toolOutput: ev.output,
-          images: ev.images?.length ? ev.images : undefined, status: "success",
+          images: ev.images?.length ? ev.images : undefined,
+          toolName: resultToolName,
+          status: toolResultOutcome(resultToolName, ev.output, ev.status).status,
         };
         queueMessageSave(updatedToolMsg, convForTurn);
         if (isActiveConv) setMessages((prev) => prev.some((m) => m.id === toolMessageId)
@@ -4244,6 +4251,7 @@ export default function App() {
   }, []);
 
   const stopConversation = useStableCallback(async (id: string) => {
+    dotStoppedAtRef.current.set(id, Date.now());
     stopGenerationRef.current.set(id, (stopGenerationRef.current.get(id) ?? 0) + 1);
     autoResumeTaskQueueRef.current = autoResumeTaskQueueRef.current.filter(entry => entry.task.conversation_id !== id);
     setPendingLongTaskAutoResume(prev => prev?.task.conversation_id === id ? null : prev);
@@ -4258,6 +4266,7 @@ export default function App() {
     if (id) void stopConversation(id);
   });
   const handleHardStop = useStableCallback(async () => {
+    dotGlobalStopAtRef.current = Date.now();
     allStopGenerationRef.current++;
     const control = conversationTurnGateRef.current;
     control.allPaused = true;
@@ -5723,7 +5732,29 @@ export default function App() {
           </div>
         )}
         </>}
-        activityPanel={<TaskActivityPanel
+        activityPanel={<><AssistantWidget conversationId={activeConversationId}
+          conversations={conversations} messages={messages} runningIds={streamingConvIds}
+          computerConnected={mcpState.connected} onSelect={id => { void handleSelectConversation(id); }} onSettings={openSettings}
+          handlers={{
+          canSend: r => r.createdAt > Math.max(dotGlobalStopAtRef.current, dotStoppedAtRef.current.get(r.conversationId) ?? 0),
+          status: async id => {
+            const control = conversationTurnGateRef.current;
+            const page = id === activeConversationIdRef.current ? messagesRef.current : (await getMessagesForView(id)).messages;
+            const answers = page.filter(m => m.role === "assistant");
+            const answer = answers[answers.length - 1];
+            return { conversationId: id, run: control.runs.get(id) ?? null,
+              paused: control.paused.has(id) || control.allPaused,
+              queued: control.queues.get(id)?.length ?? 0,
+              latestAssistant: answer ? { id: answer.id, timestamp: answer.timestamp,
+                streaming: !!answer.streaming, text: answer.content.slice(-8000) } : null };
+          },
+          send: (id, text, mode) => handleSendMessage(text, [], { conversationId: id, mode }),
+          stop: async id => {
+            await stopConversation(id);
+            const control = conversationTurnGateRef.current;
+            if (control.isActive(id) || !control.paused.has(id)) throw new Error("작업 정지 확인 실패. 실제 상태를 조회하세요.");
+          },
+        }} /><TaskActivityPanel
         tracked={[...conversationTurnGateRef.current.tracked]}
         runs={[...conversationTurnGateRef.current.runs.values()]}
         queues={conversationTurnGateRef.current.queues}
@@ -5740,7 +5771,7 @@ export default function App() {
         recovering={recoveringExecution}
         onResume={resumeConversationQueue}
         onResumeAutomation={() => { conversationTurnGateRef.current.allPaused = false; autoResumeManualStoppedRef.current = false; localStorage.removeItem(LS_AUTO_RESUME_MANUAL_STOPPED); syncControl(); }}
-        />}
+        /></>}
         conversationId={activeConversationId ?? "new"}
         isStopping={!!activeConversationId && conversationTurnGateRef.current.runs.get(activeConversationId)?.state === "stopping"}
         queuedCount={activeConversationId ? conversationTurnGateRef.current.queues.get(activeConversationId)?.length ?? 0 : 0}

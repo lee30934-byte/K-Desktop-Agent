@@ -9,6 +9,7 @@ import { runBrowserTurn } from "./browserProvider.js";
 
 import process from "node:process";
 import { createToolBridge, geminiTurnSettings } from './globalTools.js';
+import { codexToolResult } from './codexToolResult.js';
 import { runAnthropicRound, type AnthropicMessage } from './anthropicTools.js';
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -5268,12 +5269,12 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                 input: { command: it.command ?? it.text ?? "" },
                 risk: buildRiskMeta(_cxCmdName, "codex"),
               });
-              if (it.output != null) {
+              {
                 emit({
                   type: "tool_result",
                   id: msg.id,
                   tool_id: it.id ?? `codex-${Date.now()}`,
-                  output: typeof it.output === "string" ? it.output : JSON.stringify(it.output),
+                  ...codexToolResult(it),
                 });
               }
             } else if (it.type === "mcp_tool_call") {
@@ -5287,12 +5288,13 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
                 input: it.arguments ?? it.input ?? {},
                 risk: buildRiskMeta(toolName, "codex-mcp"),
               });
-              if (it.result != null) {
+              {
                 emit({
                   type: "tool_result",
                   id: msg.id,
                   tool_id: it.id ?? `codex-mcp-${Date.now()}`,
-                  output: typeof it.result === "string" ? it.result : JSON.stringify(it.result),
+                  name: toolName,
+                  ...codexToolResult(it),
                 });
               }
             } else if (it.type === "file_change") {

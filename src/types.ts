@@ -111,7 +111,7 @@ type SidecarEventPayload =
         summary: string;
       };
     }
-  | { type: "tool_result"; id: string; tool_id: string; output: string; images?: string[] }
+  | { type: "tool_result"; id: string; tool_id: string; output: string; images?: string[]; status?: "success" | "error"; name?: string }
   | { type: "done"; id: string; usage?: TokenUsage | null; computed_usage?: TokenUsage | null; maxTurnUsage?: MaxTurnUsage | null; agentId?: string | null }
   | { type: "error"; id?: string; message: string }
   // provider 가 "요청은 받았지만 이 경로에서는 못 하는 것"을 조용히 무시하지 않고 알릴 때 쓴다.
