@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+## [0.7.72] - 2026-11-06
+
+### Added
+- Embedded voice call from the assistant card using the installed Codex subscription login and WebRTC v3, without a separate OpenAI API key. Includes Korean captions, mute, speech stop, call end, device selection and a five-minute session limit.
+- Voice commands enter the existing KDA queue and approval paths. Progress questions preserve running work; confirmed stop receipts are distinct from a request or an unverified stop. Explicit final stop utterances use the same command gate and coalesce later native delegation.
+- Bound voice feedback for confirmed task progress, completion and approval waiting. Ending the call releases microphone tracks and audio resources; task lifetime remains separate.
+
+### Validation and limits
+- Source implementation validated with the full local release gate, 16 voice tests, 14 actual App control tests and 14 isolated UI checks. Real Codex subscription probes used synthetic Korean media and fixture work handlers.
+- Real microphone/speaker echo, acoustic interruption latency, installed WebView2 permissions and voice control of actual desktop work remain unverified. This release does not claim full DOT parity.
+- Installation is manual for this release at K's request; no automatic installation request is created.
+
 ## [0.7.71] - 2026-11-05
 
 ### Added
