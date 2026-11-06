@@ -1,4 +1,9 @@
-## [Unreleased]
+## [0.7.74] - 2026-11-06
+
+### Fixed
+- Restore received WebRTC voice playback through the KDA gain graph. A silent source media consumer activates Chromium remote-track decoding while only the amplified stream reaches the speaker; source playback is released with the call.
+- Release temporary interruption mute when the user's final transcript or the local quiet interval arrives, including output transcripts that precede the user's final transcript. Explicit speech-stop remains muted until a new utterance.
+- Voice playback checks now measure signal after the gain graph and an unmuted playing output, exercise a local WebRTC pair, and fail native subscription probes when only transcripts or packets arrive.
 
 ## [0.7.73] - 2026-11-06
 

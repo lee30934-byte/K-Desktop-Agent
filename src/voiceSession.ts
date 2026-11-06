@@ -184,7 +184,7 @@ export class VoiceSession {
       this.bargeIn();
     } else if (event.type === 'output_transcript.added') {
       this.responseActive = true;
-      if (!this.userSpeaking && !this.silenceUntilUser) { this.suppressed = false; if (this.audio) this.audio.muted = false; }
+      this.restoreOutput();
       this.view({ speaking: !this.suppressed });
     } else if (event.type === 'turn.done') {
       const turn = event.turn;
@@ -205,6 +205,10 @@ export class VoiceSession {
             this.localStop = { action, result: this.control(action, true) };
           } else this.localStop = undefined;
         }
+        // Output transcript can precede the user's final transcript on v3.
+        // Releasing speech must also release its temporary output suppression.
+        this.restoreOutput();
+        this.flushFeedback();
       }
       else if (turn?.role === 'assistant') { this.responseActive = false; this.view({ speaking: false, commandPending: false }); this.flushFeedback(); }
       if (['user', 'assistant'].includes(turn?.role)) this.line(turn.role, String(turn.transcript ?? ''));
@@ -215,6 +219,12 @@ export class VoiceSession {
     this.userSpeaking = true; this.suppressed = true; this.silenceUntilUser = false;
     if (this.audio) this.audio.muted = true;
     this.view({ speaking: false, commandPending: true });
+  }
+  private restoreOutput() {
+    if (this.closed || !this.responseActive || this.userSpeaking || this.silenceUntilUser) return;
+    this.suppressed = false;
+    if (this.audio) this.audio.muted = false;
+    this.view({ speaking: true });
   }
   private startVad() {
     if (!this.stream) return;
@@ -231,7 +241,14 @@ export class VoiceSession {
         const rms = Math.sqrt(buffer.reduce((sum, v) => sum + v * v, 0) / buffer.length);
         const now = performance.now();
         if (rms > 0.025) { if (!first) first = now; last = now; if (now - first >= 80 && !this.userSpeaking) this.bargeIn(); }
-        else { first = 0; if (this.userSpeaking && now - last > 650) this.userSpeaking = false; }
+        else {
+          first = 0;
+          if (this.userSpeaking && now - last > 650) {
+            this.userSpeaking = false;
+            this.restoreOutput();
+            this.flushFeedback();
+          }
+        }
       }, 30);
     } catch { /* Server speech/transcript events still provide interruption. Local latency stays unverified. */ }
   }

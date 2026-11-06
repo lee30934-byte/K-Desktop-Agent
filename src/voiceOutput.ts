@@ -17,6 +17,7 @@ export class VoiceOutput {
   private limiter: DynamicsCompressorNode;
   private destination: MediaStreamAudioDestinationNode;
   private source?: MediaStreamAudioSourceNode;
+  private sourcePlayback?: HTMLAudioElement;
   constructor(value: number) {
     const ctx = this.context = new AudioContext();
     this.gain = ctx.createGain();
@@ -30,9 +31,18 @@ export class VoiceOutput {
     this.gain.connect(this.limiter).connect(this.destination);
     this.gain.gain.value = voiceGain(value);
   }
-  async resume() { await this.context.resume(); }
+  async resume() {
+    // Chromium needs a media element consumer to decode a received WebRTC track.
+    // The source consumer is silent; the amplified destination is the only output.
+    await this.sourcePlayback?.play();
+    await this.context.resume();
+  }
   attach(stream: MediaStream) {
+    if (this.sourcePlayback) { this.sourcePlayback.pause(); this.sourcePlayback.srcObject = null; }
     this.source?.disconnect();
+    const playback = this.sourcePlayback = new Audio();
+    playback.volume = 0;
+    playback.srcObject = stream;
     this.source = this.context.createMediaStreamSource(stream);
     this.source.connect(this.gain);
     return this.destination.stream;
@@ -41,6 +51,7 @@ export class VoiceOutput {
     this.gain.gain.setTargetAtTime(voiceGain(value), this.context.currentTime, 0.02);
   }
   close() {
+    if (this.sourcePlayback) { this.sourcePlayback.pause(); this.sourcePlayback.srcObject = null; this.sourcePlayback = undefined; }
     this.source?.disconnect(); this.gain.disconnect(); this.limiter.disconnect();
     this.destination.stream.getTracks().forEach(track => track.stop());
     void this.context.close().catch(() => {});

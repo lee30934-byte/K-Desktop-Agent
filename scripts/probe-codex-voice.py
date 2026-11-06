@@ -22,10 +22,14 @@ async def main():
     parser.add_argument('--speech', default='synthetic-command.wav')
     parser.add_argument('--scenario', action='store_true')
     parser.add_argument('--expect-stop', action='store_true')
+    parser.add_argument('--out-dir', type=Path, default=OUT)
+    parser.add_argument('--diagnose-output', action='store_true')
     options = parser.parse_args()
+    output_dir = options.out_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
     result = {'at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'provider': 'installed Codex subscription',
               'realMicrophone': False, 'realSpeakerPlayback': False, 'workHandlers': 'fixture', 'apiKeyExtracted': False}
-    server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(OUT)))
+    server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(output_dir)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     proc = await asyncio.create_subprocess_exec('node', str(ROOT / 'scripts/voice-probe-host.mjs'), cwd=ROOT,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
@@ -65,6 +69,27 @@ async def main():
             await page.expose_function('nativeSpeak', speak)
             await page.goto(f'http://127.0.0.1:{server.server_port}/voice-fixture.html')
             await page.wait_for_function('!!window.voiceStart')
+            await page.evaluate('''() => {
+              window.playbackSamples=[];
+              let stream,context,analyser;
+              window.playbackProbe=setInterval(()=>{
+                const voice=window.voice,audio=voice?.audio;
+                if(!audio?.srcObject)return;
+                if(stream!==audio.srcObject){
+                  stream=audio.srcObject;
+                  context=new AudioContext();analyser=context.createAnalyser();
+                  analyser.fftSize=1024;context.createMediaStreamSource(stream).connect(analyser);
+                  void context.resume();window.playbackProbeContext=context;
+                }
+                const a=new Float32Array(1024);analyser.getFloatTimeDomainData(a);
+                const rms=Math.sqrt(a.reduce((s,v)=>s+v*v,0)/a.length);
+                if(window.playbackSamples.length<2400)window.playbackSamples.push({
+                  at:Math.round(performance.now()),rms,muted:audio.muted,paused:audio.paused,
+                  userSpeaking:voice.userSpeaking,suppressed:voice.suppressed,
+                  responseActive:voice.responseActive,context:voice.output?.context.state,
+                  silenceUntilUser:voice.silenceUntilUser});
+              },50);
+            }''')
             task = asyncio.create_task(pump())
             await page.evaluate('window.voiceStart()')
             try:
@@ -83,6 +108,8 @@ async def main():
                     elif options.expect_stop:
                         condition = "window.actions.some(a=>a.action==='stop')&&window.views.some(v=>v.lines.some(l=>l.role==='assistant'&&/멈췄|멈춘|정지했|정지됐|중단했|중단됐/.test(l.text)))"
                     await page.wait_for_function(condition, timeout=85000 if options.scenario else 45000)
+                    # A final transcript can arrive ahead of its audio packets.
+                    await page.wait_for_timeout(3000)
                 except Exception:
                     pass
                 result['actions'] = await page.evaluate('window.actions')
@@ -91,14 +118,33 @@ async def main():
                 result['events'] = await page.evaluate('window.rawEvents')
                 result['rtcStats'] = await page.evaluate("""async()=>{
                     const stats=await window.voice.peer.getStats();
-                    return [...stats.values()].filter(s=>s.type==='inbound-rtp'&&s.kind==='audio').map(s=>({bytesReceived:s.bytesReceived,packetsReceived:s.packetsReceived}));
+                    return [...stats.values()].filter(s=>s.type==='inbound-rtp'&&s.kind==='audio').map(s=>({bytesReceived:s.bytesReceived,packetsReceived:s.packetsReceived,audioLevel:s.audioLevel,totalAudioEnergy:s.totalAudioEnergy,totalSamplesDuration:s.totalSamplesDuration}));
                 }""")
                 result['meaningfulFeedback'] = any(l['role'] == 'assistant' and any(w in l['text'] for w in ['37', '진행', '빌드']) for v in result['views'] for l in v['lines'])
                 result['queuedWork'] = any(a['action'] == 'send' and a.get('mode') == 'queue' for a in result['actions'])
                 result['stoppedWork'] = any(a['action'] == 'stop' for a in result['actions'])
                 result['noUnsolicitedSteer'] = not any(a.get('mode') == 'steer' for a in result['actions'])
+                if options.diagnose_output:
+                    result['beforeActivationSamples'] = await page.evaluate('window.playbackSamples.slice()')
+                    await page.evaluate('''async()=>{
+                      const source=window.voice.output?.source?.mediaStream;
+                      if(!source)throw Error('No remote stream to diagnose');
+                      const activation=window.remoteActivation=new Audio();
+                      activation.volume=0;activation.srcObject=source;await activation.play();
+                      await window.voice.transport.speak(window.voice.id,'음성 출력 점검입니다. 하나 둘 셋 넷.');
+                    }''')
+                    await page.wait_for_timeout(8000)
+                    await page.evaluate('window.remoteActivation.pause();window.remoteActivation.srcObject=null')
+            result['playbackSamples'] = await page.evaluate('window.playbackSamples')
+            result['renderedAudioSamples'] = sum(1 for s in result['playbackSamples'] if s['rms'] > 0.00005)
+            result['unmutedAudioSamples'] = sum(1 for s in result['playbackSamples'] if s['rms'] > 0.00005 and not s['muted'] and not s['paused'] and s.get('context') == 'running')
+            await page.evaluate('clearInterval(window.playbackProbe);void window.playbackProbeContext?.close()')
             await page.evaluate('window.voice.end()')
             result['tracksReleased'] = await page.evaluate("window.voice.stream?.getTracks().every(t=>t.readyState==='ended')??true")
+            result['status'] = 'PASS' if (result.get('connected') and
+                (result.get('stoppedWork') if options.scenario or options.expect_stop else result.get('meaningfulFeedback')) and
+                result.get('noUnsolicitedSteer') and result.get('tracksReleased') and
+                result.get('unmutedAudioSamples', 0) >= 5 and not any(e.get('kind') == 'error' for e in messages)) else 'FAIL'
             task.cancel()
             await browser.close()
     finally:
@@ -108,9 +154,11 @@ async def main():
         except asyncio.TimeoutError:
             proc.kill()
         server.shutdown()
-        path = OUT / ('native-probe-' + datetime.datetime.now().strftime('%H%M%S') + '.json')
+        path = output_dir / ('native-probe-' + datetime.datetime.now().strftime('%H%M%S%f') + '.json')
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-        print(json.dumps({'path':str(path),'connected':result.get('connected'),'meaningfulFeedback':result.get('meaningfulFeedback'),'queuedWork':result.get('queuedWork'),'stoppedWork':result.get('stoppedWork'),'noUnsolicitedSteer':result.get('noUnsolicitedSteer'),'tracksReleased':result.get('tracksReleased'),'errors':[e for e in messages if e.get('kind')=='error']},ensure_ascii=True))
+        print(json.dumps({'path':str(path),'connected':result.get('connected'),'meaningfulFeedback':result.get('meaningfulFeedback'),'queuedWork':result.get('queuedWork'),'stoppedWork':result.get('stoppedWork'),'noUnsolicitedSteer':result.get('noUnsolicitedSteer'),'tracksReleased':result.get('tracksReleased'),'renderedAudioSamples':result.get('renderedAudioSamples'),'unmutedAudioSamples':result.get('unmutedAudioSamples'),'errors':[e for e in messages if e.get('kind')=='error']},ensure_ascii=True))
+    if result.get('status') != 'PASS':
+        raise SystemExit(1)
 
 if __name__ == '__main__':
     asyncio.run(main())

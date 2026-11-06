@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import { mkdirSync, writeFileSync } from 'node:fs';
-const out = 'evidence/voice-implementation-20261106';
+const out = process.env.KDA_VOICE_PROBE_OUT || 'evidence/voice-implementation-20261106';
 mkdirSync(out, { recursive: true });
 await build({ stdin: { resolveDir: process.cwd(), loader: 'ts', contents: `
   import {VoiceSession} from './src/voiceSession';

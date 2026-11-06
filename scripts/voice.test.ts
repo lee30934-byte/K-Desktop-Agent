@@ -161,6 +161,69 @@ function fakeMedia() {
   return { track, stream, peers, audios };
 }
 
+test('reply audio is released when user final arrives after the first output transcript', async () => {
+  const media = fakeMedia();
+  const transport: VoiceTransport = { listen: async () => () => {}, start: async () => {}, stop: async () => {}, reply: async () => {}, speak: async () => {} };
+  const session = new VoiceSession('locked', handlers(), transport, () => {});
+  try {
+    await session.start(); media.peers[0].connectionState = 'connected'; session.receive({ type: 'session.started' });
+    session.receive({ type: 'input_transcript.added' });
+    session.receive({ type: 'output_transcript.added' });
+    assert.equal(media.audios[0].muted, true, 'do not talk over an unfinished user utterance');
+    session.receive({ type: 'turn.done', turn: { id: 'user-late-final', role: 'user', transcript: '안녕' } });
+    assert.equal(media.audios[0].muted, false, 'audio must not depend on another output transcript after user final');
+  } finally { session.end(); }
+});
+
+test('user final cannot undo explicit silence; a new utterance can enable its own reply', async () => {
+  const media = fakeMedia();
+  const transport: VoiceTransport = { listen: async () => () => {}, start: async () => {}, stop: async () => {}, reply: async () => {}, speak: async () => {} };
+  const session = new VoiceSession('locked', handlers(), transport, () => {});
+  try {
+    await session.start(); media.peers[0].connectionState = 'connected'; session.receive({ type: 'session.started' });
+    session.receive({ type: 'input_transcript.added' });
+    session.receive({ type: 'output_transcript.added' });
+    session.silence();
+    session.receive({ type: 'turn.done', turn: { id: 'old-user-final', role: 'user', transcript: '안녕' } });
+    assert.equal(media.audios[0].muted, true);
+    session.receive({ type: 'output_transcript.added' });
+    assert.equal(media.audios[0].muted, true);
+    session.receive({ type: 'input_transcript.added' });
+    session.receive({ type: 'turn.done', turn: { id: 'next-user-final', role: 'user', transcript: '다시 답해줘' } });
+    assert.equal(media.audios[0].muted, false);
+  } finally { session.end(); }
+});
+
+test('local microphone noise cannot leave an already received reply muted after the quiet interval', async () => {
+  const media = fakeMedia();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
+  let level = 0.04;
+  class InputContext {
+    createAnalyser() { return { fftSize: 512, getFloatTimeDomainData(buffer: Float32Array) { buffer.fill(level); } }; }
+    createMediaStreamSource() { return { connect() {} }; }
+    async resume() {} async close() {}
+  }
+  Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: InputContext });
+  const transport: VoiceTransport = { listen: async () => () => {}, start: async () => {}, stop: async () => {}, reply: async () => {}, speak: async () => {} };
+  const session = new VoiceSession('locked', handlers(), transport, () => {});
+  try {
+    await session.start(); media.peers[0].connectionState = 'connected'; session.receive({ type: 'session.started' });
+    await new Promise(resolve => setTimeout(resolve, 180));
+    assert.equal(media.audios[0].muted, true);
+    session.receive({ type: 'output_transcript.added' });
+    level = 0;
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(media.audios[0].muted, false, 'quiet recovery must not wait for a fresh provider output transcript');
+    session.silence();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(media.audios[0].muted, true);
+  } finally {
+    session.end();
+    if (previous) Object.defineProperty(globalThis, 'AudioContext', previous);
+    else Reflect.deleteProperty(globalThis, 'AudioContext');
+  }
+});
+
 test('device failures distinguish missing default, selected device, permission and busy input', () => {
   const error = (name: string) => Object.assign(new Error('Requested device not found'), { name });
   assert.match(voiceStartError(error('NotFoundError'), 'microphone'), /기본 마이크.*원격 데스크톱/s);

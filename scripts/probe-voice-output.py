@@ -1,5 +1,6 @@
 """Measure the actual output graph using a synthetic remote stream; no hardware audio."""
 import asyncio
+import argparse
 import functools
 import json
 import threading
@@ -17,7 +18,11 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 async def main():
-    server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(OUT)))
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--out-dir', type=Path, default=OUT)
+    output_dir = parser.parse_args().out_dir.resolve()
+    result = {'status': 'RUNNING', 'realHardwareVerified': False}
+    server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(output_dir)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         async with async_playwright() as p:
@@ -48,8 +53,42 @@ async def main():
               const sourceSurvives=remote.stream.getTracks().every(t=>t.readyState==='live');
               const outputReleased=stream.getTracks().every(t=>t.readyState==='ended');
               oscillator.stop();remote.stream.getTracks().forEach(t=>t.stop());await input.close();await measure.close();
+
+              // A local WebRTC pair exercises received-track decoding. A directly
+              // created MediaStream alone cannot detect the Chromium playback bug.
+              const send=new RTCPeerConnection(),receive=new RTCPeerConnection();
+              const tone=new AudioContext(),wave=tone.createOscillator(),level=tone.createGain();
+              const tx=tone.createMediaStreamDestination();level.gain.value=0.025;
+              wave.connect(level).connect(tx);wave.start();await tone.resume();
+              const remoteTrack=new Promise(resolve=>receive.ontrack=e=>resolve(e.streams[0]||new MediaStream([e.track])));
+              const iceErrors=[];
+              send.onicecandidate=e=>{if(e.candidate)void receive.addIceCandidate(e.candidate).catch(e=>iceErrors.push(String(e)))};
+              receive.onicecandidate=e=>{if(e.candidate)void send.addIceCandidate(e.candidate).catch(e=>iceErrors.push(String(e)))};
+              tx.stream.getTracks().forEach(t=>send.addTrack(t,tx.stream));
+              await send.setLocalDescription(await send.createOffer());
+              await receive.setRemoteDescription(send.localDescription);
+              await receive.setLocalDescription(await receive.createAnswer());
+              await send.setRemoteDescription(receive.localDescription);
+              const rx=await Promise.race([remoteTrack,new Promise((_,reject)=>setTimeout(()=>reject(Error('WebRTC track timeout')),8000))]);
+              const amplified=new VoiceOutput(1.5),rendered=amplified.attach(rx);await amplified.resume();
+              const meter=new AudioContext(),rmsMeter=meter.createAnalyser();rmsMeter.fftSize=2048;
+              meter.createMediaStreamSource(rendered).connect(rmsMeter);await meter.resume();
+              const signal=[];
+              for(let i=0;i<30;i++){
+                await new Promise(r=>setTimeout(r,100));
+                const a=new Float32Array(2048);rmsMeter.getFloatTimeDomainData(a);
+                signal.push(Math.sqrt(a.reduce((s,x)=>s+x*x,0)/a.length));
+              }
+              const rtcRmsMax=Math.max(...signal),rtcSignalSamples=signal.filter(v=>v>0.001).length;
+              const silentSource=amplified.sourcePlayback;
+              const sourceVolume=silentSource.volume,sourcePlaying=!silentSource.paused;
+              amplified.close();
+              const sourceReleased=silentSource.paused&&silentSource.srcObject===null;
+              const remoteTrackPreserved=rx.getTracks().every(t=>t.readyState==='live');
+              send.close();receive.close();wave.stop();tx.stream.getTracks().forEach(t=>t.stop());await tone.close();await meter.close();
               return {defaultGain,savedGain,invalidGain,low:voiceGain(-10),high:voiceGain(99),
-                baseline,boosted,ratio:boosted/baseline,muted,sourceSurvives,outputReleased};
+                baseline,boosted,ratio:boosted/baseline,muted,sourceSurvives,outputReleased,
+                rtcRmsMax,rtcSignalSamples,sourceVolume,sourcePlaying,sourceReleased,remoteTrackPreserved,iceErrors};
             }''')
             await browser.close()
         assert result['defaultGain'] == 1.5 and result['savedGain'] == 2 and result['invalidGain'] == 1.5
@@ -57,11 +96,17 @@ async def main():
         assert result['baseline'] > 0.001 and 1.9 < result['ratio'] < 2.1
         assert result['muted'] < 0.00001
         assert result['sourceSurvives'] and result['outputReleased']
+        assert result['rtcRmsMax'] > 0.001 and result['rtcSignalSamples'] >= 10
+        assert result['sourceVolume'] == 0 and result['sourcePlaying']
+        assert result['sourceReleased'] and result['remoteTrackPreserved'] and not result['iceErrors']
         result.update(status='PASS', realHardwareVerified=False, installed=False,
                       scope='Synthetic received stream only; no OS or microphone setting changes')
-        (OUT / 'audio-verification.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
         print(json.dumps(result))
+    except Exception as error:
+        result.update(status='FAIL', error=str(error))
+        raise
     finally:
+        (output_dir / 'audio-verification.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
         server.shutdown()
 
 
