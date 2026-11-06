@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Fixed
+- Voice startup explains missing default/selected microphones, RDP microphone redirection, permission denial, busy input and missing speakers. Device refresh and plug/unplug updates preserve explicit selections without opening a microphone or silently switching inputs.
+
 ## [0.7.72] - 2026-11-06
 
 ### Added

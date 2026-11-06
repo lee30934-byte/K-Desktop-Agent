@@ -16,6 +16,24 @@ export interface VoiceTransport {
 let activeVoiceId: string | null = null;
 export function isVoiceCallActive() { return activeVoiceId !== null; }
 
+export function voiceStartError(error: unknown, stage: 'microphone' | 'speaker' | 'connection', selectedDevice = false) {
+  const detail = error instanceof Error ? error.message : String(error);
+  const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : '';
+  if (stage === 'connection') return detail;
+  if (stage === 'speaker') {
+    if (name === 'NotFoundError') return '선택한 스피커를 찾지 못했습니다. 스피커를 연결한 뒤 장치를 새로고침하고 다시 선택하세요.';
+    if (name === 'NotAllowedError') return '선택한 스피커 사용이 차단됐습니다. 출력 장치 권한을 확인하거나 시스템 기본을 선택하세요.';
+    return `스피커 연결 실패: ${detail}`;
+  }
+  if (name === 'NotFoundError') return selectedDevice
+    ? '선택한 마이크를 찾지 못했습니다. 마이크를 연결한 뒤 장치를 새로고침하고 다시 선택하세요.'
+    : '사용 가능한 기본 마이크를 찾지 못했습니다. Windows 설정 → 시스템 → 소리 → 입력을 확인하세요. 원격 데스크톱 사용 중이면 접속 PC의 원격 오디오 설정에서 이 컴퓨터에서 녹음을 켠 뒤 다시 접속하세요.';
+  if (name === 'NotAllowedError' || name === 'SecurityError') return '마이크 사용이 차단됐습니다. Windows 설정 → 개인정보 및 보안 → 마이크에서 마이크 액세스와 데스크톱 앱 액세스를 확인하세요.';
+  if (name === 'NotReadableError' || name === 'AbortError') return '마이크를 열지 못했습니다. 다른 앱의 마이크 사용과 장치 연결 상태를 확인한 뒤 다시 연결하세요.';
+  if (name === 'OverconstrainedError') return '선택한 마이크 또는 오디오 조건을 사용할 수 없습니다. 장치를 새로고침하고 사용 가능한 마이크를 다시 선택하세요.';
+  return `마이크 연결 실패: ${detail}`;
+}
+
 /** Media lives only between an explicit start and close; tab changes never retarget work. */
 export class VoiceSession {
   readonly id = crypto.randomUUID();
@@ -62,6 +80,7 @@ export class VoiceSession {
     activeVoiceId = this.id;
     this.view({ phase: 'connecting', message: '마이크 권한·Codex 구독 음성 연결 확인 중…' });
     this.timers.push(setTimeout(() => this.fail('음성 연결 시간이 초과됐습니다. 마이크 권한·로그인·네트워크를 확인하세요.'), 60_000));
+    let stage: 'microphone' | 'speaker' | 'connection' = 'microphone';
     try {
       if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') throw Error('이 환경에서 마이크·WebRTC를 사용할 수 없습니다.');
       const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: {
@@ -70,6 +89,7 @@ export class VoiceSession {
       } });
       if (this.closed) { stream.getTracks().forEach(t => t.stop()); return; }
       this.stream = stream;
+      stage = 'connection';
       // Thread restrictions/dynamic tool are installed before SDP; session.started
       // and the actual media connection must both succeed before transmission.
       stream.getAudioTracks().forEach(t => { t.enabled = false; t.onended = () => this.fail('마이크 연결이 해제됐습니다.'); });
@@ -84,9 +104,11 @@ export class VoiceSession {
       const peer = this.peer = new RTCPeerConnection();
       const audio = this.audio = new Audio(); audio.autoplay = true;
       if (outputDeviceId) {
+        stage = 'speaker';
         const sink = audio as HTMLAudioElement & { setSinkId?(id: string): Promise<void> };
         if (!sink.setSinkId) throw Error('이 환경은 출력 장치 선택을 지원하지 않습니다. 기본 장치를 선택하세요.');
         await sink.setSinkId(outputDeviceId);
+        stage = 'connection';
       }
       if (this.closed) return;
       peer.ontrack = event => {
@@ -114,7 +136,7 @@ export class VoiceSession {
       const sdp = peer.localDescription?.sdp;
       if (!sdp) throw Error('음성 연결 SDP를 만들지 못했습니다.');
       await this.transport.start(this.id, this.conversationId, sdp);
-    } catch (error) { if (!this.closed) this.fail(String(error instanceof Error ? error.message : error)); }
+    } catch (error) { if (!this.closed) this.fail(voiceStartError(error, stage, !!inputDeviceId)); }
   }
   private async waitIce(peer: RTCPeerConnection) {
     if (peer.iceGatheringState === 'complete') return;

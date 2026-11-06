@@ -23,9 +23,24 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
   const target = useRef({ conversationId, title });
   const [view, setView] = useState<VoiceView>({ phase: 'idle', message: '', muted: false, speaking: false, conversationId, lines: [] });
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [deviceMessage, setDeviceMessage] = useState('');
+  const deviceRead = useRef(0);
+  const mounted = useRef(false);
   const [input, setInput] = useState('');
   const [output, setOutput] = useState('');
   const busy = view.phase === 'connected' || view.phase === 'connecting';
+  async function refreshDevices() {
+    const read = ++deviceRead.current;
+    try {
+      if (!navigator.mediaDevices?.enumerateDevices) throw Error('device enumeration unavailable');
+      const found = await navigator.mediaDevices.enumerateDevices();
+      if (!mounted.current || read !== deviceRead.current) return;
+      setDevices(found);
+      setDeviceMessage(found.some(d => d.kind === 'audioinput') ? '' : '현재 앱에서 보이는 마이크가 없습니다. 마이크 연결·권한을 확인하세요. 원격 접속에서는 접속 PC의 마이크 전달 설정도 필요합니다.');
+    } catch {
+      if (mounted.current && read === deviceRead.current) setDeviceMessage('장치 목록을 읽지 못했습니다. 마이크 연결·권한을 확인한 뒤 장치를 새로고침하세요.');
+    }
+  }
   function start() {
     ref.current?.end();
     const bound: VoiceHandlers = {
@@ -37,16 +52,18 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
     };
     const session = new VoiceSession(target.current.conversationId, bound, transport, setView);
     ref.current = session;
-    void session.start(input, output).then(async () => {
-      try { setDevices(await navigator.mediaDevices.enumerateDevices()); } catch { /* Default devices still work. */ }
-    });
+    void session.start(input, output).then(() => refreshDevices());
   }
   useEffect(() => {
+    mounted.current = true;
+    void refreshDevices();
     start();
+    const devicesChanged = () => { void refreshDevices(); };
+    navigator.mediaDevices?.addEventListener('devicechange', devicesChanged);
     const unload = () => ref.current?.end();
     window.addEventListener('pagehide', unload);
     window.addEventListener('beforeunload', unload);
-    return () => { window.removeEventListener('pagehide', unload); window.removeEventListener('beforeunload', unload); ref.current?.end(); };
+    return () => { mounted.current = false; deviceRead.current++; navigator.mediaDevices?.removeEventListener('devicechange', devicesChanged); window.removeEventListener('pagehide', unload); window.removeEventListener('beforeunload', unload); ref.current?.end(); };
     // A conversation change never restarts/retargets the call.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -56,9 +73,11 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
     <p role={view.phase === 'error' ? 'alert' : 'status'}>{view.message || '음성 연결 준비 중…'}</p>
     <small>Codex 로그인 사용 · 별도 API 키 없음 · 원음 파일 저장 안 함 · 최대 5분</small>
     <div className="voice-call-devices">
-      <label>마이크<select aria-label="통화 마이크" value={input} disabled={busy} onChange={e => setInput(e.target.value)}><option value="">시스템 기본</option>{devices.filter(d => d.kind === 'audioinput' && d.deviceId !== 'default').map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || '마이크'}</option>)}</select></label>
-      <label>스피커<select aria-label="통화 스피커" value={output} disabled={busy} onChange={e => setOutput(e.target.value)}><option value="">시스템 기본</option>{devices.filter(d => d.kind === 'audiooutput' && d.deviceId !== 'default').map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || '스피커'}</option>)}</select></label>
+      <label>마이크<select aria-label="통화 마이크" value={input} disabled={busy} onChange={e => setInput(e.target.value)}><option value="">시스템 기본</option>{input && !devices.some(d => d.kind === 'audioinput' && d.deviceId === input) && <option value={input} disabled>선택한 마이크 · 연결 확인 필요</option>}{devices.filter(d => d.kind === 'audioinput' && d.deviceId !== 'default').map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || '마이크'}</option>)}</select></label>
+      <label>스피커<select aria-label="통화 스피커" value={output} disabled={busy} onChange={e => setOutput(e.target.value)}><option value="">시스템 기본</option>{output && !devices.some(d => d.kind === 'audiooutput' && d.deviceId === output) && <option value={output} disabled>선택한 스피커 · 연결 확인 필요</option>}{devices.filter(d => d.kind === 'audiooutput' && d.deviceId !== 'default').map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || '스피커'}</option>)}</select></label>
     </div>
+    {deviceMessage && <small role="status">{deviceMessage}</small>}
+    <button type="button" onClick={() => void refreshDevices()}>장치 새로고침</button>
     <div className="voice-call-actions">
       {busy ? <><button type="button" onClick={() => ref.current?.setMuted(!view.muted)}>{view.muted ? '마이크 켜기' : '음소거'}</button><button type="button" onClick={() => ref.current?.silence()} disabled={view.phase !== 'connected'}>말하기 중지</button><button type="button" onClick={() => ref.current?.end()}>통화 종료</button></> : <button type="button" onClick={start}>다시 연결</button>}
       <button type="button" disabled={view.phase !== 'connected'} onClick={() => void ref.current?.control('status')}>작업 상태</button>

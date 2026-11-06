@@ -46,10 +46,37 @@ async def main():
 
                 await page.get_by_role('button', name='통화하기', exact=False).click()
                 await page.get_by_role('region', name='AI 비서 음성통화').wait_for()
-                await page.get_by_role('alert').filter(has_text='fixture microphone denied').wait_for()
+                await page.get_by_role('alert').filter(has_text='마이크 사용이 차단됐습니다').wait_for()
                 assert not await page.evaluate('window.actions.some(a=>a.open)')
                 assert await page.get_by_role('button', name='다시 연결', exact=True).is_visible()
                 await page.screenshot(path=str(EVIDENCE / 'voice-panel.png'))
+                await page.evaluate("""() => {
+                    window.fixtureDeviceReads = 0; window.fixtureCaptureCalls = 0; window.fixtureDevices = [];
+                    navigator.mediaDevices.enumerateDevices = async () => { window.fixtureDeviceReads++; return window.fixtureDevices; };
+                    navigator.mediaDevices.getUserMedia = async () => { window.fixtureCaptureCalls++; throw new DOMException('Requested device not found', 'NotFoundError'); };
+                }""")
+                await page.get_by_role('button', name='다시 연결', exact=True).click()
+                await page.get_by_role('alert').filter(has_text='사용 가능한 기본 마이크').wait_for()
+                assert '원격 데스크톱' in await page.get_by_role('alert').inner_text()
+                await page.get_by_text('현재 앱에서 보이는 마이크가 없습니다.', exact=False).wait_for()
+                capture_calls = await page.evaluate('window.fixtureCaptureCalls')
+                await page.get_by_role('button', name='장치 새로고침', exact=True).click()
+                await page.wait_for_function('window.fixtureDeviceReads >= 2')
+                assert await page.evaluate('window.fixtureCaptureCalls') == capture_calls
+                checks.append('missing default microphone explains Windows input and RDP recording; refresh never captures audio')
+
+                await page.evaluate("""() => {
+                    window.fixtureDevices = [{ kind:'audioinput', deviceId:'test-mic', groupId:'fixture', label:'시험 마이크' }];
+                    navigator.mediaDevices.dispatchEvent(new Event('devicechange'));
+                }""")
+                microphone = page.get_by_role('combobox', name='통화 마이크', exact=True)
+                await microphone.locator('option[value="test-mic"]').wait_for(state='attached')
+                await microphone.select_option('test-mic')
+                await page.evaluate("""() => { window.fixtureDevices = []; navigator.mediaDevices.dispatchEvent(new Event('devicechange')); }""")
+                await microphone.get_by_text('선택한 마이크 · 연결 확인 필요', exact=True).wait_for(state='attached')
+                assert await microphone.input_value() == 'test-mic'
+                assert await page.evaluate('window.fixtureCaptureCalls') == capture_calls
+                checks.append('device plug/unplug refreshes options and retains explicit missing input without silently choosing another microphone')
                 await page.get_by_role('button', name='음성통화 닫기', exact=True).click()
                 checks.append('call opens internal voice controls; microphone failure is visible, resources close, and no external navigation occurs')
 

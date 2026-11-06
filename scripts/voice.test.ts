@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { VoiceCommandGate, voiceFeedback, explicitVoiceControl } from '../src/voiceControl.ts';
-import { VoiceSession, isVoiceCallActive, type VoiceEvent, type VoiceTransport } from '../src/voiceSession.ts';
+import { VoiceSession, isVoiceCallActive, voiceStartError, type VoiceEvent, type VoiceTransport } from '../src/voiceSession.ts';
 // @ts-ignore Runtime module is deliberately dependency-light.
 import { VoiceHost, CodexVoiceSession, voiceError } from '../sidecar/src/codex-voice.mjs';
 
@@ -159,6 +159,47 @@ function fakeMedia() {
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: async () => stream } } });
   return { track, stream, peers, audios };
 }
+
+test('device failures distinguish missing default, selected device, permission and busy input', () => {
+  const error = (name: string) => Object.assign(new Error('Requested device not found'), { name });
+  assert.match(voiceStartError(error('NotFoundError'), 'microphone'), /기본 마이크.*원격 데스크톱/s);
+  assert.match(voiceStartError(error('NotFoundError'), 'microphone', true), /선택한 마이크/);
+  assert.match(voiceStartError(error('NotAllowedError'), 'microphone'), /마이크 사용이 차단/);
+  assert.match(voiceStartError(error('NotReadableError'), 'microphone'), /다른 앱/);
+  assert.match(voiceStartError(error('OverconstrainedError'), 'microphone'), /오디오 조건/);
+  assert.match(voiceStartError(error('NotFoundError'), 'speaker'), /선택한 스피커/);
+  assert.equal(voiceStartError(error('NotFoundError'), 'connection'), 'Requested device not found');
+});
+
+test('missing or denied microphone never starts backend, retries or silently switches the selected input', async () => {
+  for (const name of ['NotFoundError', 'NotAllowedError', 'OverconstrainedError', 'NotReadableError']) {
+    const media = fakeMedia(), views: any[] = [], calls: any[] = [];
+    navigator.mediaDevices.getUserMedia = async constraints => {
+      calls.push(constraints);
+      throw Object.assign(new Error('Requested device not found'), { name });
+    };
+    const transport: VoiceTransport = { listen: async () => { throw Error('must not listen'); }, start: async () => { throw Error('must not start'); }, stop: async () => {}, reply: async () => {}, speak: async () => {} };
+    const session = new VoiceSession('locked', handlers(), transport, view => views.push(view));
+    await session.start('chosen-microphone');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].audio.deviceId, { exact: 'chosen-microphone' });
+    assert.equal(media.peers.length, 0);
+    assert.equal(views[views.length - 1].phase, 'error');
+    assert.equal(isVoiceCallActive(), false);
+  }
+});
+
+test('missing speaker reports output failure and releases acquired input without starting backend', async () => {
+  const media = fakeMedia(), views: any[] = []; let starts = 0;
+  (globalThis.Audio.prototype as any).setSinkId = async () => { throw Object.assign(new Error('Requested device not found'), { name: 'NotFoundError' }); };
+  const transport: VoiceTransport = { listen: async () => () => {}, start: async () => { starts++; }, stop: async () => {}, reply: async () => {}, speak: async () => {} };
+  const session = new VoiceSession('locked', handlers(), transport, view => views.push(view));
+  await session.start('', 'missing-output');
+  assert.match(views[views.length - 1].message, /선택한 스피커/);
+  assert.equal(media.track.readyState, 'ended');
+  assert.equal(starts, 0);
+  assert.equal(isVoiceCallActive(), false);
+});
 test('browser never transmits before actual media+session handshake, binds target, and releases all media on close', async () => {
   const media = fakeMedia(), calls: any[] = [], views: any[] = [], messages: any[] = [];
   let receive!: (e: VoiceEvent) => void; let unlistened = false;
