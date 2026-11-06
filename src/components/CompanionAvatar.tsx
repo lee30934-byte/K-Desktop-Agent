@@ -47,15 +47,41 @@ export default function CompanionAvatar({ mood, motion, style, compact, expanded
     reset.current = setTimeout(() => setReaction(null), 2600);
   }, [request, mood, moving]);
   const frame = mood === 'idle' && moving && reaction !== null ? reaction : frames[mood];
+  const spriteStyle = { backgroundImage: `url(${atlas})`, backgroundPosition: `${(frame % 3) * 50}% ${Math.floor(frame / 3) * 50}%` };
+  // The tablet and folded-arm poses cross the neck. Keep their original silhouette
+  // intact instead of cutting the prop or an arm into a moving head layer.
+  const articulated = ![2, 5, 7].includes(frame);
+  const resetLook = (element: HTMLButtonElement) => {
+    element.style.removeProperty('--companion-look-x');
+    element.style.removeProperty('--companion-look-y');
+  };
   return <button type="button" className={`companion-avatar tone-${style}${compact ? ' is-compact' : ''}`}
-    data-mood={mood} data-frame={frame} data-motion={moving ? 'on' : 'off'} aria-expanded={expanded}
+    data-mood={mood} data-frame={frame} data-rig={articulated ? 'head-body' : 'whole'} data-motion={moving ? 'on' : 'off'} aria-expanded={expanded}
     aria-label="K 비서 아바타 · 기능 열기" title="누르면 기능 열기 · 끌어서 이동"
+    onPointerMove={event => {
+      if (!moving || event.buttons || event.pointerType === 'touch') return;
+      const box = event.currentTarget.getBoundingClientRect();
+      const x = Math.max(-1, Math.min(1, (event.clientX - box.x) / box.width * 2 - 1));
+      const y = Math.max(-1, Math.min(1, (event.clientY - box.y) / box.height * 2 - 1));
+      event.currentTarget.style.setProperty('--companion-look-x', String(x));
+      event.currentTarget.style.setProperty('--companion-look-y', String(y));
+    }}
+    onPointerLeave={event => resetLook(event.currentTarget)}
+    onPointerDown={event => resetLook(event.currentTarget)}
+    onBlur={event => resetLook(event.currentTarget)}
     onClick={() => {
       if (moving && mood === 'idle') { setReaction(4); clearTimeout(reset.current); reset.current = setTimeout(() => setReaction(null), 2200); }
       onActivate();
     }}>
     <span className="companion-ground" aria-hidden="true" />
-    <span className="companion-sprite" aria-hidden="true" style={{ backgroundImage: `url(${atlas})`, backgroundPosition: `${(frame % 3) * 50}% ${Math.floor(frame / 3) * 50}%` }} />
+    <span className="companion-sprite" aria-hidden="true" style={spriteStyle}>
+      {articulated && <>
+        <span className="companion-body companion-layer" style={spriteStyle} />
+        <span className="companion-head-look"><span className="companion-head-motion">
+          <span className="companion-head companion-layer" style={spriteStyle} />
+        </span></span>
+      </>}
+    </span>
     {mood === 'speaking' && <span className="companion-voice-waves" aria-hidden="true"><i /><i /><i /><i /><i /></span>}
   </button>;
 }

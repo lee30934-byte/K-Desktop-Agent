@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import TelegramHubSettings from "./TelegramHubSettings";
+import MobileSettings from "./MobileSettings";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -4927,6 +4928,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
 
             <TelegramHubSettings />
+            <MobileSettings />
 
             <div className="settings-row">
               <div className="settings-row-info">

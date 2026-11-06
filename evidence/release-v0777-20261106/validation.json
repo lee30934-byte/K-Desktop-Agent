@@ -1,0 +1,69 @@
+{
+  "status": "PASS",
+  "version": "0.7.77",
+  "startedAt": "2026-11-06T13:26:36.871810+00:00",
+  "sourceHashes": {
+    "CHANGELOG.md": "cf71c39180535708c8a0dfd84bc713376a028b6b6d6aac796293ca7d30032d31",
+    "docs/companion-articulation-20261106.md": "cc44931e13bf0655470f49a4a43186348edc5c1030603f48b35c82f967a5b1a6",
+    "docs/mobile-companion.md": "5638fc71cf3e5716bf20d4f9749c03b14f0af362f2ab18609a8c36dd1ddb297a",
+    "mobile/index.html": "3fcca0a2d2f687e497fe00e81fb81e02cb4d322b1ff9f408d3e2416721e4bd2b",
+    "package-lock.json": "5b10914713df9589d3b6f14ff329959bd0428be461983ab63c036f15a976389c",
+    "package.json": "35be7302d058df0a6187655e1007ddc183340cd503ab16773de109cd44744b38",
+    "public/audio/voicePitch.worklet.mjs": "0a7c83b88fce1014ca98e11b59e9b7348d39290e5a31fe3df471914dbf4fd4b7",
+    "scripts/build-companion-motion-review.mjs": "3157ef83a360ca2ffd27c481f516bcc28b0a7cac8c4273dd552b53911d615033",
+    "scripts/build-mobile-fixture.mjs": "5c277a07e3b77625bff4e225174d846af7da5c953fcdb1d5b0f6fa8ddfce1840",
+    "scripts/dot-bridge.test.ts": "4973bef4fb4977ad5645e6395c520d821183e037f4ee9fb5776d29f78a96a57e",
+    "scripts/mobile-fixture-host.mjs": "ac6038bda02dbc1ce871c811631487134159623e78904a31b95c9d3875ecbd05",
+    "scripts/mobile-host.test.ts": "a91a2ab8536afd90c7366a17abbfddd496f5a2ea15d6af9a4f987d281f765574",
+    "scripts/mobile-private-access.ps1": "2efaf714e448283cf87065e0319d3698ddb2093b36512e565d8577c4d007ed02",
+    "scripts/probe-companion-articulation.py": "331a19f3a66b48e6ce5f20e16630af4c1d8ecca62eb336f948b527b08b837648",
+    "scripts/probe-mobile-companion.py": "491e12909022f025812183c2b21426d375cea252f4c141dd6abbb1239911bfec",
+    "scripts/validate-mobile-companion.py": "acc2924fa9b76beadaae0a68e11611afdc4c2a3ab605bc12ffe5b3bc91de3dd0",
+    "sidecar/src/index.ts": "50c8b589dc833ecdc03d4aa1aaa904e48b49ef4ae6a5817b03b092fd5ce21e1b",
+    "sidecar/src/mobile-host.ts": "eedf487359b82ab00751c01c83a21c56a0256d60ca77393e9a7b452b83a29f8e",
+    "sidecar/test-mobile.mjs": "1ba7a0e025b434402e3adbf9daabfdee0b600fe667491c533ed36bbab5baa5ac",
+    "src-tauri/Cargo.lock": "4f80bc42049dc120a3d693a14ed1dc478bb024fc17f2501eed7b86d0f97cd631",
+    "src-tauri/Cargo.toml": "bd498208f9a5435343e25e8c223f2159b53d59d4e13b086069937392c03c5cd9",
+    "src-tauri/src/lib.rs": "382c12f7505b6f4dc285ecca14df18b974802d4b5bf836f2001cbd4e0e3da5be",
+    "src-tauri/tauri.conf.json": "c78782ea111b6f6d7db4fad8d17f8f7b8438524bf4c65881ed17917bdfb8c95e",
+    "src/App.tsx": "c254ad4bcafc79da7ab6d355ccc93117a6d482c6b09e3e716c68c2c0c95cf4b1",
+    "src/assets/k-assistant-ceramic-v2.png": "a43543696bfa679e04f9d5ebc61ef569626895909f33a3a843f380c863154c21",
+    "src/components/CompanionAvatar.css": "fcff44d85797caec9079eeae7ad4545657fd64a425d91a27df318e43a7b10fad",
+    "src/components/CompanionAvatar.tsx": "a6dca4b1a5b86d0b2e459e3f489e7f1647e6df8c070443fdada21147a77af630",
+    "src/components/MobileDesktopBridge.tsx": "613aacd6ba49bfde9814073e0036d338b5dabbc83450db6ec6a2cbdb620b8680",
+    "src/components/MobileSettings.tsx": "0a81324ff34bda97f9edc56944142f1634ae7c78ba1a2f926c91833c0783cd6f",
+    "src/components/Settings.tsx": "51c505db463932222b2116c55e9ad70c9e6e58ec0d1a54b5514d0d8fb5261f61",
+    "src/mobile/api.ts": "c5c1e2ba722656d3fcdb1402c6ca6bffaf202c709f39ea9f9d6826cd91e3b11d",
+    "src/mobile/main.tsx": "6a553d0eef80344b083732768e284b3633eb027bb89d0b08b2dae3a90adf3ca5",
+    "src/mobile/mobile.css": "6bbaa06527983c7b207c3bc9ce24d281c13f2930f134c5bca7400bb1f1d3d4b8",
+    "src/mobileControl.ts": "36d79d19d393251bb90c16368433b56896a9bc5c2534af75e35d39827640fa7b",
+    "vite.mobile.config.ts": "ddb559829292ca83e3ca275cb9a46ca3b4b1c31bad364a3dfc0ad54dab760aaa"
+  },
+  "checks": [
+    {
+      "name": "release-gate",
+      "exitCode": 0,
+      "log": "C:\\Users\\lee30\\Documents\\K-Desktop-Agent\\.worktrees\\control-results-20261105\\evidence\\release-v0777-20261106\\release-gate.log"
+    },
+    {
+      "name": "version-check",
+      "exitCode": 0,
+      "log": "C:\\Users\\lee30\\Documents\\K-Desktop-Agent\\.worktrees\\control-results-20261105\\evidence\\release-v0777-20261106\\version-check.log"
+    },
+    {
+      "name": "diff-check",
+      "exitCode": 0,
+      "log": "C:\\Users\\lee30\\Documents\\K-Desktop-Agent\\.worktrees\\control-results-20261105\\evidence\\release-v0777-20261106\\diff-check.log"
+    }
+  ],
+  "installationAuthorized": false,
+  "realPhoneQA": false,
+  "realVoiceQA": false,
+  "currentCheck": "diff-check",
+  "sourceUnchangedDuringValidation": true,
+  "packagedMobileBundle": true,
+  "packagedVoiceWorkletMatches": true,
+  "candidateBrowserChecks": 21,
+  "avatarCandidateChecks": 17,
+  "finishedAt": "2026-11-06T13:27:45.683737+00:00"
+}

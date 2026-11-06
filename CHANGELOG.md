@@ -1,3 +1,17 @@
+## [0.7.77] - 2026-11-06
+
+### Added
+- Add a phone companion web screen with the animated ceramic avatar, conversation selection, voice/text commands, recent results and current-conversation stop. Reuse the desktop model, project, approval and stop handlers.
+- Add an opt-in loopback mobile host, private HTTPS support, one-time ten-minute pairing codes, bounded device sessions and desktop revocation. Deduplicate commands and enforce voice-session ownership; credentials remain on the PC.
+
+### Improved
+- Animate the companion head and torso independently with tilts, nods, breathing, pointer following and click greetings. Preserve saved motion and reduced-motion preferences.
+- Build the phone bundle and voice worklet into the sidecar resources for release packaging.
+
+### Validation and limits
+- Candidate checks: 21 browser checks, 18 loopback HTTP tests, 17 avatar UI/motion checks and full release gate PASS. Versioned release validation is recorded in the release evidence.
+- Phone and PC must use the same private Tailscale network. Enable phone access in the PC settings and pair from the phone browser. The server starts disabled after app restart. Physical phone calls, microphone/output behavior and speech naturalness remain unverified.
+
 ## [0.7.76] - 2026-11-06
 
 ### Improved

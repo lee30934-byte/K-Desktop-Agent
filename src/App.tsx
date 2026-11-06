@@ -5,6 +5,8 @@ import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import Sidebar from "./components/Sidebar";
 import MainChat from "./components/MainChat";
 import AssistantWidget from "./components/AssistantWidget";
+import MobileDesktopBridge from "./components/MobileDesktopBridge";
+import type { VoiceHandlers } from "./voiceControl";
 import { isVoiceCallActive } from "./voiceSession";
 import MetricsPanel from "./components/MetricsPanel";
 import Settings from "./components/Settings";
@@ -5564,6 +5566,29 @@ export default function App() {
   const closeSettings = useStableCallback(() => setSettingsOpen(false));
   const closeCommandPalette = useStableCallback(() => setCommandPaletteOpen(false));
 
+  const assistantHandlers: VoiceHandlers = {
+    stopAll: async () => { await handleHardStop(); },
+    canSend: r => r.createdAt > Math.max(dotGlobalStopAtRef.current, dotStoppedAtRef.current.get(r.conversationId) ?? 0),
+    status: async id => {
+      const control = conversationTurnGateRef.current;
+      const page = id === activeConversationIdRef.current ? messagesRef.current : (await getMessagesForView(id)).messages;
+      const answers = page.filter(m => m.role === "assistant");
+      const answer = answers[answers.length - 1];
+      return { conversationId: id, run: control.runs.get(id) ?? null,
+        approvalPending: codexElicitations.some(r => r.conversation_id === id && Date.now() < r.expiresAt),
+        paused: control.paused.has(id) || control.allPaused,
+        queued: control.queues.get(id)?.length ?? 0,
+        latestAssistant: answer ? { id: answer.id, timestamp: answer.timestamp,
+          streaming: !!answer.streaming, text: answer.content.slice(-8000) } : null };
+    },
+    send: (id, text, mode) => handleSendMessage(text, [], { conversationId: id, mode }),
+    stop: async id => {
+      await stopConversation(id);
+      const control = conversationTurnGateRef.current;
+      if (control.isActive(id) || !control.paused.has(id)) throw new Error("작업 정지 확인 실패. 실제 상태를 조회하세요.");
+    },
+  };
+
   return (
     <div className="app">
       <UpdateChecker />
@@ -5734,31 +5759,10 @@ export default function App() {
           </div>
         )}
         </>}
-        activityPanel={<><AssistantWidget conversationId={activeConversationId}
+        activityPanel={<><MobileDesktopBridge handlers={assistantHandlers} conversations={conversations} /><AssistantWidget conversationId={activeConversationId}
           conversations={conversations} messages={messages} runningIds={streamingConvIds}
           computerConnected={mcpState.connected} onSelect={id => { void handleSelectConversation(id); }} onSettings={openSettings}
-          handlers={{
-          stopAll: async () => { await handleHardStop(); },
-          canSend: r => r.createdAt > Math.max(dotGlobalStopAtRef.current, dotStoppedAtRef.current.get(r.conversationId) ?? 0),
-          status: async id => {
-            const control = conversationTurnGateRef.current;
-            const page = id === activeConversationIdRef.current ? messagesRef.current : (await getMessagesForView(id)).messages;
-            const answers = page.filter(m => m.role === "assistant");
-            const answer = answers[answers.length - 1];
-            return { conversationId: id, run: control.runs.get(id) ?? null,
-              approvalPending: codexElicitations.some(r => r.conversation_id === id && Date.now() < r.expiresAt),
-              paused: control.paused.has(id) || control.allPaused,
-              queued: control.queues.get(id)?.length ?? 0,
-              latestAssistant: answer ? { id: answer.id, timestamp: answer.timestamp,
-                streaming: !!answer.streaming, text: answer.content.slice(-8000) } : null };
-          },
-          send: (id, text, mode) => handleSendMessage(text, [], { conversationId: id, mode }),
-          stop: async id => {
-            await stopConversation(id);
-            const control = conversationTurnGateRef.current;
-            if (control.isActive(id) || !control.paused.has(id)) throw new Error("작업 정지 확인 실패. 실제 상태를 조회하세요.");
-          },
-        }} /><TaskActivityPanel
+          handlers={assistantHandlers} /><TaskActivityPanel
         tracked={[...conversationTurnGateRef.current.tracked]}
         runs={[...conversationTurnGateRef.current.runs.values()]}
         queues={conversationTurnGateRef.current.queues}

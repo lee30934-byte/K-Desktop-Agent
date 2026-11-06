@@ -2789,6 +2789,17 @@ async fn list_mcp_tools(refresh: Option<bool>) -> Result<(), String> {
     Ok(())
 }
 
+// Mobile HTTP stays on loopback. Pairing and work dispatch remain in the desktop.
+#[tauri::command]
+async fn mobile_control(action: String, id: Option<String>, request_id: Option<String>, result: Option<serde_json::Value>, error: Option<String>, origin: Option<String>, port: Option<u16>) -> Result<(), String> {
+    if !["enable", "disable", "status", "rotate", "reply", "claim"].contains(&action.as_str()) { return Err("unsupported mobile action".into()); }
+    let payload = serde_json::json!({"type":"mobile_control", "action":action, "id":id, "requestId":request_id, "result":result, "error":error, "origin":origin, "port":port});
+    let tx_holder = get_tx_holder().clone();
+    let guard = tx_holder.lock().await;
+    let tx = guard.as_ref().ok_or("sidecar not initialized")?;
+    tx.send(format!("{}\n", payload)).await.map_err(|e| e.to_string())
+}
+
 // Voice transport only. Work commands stay in the existing frontend turn gate.
 #[tauri::command]
 async fn voice_control(action: String, session_id: String, conversation_id: Option<String>, sdp: Option<String>, token: Option<String>, result: Option<serde_json::Value>, text: Option<String>, voice: Option<String>, preview: Option<bool>) -> Result<(), String> {
@@ -5665,6 +5676,7 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 67 (v0.6.2) — MCP 도구 인스펙터 + 카탈로그 + 커스텀 도구 plugin 빌더
             list_mcp_tools,
             voice_control,
+            mobile_control,
             list_kda_plugins,
             read_kda_plugin,
             save_kda_plugin,

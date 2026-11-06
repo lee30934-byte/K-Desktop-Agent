@@ -87,7 +87,7 @@ test('MCP stdio subprocess returns discovery JSON without banners or account acc
   const code=await new Promise(r=>child.on('close',r));assert.equal(code,0);assert.equal(err,'');assert.equal(JSON.parse(out).result.tools.length,4);
 });
 
-// Exercise the actual App JSX handlers, not a test-only copy of the wiring.
+// Resolve the real JSX binding, including a shared object used by desktop and mobile.
 async function appHandlers(deps: Record<string,unknown>) {
   const source=ts.createSourceFile('App.tsx',await fs.readFile(new URL('../src/App.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
   let expression='';function walk(node: ts.Node) {
@@ -96,6 +96,15 @@ async function appHandlers(deps: Record<string,unknown>) {
       expression=(prop.initializer as ts.JsxExpression).expression!.getText(source);
     }ts.forEachChild(node,walk);
   }walk(source);assert.ok(expression);
+  if (/^[A-Za-z_$][\w$]*$/.test(expression)) {
+    const binding = expression; let initializer = '';
+    function resolve(node: ts.Node) {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === binding && node.initializer)
+        initializer = node.initializer.getText(source);
+      ts.forEachChild(node, resolve);
+    }
+    resolve(source); assert.ok(initializer, 'JSX handlers must resolve to a real App initializer'); expression = initializer;
+  }
   const js=ts.transpile(`(${expression})`,{target:ts.ScriptTarget.ES2020});
   const scope={codexElicitations:[],...deps};
   return new Function(...Object.keys(scope),`return ${js}`)(...Object.values(scope));
@@ -107,6 +116,20 @@ test('actual App handlers pin target id and propagate an unconfirmed stop as fai
   await h.send('paired','hello','steer');assert.deepEqual(sent,[['hello',[],{conversationId:'paired',mode:'steer'}]]);
   await assert.rejects(h.stop('paired'),/정지 확인 실패/);
   active=false;control.paused.add('paired');await h.stop('paired');
+});
+
+test('desktop avatar and mobile bridge use the same actual App handler object', async () => {
+  const source = ts.createSourceFile('App.tsx', await fs.readFile(new URL('../src/App.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const bindings = new Map<string, string>();
+  function walk(node: ts.Node) {
+    if (ts.isJsxSelfClosingElement(node) && ['AssistantWidget', 'MobileDesktopBridge'].includes(node.tagName.getText(source))) {
+      const prop = node.attributes.properties.find(p => ts.isJsxAttribute(p) && p.name.getText(source) === 'handlers') as ts.JsxAttribute;
+      bindings.set(node.tagName.getText(source), (prop.initializer as ts.JsxExpression).expression!.getText(source));
+    }
+    ts.forEachChild(node, walk);
+  }
+  walk(source);
+  assert.equal(bindings.size, 2); assert.equal(bindings.get('AssistantWidget'), bindings.get('MobileDesktopBridge'));
 });
 test('actual App status exposes only the pinned conversation and marks streaming output',async()=>{
   const control={runs:new Map(),paused:new Set(),allPaused:false,queues:new Map()};
