@@ -1,5 +1,9 @@
 # KDA 구독 음성통화 구현
 
+최신 대상 규칙: `kda-voice-routing-20261106.md`. K의 후속 승인에 따라 v0.7.73은 현재 대화 따라가기·발화 시작 대상 고정·이름 전환을 사용한다. 아래 시작 대상 고정 설명은 v0.7.72 이력이다. GitHub 릴리스까지 승인됐으며 설치는 K가 직접 한다.
+
+후속 상태: v0.7.72 릴리스의 완료 검증은 `evidence/release-v0772-20261106/final-verification.json`에 있다. 아래 v0.7.71·미배포 표기는 최초 구현 시점의 이력이다. 이후 장치 안내·음성 증폭 및 UI 단순화는 로컬 수정이며, 현재 상태는 `evidence/voice-device-fix-20261106/status.json`, `evidence/voice-output-20261106/audio-verification.json`, `evidence/simple-ui-20261106/status.json`을 따른다.
+
 KDA 비서 카드의 `통화하기`는 내부 음성통화 영역을 연다. 별도 OpenAI API 키를 받지 않고 설치된 Codex 로그인으로 WebRTC 음성을 연결한다. 제품 소스 구현과 실제 구독 서버를 사용하는 합성 음성 시험을 수행했다. 설치본 v0.7.71에는 아직 적용하지 않았다.
 
 ## 동작

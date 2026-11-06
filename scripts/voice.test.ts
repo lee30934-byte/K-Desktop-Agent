@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { VoiceCommandGate, voiceFeedback, explicitVoiceControl } from '../src/voiceControl.ts';
+import { VoiceRouter } from '../src/voiceRouting.ts';
 import { VoiceSession, isVoiceCallActive, voiceStartError, type VoiceEvent, type VoiceTransport } from '../src/voiceSession.ts';
 // @ts-ignore Runtime module is deliberately dependency-light.
 import { VoiceHost, CodexVoiceSession, voiceError } from '../sidecar/src/codex-voice.mjs';
@@ -269,4 +270,113 @@ test('a streaming answer present at call start still produces its final feedback
   approvalPending = true; await session.pollStatus(); assert.match(spoken[1], /승인/);
   session.silence(); answer = { id: 'b', streaming: false, text: 'new answer' }; await session.pollStatus();
   assert.equal(spoken.length, 2); session.end();
+});
+
+function routingFixture() {
+  let selected: string | null = 'a';
+  const calls: any[] = [], changed: any[] = [];
+  const conversations = [{ id: 'a', title: 'KDA 개발' }, { id: 'b', title: '릴리스 점검' },
+    { id: 'c', title: '중복 이름' }, { id: 'd', title: '중복 이름' }];
+  const routing = { conversations: () => conversations, selected: () => selected,
+    changed: (target: any, following: boolean) => changed.push({ target, following }) };
+  const router = new VoiceRouter('routing-session', 'a', handlers(calls), routing);
+  return { router, calls, changed, conversations, routing, select: (id: string | null) => { selected = id; } };
+}
+
+test('voice routing samples selection once per utterance; queued work keeps its original conversation', async () => {
+  const f = routingFixture(); f.router.beginUtterance(); f.select('b');
+  await f.router.execute('a', { action: 'send', text: '기존 맥락으로 수정' });
+  f.router.beginUtterance(); await f.router.execute('b', { action: 'send', text: '점검' });
+  assert.deepEqual(f.calls, [['send', 'a', '기존 맥락으로 수정', 'queue'], ['send', 'b', '점검', 'queue']]);
+  assert.deepEqual(f.router.watchedTargets.map(t => t.id), ['a', 'b']);
+});
+
+test('named routing pins future commands; follow resumes selection without stopping old work', async () => {
+  const f = routingFixture();
+  const result: any = await f.router.execute('named', { action: 'send', target: '릴리스', text: '테스트 실행' });
+  assert.equal(result.target, '릴리스 점검'); assert.equal(f.router.followsSelection, false);
+  f.select('a'); f.router.beginUtterance(); await f.router.execute('status', { action: 'status', text: '' });
+  assert.deepEqual(f.calls[1], ['status', 'b']);
+  await f.router.execute('follow', { action: 'follow', text: '' });
+  await f.router.execute('back', { action: 'send', text: '이어 진행' });
+  assert.deepEqual(f.calls[2], ['send', 'a', '이어 진행', 'queue']);
+  assert.equal(f.calls.filter(c => c[0] === 'stop').length, 0);
+});
+
+test('ambiguous or missing names never dispatch; clarification must resolve before a default send', async () => {
+  const f = routingFixture();
+  const r: any = await f.router.execute('ambiguous', { action: 'send', target: '중복 이름', text: '수정' });
+  assert.equal(r.state, 'needs_target'); assert.deepEqual(r.candidates, ['중복 이름 · 1', '중복 이름 · 2']);
+  await assert.rejects(f.router.execute('fallback', { action: 'send', text: '수정' }), /대상 확인/);
+  assert.deepEqual(f.calls, []);
+  await f.router.execute('choice', { action: 'send', target: '중복 이름 · 2', text: '선택한 작업' });
+  assert.deepEqual(f.calls, [['send', 'd', '선택한 작업', 'queue']]);
+  assert.equal((await f.router.execute('missing', { action: 'stop', target: '존재하지 않음', text: '' }) as any).state, 'needs_target');
+  assert.equal(f.calls.length, 1);
+});
+
+test('routing accepts local names only, bounds discovery, and rejects replay across target changes', async () => {
+  const f = routingFixture();
+  const choices: any = await f.router.execute('list', { action: 'conversations', text: '릴리스' });
+  assert.deepEqual(choices.conversations, ['릴리스 점검']); assert.ok(!JSON.stringify(choices).includes('"id"'));
+  assert.equal(f.calls.length, 0);
+  await f.router.execute('once', { action: 'send', text: '1회' });
+  await f.router.execute('select', { action: 'select', text: '릴리스 점검' });
+  assert.equal((await f.router.execute('once', { action: 'send', text: '재전송' }) as any).state, 'unknown');
+  for (const command of [{ action: 'send', text: 'x', conversationId: 'b' }, { action: 'approve', text: '' },
+    { action: 'send', text: 'x', target: {} }, { action: 'send', text: '' }]) {
+    await assert.rejects(f.router.execute(crypto.randomUUID(), command));
+  }
+  f.router.close(); await assert.rejects(f.router.execute('late', { action: 'send', text: 'late' }));
+  assert.equal(f.calls.length, 1);
+});
+
+test('selection loss or deletion cannot fall back to another conversation; queued sends revalidate membership', async () => {
+  const f = routingFixture(); f.select(null); f.router.beginUtterance();
+  await assert.rejects(f.router.execute('none', { action: 'send', text: '실행' }), /대상 대화/);
+  f.select('b'); f.router.beginUtterance(); f.conversations.splice(1, 1);
+  await assert.rejects(f.router.execute('deleted', { action: 'stop', text: '' }), /대상 대화/);
+  assert.deepEqual(f.calls, []);
+  const calls: string[] = []; let release!: () => void;
+  const pending = new Promise<void>(r => { release = r; });
+  const g = routingFixture();
+  const router = new VoiceRouter('pending', 'a', { ...handlers(), send: async (_id, text) => { calls.push(text); await pending; } }, g.routing);
+  const first = router.execute('first', { action: 'send', text: 'first' }); await tick();
+  const queued = router.execute('queued', { action: 'send', text: 'queued' });
+  g.conversations.splice(0, 1); release(); await first;
+  assert.equal((await queued as any).state, 'cancelled'); assert.deepEqual(calls, ['first']); router.close();
+});
+
+test('a global stop cancels older queued sends in every routed conversation', async () => {
+  const f = routingFixture(), calls: any[] = []; let release!: () => void;
+  const wait = new Promise<void>(r => { release = r; });
+  const router = new VoiceRouter('all-stop', 'a', { ...handlers(calls), send: async (id, text) => { calls.push([id, text]); if (text === 'first') await wait; } }, f.routing);
+  const first = router.execute('first', { action: 'send', text: 'first' }); await tick();
+  const queued = router.execute('queued', { action: 'send', text: 'queued' }); await tick();
+  await router.execute('switch', { action: 'select', text: '릴리스 점검' });
+  await router.execute('stop-all', { action: 'stop_all', text: '' }); release(); await first;
+  assert.equal((await queued as any).state, 'cancelled'); assert.deepEqual(calls, [['a', 'first'], ['stop_all']]); router.close();
+});
+
+test('live session keeps speech-onset target across tab changes and reports results from previous conversations', async () => {
+  const media = fakeMedia(), f = routingFixture(), spoken: string[] = [], replies: any[] = [];
+  const states: Record<string, any> = { a: { run: { state: 'running' } }, b: { run: null } };
+  let receive!: (e: VoiceEvent) => void;
+  const transport: VoiceTransport = { listen: async fn => { receive = fn; return () => {}; }, start: async () => {}, stop: async () => {},
+    reply: async (_id, _token, result) => { replies.push(result); }, speak: async (_id, text) => { spoken.push(text); } };
+  const session: any = new VoiceSession('a', { ...handlers(f.calls), status: async id => states[id] }, transport, () => {}, f.routing);
+  await session.start(); media.peers[0].connectionState = 'connected'; session.receive({ type: 'session.started' }); await tick();
+  session.receive({ type: 'input_transcript.added' }); f.select('b');
+  session.receive({ type: 'turn.done', turn: { id: 'first-user', role: 'user', transcript: '이거 수정해줘' } });
+  receive({ sessionId: session.id, kind: 'command', token: 'one', createdAt: Date.now(), command: { action: 'send', text: '이거 수정해줘' } });
+  await tick(); assert.deepEqual(f.calls[0], ['send', 'a', '이거 수정해줘', 'queue']);
+  session.receive({ type: 'turn.done', turn: { role: 'assistant', transcript: '접수했습니다' } });
+  session.receive({ type: 'input_transcript.added' });
+  session.receive({ type: 'turn.done', turn: { id: 'second-user', role: 'user', transcript: '여기도 점검' } });
+  receive({ sessionId: session.id, kind: 'command', token: 'two', createdAt: Date.now(), command: { action: 'send', text: '여기도 점검' } });
+  await tick(); assert.deepEqual(f.calls[1], ['send', 'b', '여기도 점검', 'queue']);
+  session.receive({ type: 'turn.done', turn: { role: 'assistant', transcript: '접수했습니다' } }); await session.pollStatus();
+  states.a = { run: null, latestAssistant: { id: 'finished-a', text: '수정 완료', streaming: false } };
+  await session.pollStatus(); assert.ok(spoken.some(s => s.includes('KDA 개발') && s.includes('수정 완료')));
+  assert.deepEqual(replies.map(r => r.target), ['KDA 개발', '릴리스 점검']); session.end();
 });

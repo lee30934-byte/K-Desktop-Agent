@@ -5214,3 +5214,17 @@
 .codex-elicit-fields input, .codex-elicit-fields select { background: var(--bg-2); color: var(--text-primary); padding: var(--space-sm); }
 .codex-elicitation button:disabled { opacity: 0.45; cursor: not-allowed; }
 .codex-elicitation .elicitation-hint { color: var(--text-secondary); }
+
+/* Everyday controls stay visible; secondary controls open on demand. */
+.main-header .main-title { font-size: 20px; letter-spacing: -.02em; }
+.main-header .eyebrow { font-size: 10px; color: var(--text-secondary); letter-spacing: .1em; }
+.chat-options { position: relative; }
+.chat-options > summary { display: grid; place-items: center; list-style: none; width: 34px; height: 32px; border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 22px; cursor: pointer; }
+.chat-options > summary::-webkit-details-marker { display: none; }
+.chat-options-body { position: absolute; right: 0; top: calc(100% + 8px); z-index: 65; width: 184px; display: grid; gap: 4px; padding: 7px; background: var(--bg-2); border: 1px solid var(--border-default); border-radius: 10px; box-shadow: 0 12px 32px #0005; }
+.chat-options-body button { width: 100%; padding: 10px; text-align: left; background: transparent; border: 0; border-radius: 6px; color: var(--text-secondary); cursor: pointer; font: inherit; font-size: 12px; }
+.chat-options-body button:hover { background: var(--bg-3); color: var(--text-primary); }
+.chat-options-body button[aria-pressed="true"] { color: var(--accent); }
+.sidebar-backup > summary { padding: 4px 0 10px; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.sidebar-backup .tool-item { margin-top: 4px; }
+.chat-options summary:focus-visible, .sidebar-backup summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

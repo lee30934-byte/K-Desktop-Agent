@@ -1491,7 +1491,7 @@ function Sidebar({
         <div className="brand-text">
           <div className="brand-name">K.AGENT</div>
           <div className="brand-sub">
-            PERSONAL CONSOLE // {appVersion ? `V${appVersion}` : "…"}
+            {appVersion ? `v${appVersion}` : "개인 비서"}
           </div>
         </div>
       </div>
@@ -1592,8 +1592,8 @@ function Sidebar({
       </div>
 
       {/* 백업/복구 */}
-      <div className="sidebar-section">
-        <div className="eyebrow section-label">백업</div>
+      <details className="sidebar-section sidebar-backup">
+        <summary>백업·가져오기</summary>
         <button className="tool-item" onClick={handleExportCurrent} title="현재 대화 내보내기">
           <span className="tool-icon">📤</span>
           <span>대화 내보내기</span>
@@ -1606,7 +1606,7 @@ function Sidebar({
           <span className="tool-icon">📥</span>
           <span>가져오기</span>
         </button>
-      </div>
+      </details>
 
       {/* 설정 */}
       <div className="sidebar-section sidebar-bottom">

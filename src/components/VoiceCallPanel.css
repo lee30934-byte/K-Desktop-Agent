@@ -1,8 +1,16 @@
-.voice-call{margin:8px 0;padding:12px;background:var(--bg-secondary,#192332);color:var(--text-primary,#f0f3f8);border:1px solid var(--border-color,#465366);border-radius:12px;max-height:65vh;overflow:auto}
+.voice-call{margin:12px 0;padding:12px;background:var(--bg-1);color:var(--text-primary);border:1px solid var(--border-default);border-radius:12px;max-height:65vh;overflow:auto}
 .voice-call-title{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.voice-call button,.voice-call select{font:inherit;color:inherit;background:var(--bg-primary,#141c29);border:1px solid var(--border-color,#566378);border-radius:7px;padding:6px 8px;cursor:pointer}
+.voice-call button,.voice-call select{font:inherit;color:inherit;background:var(--bg-3);border:1px solid var(--border-default);border-radius:7px;padding:6px 8px;cursor:pointer}
 .voice-call button:disabled{opacity:.5;cursor:default}
 .voice-call p{font-size:12px;line-height:1.55;overflow-wrap:anywhere;margin:8px 0}
 .voice-call small{font-size:11px;line-height:1.5;display:block;opacity:.85;overflow-wrap:anywhere}
 .voice-call-devices{display:flex;gap:8px;margin:10px 0}.voice-call-devices label{font-size:11px;min-width:0;flex:1}.voice-call select{display:block;width:100%;font-size:11px}
 .voice-call-actions{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;font-size:11px}.voice-call-transcript{max-height:150px;overflow:auto}
+.voice-call-volume{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin:10px 0}.voice-call-volume input{width:100%;accent-color:var(--accent)}.voice-call-volume output{margin-left:auto;font-variant-numeric:tabular-nums}
+.voice-call-target{margin-top:8px;color:var(--accent)}
+.voice-call-route{display:block;font-size:11px;margin:8px 0;color:var(--text-secondary)}
+.voice-call-options{margin:10px 0;border-top:1px solid var(--border-subtle);padding-top:8px}
+.voice-call-options summary{cursor:pointer;font-size:11px;color:var(--text-secondary)}
+.voice-call-primary button{flex:1}
+.voice-call .voice-call-end{color:var(--warn)}
+.voice-call :is(button,select,input,summary):focus-visible{outline:2px solid var(--accent);outline-offset:2px}

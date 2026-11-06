@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+## [0.7.73] - 2026-11-06
+
+### Added
+- Voice commands follow the conversation visible at speech onset, with spoken conversation-name selection, explicit pinning, a manual target selector, and a return to follow-selection mode. Requests use the existing conversation history, queue and approval paths; changing views never moves submitted work.
+- Voice progress, completion and approval feedback retains previously addressed conversations and identifies their names. Ambiguous or missing names require clarification; deleted targets, replayed tokens and expired commands cannot execute against a fallback conversation.
+- KDA-only voice output gain from 0 to 300 percent (default 150 percent) with a limiter. System and other application volume remain unchanged.
+
+### Improved
+- Simplified assistant, chat and sidebar controls: frequent actions remain visible; activity, connections, backup, tools, device settings and captions expand on demand.
+
+### Validation and limits
+- Voice routing and existing controls covered by executable regression tests and isolated actual-component UI checks. Synthetic media/native stubs do not prove real microphone, acoustic latency, installed WebView2 or production subscription speech routing. Installation remains manual.
+
 ### Fixed
 - Voice startup explains missing default/selected microphones, RDP microphone redirection, permission denial, busy input and missing speakers. Device refresh and plug/unplug updates preserve explicit selections without opening a microphone or silently switching inputs.
 

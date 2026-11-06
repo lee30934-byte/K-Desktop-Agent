@@ -37,9 +37,10 @@ async def main():
                 widget = page.get_by_role('complementary', name='K 비서', exact=True)
                 handle = page.get_by_role('group', name='비서 창 이동 · 방향키 이동 · Home 기본 위치', exact=True)
                 await widget.wait_for()
-                await page.get_by_text('DOT 연결 · 꺼짐', exact=True).wait_for()
+                await page.get_by_text('DOT 연결 · 꺼짐', exact=True).wait_for(state='attached')
+                assert not await page.get_by_role('button', name='현재 대화 연결', exact=True).is_visible()
                 box = await widget.bounding_box()
-                assert box['x'] > 1000 and box['y'] == 64, box
+                assert box['x'] > 1000 and box['y'] == 24, box
                 assert await page.get_by_role('button', name='Telegram', exact=True).count() == 1
                 checks.append('default upper-right placement and Telegram action')
                 await page.screenshot(path=str(EVIDENCE / 'expanded.png'))
@@ -58,7 +59,8 @@ async def main():
                 await page.get_by_role('button', name='다시 연결', exact=True).click()
                 await page.get_by_role('alert').filter(has_text='사용 가능한 기본 마이크').wait_for()
                 assert '원격 데스크톱' in await page.get_by_role('alert').inner_text()
-                await page.get_by_text('현재 앱에서 보이는 마이크가 없습니다.', exact=False).wait_for()
+                await page.locator('.voice-call > small[role="status"]').filter(has_text='현재 앱에서 보이는 마이크가 없습니다.').wait_for()
+                await page.get_by_text('음성·장치 설정', exact=True).click()
                 capture_calls = await page.evaluate('window.fixtureCaptureCalls')
                 await page.get_by_role('button', name='장치 새로고침', exact=True).click()
                 await page.wait_for_function('window.fixtureDeviceReads >= 2')
@@ -86,6 +88,7 @@ async def main():
                 await page.get_by_role('button', name='Telegram', exact=True).click()
                 assert await page.evaluate('window.actions[window.actions.length-1].select') == 'telegram-fixture'
                 checks.append('Telegram selects its existing conversation or opens settings')
+                await widget.locator('.assistant-widget-more > summary').click()
                 await page.get_by_role('button', name='KDA 연결 상태 점검 대화', exact=True).click()
                 assert await page.evaluate('window.actions[window.actions.length-1].select') == 'release-fixture'
                 await page.get_by_role('button', name='최근 답변', exact=False).click()
@@ -113,7 +116,8 @@ async def main():
                 assert abs(restored['x'] - shifted['x']) < 2 and abs(restored['y'] - shifted['y']) < 2
                 checks.append('keyboard positioning and persisted position survive reload')
 
-                await widget.locator('summary').click()
+                await widget.locator('.assistant-widget-more > summary').click()
+                await widget.locator('.assistant-widget-connection summary').click()
                 await page.get_by_role('button', name='현재 대화 연결', exact=True).click()
                 await page.get_by_text('DOT 연결 · 켜짐', exact=True).wait_for()
                 await page.get_by_role('button', name='비서 창 최소화', exact=True).click()
@@ -145,6 +149,7 @@ async def main():
                 await page.wait_for_function('''() => {const b=document.querySelector('.assistant-widget').getBoundingClientRect();
                   return b.x>=8 && b.y>=8 && b.right<=innerWidth-7 && b.bottom<=innerHeight-7;}''')
                 # The body scrolls, retaining access to connection controls on short screens.
+                await widget.locator('.assistant-widget-more > summary').click()
                 await page.get_by_role('button', name='오른쪽 위로 되돌리기', exact=True).click()
                 await page.wait_for_function("document.querySelector('.assistant-widget').getBoundingClientRect().top === 8")
                 await page.screenshot(path=str(EVIDENCE / 'small-viewport.png'))
@@ -160,7 +165,7 @@ async def main():
                 await page.reload()
                 await page.get_by_role('button', name='비서 창 최소화', exact=True).wait_for()
                 await page.evaluate('window.renderAssistantFixture(null,true)')
-                await page.get_by_text('아직 활동이 없습니다.', exact=True).wait_for()
+                await page.get_by_text('아직 활동이 없습니다.', exact=True).wait_for(state='attached')
                 await page.get_by_text('아직 결과물이 없습니다.', exact=True).wait_for()
                 checks.append('malformed preferences and empty conversations recover safely')
                 await page.add_init_script("Storage.prototype.getItem=function(){throw Error('disabled storage')};Storage.prototype.setItem=function(){throw Error('disabled storage')}")

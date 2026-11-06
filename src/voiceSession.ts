@@ -1,8 +1,11 @@
-import { VoiceCommandGate, voiceFeedback, explicitVoiceControl, type VoiceHandlers } from './voiceControl';
+import { voiceFeedback, explicitVoiceControl, type VoiceHandlers } from './voiceControl';
+import { VoiceOutput, DEFAULT_VOICE_GAIN, voiceGain } from './voiceOutput';
+import { VoiceRouter, type VoiceRouting } from './voiceRouting';
 
 export type VoicePhase = 'idle' | 'connecting' | 'connected' | 'error' | 'ended';
 export interface VoiceView {
   phase: VoicePhase; message: string; muted: boolean; speaking: boolean;
+  commandPending?: boolean;
   conversationId: string; lines: { role: string; text: string }[];
 }
 export interface VoiceEvent { sessionId: string; kind: 'sdp' | 'error' | 'command'; sdp?: string; message?: string; token?: string; command?: unknown; createdAt?: number }
@@ -34,10 +37,11 @@ export function voiceStartError(error: unknown, stage: 'microphone' | 'speaker' 
   return `마이크 연결 실패: ${detail}`;
 }
 
-/** Media lives only between an explicit start and close; tab changes never retarget work. */
+/** Media persists across routing changes; each utterance and submitted task keeps its target. */
 export class VoiceSession {
   readonly id = crypto.randomUUID();
-  private gate: VoiceCommandGate;
+  private gate: VoiceRouter;
+  private utteranceCaptured = false;
   private closed = false;
   private starting = false;
   private configured = false;
@@ -45,6 +49,8 @@ export class VoiceSession {
   private channel?: RTCDataChannel;
   private stream?: MediaStream;
   private audio?: HTMLAudioElement;
+  private output?: VoiceOutput;
+  private outputGain = DEFAULT_VOICE_GAIN;
   private unlisten?: () => void;
   private timers: ReturnType<typeof setTimeout>[] = [];
   private poll?: ReturnType<typeof setInterval>;
@@ -52,8 +58,7 @@ export class VoiceSession {
   private responseActive = false;
   private userSpeaking = false;
   private suppressed = false;
-  private lastStatus?: string;
-  private lastAnswer?: string;
+  private feedbackStates = new Map<string, { status: string; answer: string }>();
   private pendingFeedback = '';
   private completedCalls = new Set<string>();
   private audioContext?: AudioContext;
@@ -65,8 +70,8 @@ export class VoiceSession {
   private finalTurns = new Set<string>();
   private state: VoiceView;
   constructor(readonly conversationId: string, private handlers: VoiceHandlers, private transport: VoiceTransport,
-    private update: (view: VoiceView) => void) {
-    this.gate = new VoiceCommandGate(this.id, conversationId, handlers);
+    private update: (view: VoiceView) => void, routing?: VoiceRouting) {
+    this.gate = new VoiceRouter(this.id, conversationId, handlers, routing);
     this.state = { phase: 'idle', message: '', muted: false, speaking: false, conversationId, lines: [] };
   }
   private view(patch: Partial<VoiceView>) { this.state = { ...this.state, ...patch }; this.update(this.state); }
@@ -113,8 +118,11 @@ export class VoiceSession {
       if (this.closed) return;
       peer.ontrack = event => {
         if (this.closed) return;
-        audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);
-        void audio.play().catch(() => this.fail('음성 재생이 차단됐습니다. 출력 장치와 앱 재생 권한을 확인하세요.'));
+        try {
+          const output = this.output ??= new VoiceOutput(this.outputGain);
+          audio.srcObject = output.attach(event.streams[0] ?? new MediaStream([event.track]));
+          void output.resume().then(() => audio.play()).catch(() => this.fail('음성 재생이 차단됐습니다. 출력 장치와 앱 재생 권한을 확인하세요.'));
+        } catch { this.fail('KDA 음성 출력 초기화 실패. 통화를 다시 연결하세요.'); }
       };
       peer.onconnectionstatechange = () => {
         if (this.closed) return;
@@ -147,6 +155,10 @@ export class VoiceSession {
       peer.addEventListener('icegatheringstatechange', check);
     });
   }
+  setOutputGain(value: number) {
+    this.outputGain = voiceGain(value);
+    if (!this.closed) this.output?.setGain(this.outputGain);
+  }
   private async acceptSdp(sdp: string) {
     try { if (!this.closed && this.peer && !this.peer.remoteDescription) await this.peer.setRemoteDescription({ type: 'answer', sdp }); }
     catch { this.fail('Codex 음성 연결 응답을 적용하지 못했습니다.'); }
@@ -156,7 +168,7 @@ export class VoiceSession {
     this.timers.forEach(clearTimeout); this.timers = [];
     this.stream?.getAudioTracks().forEach(t => { t.enabled = !this.state.muted; });
     this.startVad();
-    this.view({ phase: 'connected', message: '통화 중 · 대상 대화 고정 · 작업 승인은 KDA 화면에서 확인' });
+    this.view({ phase: 'connected', message: '듣고 있어요 · 대화 이름을 말하면 명령 대상을 바꿀 수 있어요' });
     this.timers.push(setTimeout(() => this.end(), 5 * 60_000));
     void this.pollStatus();
     this.poll = setInterval(() => void this.pollStatus(), 3000);
@@ -182,6 +194,9 @@ export class VoiceSession {
         const fresh = !key || !this.finalTurns.has(key);
         if (key && this.finalTurns.size < 128) this.finalTurns.add(key);
         if (fresh) {
+          if (!this.utteranceCaptured) this.gate.beginUtterance();
+          this.utteranceCaptured = false;
+          this.view({ commandPending: true });
           this.lastUserText = String(turn.transcript ?? '');
           this.lastControl = explicitVoiceControl(this.lastUserText);
           if (this.lastControl === 'silence') this.silence();
@@ -191,14 +206,15 @@ export class VoiceSession {
           } else this.localStop = undefined;
         }
       }
-      else if (turn?.role === 'assistant') { this.responseActive = false; this.view({ speaking: false }); this.flushFeedback(); }
+      else if (turn?.role === 'assistant') { this.responseActive = false; this.view({ speaking: false, commandPending: false }); this.flushFeedback(); }
       if (['user', 'assistant'].includes(turn?.role)) this.line(turn.role, String(turn.transcript ?? ''));
     }
   }
   private bargeIn() {
+    if (!this.utteranceCaptured) { this.gate.beginUtterance(); this.utteranceCaptured = true; }
     this.userSpeaking = true; this.suppressed = true; this.silenceUntilUser = false;
     if (this.audio) this.audio.muted = true;
-    this.view({ speaking: false });
+    this.view({ speaking: false, commandPending: true });
   }
   private startVad() {
     if (!this.stream) return;
@@ -235,7 +251,7 @@ export class VoiceSession {
       const localStop = this.localStop;
       if (localStop && localStop.action === action) {
         const local = await localStop.result;
-        const status = await this.handlers.status(this.conversationId) as any;
+        const status = await this.gate.execute(crypto.randomUUID(), { action: 'status', text: '' }) as any;
         result = !status.run && status.paused ? local : await this.gate.execute(callId, event.command);
       } else result = await this.gate.execute(callId, event.command);
       // Do not send private tool dumps or code to the voice backend.
@@ -250,6 +266,13 @@ export class VoiceSession {
   setMuted(muted: boolean) {
     this.stream?.getAudioTracks().forEach(t => { t.enabled = this.configured && !muted && !this.closed; });
     this.view({ muted });
+  }
+  selectTarget(id: string | null) {
+    if (this.userSpeaking || this.responseActive || this.state.commandPending) throw Error('말하는 중입니다. 이번 답변이 끝난 뒤 대상을 바꾸세요.');
+    const result = this.gate.select(id);
+    this.pendingFeedback = `명령 대상: ${voiceFeedback(result.target ?? '대화 선택 필요')}. ${result.following ? '현재 화면의 대화를 따릅니다.' : '이 대화로 고정했습니다.'}`;
+    this.flushFeedback();
+    return result;
   }
   silence() {
     if (this.closed) return;
@@ -281,22 +304,24 @@ export class VoiceSession {
     if (this.closed || this.polling || this.state.phase !== 'connected') return;
     this.polling = true;
     try {
-      const s = await this.handlers.status(this.conversationId) as any;
-      if (this.closed) return;
-      const status = JSON.stringify({ run: s.run?.state ?? null, paused: s.paused, queued: s.queued, approvalPending: !!s.approvalPending });
-      const answer = s.latestAssistant;
-      if (this.lastStatus === undefined) this.lastAnswer = answer?.streaming ? '' : answer?.id ?? '';
-      if (this.lastStatus !== undefined && status !== this.lastStatus) {
-        this.pendingFeedback = s.approvalPending ? 'KDA 확인: 사용자 승인을 기다립니다. 해당 대화 화면에서 검토해 주세요.' : s.run ? `KDA 확인: 작업 상태 ${s.run.state}. 대기 ${s.queued ?? 0}건.` :
-          s.paused ? 'KDA 확인: 작업이 보류되어 있습니다. 화면을 확인하세요.' : 'KDA 확인: 실행 중인 턴이 없습니다. 최신 결과는 화면에서 확인하세요.';
+      for (const target of this.gate.watchedTargets) {
+        const s = await this.handlers.status(target.id) as any;
+        if (this.closed) return;
+        if (!this.gate.watchedTargets.some(t => t.id === target.id)) continue;
+        const status = JSON.stringify({ run: s.run?.state ?? null, paused: s.paused, queued: s.queued, approvalPending: !!s.approvalPending });
+        const answer = s.latestAssistant, before = this.feedbackStates.get(target.id);
+        let feedback = '';
+        if (before && status !== before.status) {
+          feedback = s.approvalPending ? '사용자 승인을 기다립니다. 해당 대화 화면에서 검토해 주세요.' : s.run ? `작업 상태 ${s.run.state}. 대기 ${s.queued ?? 0}건.` :
+            s.paused ? '작업이 보류되어 있습니다. 화면을 확인하세요.' : '실행 중인 턴이 없습니다. 최신 결과는 화면에서 확인하세요.';
+        }
+        if (!s.approvalPending && before && answer?.id && !answer.streaming && answer.id !== before.answer) {
+          feedback = `새 답변: ${voiceFeedback(String(answer.text ?? '화면에서 확인하세요.'))}`;
+        }
+        this.feedbackStates.set(target.id, { status, answer: answer?.streaming ? before?.answer ?? '' : answer?.id ?? '' });
+        if (feedback) this.pendingFeedback = `${this.pendingFeedback} ${voiceFeedback(target.title)} 대화: ${feedback}`.trim().slice(-2000);
+        this.flushFeedback();
       }
-      if (!s.approvalPending && this.lastAnswer !== undefined && answer?.id && !answer.streaming && answer.id !== this.lastAnswer) {
-        this.pendingFeedback = `KDA의 새 답변: ${voiceFeedback(String(answer.text ?? '화면에서 확인하세요.'))}`;
-      }
-      this.lastStatus = status;
-      // Streaming answer must not consume its final notification.
-      if (!answer?.streaming) this.lastAnswer = answer?.id ?? '';
-      this.flushFeedback();
     } catch { /* No synthetic success or speculative progress on failed status reads. */ }
     finally { this.polling = false; }
   }
@@ -319,6 +344,7 @@ export class VoiceSession {
     this.stream?.getTracks().forEach(t => { t.onended = null; t.stop(); });
     this.channel?.close(); this.peer?.close();
     if (this.audio) { this.audio.pause(); this.audio.srcObject = null; }
+    this.output?.close(); this.output = undefined;
     this.unlisten?.(); this.unlisten = undefined;
     void this.transport.stop(this.id).catch(() => {});
   }

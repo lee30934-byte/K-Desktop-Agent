@@ -191,12 +191,15 @@ function MainChat({
       <div className="main-header">
         <CornerBrackets corners={["tl", "tr"]} size={14} />
         <div>
-          <div className="eyebrow">Active Session</div>
-          <div className="main-title display">SIGNAL ROUTING HUB</div>
+          <div className="eyebrow">K DESKTOP AGENT</div>
+          <div className="main-title display">대화</div>
         </div>
         <div className="main-header-right">
           <ApprovalToggle />
           {activityPanel}
+          <details className="chat-options">
+            <summary aria-label="대화 옵션" title="대화 옵션">⋯</summary>
+            <div className="chat-options-body">
           <button
             className={`copy-chat-btn ${copyStatus === "copied" ? "copied" : ""}`}
             onClick={handleCopyChat}
@@ -204,6 +207,11 @@ function MainChat({
           >
             {copyStatus === "copied" ? "✓ 복사됨" : "📋 복사"}
           </button>
+              <button type="button" onClick={() => setShowToolCardsPersist(!showToolCards)} aria-pressed={showToolCards}>
+                {showToolCards ? "도구 호출 숨기기" : "도구 호출 보기"}
+              </button>
+            </div>
+          </details>
           <StatusBadge status={status} />
         </div>
       </div>
@@ -265,34 +273,6 @@ function MainChat({
           </span>
         </div>
       )}
-      {!showToolCards && !activeFilter && (
-        <div
-          style={{
-            padding: "4px 12px",
-            fontSize: "0.75em",
-            opacity: 0.5,
-            display: "flex",
-            justifyContent: "flex-end",
-          }}
-        >
-          <button
-            onClick={() => setShowToolCardsPersist(true)}
-            style={{
-              background: "transparent",
-              border: "1px dashed var(--border-subtle)",
-              color: "inherit",
-              cursor: "pointer",
-              borderRadius: 4,
-              padding: "2px 8px",
-              fontSize: "0.92em",
-            }}
-            title="채팅에 도구 호출 카드 표시 + 카테고리/위험도 필터 활성"
-          >
-            🔧 도구 호출 보기
-          </button>
-        </div>
-      )}
-
       {/* 메시지 영역 */}
       <div className="main-body">
         <div className="messages">
