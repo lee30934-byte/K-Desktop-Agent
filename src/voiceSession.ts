@@ -69,6 +69,7 @@ export class VoiceSession {
   private pendingFeedback = '';
   private completedCalls = new Set<string>();
   private audioContext?: AudioContext;
+  private previewSource?: ConstantSourceNode;
   private vad?: ReturnType<typeof setInterval>;
   private silenceUntilUser = false;
   private lastControl: ReturnType<typeof explicitVoiceControl> = null;
@@ -77,6 +78,7 @@ export class VoiceSession {
   private finalTurns = new Set<string>();
   private state: VoiceView;
   private preview = false;
+  private previewSpeech = false;
   constructor(readonly conversationId: string, private handlers: VoiceHandlers, private transport: VoiceTransport,
     private update: (view: VoiceView) => void, routing?: VoiceRouting) {
     this.gate = new VoiceRouter(this.id, conversationId, handlers, routing);
@@ -92,21 +94,35 @@ export class VoiceSession {
     this.preview = preview;
     if (activeVoiceId && activeVoiceId !== this.id) { this.fail('이미 음성통화가 열려 있습니다. 기존 통화를 종료하세요.'); return; }
     activeVoiceId = this.id;
-    this.view({ phase: 'connecting', message: '마이크 권한·Codex 구독 음성 연결 확인 중…' });
-    this.timers.push(setTimeout(() => this.fail('음성 연결 시간이 초과됐습니다. 마이크 권한·로그인·네트워크를 확인하세요.'), 60_000));
+    this.view({ phase: 'connecting', message: preview ? '목소리 미리듣기 연결 중…' : '마이크 권한·Codex 구독 음성 연결 확인 중…' });
+    this.timers.push(setTimeout(() => this.fail(preview ? '미리듣기 연결 시간이 초과됐습니다. 로그인·네트워크를 확인하세요.' : '음성 연결 시간이 초과됐습니다. 마이크 권한·로그인·네트워크를 확인하세요.'), 60_000));
     let stage: 'microphone' | 'speaker' | 'connection' = 'microphone';
     try {
       if ((!preview && !navigator.mediaDevices?.getUserMedia) || typeof RTCPeerConnection === 'undefined') throw Error('이 환경에서 마이크·WebRTC를 사용할 수 없습니다.');
-      const stream = preview ? undefined : await navigator.mediaDevices.getUserMedia({ video: false, audio: {
-        echoCancellation: true, noiseSuppression: true, autoGainControl: true,
-        ...(inputDeviceId ? { deviceId: { exact: inputDeviceId } } : {}),
-      } });
+      let stream: MediaStream;
+      if (preview) {
+        // v3 needs an input audio clock before it speaks. Generate exact silence;
+        // never request microphone access or connect this source to the speakers.
+        stage = 'connection';
+        const context = this.audioContext = new AudioContext();
+        const destination = context.createMediaStreamDestination();
+        stream = this.stream = destination.stream;
+        const source = this.previewSource = context.createConstantSource();
+        source.offset.value = 0;
+        source.connect(destination); source.start();
+        await context.resume();
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: {
+          echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+          ...(inputDeviceId ? { deviceId: { exact: inputDeviceId } } : {}),
+        } });
+      }
       if (this.closed) { stream?.getTracks().forEach(t => t.stop()); return; }
       this.stream = stream;
       stage = 'connection';
       // Thread restrictions/dynamic tool are installed before SDP; session.started
       // and the actual media connection must both succeed before transmission.
-      stream?.getAudioTracks().forEach(t => { t.enabled = false; t.onended = () => this.fail('마이크 연결이 해제됐습니다.'); });
+      stream.getAudioTracks().forEach(t => { t.enabled = preview; t.onended = () => this.fail(preview ? '미리듣기 연결이 해제됐습니다.' : '마이크 연결이 해제됐습니다.'); });
       const off = await this.transport.listen(event => {
         if (this.closed || event.sessionId !== this.id) return;
         if (event.kind === 'error') this.fail(event.message || 'Codex 음성 연결 실패');
@@ -140,8 +156,7 @@ export class VoiceSession {
         if (peer.connectionState === 'connected') this.checkConnected();
         else if (['failed', 'closed', 'disconnected'].includes(peer.connectionState)) this.fail('음성 네트워크 연결이 끊겼습니다. 자동 재접수하지 않습니다.');
       };
-      if (stream) for (const track of stream.getTracks()) peer.addTrack(track, stream);
-      else peer.addTransceiver('audio', { direction: 'recvonly' });
+      for (const track of stream.getTracks()) peer.addTrack(track, stream);
       const dc = this.channel = peer.createDataChannel('oai-events');
       dc.onopen = () => this.checkConnected();
       dc.onmessage = event => {
@@ -183,7 +198,7 @@ export class VoiceSession {
     if (this.closed || !this.configured || this.peer?.connectionState !== 'connected' || this.channel?.readyState !== 'open' || this.state.phase === 'connected') return;
     this.timers.forEach(clearTimeout); this.timers = [];
     if (this.preview) {
-      this.view({ phase: 'connected', message: '선택한 목소리 미리듣기' });
+      this.view({ phase: 'connected', message: '샘플 음성을 기다리는 중…' });
       this.setExpiry(Date.now() + 20_000);
       void this.transport.speak(this.id, '목소리 샘플을 읽어 주세요.').catch(() => this.fail('미리듣기를 시작하지 못했습니다.'));
       return;
@@ -198,7 +213,10 @@ export class VoiceSession {
   private setExpiry(expiresAt: number) {
     clearTimeout(this.expiryTimer);
     this.view({ expiresAt });
-    this.expiryTimer = setTimeout(() => this.end(), Math.max(0, expiresAt - Date.now()));
+    this.expiryTimer = setTimeout(() => {
+      if (this.preview && !this.previewSpeech) this.fail('미리듣기 음성이 생성되지 않았습니다. 다시 시도하거나 다른 목소리를 선택하세요.');
+      else this.end();
+    }, Math.max(0, expiresAt - Date.now()));
   }
   private acceptLease(event: VoiceEvent) {
     const expiry = event.expiresAt;
@@ -236,6 +254,7 @@ export class VoiceSession {
     if (event.type === 'input_transcript.added') {
       this.bargeIn();
     } else if (event.type === 'output_transcript.added') {
+      if (this.preview) { this.previewSpeech = true; this.view({ message: '선택한 목소리 미리듣기' }); }
       this.responseActive = true;
       this.restoreOutput();
       this.view({ speaking: !this.suppressed });
@@ -415,6 +434,8 @@ export class VoiceSession {
     this.extension = undefined;
     if (this.poll) clearInterval(this.poll);
     if (this.vad) clearInterval(this.vad);
+    try { this.previewSource?.stop(); } catch { /* May be cancelled before start. */ }
+    this.previewSource?.disconnect(); this.previewSource = undefined;
     void this.audioContext?.close().catch(() => {});
     this.stream?.getTracks().forEach(t => { t.onended = null; t.stop(); });
     this.channel?.close(); this.peer?.close();

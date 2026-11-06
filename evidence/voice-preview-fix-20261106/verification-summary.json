@@ -1,0 +1,74 @@
+{
+  "status": "FIX_VERIFIED_LOCAL_RELEASE_CANDIDATE",
+  "version": "0.7.78",
+  "installedVersionObserved": "0.7.77",
+  "runs": {
+    "baseline-v2": {
+      "status": "FAIL",
+      "connected": true,
+      "unmutedAudioSamples": 0,
+      "microphoneRequests": 0,
+      "inputReleased": null,
+      "inputContextClosed": null
+    },
+    "silent-track-experiment-v1": {
+      "status": "PASS",
+      "connected": true,
+      "unmutedAudioSamples": 229,
+      "microphoneRequests": 0,
+      "inputReleased": null,
+      "inputContextClosed": null
+    },
+    "product-v1": {
+      "status": "FAIL",
+      "connected": true,
+      "unmutedAudioSamples": 0,
+      "microphoneRequests": 0,
+      "inputReleased": true,
+      "inputContextClosed": true
+    },
+    "product-v2": {
+      "status": "PASS",
+      "connected": true,
+      "unmutedAudioSamples": 126,
+      "microphoneRequests": 0,
+      "inputReleased": true,
+      "inputContextClosed": true
+    },
+    "receive-only-developer-v1": {
+      "status": "FAIL",
+      "connected": true,
+      "unmutedAudioSamples": 0,
+      "microphoneRequests": 0,
+      "inputReleased": true,
+      "inputContextClosed": true
+    },
+    "product-v3": {
+      "status": "PASS",
+      "connected": true,
+      "unmutedAudioSamples": 120,
+      "microphoneRequests": 0,
+      "inputReleased": true,
+      "inputContextClosed": true
+    },
+    "product-final-juniper-v1": {
+      "status": "PASS",
+      "connected": true,
+      "unmutedAudioSamples": 162,
+      "microphoneRequests": 0,
+      "inputReleased": true,
+      "inputContextClosed": true
+    }
+  },
+  "voiceUnitTests": 39,
+  "companionUiChecks": 7,
+  "initialFullGatePass": 11,
+  "installationAuthorized": false,
+  "installedPatched": false,
+  "published": false,
+  "hardwareSpeakerQA": false,
+  "speechNaturalness": "UNVERIFIED",
+  "nextAction": "Finish exact local commit/tag preparation; K approval is required for new tag push. Installation remains manual.",
+  "updatedAt": "2026-11-06T14:16:18.454983+00:00",
+  "versionedValidation": "../release-v0778-preparation-20261106/validation.done.json"
+}

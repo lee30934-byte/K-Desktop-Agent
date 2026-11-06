@@ -1,3 +1,13 @@
+## [0.7.78] - 2026-11-06
+
+### Fixed
+- Restore companion voice previews for the installed Codex v3 engine by providing an exact-zero synthetic input stream and a fixed developer sample request. Never open the microphone or dispatch work from preview; regular call feedback retains its existing speech-append behavior.
+- Release preview sources, tracks, audio contexts and peers on stop, cancellation and connection failure. Report a preview that generates no speech instead of silently showing normal completion.
+
+### Validation and limits
+- Real subscription previews passed with Juniper and Haetsal, measuring nonzero unmuted audio after the gain graph, zero microphone requests and zero work dispatch. Voice tests 39/39, companion UI 7/7 and full release gate passed; versioned release validation is recorded separately.
+- Physical speaker audibility and voice naturalness remain unverified. Installation remains manual.
+
 ## [0.7.77] - 2026-11-06
 
 ### Added

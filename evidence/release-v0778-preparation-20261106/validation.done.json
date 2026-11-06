@@ -1,0 +1,43 @@
+{
+  "status": "PASS",
+  "version": "0.7.78",
+  "sourceHashes": {
+    "package.json": "cba0f4d4d933800b7b9eea2a9baf5f14eb883f6e56a4af7e95f8dea686404942",
+    "package-lock.json": "97f3bc3d28f11ba00af9b0d1324684992537fd5b5a4a13684384505c3038a0fe",
+    "src-tauri/tauri.conf.json": "939c62306c76f07ad3f582829baa6c86990934e9f89aa744ee476a9120ef4539",
+    "src-tauri/Cargo.toml": "138093a1592f1abd7d1c4dabf3fc55c8f42535fdcf8d72e138845707934bac63",
+    "src-tauri/Cargo.lock": "8f4aa450d0c993cdc202fe8277e08a739da26f91a8b461f712e0edcbb56a55c5",
+    "CHANGELOG.md": "35ecd84cf595524fce598051a4c00607f6eb69e3a70aecb4f7882ffe28520d89",
+    "src/voiceSession.ts": "cae95b526a7f640dbe176aaf1e7e8058ca0188bf857c3c1f5549888477e4054e",
+    "sidecar/src/codex-voice.mjs": "0ea3d8d3f608bf6477c74d7f78c654786763b77c0fe7f2d7567743e2eb495497",
+    "scripts/voice-choice.test.ts": "9867dbc1404513587e4a666f0230626f0181f68158271a0f58344768aa8fc58f",
+    "scripts/probe-companion-voice.py": "aae04c24ae0e04179dd1fe687b65c7562961a997becc75ba9e2bceb7b16f491b",
+    "scripts/build-voice-fixture.mjs": "7ee608c238946abff21efac3c969c44223357706df39dca8356f27f9c724b1d6",
+    "scripts/probe-voice-preview.py": "06968d25b7b9359817773369e61b370b9842dce4c95fd5f6d303346135f849b2",
+    "docs/companion-voice-20261106.md": "0c2b5a02da89e4c1afab4d13118e90a66fe34ca348f78d7578d5b41dd0116c09"
+  },
+  "checks": [
+    {
+      "name": "release-gate",
+      "exitCode": 0,
+      "log": "C:\\Users\\lee30\\Documents\\K-Desktop-Agent\\.worktrees\\control-results-20261105\\evidence\\release-v0778-preparation-20261106\\release-gate.log"
+    },
+    {
+      "name": "version-check",
+      "exitCode": 0,
+      "log": "C:\\Users\\lee30\\Documents\\K-Desktop-Agent\\.worktrees\\control-results-20261105\\evidence\\release-v0778-preparation-20261106\\version-check.log"
+    },
+    {
+      "name": "diff-check",
+      "exitCode": 0,
+      "log": "C:\\Users\\lee30\\Documents\\K-Desktop-Agent\\.worktrees\\control-results-20261105\\evidence\\release-v0778-preparation-20261106\\diff-check.log"
+    }
+  ],
+  "tagPushAuthorized": false,
+  "installed": false,
+  "published": false,
+  "currentCheck": "diff-check",
+  "sourceUnchanged": true,
+  "phase": "LOCAL_RELEASE_CANDIDATE_AWAITING_TAG_PUSH_APPROVAL",
+  "finishedAt": "2026-11-06T14:16:04.390832+00:00"
+}

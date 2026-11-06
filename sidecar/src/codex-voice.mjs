@@ -199,7 +199,11 @@ export class VoiceHost {
     if (msg.type === 'voice_speak') {
       const s = this.current?.id === msg.sessionId && this.current.session;
       if (s?.threadId && typeof msg.text === 'string' && msg.text.trim() && msg.text.length <= 1200)
-        void s.request('thread/realtime/appendSpeech', { threadId: s.threadId, text: this.current.preview ? VOICE_SAMPLE : msg.text }).catch(() => s.fail('음성 샘플 또는 안내를 전달하지 못했습니다.'));
+        void s.request(this.current.preview ? 'thread/realtime/appendText' : 'thread/realtime/appendSpeech', {
+          threadId: s.threadId,
+          ...(this.current.preview ? { role: 'developer' } : {}),
+          text: this.current.preview ? `지금 목소리 미리듣기를 시작한다. 도구나 작업 실행 없이 다음 문장만 한국어로 한 번 소리 내어 읽어라: ${VOICE_SAMPLE}` : msg.text,
+        }).catch(() => s.fail('음성 샘플 또는 안내를 전달하지 못했습니다.'));
       return true;
     }
     if (msg.type === 'voice_reply') {

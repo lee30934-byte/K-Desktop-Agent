@@ -80,20 +80,37 @@ test('preview host forwards chosen voice and pins sample text without allowing e
     host.receive({ type: 'voice_start', sessionId: id, conversationId: 'target', sdp: 'v=0', voice: 'marin', preview: true });
     assert.deepEqual(seen[0][2], { voice: 'marin', preview: true });
     host.receive({ type: 'voice_speak', sessionId: id, text: 'untrusted instructions' });
-    assert.equal(seen[1][1].text, VOICE_SAMPLE);
+    assert.equal(seen[1][0], 'thread/realtime/appendText');
+    assert.equal(seen[1][1].role, 'developer');
+    assert.ok(seen[1][1].text.endsWith(VOICE_SAMPLE));
+    assert.equal(seen[1][1].text.includes('untrusted instructions'), false);
     const before = events.length;
     host.receive({ type: 'voice_extend', sessionId: id, token: crypto.randomUUID() });
     assert.equal(events.length, before);
   } finally { host.dispose(); }
 });
-test('receive-only preview opens no microphone, executes no work, sends the chosen voice and releases its peer', async () => {
-  const descriptors = new Map(['navigator', 'RTCPeerConnection', 'Audio'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+test('preview sends exact silence without microphone capture or work and releases its audio clock', async () => {
+  const descriptors = new Map(['navigator', 'RTCPeerConnection', 'Audio', 'AudioContext'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
   let microphone = 0, work = 0, options: any; const spoken: any[] = [];
+  const track = { enabled: true, readyState: 'live', stop() { this.readyState = 'ended'; } };
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+  const source = { offset: { value: 1 }, target: null as any, started: false, stopped: false, disconnected: false,
+    connect(target: any) { this.target = target; }, start() { this.started = true; },
+    stop() { this.stopped = true; }, disconnect() { this.disconnected = true; } };
+  class Context {
+    static instance: Context; state = 'suspended'; destination = { forbidden: 'speaker' };
+    constructor() { Context.instance = this; }
+    createMediaStreamDestination() { return { stream }; }
+    createConstantSource() { return source; }
+    async resume() { this.state = 'running'; }
+    async close() { this.state = 'closed'; }
+  }
   class Peer {
     static instance: Peer; connectionState = 'connected'; iceGatheringState = 'complete'; remoteDescription = null;
     localDescription: any; direction = ''; channel = { readyState: 'open', close() {} };
     constructor() { Peer.instance = this; }
-    addTransceiver(_kind: string, init: any) { this.direction = init.direction; }
+    tracks: any[] = [];
+    addTrack(track: any) { this.tracks.push(track); }
     createDataChannel() { return this.channel; }
     async createOffer() { return { type: 'offer', sdp: 'v=0' }; }
     async setLocalDescription(value: any) { this.localDescription = value; }
@@ -102,6 +119,7 @@ test('receive-only preview opens no microphone, executes no work, sends the chos
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: () => { microphone++; throw Error('microphone opened'); } } } });
   Object.defineProperty(globalThis, 'RTCPeerConnection', { configurable: true, value: Peer });
   Object.defineProperty(globalThis, 'Audio', { configurable: true, value: class { pause() {} } });
+  Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: Context });
   const deny = async () => { work++; };
   const session = new VoiceSession('preview', { status: deny, send: deny, stop: deny, stopAll: deny }, {
     listen: async () => () => {}, start: async (_id, _target, _sdp, value) => { options = value; },
@@ -109,10 +127,35 @@ test('receive-only preview opens no microphone, executes no work, sends the chos
   }, () => {});
   try {
     await session.start('', '', 'cedar', true); session.receive({ type: 'session.started' });
-    assert.equal(microphone, 0); assert.equal(Peer.instance.direction, 'recvonly');
+    assert.equal(microphone, 0); assert.deepEqual(Peer.instance.tracks, [track]);
+    assert.equal(track.enabled, true); assert.equal(source.offset.value, 0); assert.equal(source.started, true);
+    assert.notEqual(source.target, Context.instance.destination, 'silent input never connects to speakers');
+    assert.equal(Context.instance.state, 'running');
     assert.deepEqual(options, { voice: 'cedar', preview: true }); assert.equal(spoken.length, 1);
     session.receive({ type: 'turn.done', turn: { role: 'user', transcript: '전체 작업 멈춰' } });
     assert.equal(work, 0); session.end(); assert.equal(isVoiceCallActive(), false); assert.equal(Peer.instance.connectionState, 'closed');
+    assert.equal(track.readyState, 'ended'); assert.equal(source.stopped, true); assert.equal(source.disconnected, true);
+    assert.equal(Context.instance.state, 'closed');
+    // A failed transport must also release the synthetic stream and context.
+    track.readyState = 'live'; source.stopped = false;
+    const failed = new VoiceSession('preview-failure', { status: deny, send: deny, stop: deny, stopAll: deny }, {
+      listen: async () => () => {}, start: async () => { throw Error('provider unavailable'); },
+      stop: async () => {}, reply: deny, speak: async () => {},
+    }, () => {});
+    await failed.start('', '', 'cedar', true);
+    assert.equal(track.readyState, 'ended'); assert.equal(source.stopped, true);
+    assert.equal(Context.instance.state, 'closed'); assert.equal(isVoiceCallActive(), false); assert.equal(microphone, 0);
+    // Cancelling while AudioContext resumes must not open a peer or provider call.
+    let resume!: () => void;
+    Context.prototype.resume = function () { return new Promise<void>(resolve => { resume = resolve; }); };
+    const previousPeer = Peer.instance;
+    const cancelled = new VoiceSession('preview-cancelled', { status: deny, send: deny, stop: deny, stopAll: deny }, {
+      listen: deny, start: deny, stop: async () => {}, reply: deny, speak: deny,
+    }, () => {});
+    const starting = cancelled.start('', '', 'cedar', true);
+    cancelled.end(); resume(); await starting;
+    assert.equal(Peer.instance, previousPeer); assert.equal(work, 0); assert.equal(microphone, 0);
+    assert.equal(Context.instance.state, 'closed'); assert.equal(track.readyState, 'ended');
   } finally {
     session.end();
     for (const [name, descriptor] of descriptors) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name); }

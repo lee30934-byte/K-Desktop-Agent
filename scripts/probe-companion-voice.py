@@ -39,7 +39,7 @@ async def main():
                   navigator.mediaDevices.enumerateDevices=async()=>[];
                   window.RTCPeerConnection=class {
                     constructor(){window.peers.push(this);this.connectionState='new';this.iceGatheringState='complete';this.channel={readyState:'open',close(){}};}
-                    addTrack(){} addTransceiver(kind,init){this.direction=init.direction;}
+                    addTrack(track){this.tracks??=[];this.tracks.push(track);} addTransceiver(kind,init){this.direction=init.direction;}
                     createDataChannel(){return this.channel;}
                     async createOffer(){return {type:'offer',sdp:'v=0'};}
                     async setLocalDescription(d){this.localDescription=d;}
@@ -72,15 +72,16 @@ async def main():
                 await page.get_by_role('button', name='목소리 미리듣기', exact=True).click()
                 await page.wait_for_function("window.actions.some(a=>a.action==='start'&&a.preview)")
                 assert await page.evaluate('window.microphoneRequests') == 0
-                assert await page.evaluate('window.peers[0].direction') == 'recvonly'
+                assert await page.evaluate("window.peers[0].tracks.length===1 && window.peers[0].tracks[0].kind==='audio'")
                 assert await page.evaluate("window.actions.find(a=>a.action==='start').voice") == 'cedar'
                 await page.evaluate('window.connectLatest()')
                 await page.wait_for_function("window.actions.some(a=>a.action==='speak')")
                 await page.evaluate("window.peers[0].channel.onmessage({data:JSON.stringify({type:'output_transcript.added'})})")
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.mood==='speaking'")
-                checks.append('preview forwards selected voice, receives only audio, opens no microphone and animates the avatar')
+                checks.append('preview forwards selected voice, sends synthetic silence, opens no microphone and animates the avatar')
                 await page.get_by_role('button', name='비서 기능 접기', exact=True).click()
                 await page.wait_for_function("window.peers[0].connectionState==='closed'")
+                assert await page.evaluate("window.peers[0].tracks.every(t=>t.readyState==='ended')")
                 checks.append('closing the menu tears down preview resources')
 
                 await appearance()
