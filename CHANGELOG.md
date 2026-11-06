@@ -1,3 +1,10 @@
+## [0.7.75] - 2026-11-06
+
+### Improved
+- Raise the KDA voice output gain limit from 300% to 500%, with one shared limit for playback and the slider. Preserve the default 150%, saved volume, and limiter.
+- Add four original SVG assistant avatars (robot, cat, sprout, cloud), distinct idle motion, click reactions and expressions driven by voice/task state. Persist avatar and motion preferences; respect reduced motion and pause in hidden documents.
+- Show remaining call time and allow acknowledged five-minute extensions without restarting media or resubmitting work. Keep frontend/backend expiry guards, reject cross-session renewals, and deduplicate renewal tokens.
+
 ## [0.7.74] - 2026-11-06
 
 ### Fixed

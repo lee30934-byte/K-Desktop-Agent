@@ -1,7 +1,9 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import VoiceCallPanel from "./VoiceCallPanel";
 import DotBridgePanel from "./DotBridgePanel";
+import AssistantAvatar, { AVATARS, AVATAR_MOODS, readAvatarPreference, type AvatarMood } from "./AssistantAvatar";
+import type { VoiceView } from "../voiceSession";
 import type { VoiceHandlers } from "../voiceControl";
 import type { ChatMessage, Conversation } from "../types";
 import "./AssistantWidget.css";
@@ -33,6 +35,8 @@ interface Props {
 /** View-only layout state; minimizing never unmounts the DOT dispatcher. */
 export default function AssistantWidget(props: Props) {
   const [layout, setLayout] = useState<Layout>(readLayout);
+  const [avatar, setAvatar] = useState(readAvatarPreference);
+  const [voiceView, setVoiceView] = useState<VoiceView | null>(null);
   const [voiceTarget, setVoiceTarget] = useState<{ id: string; title: string; following?: boolean } | null>(null);
   const panel = useRef<HTMLElement>(null);
   const drag = useRef<{ id: number; x: number; y: number; origin: Position } | null>(null);
@@ -43,6 +47,14 @@ export default function AssistantWidget(props: Props) {
   const selectedTitle = props.conversations.find(c => c.id === props.conversationId)?.title ?? "대화를 선택하세요";
   const targetChanged = !!voiceTarget && !voiceTarget.following && props.conversationId !== voiceTarget.id;
   const voiceTitle = voiceTarget?.following ? selectedTitle : voiceTarget?.title;
+  const mood: AvatarMood = voiceTarget && voiceView
+    ? voiceView.phase === 'error' ? 'error' : voiceView.phase === 'connecting' ? 'connecting'
+    : voiceView.phase === 'connected' ? voiceView.speaking ? 'speaking' : voiceView.muted ? 'muted'
+    : voiceView.listening ? 'listening' : voiceView.commandPending ? 'thinking' : 'listening'
+    : running ? 'working' : 'idle' : running ? 'working' : 'idle';
+  useEffect(() => {
+    try { localStorage.setItem('kda_assistant_avatar_v1', JSON.stringify(avatar)); } catch { /* Session selection still works. */ }
+  }, [avatar]);
   function bounded(p: Position): Position {
     const box = panel.current?.getBoundingClientRect();
     return { x: Math.max(8, Math.min(p.x, window.innerWidth - (box?.width ?? 300) - 8)),
@@ -98,8 +110,8 @@ export default function AssistantWidget(props: Props) {
     <div className="assistant-widget-handle" tabIndex={0} role="group" aria-label="비서 창 이동 · 방향키 이동 · Home 기본 위치"
       onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null; }}
       onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }} onKeyDown={keyMove}>
-      <span className="assistant-widget-avatar" aria-hidden="true">K</span>
-      <div className="assistant-widget-identity"><strong>K 비서</strong><span title={voiceTitle}><i className={running ? "working" : ""} />{voiceTarget ? `음성 · ${voiceTitle}` : running ? `${running}개 작업 진행 중` : "무엇을 도와드릴까요?"}</span></div>
+      <AssistantAvatar kind={avatar.kind} mood={mood} motion={avatar.motion} compact={layout.minimized} />
+      <div className="assistant-widget-identity"><strong>K 비서</strong><span title={voiceTitle}><i className={running ? "working" : ""} />{voiceTarget ? `음성 · ${voiceTitle}` : running ? `${running}개 작업 진행 중` : "무엇을 도와드릴까요?"}</span>{!layout.minimized && <small className="assistant-widget-mood">{AVATAR_MOODS[mood]}</small>}</div>
       <button type="button" className="assistant-widget-icon" aria-label={layout.minimized ? "비서 창 펼치기" : "비서 창 최소화"}
         title={layout.minimized ? "펼치기" : "최소화"} onClick={() => setLayout(previous => ({ ...previous, minimized: !previous.minimized }))}>{layout.minimized ? "↗" : "−"}</button>
     </div>
@@ -114,9 +126,19 @@ export default function AssistantWidget(props: Props) {
         <button type="button" onClick={telegram}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 18-7-5 18-5-7-8-4Zm8 4 10-11" /></svg>Telegram</button>
       </div>
       <p className="assistant-widget-hint">말로 작업을 요청하고 진행 상황을 확인하세요.</p>
+      <details className="assistant-avatar-options">
+        <summary>아바타 꾸미기</summary>
+        <div role="group" aria-label="아바타 선택" className="assistant-avatar-choices">{AVATARS.map(a =>
+          <button type="button" key={a.id} aria-pressed={avatar.kind === a.id} onClick={() => setAvatar(p => ({ ...p, kind: a.id }))}>
+            <strong>{a.name}</strong><small>{a.note}</small>
+          </button>)}</div>
+        <label><input type="checkbox" checked={avatar.motion} onChange={e => setAvatar(p => ({ ...p, motion: e.target.checked }))} />대기모션·리액션 움직임</label>
+        <small>아바타를 누르면 인사·하트·갸웃·졸기 리액션을 보여줘요.</small>
+      </details>
       {voiceTarget && <VoiceCallPanel conversationId={voiceTarget.id} title={voiceTarget.title} selectedId={props.conversationId} conversations={props.conversations} handlers={props.handlers}
+        onView={setVoiceView}
         onTarget={(target, following) => setVoiceTarget(previous => previous ? { id: target?.id ?? '', title: target?.title ?? '대화 선택 필요', following } : null)}
-        onClose={() => setVoiceTarget(null)} />}
+        onClose={() => { setVoiceTarget(null); setVoiceView(null); }} />}
       <section className="assistant-widget-section">
         <h3>최근 답변 <span>현재 보고 있는 대화</span></h3>
         {answer && props.conversationId ? <button type="button" aria-label="최근 답변 열기" className="assistant-widget-result" onClick={() => props.onSelect(props.conversationId!)}>

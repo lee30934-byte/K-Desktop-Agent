@@ -76,8 +76,12 @@ async def main():
                 await voice.get_by_text('음성·장치 설정', exact=True).click()
                 assert await page.get_by_role('combobox', name='통화 마이크', exact=True).is_visible()
                 gain = page.get_by_role('slider', name='KDA 음성 크기')
+                assert await gain.get_attribute('max') == '500'
                 await gain.fill('200')
                 assert await page.evaluate("localStorage.getItem('kda_voice_output_gain')") == '2'
+                await gain.fill('500')
+                assert await page.evaluate("localStorage.getItem('kda_voice_output_gain')") == '5'
+                assert await voice.locator('.voice-call-volume output').inner_text() == '500%'
                 checks.append('device controls open on demand and output-gain adjustment persists')
 
                 await page.evaluate("window.renderSimpleUI('other')")

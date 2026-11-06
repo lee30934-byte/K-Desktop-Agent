@@ -6,15 +6,17 @@ export type VoicePhase = 'idle' | 'connecting' | 'connected' | 'error' | 'ended'
 export interface VoiceView {
   phase: VoicePhase; message: string; muted: boolean; speaking: boolean;
   commandPending?: boolean;
+  listening?: boolean; expiresAt?: number; extending?: boolean; extensionMessage?: string;
   conversationId: string; lines: { role: string; text: string }[];
 }
-export interface VoiceEvent { sessionId: string; kind: 'sdp' | 'error' | 'command'; sdp?: string; message?: string; token?: string; command?: unknown; createdAt?: number }
+export interface VoiceEvent { sessionId: string; kind: 'sdp' | 'error' | 'command' | 'lease'; sdp?: string; message?: string; token?: string; command?: unknown; createdAt?: number; expiresAt?: number }
 export interface VoiceTransport {
   listen(handler: (event: VoiceEvent) => void): Promise<() => void>;
   start(sessionId: string, conversationId: string, sdp: string): Promise<void>;
   stop(sessionId: string): Promise<void>;
   reply(sessionId: string, token: string, result: unknown): Promise<void>;
   speak(sessionId: string, text: string): Promise<void>;
+  extend?(sessionId: string, token: string): Promise<void>;
 }
 let activeVoiceId: string | null = null;
 export function isVoiceCallActive() { return activeVoiceId !== null; }
@@ -55,6 +57,8 @@ export class VoiceSession {
   private timers: ReturnType<typeof setTimeout>[] = [];
   private poll?: ReturnType<typeof setInterval>;
   private polling = false;
+  private expiryTimer?: ReturnType<typeof setTimeout>;
+  private extension?: { token: string; timer: ReturnType<typeof setTimeout> };
   private responseActive = false;
   private userSpeaking = false;
   private suppressed = false;
@@ -101,6 +105,7 @@ export class VoiceSession {
       const off = await this.transport.listen(event => {
         if (this.closed || event.sessionId !== this.id) return;
         if (event.kind === 'error') this.fail(event.message || 'Codex 음성 연결 실패');
+        else if (event.kind === 'lease') this.acceptLease(event);
         else if (event.kind === 'sdp' && event.sdp) void this.acceptSdp(event.sdp);
         else if (event.kind === 'command') void this.command(event);
       });
@@ -169,9 +174,39 @@ export class VoiceSession {
     this.stream?.getAudioTracks().forEach(t => { t.enabled = !this.state.muted; });
     this.startVad();
     this.view({ phase: 'connected', message: '듣고 있어요 · 대화 이름을 말하면 명령 대상을 바꿀 수 있어요' });
-    this.timers.push(setTimeout(() => this.end(), 5 * 60_000));
+    if (!this.state.expiresAt) this.setExpiry(Date.now() + 5 * 60_000);
     void this.pollStatus();
     this.poll = setInterval(() => void this.pollStatus(), 3000);
+  }
+  private setExpiry(expiresAt: number) {
+    clearTimeout(this.expiryTimer);
+    this.view({ expiresAt });
+    this.expiryTimer = setTimeout(() => this.end(), Math.max(0, expiresAt - Date.now()));
+  }
+  private acceptLease(event: VoiceEvent) {
+    const expiry = event.expiresAt;
+    if (!Number.isFinite(expiry) || expiry! <= Date.now() || expiry! > Date.now() + 11 * 60_000) return;
+    if (event.token && event.token !== this.extension?.token) return;
+    // A delayed initial lease must never undo an acknowledged extension.
+    if (this.state.expiresAt && expiry! < this.state.expiresAt) return;
+    this.setExpiry(expiry!);
+    if (event.token && this.extension) {
+      clearTimeout(this.extension.timer); this.extension = undefined;
+      this.view({ extending: false, extensionMessage: '통화 시간이 연장됐어요.' });
+    }
+  }
+  async extend() {
+    if (this.closed || this.state.phase !== 'connected' || this.extension) return;
+    if (!this.transport.extend) { this.view({ extensionMessage: '이 음성 연결은 연장을 지원하지 않습니다.' }); return; }
+    const token = crypto.randomUUID();
+    const failed = () => {
+      if (this.closed || this.extension?.token !== token) return;
+      clearTimeout(this.extension.timer); this.extension = undefined;
+      this.view({ extending: false, extensionMessage: '연장을 확인하지 못했습니다. 표시된 남은 시간을 확인하세요.' });
+    };
+    this.extension = { token, timer: setTimeout(failed, 5000) };
+    this.view({ extending: true, extensionMessage: '' });
+    try { await this.transport.extend(this.id, token); } catch { failed(); }
   }
   receive(event: Record<string, any>) {
     if (this.closed) return;
@@ -190,6 +225,7 @@ export class VoiceSession {
       const turn = event.turn;
       if (turn?.role === 'user') {
         this.userSpeaking = false;
+        this.view({ listening: false });
         const key = typeof turn.id === 'string' ? turn.id : String(event.event_id ?? '');
         const fresh = !key || !this.finalTurns.has(key);
         if (key && this.finalTurns.size < 128) this.finalTurns.add(key);
@@ -218,7 +254,7 @@ export class VoiceSession {
     if (!this.utteranceCaptured) { this.gate.beginUtterance(); this.utteranceCaptured = true; }
     this.userSpeaking = true; this.suppressed = true; this.silenceUntilUser = false;
     if (this.audio) this.audio.muted = true;
-    this.view({ speaking: false, commandPending: true });
+    this.view({ speaking: false, commandPending: true, listening: true });
   }
   private restoreOutput() {
     if (this.closed || !this.responseActive || this.userSpeaking || this.silenceUntilUser) return;
@@ -245,6 +281,7 @@ export class VoiceSession {
           first = 0;
           if (this.userSpeaking && now - last > 650) {
             this.userSpeaking = false;
+            this.view({ listening: false });
             this.restoreOutput();
             this.flushFeedback();
           }
@@ -282,7 +319,7 @@ export class VoiceSession {
   }
   setMuted(muted: boolean) {
     this.stream?.getAudioTracks().forEach(t => { t.enabled = this.configured && !muted && !this.closed; });
-    this.view({ muted });
+    this.view({ muted, ...(muted ? { listening: false } : {}) });
   }
   selectTarget(id: string | null) {
     if (this.userSpeaking || this.responseActive || this.state.commandPending) throw Error('말하는 중입니다. 이번 답변이 끝난 뒤 대상을 바꾸세요.');
@@ -349,12 +386,15 @@ export class VoiceSession {
       void this.transport.speak(this.id, text).catch(() => { if (!this.closed) this.line('system', '진행 음성 전달 실패. 실제 상태는 작업 패널에서 확인하세요.'); });
     } catch (e) { this.fail(String(e)); }
   }
-  private fail(message: string) { if (!this.closed) { this.view({ phase: 'error', message, speaking: false }); this.release(); } }
-  end() { if (!this.closed) { this.view({ phase: 'ended', message: '통화 종료 · 진행 중인 작업은 작업 패널에서 확인하세요.', speaking: false }); this.release(); } }
+  private fail(message: string) { if (!this.closed) { this.view({ phase: 'error', message, speaking: false, listening: false, extending: false }); this.release(); } }
+  end() { if (!this.closed) { this.view({ phase: 'ended', message: '통화 종료 · 진행 중인 작업은 작업 패널에서 확인하세요.', speaking: false, listening: false, extending: false }); this.release(); } }
   private release() {
     this.closed = true; this.gate.close();
     if (activeVoiceId === this.id) activeVoiceId = null;
     this.timers.forEach(clearTimeout); this.timers = [];
+    clearTimeout(this.expiryTimer);
+    if (this.extension) clearTimeout(this.extension.timer);
+    this.extension = undefined;
     if (this.poll) clearInterval(this.poll);
     if (this.vad) clearInterval(this.vad);
     void this.audioContext?.close().catch(() => {});

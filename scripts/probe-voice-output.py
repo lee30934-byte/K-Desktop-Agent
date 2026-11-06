@@ -36,6 +36,8 @@ async def main():
               const defaultGain=readVoiceGain();
               localStorage.setItem(VOICE_OUTPUT_KEY,'2');
               const savedGain=readVoiceGain();
+              localStorage.setItem(VOICE_OUTPUT_KEY,'5');
+              const savedMaxGain=readVoiceGain();
               localStorage.setItem(VOICE_OUTPUT_KEY,'oops');
               const invalidGain=readVoiceGain();
               const input=new AudioContext(), oscillator=input.createOscillator(), quiet=input.createGain();
@@ -49,6 +51,7 @@ async def main():
                   samples.push(Math.sqrt(a.reduce((s,x)=>s+x*x,0)/a.length));await new Promise(r=>setTimeout(r,20));}
                 return samples.reduce((s,x)=>s+x,0)/samples.length;};
               const baseline=await rms();output.setGain(2);const boosted=await rms();
+              output.setGain(5);const maxBoosted=await rms();
               output.setGain(0);const muted=await rms();output.close();
               const sourceSurvives=remote.stream.getTracks().every(t=>t.readyState==='live');
               const outputReleased=stream.getTracks().every(t=>t.readyState==='ended');
@@ -86,14 +89,15 @@ async def main():
               const sourceReleased=silentSource.paused&&silentSource.srcObject===null;
               const remoteTrackPreserved=rx.getTracks().every(t=>t.readyState==='live');
               send.close();receive.close();wave.stop();tx.stream.getTracks().forEach(t=>t.stop());await tone.close();await meter.close();
-              return {defaultGain,savedGain,invalidGain,low:voiceGain(-10),high:voiceGain(99),
-                baseline,boosted,ratio:boosted/baseline,muted,sourceSurvives,outputReleased,
+              return {defaultGain,savedGain,savedMaxGain,invalidGain,low:voiceGain(-10),high:voiceGain(99),
+                baseline,boosted,ratio:boosted/baseline,maxRatio:maxBoosted/baseline,muted,sourceSurvives,outputReleased,
                 rtcRmsMax,rtcSignalSamples,sourceVolume,sourcePlaying,sourceReleased,remoteTrackPreserved,iceErrors};
             }''')
             await browser.close()
         assert result['defaultGain'] == 1.5 and result['savedGain'] == 2 and result['invalidGain'] == 1.5
-        assert result['low'] == 0 and result['high'] == 3
+        assert result['low'] == 0 and result['high'] == 5 and result['savedMaxGain'] == 5
         assert result['baseline'] > 0.001 and 1.9 < result['ratio'] < 2.1
+        assert 4.8 < result['maxRatio'] < 5.2
         assert result['muted'] < 0.00001
         assert result['sourceSurvives'] and result['outputReleased']
         assert result['rtcRmsMax'] > 0.001 and result['rtcSignalSamples'] >= 10

@@ -2802,6 +2802,11 @@ async fn voice_control(action: String, session_id: String, conversation_id: Opti
             serde_json::json!({"type":"voice_start","sessionId":session_id,"conversationId":conversation,"sdp":offer})
         },
         "stop" => serde_json::json!({"type":"voice_stop","sessionId":session_id}),
+        "extend" => {
+            let token = token.ok_or("missing extension token")?;
+            uuid::Uuid::parse_str(&token).map_err(|_| "invalid extension token")?;
+            serde_json::json!({"type":"voice_extend","sessionId":session_id,"token":token})
+        },
         "speak" => {
             let text = text.ok_or("missing feedback")?;
             if text.trim().is_empty() || text.chars().count() > 1200 { return Err("invalid feedback".into()); }

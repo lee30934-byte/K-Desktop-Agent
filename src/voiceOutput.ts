@@ -1,7 +1,8 @@
 export const VOICE_OUTPUT_KEY = 'kda_voice_output_gain';
 export const DEFAULT_VOICE_GAIN = 1.5;
+export const MAX_VOICE_GAIN = 5;
 export function voiceGain(value: number) {
-  return Number.isFinite(value) ? Math.min(3, Math.max(0, value)) : DEFAULT_VOICE_GAIN;
+  return Number.isFinite(value) ? Math.min(MAX_VOICE_GAIN, Math.max(0, value)) : DEFAULT_VOICE_GAIN;
 }
 export function readVoiceGain() {
   try {

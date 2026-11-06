@@ -21,7 +21,17 @@
 .assistant-widget button:focus-visible, .assistant-widget-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .assistant-widget-handle { display: flex; align-items: center; gap: 10px; padding: 14px; flex-shrink: 0; cursor: grab; touch-action: none; user-select: none; }
 .assistant-widget-handle:active { cursor: grabbing; }
-.assistant-widget-avatar { display: grid; place-items: center; width: 38px; height: 38px; font: 600 21px var(--font-display); border-radius: 12px; background: var(--accent-glow); color: var(--accent); }
+.assistant-widget-mood { display: block; margin-top: 8px; color: var(--text-secondary); font-size: 10px; }
+.assistant-avatar-options { margin: 12px 0; color: var(--text-secondary); font-size: 11px; }
+.assistant-avatar-options summary { cursor: pointer; padding: 6px 0; }
+.assistant-avatar-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 6px 0 10px; }
+.assistant-avatar-choices button { text-align: left; padding: 8px; background: var(--bg-3); border: 1px solid var(--border-subtle); border-radius: 9px; }
+.assistant-avatar-choices button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-glow); }
+.assistant-avatar-choices strong, .assistant-avatar-choices small { display: block; }
+.assistant-avatar-choices strong { font-weight: 500; color: var(--text-primary); }
+.assistant-avatar-choices small { font-size: 10px; color: var(--text-secondary); }
+.assistant-avatar-options label { display: flex; align-items: center; gap: 5px; margin-bottom: 7px; }
+.assistant-avatar-options > small { display: block; font-size: 10px; }
 .assistant-widget-identity { flex: 1; min-width: 0; }
 .assistant-widget-identity strong { display: block; font-size: 14px; }
 .assistant-widget-identity > span { display: block; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary); font-size: 11px; white-space: nowrap; }

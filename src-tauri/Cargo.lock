@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "k-desktop-agent"
-version = "0.7.74"
+version = "0.7.75"
 dependencies = [
  "image",
  "notify",

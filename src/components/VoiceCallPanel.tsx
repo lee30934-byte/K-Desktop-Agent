@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { VoiceSession, type VoiceEvent, type VoiceTransport, type VoiceView } from '../voiceSession';
 import type { VoiceHandlers } from '../voiceControl';
 import type { VoiceTarget } from '../voiceRouting';
-import { readVoiceGain, voiceGain, VOICE_OUTPUT_KEY } from '../voiceOutput';
+import { readVoiceGain, voiceGain, VOICE_OUTPUT_KEY, MAX_VOICE_GAIN } from '../voiceOutput';
 import './VoiceCallPanel.css';
 
 const transport: VoiceTransport = {
@@ -15,12 +15,14 @@ const transport: VoiceTransport = {
   stop: sessionId => invoke('voice_control', { action: 'stop', sessionId }),
   reply: (sessionId, token, result) => invoke('voice_control', { action: 'reply', sessionId, token, result }),
   speak: (sessionId, text) => invoke('voice_control', { action: 'speak', sessionId, text }),
+  extend: (sessionId, token) => invoke('voice_control', { action: 'extend', sessionId, token }),
 };
 
-export default function VoiceCallPanel({ conversationId, title, handlers, onClose, selectedId, conversations, onTarget }: {
+export default function VoiceCallPanel({ conversationId, title, handlers, onClose, selectedId, conversations, onTarget, onView }: {
   conversationId: string; title: string; handlers: VoiceHandlers; onClose(): void;
   selectedId?: string | null; conversations?: VoiceTarget[];
   onTarget?(target: VoiceTarget | null, following: boolean): void;
+  onView?(view: VoiceView): void;
 }) {
   const ref = useRef<VoiceSession>();
   const handlersRef = useRef(handlers); handlersRef.current = handlers;
@@ -29,6 +31,15 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
   const [following, setFollowing] = useState(true);
   const [routeError, setRouteError] = useState('');
   const [view, setView] = useState<VoiceView>({ phase: 'idle', message: '', muted: false, speaking: false, conversationId, lines: [] });
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { onView?.(view); }, [view, onView]);
+  useEffect(() => {
+    if (view.phase !== 'connected') return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [view.phase, view.expiresAt]);
+  const remaining = Math.max(0, Math.ceil(((view.expiresAt ?? now) - now) / 1000));
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceMessage, setDeviceMessage] = useState('');
   const deviceRead = useRef(0);
@@ -95,6 +106,9 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
     }}><option value="">현재 보고 있는 대화 따라가기</option>{conversations.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}</select></label>}
     {routeError && <small role="alert">{routeError}</small>}
     <p role={view.phase === 'error' ? 'alert' : 'status'}>{view.message || '음성 연결 준비 중…'}</p>
+    {view.phase === 'connected' && <div className="voice-call-lease"><span>남은 시간 {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')}</span>
+      <button type="button" disabled={view.extending || remaining > 5 * 60} onClick={() => void ref.current?.extend()} title="남은 시간이 5분 이하일 때 5분 더 이어갈 수 있어요">{view.extending ? '연장 확인 중…' : '5분 연장'}</button></div>}
+    {view.extensionMessage && <small role="status">{view.extensionMessage}</small>}
     <div className="voice-call-actions voice-call-primary">
       {busy ? <><button type="button" onClick={() => ref.current?.setMuted(!view.muted)}>{view.muted ? '마이크 켜기' : '음소거'}</button><button type="button" onClick={() => ref.current?.silence()} disabled={view.phase !== 'connected'}>말하기 중지</button><button type="button" className="voice-call-end" onClick={() => ref.current?.end()}>통화 종료</button></> : <button type="button" onClick={start}>다시 연결</button>}
     </div>
@@ -105,7 +119,7 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
       <label>스피커<select aria-label="통화 스피커" value={output} disabled={busy} onChange={e => setOutput(e.target.value)}><option value="">시스템 기본</option>{output && !devices.some(d => d.kind === 'audiooutput' && d.deviceId === output) && <option value={output} disabled>선택한 스피커 · 연결 확인 필요</option>}{devices.filter(d => d.kind === 'audiooutput' && d.deviceId !== 'default').map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || '스피커'}</option>)}</select></label>
     </div>
     <label className="voice-call-volume">KDA 음성 크기 <output>{Math.round(gain * 100)}%</output>
-      <input aria-label="KDA 음성 크기" type="range" min="0" max="300" step="10" value={Math.round(gain * 100)} onChange={e => {
+      <input aria-label="KDA 음성 크기" type="range" min="0" max={MAX_VOICE_GAIN * 100} step="10" value={Math.round(gain * 100)} onChange={e => {
         const value = voiceGain(Number(e.target.value) / 100);
         setGain(value); ref.current?.setOutputGain(value);
         try { localStorage.setItem(VOICE_OUTPUT_KEY, String(value)); } catch { /* Current-call control still works. */ }
@@ -113,7 +127,7 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
     </label>
     {deviceMessage && <small role="status">{deviceMessage}</small>}
     <button type="button" onClick={() => void refreshDevices()}>장치 새로고침</button>
-    <small>Codex 로그인 사용 · 원음 파일 저장 안 함 · 통화 최대 5분</small>
+    <small>Codex 로그인 사용 · 원음 파일 저장 안 함 · 기본 5분, 연결 중 연장 가능</small>
     </details>
     {deviceMessage && view.phase === 'error' && <small role="status">{deviceMessage}</small>}
     <div className="voice-call-actions">

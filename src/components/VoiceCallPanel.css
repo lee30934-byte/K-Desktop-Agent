@@ -14,3 +14,6 @@
 .voice-call-primary button{flex:1}
 .voice-call .voice-call-end{color:var(--warn)}
 .voice-call :is(button,select,input,summary):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.voice-call-lease { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.voice-call-lease button { background: var(--accent-glow); border: 1px solid var(--border-default); border-radius: 7px; color: var(--accent); padding: 5px 9px; cursor: pointer; }
+.voice-call-lease button:disabled { opacity: .6; cursor: default; }

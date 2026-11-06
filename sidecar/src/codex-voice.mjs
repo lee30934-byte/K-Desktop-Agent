@@ -143,9 +143,25 @@ export class VoiceHost {
   current = null;
   constructor(codex, emit, Session = CodexVoiceSession) { this.codex = codex; this.emit = emit; this.Session = Session; }
   receive(msg) {
-    if (!['voice_start', 'voice_stop', 'voice_reply', 'voice_speak'].includes(msg.type)) return false;
+    if (!['voice_start', 'voice_stop', 'voice_reply', 'voice_speak', 'voice_extend'].includes(msg.type)) return false;
     const valid = typeof msg.sessionId === 'string' && /^[\w-]{20,80}$/.test(msg.sessionId);
     if (!valid) return true;
+    if (msg.type === 'voice_extend') {
+      const entry = this.current;
+      if (!entry || entry.id !== msg.sessionId || entry.session?.closed || Date.now() >= entry.expiresAt ||
+          typeof msg.token !== 'string' || !/^[\w-]{20,80}$/.test(msg.token)) return true;
+      const previous = entry.extensions.get(msg.token);
+      if (previous) {
+        this.emit({ type: 'voice_event', sessionId: entry.id, kind: 'lease', token: msg.token, expiresAt: previous });
+        return true;
+      }
+      if (entry.extensions.size >= 128) return true;
+      entry.expiresAt = Math.min(Date.now() + 10 * 60_000, entry.expiresAt + 5 * 60_000);
+      entry.extensions.set(msg.token, entry.expiresAt);
+      this.armExpiry(entry);
+      this.emit({ type: 'voice_event', sessionId: entry.id, kind: 'lease', token: msg.token, expiresAt: entry.expiresAt });
+      return true;
+    }
     if (msg.type === 'voice_speak') {
       const s = this.current?.id === msg.sessionId && this.current.session;
       if (s?.threadId && typeof msg.text === 'string' && msg.text.trim() && msg.text.length <= 1200)
@@ -169,7 +185,7 @@ export class VoiceHost {
       this.emit({ type: 'voice_event', sessionId: msg.sessionId, kind: 'error', message: '다른 통화가 있거나 음성 시작 요청이 유효하지 않습니다.' });
       return true;
     }
-    const entry = { id: msg.sessionId, session: null, timer: null };
+    const entry = { id: msg.sessionId, session: null, timer: null, expiresAt: Date.now() + 5 * 60_000, extensions: new Map() };
     this.current = entry;
     const publish = event => {
       if (this.current !== entry) return;
@@ -179,10 +195,19 @@ export class VoiceHost {
     try {
       entry.session = new this.Session(this.codex, publish);
       // Also limits a disconnected frontend that cannot send stop.
-      entry.timer = setTimeout(() => publish({ kind: 'error', message: '5분 통화 제한으로 종료됐습니다. 필요하면 다시 연결하세요.' }), 5 * 60_000);
+      this.armExpiry(entry);
+      publish({ kind: 'lease', expiresAt: entry.expiresAt });
       void entry.session.start(msg.sdp, entry.id).catch(error => publish({ kind: 'error', message: String(error.message) }));
     } catch { publish({ kind: 'error', message: 'Codex 음성 연결을 시작하지 못했습니다.' }); }
     return true;
+  }
+  armExpiry(entry) {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      if (this.current !== entry) return;
+      this.emit({ type: 'voice_event', sessionId: entry.id, kind: 'error', message: '통화 시간이 만료됐습니다. 필요하면 다시 연결하세요.' });
+      this.dispose();
+    }, Math.max(0, entry.expiresAt - Date.now()));
   }
   dispose() {
     const entry = this.current; this.current = null;

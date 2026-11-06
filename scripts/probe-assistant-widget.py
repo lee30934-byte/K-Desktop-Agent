@@ -98,9 +98,10 @@ async def main():
                 # Real pointer sequence with capture; buttons in the header remain independent.
                 origin = await widget.bounding_box()
                 h = await handle.bounding_box()
-                await page.mouse.move(h['x'] + 85, h['y'] + 30)
+                identity = await widget.locator('.assistant-widget-identity').bounding_box()
+                await page.mouse.move(identity['x'] + 20, identity['y'] + 10)
                 await page.mouse.down()
-                await page.mouse.move(h['x'] - 215, h['y'] + 105, steps=8)
+                await page.mouse.move(identity['x'] + 20 - 300, identity['y'] + 10 + 75, steps=8)
                 await page.mouse.up()
                 moved = await widget.bounding_box()
                 assert abs(moved['x'] - (origin['x'] - 300)) < 2 and abs(moved['y'] - (origin['y'] + 75)) < 2, moved
@@ -133,7 +134,8 @@ async def main():
                 assert await page.evaluate('window.actions[0].id') == '11111111-1111-4111-8111-111111111111'
                 checks.append('minimized dispatcher remains mounted and preserves paired target across tabs')
                 h = await handle.bounding_box()
-                await page.mouse.move(h['x'] + 80, h['y'] + 30)
+                identity = await widget.locator('.assistant-widget-identity').bounding_box()
+                await page.mouse.move(identity['x'] + 20, identity['y'] + 10)
                 await page.mouse.down()
                 await page.mouse.move(0, 0, steps=6)
                 await page.mouse.up()

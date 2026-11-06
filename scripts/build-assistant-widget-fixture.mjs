@@ -28,8 +28,8 @@ await build({
       throw Error('unexpected command: '+command);
     };
     const root=createRoot(document.getElementById('widget-root'));
-    window.renderAssistantFixture=(id='11111111-1111-4111-8111-111111111111',empty=false)=>root.render(
-      <AssistantWidget conversationId={id} computerConnected={true} runningIds={new Set()}
+    window.renderAssistantFixture=(id='11111111-1111-4111-8111-111111111111',empty=false,working=false)=>root.render(
+      <AssistantWidget conversationId={id} computerConnected={true} runningIds={new Set(working?[id]:[])}
         conversations={empty?[]:[{id:'11111111-1111-4111-8111-111111111111',title:'비서 화면 디자인',lastActive:3},
           {id:'telegram-fixture',title:'Telegram 원격 대화',lastActive:2},
           {id:'release-fixture',title:'KDA 연결 상태 점검',lastActive:1}]}

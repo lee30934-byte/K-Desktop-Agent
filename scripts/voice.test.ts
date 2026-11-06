@@ -130,7 +130,7 @@ test('host allows one call, rejects cross-session replies/stops, and discards re
   }
   const host = new VoiceHost('codex', (e: any) => events.push(e), Session);
   const start = { type: 'voice_start', sessionId: crypto.randomUUID(), conversationId: 'conversation', sdp: 'v=0\r\n' };
-  host.receive(start); host.receive(start); assert.equal(instances.length, 1); assert.equal(events[0].kind, 'error');
+  host.receive(start); host.receive(start); assert.equal(instances.length, 1); assert.ok(events.some(e => e.kind === 'error'));
   host.receive({ type: 'voice_stop', sessionId: crypto.randomUUID() }); assert.equal(instances[0].closed, false);
   host.receive({ type: 'voice_reply', sessionId: crypto.randomUUID(), token: 'unknown', result: {} }); assert.equal(instances[0].replies.length, 0);
   host.dispose(); assert.equal(instances[0].closed, true);
@@ -442,4 +442,82 @@ test('live session keeps speech-onset target across tab changes and reports resu
   states.a = { run: null, latestAssistant: { id: 'finished-a', text: '수정 완료', streaming: false } };
   await session.pollStatus(); assert.ok(spoken.some(s => s.includes('KDA 개발') && s.includes('수정 완료')));
   assert.deepEqual(replies.map(r => r.target), ['KDA 개발', '릴리스 점검']); session.end();
+});
+
+
+test('host lease renewal preserves the session, ignores cross-session/duplicate requests, and replaces expiry', t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_000_000 });
+  const sessions: any[] = [], events: any[] = [];
+  class Session {
+    closed = false;
+    constructor() { sessions.push(this); }
+    async start() {}
+    close() { this.closed = true; }
+  }
+  const host = new VoiceHost('codex', (e: any) => events.push(e), Session);
+  const id = crypto.randomUUID(), token = crypto.randomUUID();
+  try {
+    host.receive({ type: 'voice_start', sessionId: id, conversationId: 'locked', sdp: 'v=0' });
+    const initial = events.find(e => e.kind === 'lease').expiresAt;
+    t.mock.timers.tick(4 * 60_000);
+    host.receive({ type: 'voice_extend', sessionId: crypto.randomUUID(), token });
+    assert.equal(events.filter(e => e.kind === 'lease').length, 1);
+    host.receive({ type: 'voice_extend', sessionId: id, token });
+    const expiry = events[events.length - 1].expiresAt;
+    assert.equal(expiry, initial + 5 * 60_000);
+    host.receive({ type: 'voice_extend', sessionId: id, token });
+    assert.equal(events[events.length - 1].expiresAt, expiry, 'duplicate delivery must not add another five minutes');
+    assert.equal(sessions.length, 1);
+    t.mock.timers.tick(60_001);
+    assert.equal(sessions[0].closed, false, 'original five-minute timer was cancelled');
+    t.mock.timers.tick(5 * 60_000);
+    assert.equal(sessions[0].closed, true);
+    const count = events.length;
+    host.receive({ type: 'voice_extend', sessionId: id, token: crypto.randomUUID() });
+    assert.equal(events.length, count, 'late renewal cannot revive a disposed session');
+  } finally { host.dispose(); t.mock.timers.reset(); }
+});
+
+test('voice extension waits for matching backend acknowledgement, survives the old deadline, and releases media', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_000_000 });
+  const media = fakeMedia(); let listener!: (event: VoiceEvent) => void;
+  const views: any[] = [], extensions: any[] = [];
+  const transport: VoiceTransport = { listen: async fn => { listener = fn; return () => {}; }, start: async () => {}, stop: async () => {}, reply: async () => {}, speak: async () => {},
+    extend: async (id, token) => { extensions.push([id, token]); } };
+  const session = new VoiceSession('locked', handlers(), transport, v => views.push(v));
+  try {
+    await session.start(); media.peers[0].connectionState = 'connected'; session.receive({ type: 'session.started' });
+    const initial = views[views.length - 1].expiresAt;
+    t.mock.timers.tick(4 * 60_000);
+    await session.extend(); await session.extend();
+    assert.equal(extensions.length, 1, 'double click has one pending renewal');
+    assert.equal(views[views.length - 1].expiresAt, initial, 'native forwarding is not renewal proof');
+    listener({ sessionId: session.id, kind: 'lease', expiresAt: initial + 5 * 60_000, token: crypto.randomUUID() });
+    assert.equal(views[views.length - 1].expiresAt, initial);
+    listener({ sessionId: session.id, kind: 'lease', expiresAt: initial + 5 * 60_000, token: extensions[0][1] });
+    assert.equal(views[views.length - 1].extending, false);
+    listener({ sessionId: session.id, kind: 'lease', expiresAt: initial });
+    assert.equal(views[views.length - 1].expiresAt, initial + 5 * 60_000, 'stale initial lease cannot shorten renewal');
+    t.mock.timers.tick(60_001);
+    assert.equal(media.track.readyState, 'live');
+    assert.equal(media.peers.length, 1);
+    t.mock.timers.tick(5 * 60_000);
+    assert.equal(media.track.readyState, 'ended');
+    assert.equal(views[views.length - 1].phase, 'ended');
+  } finally { session.end(); t.mock.timers.reset(); }
+});
+
+test('unacknowledged renewal reports uncertainty without changing deadline or reconnecting', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_000_000 });
+  const media = fakeMedia(), views: any[] = [];
+  const transport: VoiceTransport = { listen: async () => () => {}, start: async () => {}, stop: async () => {}, reply: async () => {}, speak: async () => {}, extend: async () => {} };
+  const session = new VoiceSession('locked', handlers(), transport, v => views.push(v));
+  try {
+    await session.start(); media.peers[0].connectionState = 'connected'; session.receive({ type: 'session.started' });
+    const initial = views[views.length - 1].expiresAt;
+    await session.extend(); t.mock.timers.tick(5001);
+    assert.equal(views[views.length - 1].expiresAt, initial);
+    assert.match(views[views.length - 1].extensionMessage, /확인하지 못했습니다/);
+    assert.equal(media.peers.length, 1);
+  } finally { session.end(); t.mock.timers.reset(); }
 });
