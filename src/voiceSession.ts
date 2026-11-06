@@ -1,18 +1,20 @@
 import { voiceFeedback, explicitVoiceControl, type VoiceHandlers } from './voiceControl';
 import { VoiceOutput, DEFAULT_VOICE_GAIN, voiceGain } from './voiceOutput';
 import { VoiceRouter, type VoiceRouting } from './voiceRouting';
+import { voiceEffect, DEFAULT_VOICE_EFFECT, type VoiceEffectPreference } from './voiceEffects';
 
 export type VoicePhase = 'idle' | 'connecting' | 'connected' | 'error' | 'ended';
 export interface VoiceView {
   phase: VoicePhase; message: string; muted: boolean; speaking: boolean;
   commandPending?: boolean;
   listening?: boolean; expiresAt?: number; extending?: boolean; extensionMessage?: string;
+  effectWarning?: string;
   conversationId: string; lines: { role: string; text: string }[];
 }
-export interface VoiceEvent { sessionId: string; kind: 'sdp' | 'error' | 'command' | 'lease'; sdp?: string; message?: string; token?: string; command?: unknown; createdAt?: number; expiresAt?: number }
+export interface VoiceEvent { sessionId: string; kind: 'sdp' | 'error' | 'command' | 'lease' | 'voices'; voices?: string[]; sdp?: string; message?: string; token?: string; command?: unknown; createdAt?: number; expiresAt?: number }
 export interface VoiceTransport {
   listen(handler: (event: VoiceEvent) => void): Promise<() => void>;
-  start(sessionId: string, conversationId: string, sdp: string): Promise<void>;
+  start(sessionId: string, conversationId: string, sdp: string, options?: { voice: string; preview: boolean }): Promise<void>;
   stop(sessionId: string): Promise<void>;
   reply(sessionId: string, token: string, result: unknown): Promise<void>;
   speak(sessionId: string, text: string): Promise<void>;
@@ -53,6 +55,7 @@ export class VoiceSession {
   private audio?: HTMLAudioElement;
   private output?: VoiceOutput;
   private outputGain = DEFAULT_VOICE_GAIN;
+  private outputEffect = DEFAULT_VOICE_EFFECT;
   private unlisten?: () => void;
   private timers: ReturnType<typeof setTimeout>[] = [];
   private poll?: ReturnType<typeof setInterval>;
@@ -73,6 +76,7 @@ export class VoiceSession {
   private localStop?: { action: 'stop' | 'stop_all'; result: Promise<unknown> };
   private finalTurns = new Set<string>();
   private state: VoiceView;
+  private preview = false;
   constructor(readonly conversationId: string, private handlers: VoiceHandlers, private transport: VoiceTransport,
     private update: (view: VoiceView) => void, routing?: VoiceRouting) {
     this.gate = new VoiceRouter(this.id, conversationId, handlers, routing);
@@ -82,32 +86,33 @@ export class VoiceSession {
   private line(role: string, text: string) {
     if (text.trim()) this.view({ lines: [...this.state.lines, { role, text: text.slice(0, 2000) }].slice(-12) });
   }
-  async start(inputDeviceId = '', outputDeviceId = '') {
+  async start(inputDeviceId = '', outputDeviceId = '', voice = '', preview = false) {
     if (this.closed || this.starting) return;
     this.starting = true;
+    this.preview = preview;
     if (activeVoiceId && activeVoiceId !== this.id) { this.fail('이미 음성통화가 열려 있습니다. 기존 통화를 종료하세요.'); return; }
     activeVoiceId = this.id;
     this.view({ phase: 'connecting', message: '마이크 권한·Codex 구독 음성 연결 확인 중…' });
     this.timers.push(setTimeout(() => this.fail('음성 연결 시간이 초과됐습니다. 마이크 권한·로그인·네트워크를 확인하세요.'), 60_000));
     let stage: 'microphone' | 'speaker' | 'connection' = 'microphone';
     try {
-      if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') throw Error('이 환경에서 마이크·WebRTC를 사용할 수 없습니다.');
-      const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: {
+      if ((!preview && !navigator.mediaDevices?.getUserMedia) || typeof RTCPeerConnection === 'undefined') throw Error('이 환경에서 마이크·WebRTC를 사용할 수 없습니다.');
+      const stream = preview ? undefined : await navigator.mediaDevices.getUserMedia({ video: false, audio: {
         echoCancellation: true, noiseSuppression: true, autoGainControl: true,
         ...(inputDeviceId ? { deviceId: { exact: inputDeviceId } } : {}),
       } });
-      if (this.closed) { stream.getTracks().forEach(t => t.stop()); return; }
+      if (this.closed) { stream?.getTracks().forEach(t => t.stop()); return; }
       this.stream = stream;
       stage = 'connection';
       // Thread restrictions/dynamic tool are installed before SDP; session.started
       // and the actual media connection must both succeed before transmission.
-      stream.getAudioTracks().forEach(t => { t.enabled = false; t.onended = () => this.fail('마이크 연결이 해제됐습니다.'); });
+      stream?.getAudioTracks().forEach(t => { t.enabled = false; t.onended = () => this.fail('마이크 연결이 해제됐습니다.'); });
       const off = await this.transport.listen(event => {
         if (this.closed || event.sessionId !== this.id) return;
         if (event.kind === 'error') this.fail(event.message || 'Codex 음성 연결 실패');
         else if (event.kind === 'lease') this.acceptLease(event);
         else if (event.kind === 'sdp' && event.sdp) void this.acceptSdp(event.sdp);
-        else if (event.kind === 'command') void this.command(event);
+        else if (event.kind === 'command' && !this.preview) void this.command(event);
       });
       if (this.closed) { off(); return; }
       this.unlisten = off;
@@ -124,7 +129,8 @@ export class VoiceSession {
       peer.ontrack = event => {
         if (this.closed) return;
         try {
-          const output = this.output ??= new VoiceOutput(this.outputGain);
+          const output = this.output ??= new VoiceOutput(this.outputGain, this.outputEffect,
+            effectWarning => { if (!this.closed) this.view({ effectWarning }); });
           audio.srcObject = output.attach(event.streams[0] ?? new MediaStream([event.track]));
           void output.resume().then(() => audio.play()).catch(() => this.fail('음성 재생이 차단됐습니다. 출력 장치와 앱 재생 권한을 확인하세요.'));
         } catch { this.fail('KDA 음성 출력 초기화 실패. 통화를 다시 연결하세요.'); }
@@ -134,7 +140,8 @@ export class VoiceSession {
         if (peer.connectionState === 'connected') this.checkConnected();
         else if (['failed', 'closed', 'disconnected'].includes(peer.connectionState)) this.fail('음성 네트워크 연결이 끊겼습니다. 자동 재접수하지 않습니다.');
       };
-      for (const track of stream.getTracks()) peer.addTrack(track, stream);
+      if (stream) for (const track of stream.getTracks()) peer.addTrack(track, stream);
+      else peer.addTransceiver('audio', { direction: 'recvonly' });
       const dc = this.channel = peer.createDataChannel('oai-events');
       dc.onopen = () => this.checkConnected();
       dc.onmessage = event => {
@@ -148,7 +155,7 @@ export class VoiceSession {
       if (this.closed) return;
       const sdp = peer.localDescription?.sdp;
       if (!sdp) throw Error('음성 연결 SDP를 만들지 못했습니다.');
-      await this.transport.start(this.id, this.conversationId, sdp);
+      await this.transport.start(this.id, this.conversationId, sdp, { voice, preview });
     } catch (error) { if (!this.closed) this.fail(voiceStartError(error, stage, !!inputDeviceId)); }
   }
   private async waitIce(peer: RTCPeerConnection) {
@@ -164,6 +171,10 @@ export class VoiceSession {
     this.outputGain = voiceGain(value);
     if (!this.closed) this.output?.setGain(this.outputGain);
   }
+  setOutputEffect(value: VoiceEffectPreference) {
+    this.outputEffect = voiceEffect(value);
+    if (!this.closed) void this.output?.setEffect(this.outputEffect);
+  }
   private async acceptSdp(sdp: string) {
     try { if (!this.closed && this.peer && !this.peer.remoteDescription) await this.peer.setRemoteDescription({ type: 'answer', sdp }); }
     catch { this.fail('Codex 음성 연결 응답을 적용하지 못했습니다.'); }
@@ -171,6 +182,12 @@ export class VoiceSession {
   private checkConnected() {
     if (this.closed || !this.configured || this.peer?.connectionState !== 'connected' || this.channel?.readyState !== 'open' || this.state.phase === 'connected') return;
     this.timers.forEach(clearTimeout); this.timers = [];
+    if (this.preview) {
+      this.view({ phase: 'connected', message: '선택한 목소리 미리듣기' });
+      this.setExpiry(Date.now() + 20_000);
+      void this.transport.speak(this.id, '목소리 샘플을 읽어 주세요.').catch(() => this.fail('미리듣기를 시작하지 못했습니다.'));
+      return;
+    }
     this.stream?.getAudioTracks().forEach(t => { t.enabled = !this.state.muted; });
     this.startVad();
     this.view({ phase: 'connected', message: '듣고 있어요 · 대화 이름을 말하면 명령 대상을 바꿀 수 있어요' });
@@ -215,6 +232,7 @@ export class VoiceSession {
     }
     if (event.type === 'error') { this.fail('Codex 음성 채널 요청 실패. 계정·현재 음성 지원을 확인하세요.'); return; }
     if (!this.configured) return;
+    if (this.preview && (event.type === 'input_transcript.added' || (event.type === 'turn.done' && event.turn?.role === 'user'))) return;
     if (event.type === 'input_transcript.added') {
       this.bargeIn();
     } else if (event.type === 'output_transcript.added') {
@@ -246,7 +264,7 @@ export class VoiceSession {
         this.restoreOutput();
         this.flushFeedback();
       }
-      else if (turn?.role === 'assistant') { this.responseActive = false; this.view({ speaking: false, commandPending: false }); this.flushFeedback(); }
+      else if (turn?.role === 'assistant') { this.responseActive = false; this.view({ speaking: false, commandPending: false }); if (this.preview) { this.timers.push(setTimeout(() => this.end(), 1200)); return; } this.flushFeedback(); }
       if (['user', 'assistant'].includes(turn?.role)) this.line(turn.role, String(turn.transcript ?? ''));
     }
   }

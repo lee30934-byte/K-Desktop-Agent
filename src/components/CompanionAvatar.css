@@ -1,0 +1,32 @@
+.companion-avatar { position:relative; display:block; width:216px; height:216px; padding:0; border:0; background:transparent; cursor:grab; touch-action:none; -webkit-tap-highlight-color:transparent; }
+.companion-avatar:active { cursor:grabbing; }
+.companion-avatar:focus-visible { outline:2px solid #89e6cb; outline-offset:4px; border-radius:36%; }
+.companion-sprite { position:absolute; inset:0; background-repeat:no-repeat; background-size:300% 300%; transform-origin:50% 84%; filter:drop-shadow(0 8px 8px #0003); will-change:transform; }
+.companion-ground { position:absolute; left:26%; right:22%; height:12px; bottom:4px; background:radial-gradient(ellipse,#82d7bd22,transparent 70%); border-radius:50%; }
+.companion-avatar.tone-pearl .companion-sprite { filter:hue-rotate(35deg) saturate(.55) drop-shadow(0 8px 8px #0003); }
+.companion-avatar.tone-rose .companion-sprite { filter:hue-rotate(170deg) saturate(.7) drop-shadow(0 8px 8px #0003); }
+.companion-avatar[data-motion="on"] .companion-sprite { animation:companion-breathe 4.8s ease-in-out infinite; }
+.companion-avatar[data-mood="listening"][data-motion="on"] .companion-sprite { animation:companion-listen 3.8s ease-in-out infinite; }
+.companion-avatar[data-mood="thinking"][data-motion="on"] .companion-sprite,
+.companion-avatar[data-mood="connecting"][data-motion="on"] .companion-sprite { animation:companion-think 3s ease-in-out infinite; }
+.companion-avatar[data-mood="speaking"][data-motion="on"] .companion-sprite { animation:companion-talk .8s ease-in-out infinite; }
+.companion-avatar[data-mood="working"][data-motion="on"] .companion-sprite { animation:companion-work 2.8s ease-in-out infinite; }
+.companion-avatar[data-mood="idle"][data-frame="4"][data-motion="on"] .companion-sprite { animation:companion-greet .8s ease-in-out 3; }
+.companion-avatar[data-mood="idle"][data-frame="5"][data-motion="on"] .companion-sprite { animation:companion-joy .7s ease-in-out 3; }
+.companion-avatar[data-mood="idle"][data-frame="6"][data-motion="on"] .companion-sprite { animation:companion-doze 4s ease-in-out infinite; }
+.companion-avatar.is-compact { width:112px; height:112px; }
+.companion-voice-waves { position:absolute; bottom:18px; left:39%; display:flex; align-items:center; gap:3px; height:16px; padding:4px 8px; border-radius:16px; background:#082c2dd9; }
+.companion-voice-waves i { width:2px; height:5px; border-radius:2px; background:#9af7d2; }
+.companion-avatar[data-motion="on"] .companion-voice-waves i { animation:companion-meter .6s ease-in-out infinite alternate; }
+.companion-voice-waves i:nth-child(2n) { animation-delay:-.3s !important; }.companion-voice-waves i:nth-child(3) { animation-delay:-.15s !important; }
+@keyframes companion-breathe { 0%,100%{transform:translateY(0) rotate(-.6deg)}50%{transform:translateY(-4px) rotate(.6deg)} }
+@keyframes companion-listen { 0%,100%{transform:rotate(-1deg)}50%{transform:translateY(-2px) rotate(1.8deg)} }
+@keyframes companion-think { 0%,100%{transform:rotate(-2deg)}50%{transform:rotate(1deg) translateY(-3px)} }
+@keyframes companion-talk { 0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-3px) scale(1.01,.995)} }
+@keyframes companion-work { 0%,100%{transform:rotate(-.7deg)}50%{transform:rotate(.7deg) translateY(-2px)} }
+@keyframes companion-meter { to{height:12px} }
+@keyframes companion-greet { 0%,100%{transform:rotate(-2deg)}50%{transform:rotate(3deg) translateY(-3px)} }
+@keyframes companion-joy { 0%,100%{transform:translateY(0)}45%{transform:translateY(-8px) scale(1.02,.99)} }
+@keyframes companion-doze { 0%,100%{transform:rotate(-3deg) translateY(1px)}50%{transform:rotate(-1deg) translateY(3px)} }
+.companion-avatar[data-motion="off"] * { animation:none !important; will-change:auto; }
+@media(prefers-reduced-motion:reduce){.companion-avatar *{animation:none !important;will-change:auto}}

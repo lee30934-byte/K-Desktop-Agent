@@ -2791,15 +2791,18 @@ async fn list_mcp_tools(refresh: Option<bool>) -> Result<(), String> {
 
 // Voice transport only. Work commands stay in the existing frontend turn gate.
 #[tauri::command]
-async fn voice_control(action: String, session_id: String, conversation_id: Option<String>, sdp: Option<String>, token: Option<String>, result: Option<serde_json::Value>, text: Option<String>) -> Result<(), String> {
+async fn voice_control(action: String, session_id: String, conversation_id: Option<String>, sdp: Option<String>, token: Option<String>, result: Option<serde_json::Value>, text: Option<String>, voice: Option<String>, preview: Option<bool>) -> Result<(), String> {
     uuid::Uuid::parse_str(&session_id).map_err(|_| "invalid voice session")?;
     let payload = match action.as_str() {
+        "list" => serde_json::json!({"type":"voice_list","sessionId":session_id}),
         "start" => {
             let conversation = conversation_id.ok_or("missing conversation")?;
             uuid::Uuid::parse_str(&conversation).map_err(|_| "invalid conversation")?;
             let offer = sdp.ok_or("missing SDP")?;
             if !offer.starts_with("v=0") || offer.len() > 100_000 { return Err("invalid SDP".into()); }
-            serde_json::json!({"type":"voice_start","sessionId":session_id,"conversationId":conversation,"sdp":offer})
+            let voice = voice.unwrap_or_default();
+            if !voice.is_empty() && (!(2..=24).contains(&voice.len()) || !voice.bytes().all(|b| b.is_ascii_lowercase())) { return Err("invalid voice".into()); }
+            serde_json::json!({"type":"voice_start","sessionId":session_id,"conversationId":conversation,"sdp":offer,"voice":voice,"preview":preview.unwrap_or(false)})
         },
         "stop" => serde_json::json!({"type":"voice_stop","sessionId":session_id}),
         "extend" => {

@@ -1,28 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { VoiceSession, type VoiceEvent, type VoiceTransport, type VoiceView } from '../voiceSession';
+import { VoiceSession, type VoiceView } from '../voiceSession';
+import { voiceTransport as transport } from '../voiceTransport';
 import type { VoiceHandlers } from '../voiceControl';
 import type { VoiceTarget } from '../voiceRouting';
 import { readVoiceGain, voiceGain, VOICE_OUTPUT_KEY, MAX_VOICE_GAIN } from '../voiceOutput';
 import './VoiceCallPanel.css';
+import { DEFAULT_VOICE_EFFECT, type VoiceEffectPreference } from '../voiceEffects';
 
-const transport: VoiceTransport = {
-  listen: handler => listen<VoiceEvent & { type: string }>('sidecar-event', e => {
-    if (e.payload.type === 'voice_event') handler(e.payload);
-  }),
-  start: (sessionId, conversationId, sdp) => invoke('voice_control', { action: 'start', sessionId, conversationId, sdp }),
-  stop: sessionId => invoke('voice_control', { action: 'stop', sessionId }),
-  reply: (sessionId, token, result) => invoke('voice_control', { action: 'reply', sessionId, token, result }),
-  speak: (sessionId, text) => invoke('voice_control', { action: 'speak', sessionId, text }),
-  extend: (sessionId, token) => invoke('voice_control', { action: 'extend', sessionId, token }),
-};
-
-export default function VoiceCallPanel({ conversationId, title, handlers, onClose, selectedId, conversations, onTarget, onView }: {
+export default function VoiceCallPanel({ conversationId, title, handlers, onClose, selectedId, conversations, onTarget, onView, voice = '', effect = DEFAULT_VOICE_EFFECT }: {
   conversationId: string; title: string; handlers: VoiceHandlers; onClose(): void;
   selectedId?: string | null; conversations?: VoiceTarget[];
   onTarget?(target: VoiceTarget | null, following: boolean): void;
   onView?(view: VoiceView): void;
+  voice?: string;
+  effect?: VoiceEffectPreference;
 }) {
   const ref = useRef<VoiceSession>();
   const handlersRef = useRef(handlers); handlersRef.current = handlers;
@@ -33,6 +24,7 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
   const [view, setView] = useState<VoiceView>({ phase: 'idle', message: '', muted: false, speaking: false, conversationId, lines: [] });
   const [now, setNow] = useState(Date.now);
   useEffect(() => { onView?.(view); }, [view, onView]);
+  useEffect(() => { ref.current?.setOutputEffect(effect); }, [effect.preset, effect.strength]);
   useEffect(() => {
     if (view.phase !== 'connected') return;
     setNow(Date.now());
@@ -82,8 +74,9 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
     } : undefined);
     if (!following) session.selectTarget(initial);
     session.setOutputGain(gain);
+    session.setOutputEffect(effect);
     ref.current = session;
-    void session.start(input, output).then(() => refreshDevices());
+    void session.start(input, output, voice).then(() => refreshDevices());
   }
   useEffect(() => {
     mounted.current = true;
@@ -109,6 +102,7 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
     {view.phase === 'connected' && <div className="voice-call-lease"><span>남은 시간 {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')}</span>
       <button type="button" disabled={view.extending || remaining > 5 * 60} onClick={() => void ref.current?.extend()} title="남은 시간이 5분 이하일 때 5분 더 이어갈 수 있어요">{view.extending ? '연장 확인 중…' : '5분 연장'}</button></div>}
     {view.extensionMessage && <small role="status">{view.extensionMessage}</small>}
+    {view.effectWarning && <small role="status">{view.effectWarning}</small>}
     <div className="voice-call-actions voice-call-primary">
       {busy ? <><button type="button" onClick={() => ref.current?.setMuted(!view.muted)}>{view.muted ? '마이크 켜기' : '음소거'}</button><button type="button" onClick={() => ref.current?.silence()} disabled={view.phase !== 'connected'}>말하기 중지</button><button type="button" className="voice-call-end" onClick={() => ref.current?.end()}>통화 종료</button></> : <button type="button" onClick={start}>다시 연결</button>}
     </div>

@@ -258,6 +258,7 @@ function runRegressionTests() {
 // (2026-09-15 발견 — 게이트 목록에 없는 검사는 존재하지 않는 검사다).
 // 파일이 있는데 못 돌리면 SKIP 이 아니라 **FAIL** 로 막는다. 조용한 누락이 제일 위험하다.
 const NODE_TEST_SUITES = [
+  { file: "scripts/voice-effects.test.ts", runner: "tsx" }, // bounded DSP, pitch and safe preference migration
   { file: "scripts/dot-bridge.test.ts", runner: "tsx" },
   { file: "scripts/control-tool-results.test.ts", runner: "tsx" }, // actual control failures, screenshot payloads and App persistence
   { file: "scripts/browser-host.test.ts", runner: "tsx" },

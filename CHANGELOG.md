@@ -1,3 +1,14 @@
+## [0.7.76] - 2026-11-06
+
+### Improved
+- Replace the assistant selector with one ceramic robot companion, nine state/reaction poses, mint/pearl/rose finishes, torso-centered controls, saved motion preferences and a refined slate/mint menu. Keep drag, minimize, reduced-motion support and ongoing calls.
+- Select and save a voice from the installed Codex engine catalog. Preview a fixed Korean sample without microphone access; voice changes apply to the next call.
+- Add six local voice effect presets: natural, warm, bright, small robot, deep and radio. Save strength, preview effects and adjust them during a call without reconnecting. Fall back to original audio if processing fails; keep the existing gain/limiter and remote WebRTC decoding path.
+
+### Validation and limits
+- Previous candidate validation: 21 UI checks, 39 voice-session tests, 6 DSP tests and the full local release gate passed. Release validation is recorded separately in the release evidence.
+- Effects use streaming pitch shift, EQ, ring modulation and saturation. Neural voice conversion, independent formant preservation, real-device call audibility, speech naturalness and measured end-to-end latency remain unverified. This release does not add phone access or additional character designs.
+
 ## [0.7.75] - 2026-11-06
 
 ### Improved

@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import './voice-choice.test.ts';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';

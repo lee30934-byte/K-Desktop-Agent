@@ -7,6 +7,14 @@ import treeKill from 'tree-kill';
 import { randomUUID } from 'node:crypto';
 import { VOICE_TOOL, VOICE_INSTRUCTIONS } from './voice-contract.mjs';
 
+export const VOICE_SAMPLE = '안녕하세요, K님. 저는 곁에서 함께하는 K 비서예요. 이 목소리로 이야기할게요.';
+export function voiceCatalog(result) {
+  const voices = result?.voices?.v3;
+  if (!Array.isArray(voices) || !voices.length || voices.some(v => typeof v !== 'string' || !/^[a-z]{2,24}$/.test(v)))
+    throw Error('현재 엔진의 음성 목록을 확인하지 못했습니다. 목록을 새로고침하세요.');
+  return [...new Set(voices)];
+}
+
 export function voiceError(value) {
   return String(value ?? 'unknown').replace(/https?:\/\/\S+/g, '[endpoint]')
     .replace(/(?:Bearer\s+|sk-|ghp_|github_pat_)[\w.\/-]+/gi, '[redacted]')
@@ -58,7 +66,7 @@ export class CodexVoiceSession {
     }
     if ('id' in message) {
       const p = message.params ?? {};
-      if (message.method === 'item/tool/call' && p.threadId === this.threadId && p.tool === VOICE_TOOL.name &&
+      if (!this.preview && message.method === 'item/tool/call' && p.threadId === this.threadId && p.tool === VOICE_TOOL.name &&
           !p.namespace && typeof p.callId === 'string' && typeof p.turnId === 'string' && p.arguments && typeof p.arguments === 'object') {
         if (JSON.stringify(p.arguments).length > 14000) { this.fail('음성 명령 크기 한도를 초과했습니다.'); return; }
         if (this.claimed.has(p.callId)) return;
@@ -93,9 +101,21 @@ export class CodexVoiceSession {
     const text = JSON.stringify(result);
     this.send({ id: p.rpcId, result: { success: result?.state !== 'error', contentItems: [{ type: 'inputText', text: text.slice(0, 16000) }] } });
   }
-  async start(sdp, voiceSessionId) {
+  async initialize() {
     await this.request('initialize', { clientInfo: { name: 'kda_voice', version: '0.1.0' }, capabilities: { experimentalApi: true } });
     this.send({ method: 'initialized', params: {} });
+  }
+  async listVoices() {
+    await this.initialize();
+    return voiceCatalog(await this.request('thread/realtime/listVoices', {}));
+  }
+  async start(sdp, voiceSessionId, options = {}) {
+    this.preview = options.preview === true;
+    await this.initialize();
+    if (options.voice) {
+      const available = voiceCatalog(await this.request('thread/realtime/listVoices', {}));
+      if (!available.includes(options.voice)) throw Error('선택한 목소리를 현재 엔진에서 사용할 수 없습니다. 다른 목소리를 선택하세요.');
+    }
     // Disable inherited MCP servers for this isolated transport thread only.
     const config = await this.request('config/read', { includeLayers: false });
     const overrides = {};
@@ -112,7 +132,7 @@ export class CodexVoiceSession {
     const thread = await this.request('thread/start', { cwd: this.cwd, ephemeral: true,
       approvalPolicy: 'untrusted', sandbox: 'read-only', baseInstructions: '',
       developerInstructions: VOICE_INSTRUCTIONS + '\nYou are a restricted KDA voice dispatcher. The ONLY tool you may call is kda_control. Never read files, execute shell, edit, browse, delegate, or call any other tool. Use status for task questions; do not steer existing work for ordinary questions. Give short grounded Korean replies.',
-      dynamicTools: [{ type: 'function', name: VOICE_TOOL.name, description: VOICE_TOOL.description, inputSchema: VOICE_TOOL.parameters }],
+      dynamicTools: this.preview ? [] : [{ type: 'function', name: VOICE_TOOL.name, description: VOICE_TOOL.description, inputSchema: VOICE_TOOL.parameters }],
       config: overrides });
     this.threadId = thread?.thread?.id;
     if (!this.threadId) throw Error('Codex가 음성 스레드를 반환하지 않았습니다.');
@@ -120,8 +140,9 @@ export class CodexVoiceSession {
       throw Error('음성 중계기의 읽기 전용·승인 정책을 확인하지 못했습니다.');
     await this.request('thread/realtime/start', { threadId: this.threadId, outputModality: 'audio',
       version: 'v3', transport: { type: 'webrtc', sdp }, voiceSessionId,
+      ...(options.voice ? { voice: options.voice } : {}),
       includeStartupContext: false, clientManagedHandoffs: false, flushTranscriptTailOnSessionEnd: false,
-      prompt: '당신은 K님의 KDA 음성비서다. 한국어로 짧게 대화한다. 컴퓨터 작업·현재 작업의 상태 조회·정지는 반드시 기존 백엔드에 위임한다. 백엔드는 KDA 전용 제어만 사용한다. 단순 대화는 직접 답한다. 접수와 실제 완료를 구별하고 결과를 받기 전 실행·완료했다고 말하지 않는다. 사용자 발화 중에는 말을 멈춘다. 코드·비밀값을 읽지 않는다.' }, 45_000);
+      prompt: this.preview ? `목소리 미리듣기 전용이다. 도구나 작업 실행 없이 다음 문장만 한국어로 한 번 읽는다: ${VOICE_SAMPLE}` : '당신은 K님의 KDA 음성비서다. 한국어로 짧게 대화한다. 컴퓨터 작업·현재 작업의 상태 조회·정지는 반드시 기존 백엔드에 위임한다. 백엔드는 KDA 전용 제어만 사용한다. 단순 대화는 직접 답한다. 접수와 실제 완료를 구별하고 결과를 받기 전 실행·완료했다고 말하지 않는다. 사용자 발화 중에는 말을 멈춘다. 코드·비밀값을 읽지 않는다.' }, 45_000);
   }
   fail(message) {
     if (this.closed) return;
@@ -141,14 +162,27 @@ export class CodexVoiceSession {
 
 export class VoiceHost {
   current = null;
+  catalog = null;
   constructor(codex, emit, Session = CodexVoiceSession) { this.codex = codex; this.emit = emit; this.Session = Session; }
   receive(msg) {
-    if (!['voice_start', 'voice_stop', 'voice_reply', 'voice_speak', 'voice_extend'].includes(msg.type)) return false;
+    if (!['voice_list', 'voice_start', 'voice_stop', 'voice_reply', 'voice_speak', 'voice_extend'].includes(msg.type)) return false;
     const valid = typeof msg.sessionId === 'string' && /^[\w-]{20,80}$/.test(msg.sessionId);
     if (!valid) return true;
+    if (msg.type === 'voice_list') {
+      // Share one read-only process across simultaneous callers; no realtime call starts.
+      if (!this.catalog) {
+        this.catalog = Promise.resolve().then(async () => {
+          const session = new this.Session(this.codex, () => {});
+          try { return await session.listVoices(); } finally { session.close(); }
+        }).finally(() => { this.catalog = null; });
+      }
+      void this.catalog.then(voices => this.emit({ type: 'voice_event', sessionId: msg.sessionId, kind: 'voices', voices }),
+        error => this.emit({ type: 'voice_event', sessionId: msg.sessionId, kind: 'voices', message: voiceError(error.message) }));
+      return true;
+    }
     if (msg.type === 'voice_extend') {
       const entry = this.current;
-      if (!entry || entry.id !== msg.sessionId || entry.session?.closed || Date.now() >= entry.expiresAt ||
+      if (!entry || entry.preview || entry.id !== msg.sessionId || entry.session?.closed || Date.now() >= entry.expiresAt ||
           typeof msg.token !== 'string' || !/^[\w-]{20,80}$/.test(msg.token)) return true;
       const previous = entry.extensions.get(msg.token);
       if (previous) {
@@ -165,11 +199,11 @@ export class VoiceHost {
     if (msg.type === 'voice_speak') {
       const s = this.current?.id === msg.sessionId && this.current.session;
       if (s?.threadId && typeof msg.text === 'string' && msg.text.trim() && msg.text.length <= 1200)
-        void s.request('thread/realtime/appendSpeech', { threadId: s.threadId, text: msg.text }).catch(() => {});
+        void s.request('thread/realtime/appendSpeech', { threadId: s.threadId, text: this.current.preview ? VOICE_SAMPLE : msg.text }).catch(() => s.fail('음성 샘플 또는 안내를 전달하지 못했습니다.'));
       return true;
     }
     if (msg.type === 'voice_reply') {
-      if (this.current?.id === msg.sessionId && typeof msg.token === 'string' && msg.result &&
+      if (!this.current?.preview && this.current?.id === msg.sessionId && typeof msg.token === 'string' && msg.result &&
           typeof msg.result === 'object' && JSON.stringify(msg.result).length <= 16000) {
         try { this.current.session?.reply(msg.token, msg.result); }
         catch { this.current?.session?.fail('음성 명령 응답을 전달하지 못했습니다. 작업 상태를 확인하세요.'); }
@@ -181,14 +215,17 @@ export class VoiceHost {
       return true;
     }
     if (this.current || typeof msg.sdp !== 'string' || msg.sdp.length > 100_000 || !msg.sdp.startsWith('v=0') ||
+        (msg.voice != null && (typeof msg.voice !== 'string' || (msg.voice !== '' && !/^[a-z]{2,24}$/.test(msg.voice)))) ||
+        (msg.preview != null && typeof msg.preview !== 'boolean') ||
         typeof msg.conversationId !== 'string' || !msg.conversationId) {
       this.emit({ type: 'voice_event', sessionId: msg.sessionId, kind: 'error', message: '다른 통화가 있거나 음성 시작 요청이 유효하지 않습니다.' });
       return true;
     }
-    const entry = { id: msg.sessionId, session: null, timer: null, expiresAt: Date.now() + 5 * 60_000, extensions: new Map() };
+    const entry = { id: msg.sessionId, preview: msg.preview === true, session: null, timer: null, expiresAt: Date.now() + (msg.preview === true ? 60_000 : 5 * 60_000), extensions: new Map() };
     this.current = entry;
     const publish = event => {
       if (this.current !== entry) return;
+      if (entry.preview && event.kind === 'command') { publish({ kind: 'error', message: '미리듣기에서는 작업을 실행할 수 없습니다.' }); return; }
       this.emit({ type: 'voice_event', sessionId: entry.id, ...event });
       if (event.kind === 'error') this.dispose();
     };
@@ -197,7 +234,7 @@ export class VoiceHost {
       // Also limits a disconnected frontend that cannot send stop.
       this.armExpiry(entry);
       publish({ kind: 'lease', expiresAt: entry.expiresAt });
-      void entry.session.start(msg.sdp, entry.id).catch(error => publish({ kind: 'error', message: String(error.message) }));
+      void entry.session.start(msg.sdp, entry.id, { voice: msg.voice || '', preview: entry.preview }).catch(error => publish({ kind: 'error', message: String(error.message) }));
     } catch { publish({ kind: 'error', message: 'Codex 음성 연결을 시작하지 못했습니다.' }); }
     return true;
   }

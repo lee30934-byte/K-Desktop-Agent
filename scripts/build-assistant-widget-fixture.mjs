@@ -1,7 +1,9 @@
 import { build } from 'esbuild';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 const evidence = process.env.KDA_WIDGET_EVIDENCE || 'evidence/assistant-widget-20261105';
 mkdirSync(evidence, { recursive: true });
+mkdirSync(`${evidence}/audio`, { recursive: true });
+copyFileSync('public/audio/voicePitch.worklet.mjs', `${evidence}/audio/voicePitch.worklet.mjs`);
 await build({
   stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React from 'react';
@@ -10,7 +12,12 @@ await build({
     window.actions=[];window.requests=[];window.replies=[];window.running=false;
     window.info={enabled:false,conversationId:null,session:null,root:'C:/fixture/dot-bridge',adapterPath:null};
     window.dotInvoke=async(command,args)=>{
-      if(command==='voice_control'){window.actions.push({voice:args.action,sessionId:args.sessionId});return;}
+      if(command==='voice_control'){
+        window.actions.push({voice:args.action,...args});
+        if(args.action==='list')queueMicrotask(()=>window.voiceListener?.({payload:{type:'voice_event',kind:'voices',sessionId:args.sessionId,
+          ...(window.voiceCatalogError?{message:'fixture catalog unavailable'}:{voices:['marin','cedar','coral']})}}));
+        return;
+      }
       if(command==='dot_bridge_info')return {...window.info};
       if(command==='dot_bridge_pair'){
         window.info=args.conversationId?{...window.info,enabled:true,conversationId:args.conversationId,
@@ -40,11 +47,11 @@ await build({
           stop:async id=>{window.actions.push({id,stop:true});window.running=false;}}}/>);
     window.renderAssistantFixture();
   ` },
-  bundle: true, format: 'iife', outfile: `${evidence}/widget-fixture.js`,
+  bundle: true, format: 'iife', outfile: `${evidence}/widget-fixture.js`, loader: { '.png': 'file' },
   define: { 'process.env.NODE_ENV': '"production"' },
   plugins: [{ name: 'native-fixture', setup(build) {
     build.onResolve({filter:/^@tauri-apps\/api\/event$/},()=>({path:'event',namespace:'mock-event'}));
-    build.onLoad({filter:/.*/,namespace:'mock-event'},()=>({contents:'export const listen=async(name,fn)=>{window.voiceListener=fn;return()=>{window.voiceListener=null}};',loader:'js'}));
+    build.onLoad({filter:/.*/,namespace:'mock-event'},()=>({contents:'const listeners=new Set();window.voiceListener=e=>listeners.forEach(fn=>fn(e));export const listen=async(name,fn)=>{listeners.add(fn);return()=>listeners.delete(fn)};',loader:'js'}));
     build.onResolve({filter:/^@tauri-apps\/api\/core$/},()=>({path:'fixture',namespace:'mock'}));
     build.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:'export const invoke=(command,args)=>window.dotInvoke(command,args);',loader:'js'}));
   }}],

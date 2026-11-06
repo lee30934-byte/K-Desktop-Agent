@@ -1,7 +1,9 @@
 import { build } from 'esbuild';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 const out = process.env.KDA_SIMPLE_UI_EVIDENCE || 'evidence/simple-ui-20261106';
 mkdirSync(out, { recursive: true });
+mkdirSync(`${out}/audio`, { recursive: true });
+copyFileSync('public/audio/voicePitch.worklet.mjs', `${out}/audio/voicePitch.worklet.mjs`);
 await build({
   stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React from 'react';
@@ -42,7 +44,7 @@ await build({
           onSelect={id=>window.actions.push({select:id})} onSettings={()=>window.actions.push({settings:true})}/>}/>
     </div>);
     window.renderSimpleUI();
-  ` }, bundle: true, format: 'iife', outfile: `${out}/simple-ui.js`,
+  ` }, bundle: true, format: 'iife', outfile: `${out}/simple-ui.js`, loader: { '.png': 'file' },
   define: { 'process.env.NODE_ENV': '"production"' },
   plugins: [{name:'isolated-native',setup(b){
     b.onResolve({filter:/^@tauri-apps\//},a=>({path:a.path,namespace:'fixture-native'}));
