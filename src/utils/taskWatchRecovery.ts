@@ -13,9 +13,11 @@ export interface ReadyWatch {
   id: string; file?: string; conversationId?: string | null;
   title: string; prompt: string; status: string; note: string;
   delivery?: WatchDelivery;
+  /** Rust: delivery is held for review / retry budget spent and can be archived by K. */
+  resolvable?: boolean;
 }
 
-export interface WaitingWatch { id: string; title: string; reason: string; conversationId?: string | null }
+export interface WaitingWatch { id: string; title: string; reason: string; conversationId?: string | null; file?: string; resolvable?: boolean }
 
 export function waitingWatchKey(watch: WaitingWatch): string {
   return `${watch.id}:${watch.reason}`;
@@ -43,9 +45,15 @@ export async function settleWatchFailure(
 
 export function watchBlockReason(watch: ReadyWatch, control: ConversationControl, conversationId: string): string | undefined {
   if (watch.delivery?.state === "result_ready") return undefined; // local persistence only; never starts a model
-  return control.autoRunBlockReason(conversationId)
-    ?? (watch.status === "held" ? watch.delivery?.reason ?? "delivery-held" : undefined)
+  // A held delivery never clears by waiting. Show its real reason first; otherwise a busy
+  // conversation masks it as "대화 작업 진행 중" and the label (and dismiss key) keeps flipping.
+  return (watch.status === "held" ? watch.delivery?.reason ?? "delivery-held" : undefined)
+    ?? control.autoRunBlockReason(conversationId)
     ?? (watch.delivery?.state === "retry_wait" && (watch.delivery.nextAttemptAt ?? 0) > Date.now() ? "retry-backoff" : undefined);
+}
+
+export function toWaitingWatch(watch: ReadyWatch, reason: string): WaitingWatch {
+  return { id: watch.id, title: watch.title, reason, conversationId: watch.conversationId, file: watch.file || watch.id, resolvable: watch.resolvable === true };
 }
 
 export function watchRecoveryPrompt(watch: ReadyWatch): string {

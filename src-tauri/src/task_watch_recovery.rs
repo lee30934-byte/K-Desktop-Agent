@@ -108,3 +108,44 @@ pub fn ack(path: &Path, turn: &str) -> Result<(), String> {
     if m["_delivery"]["state"] != "result_ready" { return Err("task-watch ack requires saved result".into()); }
     std::fs::remove_file(path).map_err(|e| e.to_string())
 }
+
+/// A held delivery (needs review or retry budget spent) never progresses by itself.
+/// Only those may be archived; live/ready/claimed-by-this-app markers are refused.
+pub fn resolvable(marker: &Value, now: i64, session: &str) -> bool {
+    matches!(view(marker, now, session)["state"].as_str(), Some("blocked" | "exhausted"))
+}
+
+/// Move a held marker to `archive` (never delete). Returns the archived path.
+pub fn resolve(path: &Path, archive: &Path, reason: &str, now: i64, session: &str) -> Result<std::path::PathBuf, String> {
+    let mut m = read(path)?;
+    let d = view(&m, now, session);
+    if !matches!(d["state"].as_str(), Some("blocked" | "exhausted")) {
+        return Err(format!("delivery is not held for review: {}", d["state"]));
+    }
+    m["_resolved"] = json!({"at": now, "reason": reason, "heldReason": d["reason"]});
+    std::fs::create_dir_all(archive).map_err(|e| e.to_string())?;
+    let name = path.file_name().and_then(|s| s.to_str()).ok_or("invalid marker path")?;
+    let mut dest = archive.join(name);
+    if dest.exists() {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("marker");
+        dest = archive.join(format!("{}-{}.json", stem, now));
+    }
+    write(&dest, &m)?;
+    std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    Ok(dest)
+}
+
+/// Auto-resume replaced an interrupted watch turn: archive that turn's review-held marker.
+pub fn resolve_interrupted_turn(dir: &Path, archive: &Path, turn: &str, reason: &str, now: i64, session: &str) -> Result<Vec<String>, String> {
+    if turn.is_empty() { return Ok(vec![]); }
+    let mut done = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") { continue; }
+        let Ok(m) = read(&path) else { continue };
+        if m["_delivery"]["turnId"].as_str() != Some(turn) { continue; }
+        if view(&m, now, session)["reason"] != "interrupted-delivery-review" { continue; }
+        done.push(resolve(&path, archive, reason, now, session)?.display().to_string());
+    }
+    Ok(done)
+}

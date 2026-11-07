@@ -39,7 +39,7 @@ import { saveWorkspace, restoreWorkspace, startupRecoveryCandidates, recoveryAtt
 import { loadConversationWorkspace, saveConversationWorkspace, getLongTask } from "./db";
 import { ConversationMessageWriter } from "./messagePersistence";
 import { dispatchAvailableWatches } from "./utils/taskWatchDispatch";
-import { settleWatchFailure, watchBlockReason, watchBlockLabel, watchRecoveryPrompt, persistWatchResult, visibleWaitingWatches, waitingWatchKey, type WaitingWatch, type ReadyWatch, type WatchDelivery } from "./utils/taskWatchRecovery";
+import { settleWatchFailure, watchBlockReason, watchBlockLabel, watchRecoveryPrompt, persistWatchResult, visibleWaitingWatches, waitingWatchKey, toWaitingWatch, type WaitingWatch, type ReadyWatch, type WatchDelivery } from "./utils/taskWatchRecovery";
 // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그
 import FolderInstructionsDialog from "./components/FolderInstructionsDialog";
 // Phase 112 (v0.6.63) — 대화 라이브러리 (full-screen panel + card grid)
@@ -4032,6 +4032,16 @@ export default function App() {
     try { localStorage.setItem("kda_dismissed_task_watch_waiting_v1", JSON.stringify(bounded)); } catch { /* in-memory dismissal still works */ }
     setDismissedTaskWatchKeys(new Set(bounded));
   };
+  const [taskWatchResolveError, setTaskWatchResolveError] = useState<string | null>(null);
+  const resolveTaskWatchWaiting = async (w: WaitingWatch) => {
+    try {
+      await invoke("task_watch_resolve", { file: w.file || w.id, reason: "user-confirmed" });
+      setTaskWatchResolveError(null);
+      setTaskWatchWaiting((prev) => prev.filter((x) => x.id !== w.id));
+    } catch (e) {
+      setTaskWatchResolveError(`${w.title}: ${String(e)}`);
+    }
+  };
   const taskWatchLog = useCallback((line: string) => {
     void invoke("task_watch_log", { line: `[${new Date().toLocaleString("sv-SE")}] ${line}` }).catch(() => {});
   }, []);
@@ -4230,7 +4240,7 @@ export default function App() {
         if (!Array.isArray(fired)) return;
         setTaskWatchWaiting(fired.flatMap((w) => {
           const reason = watchBlockReason(w, conversationTurnGateRef.current, w.conversationId || "");
-          return reason ? [{ id: w.id, title: w.title, reason, conversationId: w.conversationId }] : [];
+          return reason ? [toWaitingWatch(w, reason)] : [];
         }));
         if (fired.length === 0) return;
         // 대화별 owner gate는 같은 대화의 중복 turn을 막는다. 다른 대화는 빈 슬롯만큼 시작한다.
@@ -4833,6 +4843,10 @@ export default function App() {
         const prompt = buildLongTaskAutoResumePrompt(task, reason);
         saveControlNotice(targetConvId, `중단된 ${task.kind} 작업을 저장된 요청과 진행 기록에서 이어갑니다.`);
         await handleSendMessage(prompt, recoveryAttachments(task), { conversationId: targetConvId });
+        // The resumed turn replaces an interrupted task-watch delivery; its review-held marker
+        // would otherwise stay in the waiting banner forever.
+        void invoke("task_watch_resolve_turn", { turnId: task.id, reason: "auto-resume-dispatched" })
+          .catch((e) => logger.warn(`[AutoResume] task-watch resolve failed id=${task.id}: ${e}`));
         await finalizeLongTask(
           task.id,
           "failed",
@@ -5718,7 +5732,17 @@ export default function App() {
           <div role="status" className="task-watch-waiting" style={{ padding: "8px 12px", color: "var(--warn)", background: "var(--bg-2)", fontSize: "0.85em" }}>
             <button className="settings-btn" style={{ float: "right", padding: "2px 8px", fontSize: "0.85em" }} onClick={dismissTaskWatchWaiting} title="이 알림 숨김 · 작업 감시는 계속됨">✕</button>
             <strong>이 대화의 작업 결과 확인 대기 {visibleTaskWatchWaiting.length}건</strong>
-            {visibleTaskWatchWaiting.slice(0, 3).map((w) => <div key={w.id}>{w.title} · {watchBlockLabel(w.reason)}</div>)}
+            {visibleTaskWatchWaiting.slice(0, 3).map((w) => (
+              <div key={w.id}>
+                {w.title} · {watchBlockLabel(w.reason)}
+                {w.resolvable && (
+                  <button className="settings-btn task-watch-resolve" style={{ marginLeft: 8, padding: "1px 8px", fontSize: "0.85em" }}
+                    onClick={() => { void resolveTaskWatchWaiting(w); }}
+                    title="결과를 확인했으면 이 감시 기록을 보관 폴더(task-watch/archive/resolved)로 옮깁니다 · 삭제하지 않음">확인 완료</button>
+                )}
+              </div>
+            ))}
+            {taskWatchResolveError && <div role="alert">보관 실패: {taskWatchResolveError}</div>}
           </div>
         )}
         {/* Phase 121 (v0.6.76) — dead-stream 워치독 배너. 비파괴적: 자동 중단 안 함. */}

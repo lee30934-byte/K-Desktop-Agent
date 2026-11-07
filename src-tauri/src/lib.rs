@@ -1649,6 +1649,7 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
         };
 
         let mut delivery = task_watch_recovery::view(&marker, now_ms, task_watch_session());
+        let resolvable = matches!(delivery["state"].as_str(), Some("blocked" | "exhausted"));
         if delivery["state"] == "claimed" { continue; }
         let mut observation = eval_watch(&marker, now_ms);
         if delivery["state"] == "result_ready" {
@@ -1691,6 +1692,7 @@ fn task_watch_scan() -> Result<Vec<serde_json::Value>, String> {
                 "status": status,
                 "note": note,
                 "delivery": delivery,
+                "resolvable": resolvable,
             }));
         }
     }
@@ -1748,6 +1750,25 @@ fn task_watch_release_marker(path: &Path, turn_id: &str, error: &str) -> Result<
 fn task_watch_release(file: String, turn_id: String, error: String) -> Result<serde_json::Value, String> {
     let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
     task_watch_release_marker(&task_watch_marker_path(&file)?, &turn_id, &error)
+}
+fn task_watch_archive_dir() -> PathBuf {
+    task_watch_dir().join("archive").join("resolved")
+}
+/// K pressed "확인 완료" on a held delivery: archive (never delete) so the banner clears.
+#[tauri::command]
+fn task_watch_resolve(file: String, reason: String) -> Result<String, String> {
+    let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
+    let dest = task_watch_recovery::resolve(&task_watch_marker_path(&file)?, &task_watch_archive_dir(), &reason, current_unix_ms(), task_watch_session())?;
+    task_watch_log_line(&format!("RESOLVE task-watch \"{}\" reason={} archived={}", file, reason, dest.display()));
+    Ok(dest.display().to_string())
+}
+/// Auto-resume took over an interrupted watch turn; its review-held marker is no longer actionable.
+#[tauri::command]
+fn task_watch_resolve_turn(turn_id: String, reason: String) -> Result<Vec<String>, String> {
+    let _guard = TASK_WATCH_IO.lock().map_err(|e| e.to_string())?;
+    let done = task_watch_recovery::resolve_interrupted_turn(&task_watch_dir(), &task_watch_archive_dir(), &turn_id, &reason, current_unix_ms(), task_watch_session())?;
+    for d in &done { task_watch_log_line(&format!("RESOLVE task-watch turn={} reason={} archived={}", turn_id, reason, d)); }
+    Ok(done)
 }
 #[tauri::command]
 fn task_watch_record_result(file: String, turn_id: String, text: String) -> Result<(), String> {
@@ -5699,6 +5720,8 @@ pub fn run_with_options(start_minimized: bool) {
             task_watch_ack,
             task_watch_release,
             task_watch_record_result,
+            task_watch_resolve,
+            task_watch_resolve_turn,
             // Resources (파일 감시)
             watch_folder,
             get_watched_folders_list,

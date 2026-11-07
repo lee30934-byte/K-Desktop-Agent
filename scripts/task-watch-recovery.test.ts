@@ -121,11 +121,50 @@ await test("recheck real completion file and producer before retry; timeout is n
   assert.equal(rust("observation", "observed", { alive: false, timeout: true }), "watch-condition-missing");
   const marker = rust("read", "observed"); assert.equal(marker.run.startedAt, "past"); assert.equal(marker.run.pid, 123);
 });
+await test("held delivery shows its real reason even while the conversation is busy (dismiss key stays stable)", () => {
+  setup("heldbusy"); rust("claim", "heldbusy", { turn: "old", now: 1 });
+  const c = new ConversationControl(); c.claim("chat", "busy-turn");
+  const w: ReadyWatch = { ...scanned("heldbusy", 1e9, "restarted"), status: "held" };
+  assert.equal(c.autoRunBlockReason("chat"), "conversation-running");
+  const busy = watchBlockReason(w, c, "chat"); c.finish("chat", "busy-turn", "completed");
+  const idle = watchBlockReason(w, c, "chat");
+  assert.equal(busy, "interrupted-delivery-review"); assert.equal(idle, busy);
+  const key = waitingWatchKey({ id: w.id, title: w.title, reason: busy! });
+  assert.equal(visibleWaitingWatches([{ id: w.id, title: w.title, reason: idle!, conversationId: "chat" }], "chat", new Set([key])).length, 0);
+});
+await test("K confirms a held delivery: archived (not deleted), live deliveries are refused", () => {
+  const archive = path.join(dir, "archive-resolved");
+  setup("live"); assert.equal(rust("resolvable", "live", { now: 5 }), false);
+  assert.equal(raw("resolve", "live", { archive, now: 5 }).ok, false);
+  rust("claim", "live", { turn: "mine", now: 5, session: "app-one" });
+  assert.equal(raw("resolve", "live", { archive, now: 6, session: "app-one" }).ok, false);
+  assert.equal(existsSync(path.join(dir, "live.json")), true);
+  setup("stopped"); rust("claim", "stopped", { turn: "s", now: 1 });
+  rust("release", "stopped", { turn: "s", error: "사용자가 정지함 — 대화 자동 실행 보류", now: 2 });
+  assert.equal(rust("resolvable", "stopped", { now: 3 }), true);
+  const dest = rust("resolve", "stopped", { archive, now: 3, reason: "user-confirmed" });
+  assert.equal(existsSync(path.join(dir, "stopped.json")), false); assert.equal(existsSync(dest), true);
+  const archived = JSON.parse(readFileSync(dest, "utf8"));
+  assert.equal(archived._resolved.reason, "user-confirmed"); assert.equal(archived._resolved.heldReason, "requires-user");
+  assert.equal(archived.watch.path, "already-completed.done");
+});
+await test("auto-resume of an interrupted watch turn archives only that turn's review-held marker", () => {
+  const archive = path.join(dir, "archive-turn");
+  setup("resumed"); rust("claim", "resumed", { turn: "watch-turn", now: 1, session: "before-restart" });
+  setup("unrelated"); rust("claim", "unrelated", { turn: "other-turn", now: 1, session: "before-restart" });
+  assert.deepEqual(rust("resolve_turn", "resumed", { archive, turn: "watch-turn", now: 2, session: "before-restart" }), []);
+  const done = rust("resolve_turn", "resumed", { archive, turn: "watch-turn", now: 3, session: "after-restart" });
+  assert.equal(done.length, 1); assert.equal(existsSync(path.join(dir, "resumed.json")), false);
+  assert.equal(existsSync(path.join(dir, "unrelated.json")), true);
+});
 await test("production wiring stages result, rechecks completion/processes, and displays deferred reasons", () => {
   const app = readFileSync("src/App.tsx", "utf8"); const rs = readFileSync("src-tauri/src/lib.rs", "utf8");
   assert.match(app, /settleWatchFailure\(conversationTurnGateRef.current/);
   assert.match(app, /ev.id && !failedWatch/); assert.match(app, /watchBlockReason\(w,/);
   assert.match(app, /task-watch-waiting/); assert.match(app, /watchBlockLabel\(w.reason\)/);
+  assert.match(app, /invoke\("task_watch_resolve", \{ file: w.file \|\| w.id/); assert.match(app, /w.resolvable &&/);
+  assert.match(app, /handleSendMessage\(prompt, recoveryAttachments\(task\)[\s\S]{0,400}task_watch_resolve_turn/);
+  assert.match(rs, /"resolvable": resolvable/); assert.match(rs, /task_watch_resolve,\s*task_watch_resolve_turn,/);
   assert.match(app, /task_watch_record_result[\s\S]*?saveMessage\(convForTurn[\s\S]*?task_watch_ack/);
   assert.match(rs, /fn task_watch_claim_marker[\s\S]*?eval_watch[\s\S]*?task_watch_recovery::observation_block[\s\S]*?task_watch_recovery::claim/);
   assert.match(rs, /marker.get\("_delivery"\).is_some\(\) \{ RunGate::NotApplicable/);

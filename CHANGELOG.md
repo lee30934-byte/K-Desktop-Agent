@@ -1,3 +1,14 @@
+## [0.7.81] - 2026-11-08
+
+### Fixed
+- Task-watch waiting banner: a delivery held for review (interrupted by an app restart, stopped by the user, or retry budget spent) now shows its real reason instead of "대화 작업 진행 중" while the conversation is busy. The label no longer flips, so dismissing with ✕ stays dismissed.
+- Held deliveries get a "확인 완료" button that archives the marker to `task-watch/archive/resolved` (never deleted). Live, ready or currently claimed deliveries are refused.
+- When auto-resume takes over an interrupted task-watch turn, that turn's review-held marker is archived automatically, so it no longer stays in the banner.
+
+### Validation and limits
+- Task-watch recovery integration 15/15 with the real Rust ledger (new: held-reason precedence fails on the pre-fix ordering; archive refuses live deliveries; auto-resume archives only the matching turn). Full release gate 11 PASS.
+- Installed-app banner appearance and the button click in the installed app remain unverified. Installation remains manual.
+
 ## [0.7.80] - 2026-11-07
 
 ### Fixed
