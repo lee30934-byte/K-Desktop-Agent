@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import VoiceCallPanel from "./VoiceCallPanel";
 import DotBridgePanel from "./DotBridgePanel";
 import { AVATAR_MOODS, type AvatarMood } from "./AssistantAvatar";
-import CompanionAvatar, { readCompanionPreference } from "./CompanionAvatar";
+import CompanionAvatar, { COMPANION_MOTION_LABELS, readCompanionPreference, type CompanionMotionState } from "./CompanionAvatar";
 import CompanionVoice, { type CompanionVoiceHandle } from "./CompanionVoice";
 import CompanionIcon from "./CompanionIcon";
 import type { VoiceView } from "../voiceSession";
@@ -39,6 +39,7 @@ interface Props {
 export default function AssistantWidget(props: Props) {
   const [layout, setLayout] = useState<Layout>(readLayout);
   const [avatar, setAvatar] = useState(readCompanionPreference);
+  const [motionState, setMotionState] = useState<CompanionMotionState>('playing');
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'home' | 'appearance' | 'connections'>('home');
   const [reactionRequest, setReactionRequest] = useState<{ frame: number; key: number }>();
@@ -85,6 +86,31 @@ export default function AssistantWidget(props: Props) {
   useLayoutEffect(() => {
     try { localStorage.setItem(STORAGE, JSON.stringify(layout)); } catch { /* Layout still works with storage disabled. */ }
   }, [layout]);
+  // Keep chat bubbles and the composer out from under the docked companion.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const clear = () => { root.style.removeProperty('--companion-reserve'); root.style.removeProperty('--companion-reserve-composer'); root.removeAttribute('data-companion-reserve'); };
+    const update = () => {
+      const box = panel.current?.getBoundingClientRect();
+      const main = document.querySelector('.main-chat')?.getBoundingClientRect();
+      const composer = document.querySelector('.composer-wrapper')?.getBoundingClientRect();
+      if (!box || !main || layout.position) { clear(); return; }
+      const overlap = Math.round(main.right - box.left + 12);
+      // Never squeeze the conversation below a readable width; overlay instead.
+      if (overlap <= 0 || main.width - overlap < 520) { clear(); return; }
+      root.setAttribute('data-companion-reserve', '');
+      root.style.setProperty('--companion-reserve', `${overlap}px`);
+      const coversComposer = !!composer && box.bottom > composer.top - 8;
+      root.style.setProperty('--companion-reserve-composer', coversComposer ? `${overlap}px` : '0px');
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    if (panel.current) observer.observe(panel.current);
+    const main = document.querySelector('.main-chat');
+    if (main) observer.observe(main);
+    window.addEventListener('resize', update);
+    return () => { observer.disconnect(); window.removeEventListener('resize', update); clear(); };
+  }, [layout.position, layout.minimized, open]);
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || ((event.target as HTMLElement).closest("button") && !(event.target as HTMLElement).closest(".companion-avatar"))) return;
     suppressClick.current = false;
@@ -134,10 +160,13 @@ export default function AssistantWidget(props: Props) {
       onPointerDown={startDrag} onPointerMove={moveDrag}
       onPointerUp={() => { drag.current = null; setTimeout(() => { suppressClick.current = false; }, 0); }}
       onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }} onKeyDown={keyMove}>
-      {!layout.minimized && <div className="companion-bubble" role="status"><small><i data-state={mood} />K 비서<span>{callStatus}</span></small><p title={bubble}>{bubble}</p></div>}
+      {!layout.minimized && !open && <div className="companion-bubble" role="status"><small><i data-state={mood} />K 비서<span>{callStatus}</span></small><p title={bubble}>{bubble}</p></div>}
       <div className="companion-figure">
-        <CompanionAvatar mood={mood} motion={avatar.motion} style={avatar.style} compact={layout.minimized} expanded={open} request={reactionRequest}
+        <CompanionAvatar mood={mood} motion={avatar.motion} style={avatar.style} compact={layout.minimized} expanded={open} request={reactionRequest} onMotionState={setMotionState}
         onActivate={() => { if (!suppressClick.current) setOpen(p => !p); }} />
+      </div>
+      <div className="companion-footer">
+        <span className="companion-name">{AVATAR_MOODS[mood]}</span>
         <div className="companion-controls" role="group" aria-label="아바타 빠른 조작">
           <button type="button" className={voiceTarget ? 'is-in-call' : undefined} title={voiceTarget ? '통화 조작 열기' : '통화하기'} aria-label={voiceTarget ? '통화 조작 열기' : '통화하기'} disabled={!props.conversationId && !voiceTarget} onClick={call}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H5a1 1 0 0 0-1 1c0 8 7 15 15 15a1 1 0 0 0 1-1v-3l-5-2-2 2c-3-1-5-3-6-6l2-2-1-4Z" /></svg></button>
@@ -147,7 +176,6 @@ export default function AssistantWidget(props: Props) {
             <svg viewBox="0 0 24 24" aria-hidden="true">{layout.minimized ? <path d="M7 17 17 7M7 7h10v10" /> : <path d="M6 12h12" />}</svg></button>
         </div>
       </div>
-      <span className="companion-name">{AVATAR_MOODS[mood]}</span>
     </div>
     <div className="companion-popover" hidden={!open}>
       <header className="companion-menu-header"><span className="companion-brand-mark" aria-hidden="true"><CompanionIcon name="style" /></span><div><strong>K 비서 <span>나의 작은 동반자</span></strong><small>{voiceTitle ?? selectedTitle}</small></div><button type="button" aria-label="비서 기능 접기" onClick={() => setOpen(false)}><CompanionIcon name="close" /></button></header>
@@ -170,8 +198,8 @@ export default function AssistantWidget(props: Props) {
         <div className="companion-field-heading"><strong>컬러</strong><span>세라믹 컬렉션</span></div>
         <div className="companion-swatches" role="group" aria-label="비서 색상">{([{ id: 'mint', name: '민트 세라믹' }, { id: 'pearl', name: '펄 세라믹' }, { id: 'rose', name: '로즈 세라믹' }] as const).map(a => <button type="button" key={a.id} className={`swatch-${a.id}`} aria-pressed={avatar.style === a.id} onClick={() => setAvatar(p => ({ ...p, style: a.id }))}><i />{a.name}</button>)}</div>
         <CompanionVoice ref={voiceAppearance} voice={avatar.voice} effect={avatar.effect} onEffectChange={effect => setAvatar(p => ({ ...p, effect }))} callEffectWarning={voiceView?.effectWarning} onChange={voice => setAvatar(p => ({ ...p, voice }))} onView={setPreviewView} enabled={open && tab === 'appearance' && !layout.minimized} callActive={!!voiceTarget && (!voiceView || voiceView.phase === 'connecting' || voiceView.phase === 'connected')} />
-        <div className="companion-motion-card"><label className="companion-motion-toggle"><span><strong>움직임과 리액션</strong><small>작은 움직임으로 마음을 전해요</small></span><input type="checkbox" aria-label="대기모션·리액션 움직임" checked={avatar.motion} onChange={e => setAvatar(p => ({ ...p, motion: e.target.checked }))} /><i className="companion-switch" aria-hidden="true" /></label>
-        <div className="companion-reactions" role="group" aria-label="비서 리액션">{([{ frame: 4, name: '인사', icon: 'wave' }, { frame: 5, name: '기쁨', icon: 'smile' }, { frame: 2, name: '갸웃', icon: 'tilt' }, { frame: 6, name: '졸기', icon: 'moon' }] as const).map(r => <button type="button" key={r.frame} disabled={mood !== 'idle' || !avatar.motion} onClick={() => setReactionRequest(p => ({ frame: r.frame, key: (p?.key ?? 0) + 1 }))}><CompanionIcon name={r.icon} />{r.name}</button>)}</div></div>
+        <div className="companion-motion-card"><label className="companion-motion-toggle"><span><strong>움직임과 리액션</strong><small role="status" aria-live="polite">{COMPANION_MOTION_LABELS[motionState]}</small></span><input type="checkbox" aria-label="대기모션·리액션 움직임" checked={avatar.motion} onChange={e => setAvatar(p => ({ ...p, motion: e.target.checked }))} /><i className="companion-switch" aria-hidden="true" /></label>
+        <div className="companion-reactions" role="group" aria-label="비서 리액션">{([{ frame: 4, name: '인사', icon: 'wave' }, { frame: 5, name: '기쁨', icon: 'smile' }, { frame: 2, name: '갸웃', icon: 'tilt' }, { frame: 6, name: '졸기', icon: 'moon' }] as const).map(r => <button type="button" key={r.frame} disabled={mood !== 'idle' || motionState !== 'playing'} onClick={() => setReactionRequest(p => ({ frame: r.frame, key: (p?.key ?? 0) + 1 }))}><CompanionIcon name={r.icon} />{r.name}</button>)}</div></div>
         <footer className="companion-appearance-footer"><small>캐릭터를 끌어 원하는 곳으로</small><button type="button" className="companion-link" onClick={() => { setLayout(p => ({ ...p, position: null })); }}>기본 위치로</button></footer>
       </section>
       <section className="companion-connections" hidden={tab !== 'connections'}>

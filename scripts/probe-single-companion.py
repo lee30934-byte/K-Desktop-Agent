@@ -57,8 +57,8 @@ async def main():
                 assert await avatar.count() == 1
                 assert await widget.locator('.assistant-avatar').count() == 0
                 assert not await widget.locator('.companion-popover').is_visible()
-                sprite = await avatar.locator('.companion-sprite').evaluate("e=>getComputedStyle(e).backgroundImage")
-                assert 'k-assistant-ceramic' in sprite
+                sprite = await avatar.locator('.companion-pose:not(.is-leaving) .companion-body').evaluate("e=>getComputedStyle(e).backgroundImage")
+                assert 'body-mint' in sprite
                 checks.append('one bitmap companion renders with its menu initially closed')
                 await page.screenshot(path=str(OUT / 'idle.png'))
 
@@ -132,10 +132,10 @@ async def main():
                 await page.get_by_role('button', name='통화하기', exact=True).locator('svg').click()
                 await page.wait_for_function("window.nativeCalls.some(c=>c.action==='start')")
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.mood==='connecting'")
-                assert await widget.locator('.companion-bubble small span').inner_text() == '연결 중'
+                assert await widget.locator('.companion-bubble').count() == 0  # panel open: no duplicate bubble
                 await page.evaluate("const peer=window.fixturePeer;peer.connectionState='connected';peer.onconnectionstatechange();window.voiceData=e=>peer.channel.onmessage({data:JSON.stringify(e)});window.voiceData({type:'session.started'});")
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.mood==='listening'")
-                assert await widget.locator('.companion-bubble small span').inner_text() == '통화 중'
+                assert await widget.locator('.companion-bubble').count() == 0
                 await page.get_by_role('button', name='음소거', exact=True).click()
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.mood==='muted'")
                 await page.get_by_role('button', name='마이크 켜기', exact=True).click()
@@ -162,7 +162,10 @@ async def main():
                 assert await page.evaluate("window.nativeCalls.filter(c=>c.action==='stop').length") == 1
                 if await page.get_by_role('button', name='비서 창 펼치기', exact=True).count():
                     await page.get_by_role('button', name='비서 창 펼치기', exact=True).click()
-                assert await widget.locator('.companion-bubble small span').inner_text() == '통화 종료'
+                if await widget.locator('.companion-popover').is_visible():
+                    assert await widget.locator('.companion-bubble').count() == 0
+                else:
+                    assert await widget.locator('.companion-bubble small span').inner_text() == '통화 종료'
                 checks.append('explicit call end stops tracks and dispatches one native stop')
                 await page.get_by_role('button', name='통화 조작 열기', exact=True).click()
                 await page.get_by_role('button', name='음성통화 닫기', exact=True).click()

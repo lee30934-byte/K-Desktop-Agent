@@ -29,7 +29,7 @@ await build({
     }
     createRoot(document.getElementById('root')).render(<Review/>);
   ` },
-  bundle: true, format: 'iife', outfile: `${out}/review.js`, loader: { '.png': 'file' },
+  bundle: true, format: 'iife', outfile: `${out}/review.js`, loader: { '.png': 'file', '.webp': 'file' },
   assetNames: 'assets/[name]-[hash]', define: { 'process.env.NODE_ENV': '"production"' },
 });
 writeFileSync(`${out}/review.html`, `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

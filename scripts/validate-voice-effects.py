@@ -18,7 +18,7 @@ def main():
     paths += ['src/voiceEffects.ts', 'src/voiceTransport.ts', 'src/components/CompanionAvatar.tsx',
               'src/components/CompanionAvatar.css', 'src/components/CompanionWidget.css', 'src/components/CompanionIcon.tsx',
               'src/components/CompanionVoice.tsx', 'public/audio/voicePitch.worklet.mjs', 'src/image-assets.d.ts',
-              'src/assets/k-assistant-ceramic-v2.png', 'scripts/voice-effects.test.ts', 'scripts/voice-choice.test.ts',
+              'design/companion/k-assistant-ceramic-v2.png', 'scripts/voice-effects.test.ts', 'scripts/voice-choice.test.ts',
               'scripts/build-voice-effects-fixture.mjs', 'scripts/probe-voice-effects.py',
               'scripts/probe-companion-effects.py', 'scripts/probe-companion-voice.py', 'scripts/probe-single-companion.py',
               'scripts/validate-voice-effects.py']

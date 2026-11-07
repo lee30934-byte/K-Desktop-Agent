@@ -44,7 +44,7 @@ await build({
           onSelect={id=>window.actions.push({select:id})} onSettings={()=>window.actions.push({settings:true})}/>}/>
     </div>);
     window.renderSimpleUI();
-  ` }, bundle: true, format: 'iife', outfile: `${out}/simple-ui.js`, loader: { '.png': 'file' },
+  ` }, bundle: true, format: 'iife', outfile: `${out}/simple-ui.js`, loader: { '.png': 'file', '.webp': 'file' },
   define: { 'process.env.NODE_ENV': '"production"' },
   plugins: [{name:'isolated-native',setup(b){
     b.onResolve({filter:/^@tauri-apps\//},a=>({path:a.path,namespace:'fixture-native'}));

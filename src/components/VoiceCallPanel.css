@@ -17,3 +17,12 @@
 .voice-call-lease { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .voice-call-lease button { background: var(--accent-glow); border: 1px solid var(--border-default); border-radius: 7px; color: var(--accent); padding: 5px 9px; cursor: pointer; }
 .voice-call-lease button:disabled { opacity: .6; cursor: default; }
+.voice-call-work{margin:12px 0 8px;padding:10px;border:1px solid var(--border-subtle);border-radius:10px}
+.voice-call-work-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px}
+.voice-call-work-heading strong{font-weight:600;color:var(--text-secondary)}
+.voice-call-work .voice-call-actions{margin:8px 0 6px}
+.voice-call-work .voice-call-actions button{flex:1}
+.voice-call .voice-call-stop{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.voice-call .voice-call-stop-all{color:#ffd9d2;background:#5a2a2c;border-color:#b2605f}
+.voice-call .voice-call-stop-all:hover:not(:disabled){background:#6d3033}
+.voice-call .voice-call-stop-all.is-confirming{background:#b23b3b;border-color:#ff9c8f;color:#fff;box-shadow:0 0 0 2px #ff9c8f40}

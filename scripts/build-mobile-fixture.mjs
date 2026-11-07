@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import { mkdirSync, writeFileSync } from 'node:fs';
-const out = 'evidence/mobile-companion-20261106/ui-v1';
+const out = process.env.KDA_MOBILE_EVIDENCE || 'evidence/mobile-companion-20261106/ui-v1';
 mkdirSync(out, { recursive: true });
 const bridge = `
   const handlers=new Set(); let seq=0;

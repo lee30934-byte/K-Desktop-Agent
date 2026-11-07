@@ -22,8 +22,9 @@ export default forwardRef<CompanionVoiceHandle, {
   useEffect(() => { onView?.(view); }, [view, onView]);
   useEffect(() => { preview.current?.setOutputEffect(effect); }, [effect.preset, effect.strength]);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; stop(); }; }, []);
+  useEffect(() => { if (callActive) stop(); }, [callActive]);
   useEffect(() => {
-    if (!enabled || callActive) { stop(); setLoading(false); return; }
+    if (!enabled) { stop(); setLoading(false); return; }
     const controller = new AbortController();
     setLoading(true); setError('');
     void listVoiceChoices(controller.signal).then(found => {
@@ -31,7 +32,7 @@ export default forwardRef<CompanionVoiceHandle, {
     }).catch(e => { if (!controller.signal.aborted) setError(String(e.message ?? e)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [enabled, callActive, reload]);
+  }, [enabled, reload]);
   const busy = view?.phase === 'connecting' || view?.phase === 'connected';
   const unavailable = !!voice && !voices.includes(voice);
   function sample() {
@@ -47,7 +48,7 @@ export default forwardRef<CompanionVoiceHandle, {
   }
   return <section className="companion-voice" aria-label="비서 목소리 설정">
     <div className="companion-field-heading"><strong>목소리</strong><span>나와 어울리는 한 가지</span></div>
-    <div className="companion-voice-card"><div className="companion-voice-identity"><span className={`companion-sound-mark${busy ? ' is-playing' : ''}`} aria-hidden="true"><i /><i /><i /><i /><i /></span><div><strong>{voice ? voice.charAt(0).toUpperCase() + voice.slice(1) : '기본 목소리'}</strong><small>{busy ? '미리듣는 중' : 'VOICE COMPANION'}</small></div><button className="companion-voice-refresh" type="button" aria-label="목록 새로고침" title={loading ? '목소리 불러오는 중…' : '목록 새로고침'} disabled={loading || callActive || busy} onClick={() => setReload(n => n + 1)}><CompanionIcon name="refresh" /></button></div>
+    <div className="companion-voice-card"><div className="companion-voice-identity"><span className={`companion-sound-mark${busy ? ' is-playing' : ''}`} aria-hidden="true"><i /><i /><i /><i /><i /></span><div><strong>{voice ? voice.charAt(0).toUpperCase() + voice.slice(1) : '기본 목소리'}</strong><small>{busy ? '미리듣는 중' : 'VOICE COMPANION'}</small></div><button className="companion-voice-refresh" type="button" aria-label="목록 새로고침" title={loading ? '목소리 불러오는 중…' : '목록 새로고침'} disabled={loading || busy} onClick={() => setReload(n => n + 1)}><CompanionIcon name="refresh" /></button></div>
     <label><span className="companion-sr-only">비서 목소리</span><select aria-label="비서 목소리" value={voice} disabled={loading} onChange={e => { stop(); onChange(e.target.value); setView(null); }}>
       <option value="">엔진 기본 목소리</option>
       {unavailable && <option value={voice} disabled>{voice} · 사용 가능 여부 확인 필요</option>}

@@ -183,7 +183,7 @@ export class MobileHost {
     if (relative.includes('\\') || relative.split('/').some(v => v === '..' || v.startsWith('.'))) return this.json(res, 404, { error: '없음' });
     const file = path.resolve(this.staticRoot, '.' + relative);
     if (!file.startsWith(path.resolve(this.staticRoot) + path.sep)) return this.json(res, 404, { error: '없음' });
-    const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.mjs': 'text/javascript', '.webmanifest': 'application/manifest+json' };
+    const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.mjs': 'text/javascript', '.webmanifest': 'application/manifest+json' };
     const mime = types[path.extname(file)];
     if (!mime) return this.json(res, 404, { error: '없음' });
     try {

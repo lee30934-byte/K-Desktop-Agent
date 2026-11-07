@@ -23,6 +23,13 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
   const [routeError, setRouteError] = useState('');
   const [view, setView] = useState<VoiceView>({ phase: 'idle', message: '', muted: false, speaking: false, conversationId, lines: [] });
   const [now, setNow] = useState(Date.now);
+  const [confirmStopAll, setConfirmStopAll] = useState(false);
+  useEffect(() => {
+    if (!confirmStopAll) return;
+    const t = setTimeout(() => setConfirmStopAll(false), 4000);
+    return () => clearTimeout(t);
+  }, [confirmStopAll]);
+  useEffect(() => { if (view.phase !== 'connected') setConfirmStopAll(false); }, [view.phase]);
   useEffect(() => { onView?.(view); }, [view, onView]);
   useEffect(() => { ref.current?.setOutputEffect(effect); }, [effect.preset, effect.strength]);
   useEffect(() => {
@@ -124,11 +131,19 @@ export default function VoiceCallPanel({ conversationId, title, handlers, onClos
     <small>Codex 로그인 사용 · 원음 파일 저장 안 함 · 기본 5분, 연결 중 연장 가능</small>
     </details>
     {deviceMessage && view.phase === 'error' && <small role="status">{deviceMessage}</small>}
-    <div className="voice-call-actions">
-      <button type="button" disabled={view.phase !== 'connected'} onClick={() => void ref.current?.control('status')}>작업 상태</button>
-      <button type="button" disabled={view.phase !== 'connected'} onClick={() => void ref.current?.control('stop')}>현재 작업 정지</button>
-      <button type="button" disabled={view.phase !== 'connected'} onClick={() => void ref.current?.control('stop_all')}>전체 작업 정지</button>
-    </div>
+    <section className="voice-call-work" aria-label="작업 제어">
+      <div className="voice-call-work-heading"><strong>작업 제어</strong><button type="button" disabled={view.phase !== 'connected'} onClick={() => void ref.current?.control('status')}>상태 묻기</button></div>
+      <div className="voice-call-actions">
+        <button type="button" className="voice-call-stop" disabled={view.phase !== 'connected'} onClick={() => void ref.current?.control('stop')}>현재 작업 정지</button>
+        <button type="button" className={`voice-call-stop-all${confirmStopAll ? ' is-confirming' : ''}`} disabled={view.phase !== 'connected'}
+          aria-describedby="voice-call-stop-all-note"
+          onClick={() => {
+            if (!confirmStopAll) { setConfirmStopAll(true); return; }
+            setConfirmStopAll(false); void ref.current?.control('stop_all');
+          }}>{confirmStopAll ? '한 번 더 눌러 전체 정지' : '전체 작업 정지'}</button>
+      </div>
+      <small id="voice-call-stop-all-note">{confirmStopAll ? '모든 대화의 실행이 멈춥니다. 4초 안에 다시 누르면 실행돼요.' : '전체 정지는 확인을 한 번 더 받아요.'}</small>
+    </section>
     <details className="voice-call-options"><summary>통화 자막</summary><div className="voice-call-transcript" role="log" aria-label="통화 자막">{view.lines.map((l, i) => <p key={i}><b>{l.role === 'user' ? 'K' : l.role === 'assistant' ? '비서' : 'KDA'}:</b> {l.text}</p>)}</div></details>
     <small>“○○ 대화에 수정 요청해줘”처럼 대상을 말해보세요. 지시받은 대화의 맥락으로 작업하며, 통화를 끝내도 작업은 계속됩니다.</small>
   </section>;

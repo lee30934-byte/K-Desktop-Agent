@@ -1,6 +1,7 @@
 import { voiceFeedback, explicitVoiceControl, type VoiceHandlers } from './voiceControl';
 import { VoiceOutput, DEFAULT_VOICE_GAIN, voiceGain } from './voiceOutput';
 import { VoiceRouter, type VoiceRouting } from './voiceRouting';
+import { setVoiceLevelSource } from './voiceLevel';
 import { voiceEffect, DEFAULT_VOICE_EFFECT, type VoiceEffectPreference } from './voiceEffects';
 
 export type VoicePhase = 'idle' | 'connecting' | 'connected' | 'error' | 'ended';
@@ -54,6 +55,7 @@ export class VoiceSession {
   private stream?: MediaStream;
   private audio?: HTMLAudioElement;
   private output?: VoiceOutput;
+  private releaseLevel?: () => void;
   private outputGain = DEFAULT_VOICE_GAIN;
   private outputEffect = DEFAULT_VOICE_EFFECT;
   private unlisten?: () => void;
@@ -147,6 +149,7 @@ export class VoiceSession {
         try {
           const output = this.output ??= new VoiceOutput(this.outputGain, this.outputEffect,
             effectWarning => { if (!this.closed) this.view({ effectWarning }); });
+          this.releaseLevel ??= setVoiceLevelSource(() => (this.suppressed ? 0 : output.level()));
           audio.srcObject = output.attach(event.streams[0] ?? new MediaStream([event.track]));
           void output.resume().then(() => audio.play()).catch(() => this.fail('음성 재생이 차단됐습니다. 출력 장치와 앱 재생 권한을 확인하세요.'));
         } catch { this.fail('KDA 음성 출력 초기화 실패. 통화를 다시 연결하세요.'); }
@@ -440,6 +443,7 @@ export class VoiceSession {
     this.stream?.getTracks().forEach(t => { t.onended = null; t.stop(); });
     this.channel?.close(); this.peer?.close();
     if (this.audio) { this.audio.pause(); this.audio.srcObject = null; }
+    this.releaseLevel?.(); this.releaseLevel = undefined;
     this.output?.close(); this.output = undefined;
     this.unlisten?.(); this.unlisten = undefined;
     void this.transport.stop(this.id).catch(() => {});

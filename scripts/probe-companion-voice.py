@@ -59,6 +59,23 @@ async def main():
                         await page.get_by_role('button', name='비서 메뉴', exact=True).click()
                     await page.get_by_role('button', name='꾸미기', exact=True).click()
 
+                # Opening appearance for the first time during a call used to skip
+                # the catalog entirely, leaving only the engine-default option.
+                await page.get_by_role('button', name='통화하기', exact=True).click()
+                await page.wait_for_function('window.peers.length===1')
+                await page.evaluate('window.connectLatest()')
+                await appearance()
+                await page.wait_for_function("document.querySelector('.companion-voice select').options.length===4")
+                assert await page.get_by_role('button', name='목록 새로고침', exact=True).is_enabled()
+                assert await page.get_by_role('button', name='목소리 미리듣기', exact=True).is_disabled()
+                await page.get_by_role('button', name='목록 새로고침', exact=True).click()
+                await page.wait_for_function("window.actions.filter(a=>a.action==='list').length===2")
+                assert await page.evaluate("window.peers[0].connectionState==='connected'")
+                checks.append('first appearance during an active call loads and refreshes voices without changing the peer')
+                await page.get_by_role('button', name='대화·작업', exact=True).click()
+                await page.get_by_role('button', name='음성통화 닫기', exact=True).click()
+                await page.reload()
+
                 await appearance()
                 choice = page.get_by_role('combobox', name='비서 목소리', exact=True)
                 await page.wait_for_function("document.querySelector('[aria-label=\"비서 목소리\"]').options.length===4")

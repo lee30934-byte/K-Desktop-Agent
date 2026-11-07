@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import CompanionAvatar, { readCompanionPreference } from '../components/CompanionAvatar';
+import CompanionAvatar, { COMPANION_MOTION_LABELS, readCompanionPreference, type CompanionMotionState } from '../components/CompanionAvatar';
 import type { AvatarMood } from '../components/AssistantAvatar';
 import { VoiceSession, type VoiceView } from '../voiceSession';
 import { MobileApi } from './api';
@@ -15,6 +15,7 @@ function MobileApp() {
   const [text, setText] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [notice, setNotice] = useState(''), [status, setStatus] = useState<any>(null), [online, setOnline] = useState(false);
   const [voice, setVoice] = useState<VoiceView | null>(null), [pref, setPref] = useState(readCompanionPreference);
+  const [motionState, setMotionState] = useState<CompanionMotionState>('playing');
   const call = useRef<VoiceSession | null>(null), current = useRef({ targets, selected }); current.current = { targets, selected };
   const target = targets.find(t => t.id === selected);
   const live = voice?.phase === 'connected' || voice?.phase === 'connecting';
@@ -81,7 +82,7 @@ function MobileApp() {
     <header><div className="brand"><span className="brand-mark">K</span><div><strong>함께, 어디서나</strong><small>DESKTOP COMPANION</small></div></div>
       <span className={`connection ${paired && online ? 'online' : ''}`}>{paired && online ? 'PC 연결됨' : paired ? '연결 확인 중' : '기기 연결'}</span></header>
     <section className="companion-stage" aria-label="움직이는 K 비서">
-      <div className="stage-glow" /><CompanionAvatar mood={mood} motion={pref.motion} style={pref.style} compact={false} expanded={false} onActivate={() => setNotice('듣고 있어요. 아래에서 대화를 선택하고 이야기해 주세요.')} />
+      <div className="stage-glow" /><CompanionAvatar mood={mood} motion={pref.motion} style={pref.style} compact={false} expanded={false} onMotionState={setMotionState} onActivate={() => setNotice('듣고 있어요. 아래에서 대화를 선택하고 이야기해 주세요.')} />
       <p>{live ? voice?.message : paired ? target ? `${target.title} · 무엇을 도와드릴까요?` : '명령할 대화를 골라 주세요' : 'PC의 K 비서를 휴대폰으로'}</p>
     </section>
     {!secure && <p className="alert" role="alert">음성 연결에는 HTTPS가 필요합니다. PC 설정의 개인 HTTPS 주소로 접속하세요.</p>}
@@ -115,6 +116,7 @@ function MobileApp() {
       <details className="surface preferences"><summary>목소리와 움직임</summary>
         <label htmlFor="effect">음성 변조</label><select id="effect" value={pref.effect.preset} onChange={e => changeEffect(e.target.value)}>{VOICE_EFFECT_PRESETS.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
         <label className="motion-check"><input type="checkbox" checked={pref.motion} onChange={e => { const next = { ...pref, motion: e.target.checked }; setPref(next); localStorage.setItem('kda_companion_v2', JSON.stringify(next)); }} />아바타 움직임</label>
+        <small role="status" aria-live="polite">{COMPANION_MOTION_LABELS[motionState]}</small>
         <p>음성 연결은 Codex 음성 엔진, 작업은 PC에서 선택한 모델이 처리합니다.</p>
       </details><button className="disconnect" onClick={() => void act(async () => { call.current?.end(); await api.disconnect(); setPaired(false); setTargets([]); setStatus(null); setSelected(''); setNotice('휴대폰 연결을 해제했습니다.'); })}>이 휴대폰 연결 해제</button>
     </>}

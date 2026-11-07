@@ -40,10 +40,10 @@ async def main():
                 await page.goto(f'http://127.0.0.1:{server.server_port}/{OUT.name}/review.html')
                 avatar = page.locator('.companion-avatar')
                 await avatar.wait_for()
-                await page.wait_for_function("document.images.length===0 && getComputedStyle(document.querySelector('.companion-head')).backgroundImage.includes('ceramic')")
+                await page.wait_for_function("document.images.length===0 && getComputedStyle(document.querySelector('.companion-head')).backgroundImage.includes('head-')")
                 # Measure head motion with body/root paused, so whole-image sway
                 # cannot pass a test intended to prove independent articulation.
-                await avatar.evaluate("e=>{for(const a of e.getAnimations({subtree:true})){a.pause();a.currentTime=0;}}")
+                await avatar.evaluate("e=>{for(const a of e.getAnimations({subtree:true})){if(a.animationName==='companion-pose-in'){a.finish();continue;}a.pause();a.currentTime=0;}}")
                 async def head_at(time):
                     await avatar.evaluate("(e,t)=>{for(const a of e.getAnimations({subtree:true})){if(a.effect.target.classList.contains('companion-head-motion'))a.currentTime=t;}}", time)
                     await page.wait_for_timeout(60)
@@ -64,10 +64,10 @@ async def main():
                 box = await avatar.bounding_box()
                 await page.mouse.move(box['x'] + box['width'] * .2, box['y'] + box['height'] * .3)
                 await page.wait_for_timeout(420)
-                look_left = await page.locator('.companion-head-look').evaluate('e=>getComputedStyle(e).transform')
+                look_left = await page.locator('.companion-pose:not(.is-leaving) .companion-head-look').evaluate('e=>getComputedStyle(e).transform')
                 await page.mouse.move(box['x'] + box['width'] * .8, box['y'] + box['height'] * .3)
                 await page.wait_for_timeout(420)
-                look_right = await page.locator('.companion-head-look').evaluate('e=>getComputedStyle(e).transform')
+                look_right = await page.locator('.companion-pose:not(.is-leaving) .companion-head-look').evaluate('e=>getComputedStyle(e).transform')
                 assert look_left != look_right
                 await page.mouse.move(24, 24)
                 assert await avatar.evaluate("e=>e.style.getPropertyValue('--companion-look-x')") == ''
@@ -76,7 +76,7 @@ async def main():
                 await page.get_by_label('움직임 켜기', exact=False).uncheck()
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.motion==='off'")
                 assert await avatar.evaluate('e=>e.getAnimations({subtree:true}).length') == 0
-                assert await page.locator('.companion-head-look').evaluate('e=>getComputedStyle(e).transform') == 'none'
+                assert await page.locator('.companion-pose:not(.is-leaving) .companion-head-look').evaluate('e=>getComputedStyle(e).transform') == 'none'
                 checks.append('motion switch stops all rig animation and pointer offset')
                 await page.get_by_label('움직임 켜기', exact=False).check()
                 await page.emulate_media(reduced_motion='reduce')
@@ -94,7 +94,7 @@ async def main():
                 for mood in ['listening', 'speaking', 'muted', 'error', 'idle']:
                     await page.get_by_label('미리보기 상태', exact=True).select_option(mood)
                     await page.wait_for_function('(m)=>document.querySelector(".companion-avatar").dataset.mood===m', arg=mood)
-                    animation_names[mood] = await page.locator('.companion-head-motion').evaluate('e=>getComputedStyle(e).animationName')
+                    animation_names[mood] = await page.locator('.companion-pose:not(.is-leaving) .companion-head-motion').evaluate('e=>getComputedStyle(e).animationName')
                     await page.screenshot(path=str(OUT / f'{mood}.png'))
                 assert len(set(animation_names.values())) == 5, animation_names
                 result['headAnimations'] = animation_names
@@ -102,14 +102,15 @@ async def main():
                 for mood in ['thinking', 'working']:
                     await page.get_by_label('미리보기 상태', exact=True).select_option(mood)
                     await page.wait_for_function('(m)=>document.querySelector(".companion-avatar").dataset.mood===m', arg=mood)
-                    assert await avatar.get_attribute('data-rig') == 'whole'
-                    assert await page.locator('.companion-head').count() == 0
-                checks.append('crossing arms and tablet poses preserve the original complete image')
+                    assert await avatar.get_attribute('data-rig') == 'layered'
+                    await page.wait_for_function("document.querySelectorAll('.companion-avatar .companion-pose').length===1")
+                    assert await page.locator('.companion-avatar .companion-front').count() == 1
+                checks.append('crossing-arm and tablet poses keep the hand/prop in a front layer while the head turns')
 
                 await page.get_by_label('미리보기 상태', exact=True).select_option('idle')
                 await page.get_by_role('button', name='인사', exact=True).click()
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.frame==='4'")
-                assert await page.locator('.companion-head-motion').evaluate('e=>getComputedStyle(e).animationName') == 'companion-head-greet'
+                assert await page.locator('.companion-pose:not(.is-leaving) .companion-head-motion').evaluate('e=>getComputedStyle(e).animationName') == 'companion-head-greet'
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.frame==='0'")
                 checks.append('requested greeting articulates the head and returns to idle')
                 for width in [390, 760, 1180]:

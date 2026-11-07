@@ -22,7 +22,7 @@ def main():
              'scripts/build-mobile-fixture.mjs', 'scripts/mobile-fixture-host.mjs', 'scripts/probe-mobile-companion.py',
              'scripts/validate-mobile-companion.py', 'scripts/mobile-private-access.ps1', 'src/mobileControl.ts',
              'src/components/MobileSettings.tsx', 'src/components/MobileDesktopBridge.tsx', 'vite.mobile.config.ts',
-             'mobile/index.html', 'docs/mobile-companion.md', 'src/assets/k-assistant-ceramic-v2.png',
+             'mobile/index.html', 'docs/mobile-companion.md', 'design/companion/k-assistant-ceramic-v2.png',
              'public/audio/voicePitch.worklet.mjs']
     extra += [str(p.relative_to(ROOT)).replace('\\', '/') for p in (ROOT / 'src/mobile').rglob('*') if p.is_file()]
     paths = sorted(set(tracked + extra))

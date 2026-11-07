@@ -1,3 +1,21 @@
+## [0.7.79] - 2026-11-07
+
+### Fixed
+- Load the full voice catalog when a call starts before the customization panel was opened; the voice dropdown no longer shows only the default.
+- Stop the companion image from shimmering while it moves: no CSS filter in the animated rig, composited moving layers, and 500/340/230/160 px atlas tiers chosen from the drawn device size before first paint.
+- Keep the antenna orb and its glow inside the frame by rebuilding every pose cell with transparent padding; remove neighbouring-cell bleed.
+- Serve the companion's WebP layers from the phone host.
+
+### Improved
+- Split the companion into body, head, eyes, mouth and front-hand layers so head turns no longer break raised arms; tone finishes recolour only the shell (rose is pink, pearl near-neutral).
+- Move the head in working, thinking and connecting states; add blinking, idle gaze, 0.16 s pose crossfades, irregular 7-14 s reactions, doze only after 3 minutes idle (click wakes) and an open-eyed muted pose with a mic-off badge.
+- Drive the mouth and voice bars from real output loudness, with a synthetic fallback only when no output is measured.
+- Shift chat messages and the composer clear of the floating companion, hide the duplicate bubble while the panel is open, move quick controls below the figure and require a second press within 4 s for the call screen's stop-all action.
+
+### Validation and limits
+- Companion rig 13/13 (including sharpness CV < 3% at 112 px; measured 5.89% -> 1.48%), single companion, motion state, articulation, voice UI and phone checks PASS; full release gate 11 PASS.
+- Measured in a development browser at 100% scaling. Installed-app, high-DPI screen and physical phone appearance, real-voice lip sync and speech naturalness remain unverified. Installation remains manual.
+
 ## [0.7.78] - 2026-11-06
 
 ### Fixed

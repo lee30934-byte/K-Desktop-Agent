@@ -1,3 +1,4 @@
+import { rmsToLevel } from './voiceLevel';
 import { VoiceEffectRack, voiceEffect, effectEnabled, DEFAULT_VOICE_EFFECT, type VoiceEffectPreference } from './voiceEffects';
 
 export const VOICE_OUTPUT_KEY = 'kda_voice_output_gain';
@@ -19,6 +20,8 @@ export class VoiceOutput {
   private gain: GainNode;
   private limiter: DynamicsCompressorNode;
   private destination: MediaStreamAudioDestinationNode;
+  private analyser: AnalyserNode;
+  private samples: Float32Array<ArrayBuffer>;
   private source?: MediaStreamAudioSourceNode;
   private sourcePlayback?: HTMLAudioElement;
   private effects?: VoiceEffectRack;
@@ -34,6 +37,10 @@ export class VoiceOutput {
     this.limiter.release.value = 0.1;
     this.destination = ctx.createMediaStreamDestination();
     this.gain.connect(this.limiter).connect(this.destination);
+    // Side tap for the avatar's mouth; it is not connected to any output.
+    this.analyser = ctx.createAnalyser(); this.analyser.fftSize = 512; this.analyser.smoothingTimeConstant = 0;
+    this.limiter.connect(this.analyser);
+    this.samples = new Float32Array(new ArrayBuffer(this.analyser.fftSize * 4));
     this.gain.gain.value = voiceGain(value);
     void this.setEffect(effect);
   }
@@ -52,6 +59,14 @@ export class VoiceOutput {
     this.source = this.context.createMediaStreamSource(stream);
     this.source.connect(this.effects?.input ?? this.gain);
     return this.destination.stream;
+  }
+  /** Current output loudness 0..1 (after gain/effects), for lip-sync only. */
+  level() {
+    if (this.closed) return 0;
+    this.analyser.getFloatTimeDomainData(this.samples);
+    let sum = 0;
+    for (let i = 0; i < this.samples.length; i++) sum += this.samples[i] * this.samples[i];
+    return rmsToLevel(Math.sqrt(sum / this.samples.length));
   }
   setGain(value: number) {
     this.gain.gain.setTargetAtTime(voiceGain(value), this.context.currentTime, 0.02);
@@ -73,7 +88,7 @@ export class VoiceOutput {
     if (this.closed) return;
     this.closed = true; this.effects?.close();
     if (this.sourcePlayback) { this.sourcePlayback.pause(); this.sourcePlayback.srcObject = null; this.sourcePlayback = undefined; }
-    this.source?.disconnect(); this.gain.disconnect(); this.limiter.disconnect();
+    this.source?.disconnect(); this.gain.disconnect(); this.limiter.disconnect(); this.analyser.disconnect();
     this.destination.stream.getTracks().forEach(track => track.stop());
     void this.context.close().catch(() => {});
   }

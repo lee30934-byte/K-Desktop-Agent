@@ -2,7 +2,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { MobileHost } from '../sidecar/dist/mobile-host.js';
-const fixtureRoot = new URL('../evidence/mobile-companion-20261106/ui-v1/', import.meta.url);
+const fixtureRoot = new URL(`../${process.env.KDA_MOBILE_EVIDENCE || 'evidence/mobile-companion-20261106/ui-v1'}/`, import.meta.url);
 const reserve = net.createServer();
 await new Promise(r => reserve.listen(0, '127.0.0.1', r));
 const mobilePort = reserve.address().port;

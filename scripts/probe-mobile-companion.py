@@ -4,13 +4,14 @@ No production DB, user browser, paid provider, physical microphone or OS setting
 import asyncio
 import datetime
 import json
+import os
 from pathlib import Path
 import subprocess
 
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'evidence/mobile-companion-20261106/ui-v1'
+OUT = ROOT / os.environ.get('KDA_MOBILE_EVIDENCE', 'evidence/mobile-companion-20261106/ui-v1')
 
 
 async def main():
@@ -64,7 +65,14 @@ async def main():
                 await phone.get_by_text('PC의 최근 결과 · 대화별 설정 유지', exact=True).wait_for()
                 avatar = phone.locator('.companion-avatar')
                 await phone.wait_for_function("() => document.querySelector('.companion-head-motion')!==null")
-                check('articulated avatar reused by phone in idle pose', await avatar.get_attribute('data-rig') == 'head-body')
+                check('layered avatar reused by phone in idle pose', await avatar.get_attribute('data-rig') == 'layered')
+                loaded = await phone.evaluate("""async()=>{const layers=[...document.querySelectorAll('.companion-avatar .companion-pose:not(.is-leaving) .companion-layer')];
+                  const urls=[...new Set(layers.map(e=>getComputedStyle(e).backgroundImage.match(/url\(\"?([^\")]+)/)?.[1]).filter(Boolean))];
+                  const out=[];for(const u of urls){const r=await fetch(u);
+                    const ok=await new Promise(res=>{const i=new Image();i.onload=()=>res(i.naturalWidth);i.onerror=()=>res(0);i.src=u;});
+                    out.push({u:u.split('/').pop(),status:r.status,type:r.headers.get('content-type'),width:ok});}return out;}""")
+                result_layers = loaded
+                check('phone avatar layer images load (HTTP 200, image/webp, decoded, one resolution tier)', len(loaded) >= 3 and all(x['status'] == 200 and x['type'] == 'image/webp' and x['width'] in (1500, 1020, 690, 480) for x in loaded) and len({x['width'] for x in loaded}) == 1)
                 await phone.get_by_label('텍스트로 명령').fill('휴대폰 연결 검증')
                 await phone.get_by_role('button', name='명령 보내기').click()
                 await phone.get_by_text('모의 PC 결과: 휴대폰 연결 검증', exact=True).wait_for(timeout=15000)
@@ -76,7 +84,7 @@ async def main():
                     check(f'no horizontal clipping at {width}x{height}', await phone.evaluate('document.documentElement.scrollWidth<=innerWidth'))
                 await phone.set_viewport_size({'width': 390, 'height': 844})
                 avatar = phone.locator('.companion-avatar')
-                check('working pose preserves whole prop silhouette', await avatar.get_attribute('data-rig') == 'whole')
+                check('working pose keeps the tablet in a front layer', await avatar.locator('.companion-pose:not(.is-leaving) .companion-front').count() == 1)
                 await phone.get_by_text('목소리와 움직임', exact=True).click()
                 await phone.get_by_label('아바타 움직임', exact=True).uncheck()
                 await phone.wait_for_function("() => document.querySelector('.companion-avatar').dataset.motion==='off'")
