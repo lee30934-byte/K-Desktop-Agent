@@ -139,4 +139,4 @@
 .companion-avatar[data-motion="off"] .companion-head-look { transform:none; transition:none; }
 .companion-avatar[data-motion="off"] :is(.companion-eyes,.companion-gaze,.companion-mouth,.companion-voice-waves i) { transition:none; }
 .companion-avatar[data-motion="off"] * { animation:none !important; will-change:auto; }
-@media(prefers-reduced-motion:reduce){.companion-avatar *{animation:none !important;will-change:auto;transition:none !important}.companion-head-look,.companion-gaze{transform:none!important}}
+/* OS reduced-motion is not applied here: the in-app motion switch (data-motion) decides. */

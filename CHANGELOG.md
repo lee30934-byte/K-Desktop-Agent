@@ -1,3 +1,13 @@
+## [0.7.80] - 2026-11-07
+
+### Fixed
+- Load the voice catalog when the companion menu is opened from the minimized companion; previously no request was sent and only the engine default voice appeared.
+- Keep the companion animating while its in-app motion switch is on, even when Windows "Animation effects" is off (OS reduced motion). Turning the switch off still stops all motion.
+
+### Validation and limits
+- New regression check opens the menu from the minimized companion and requires a catalog request; the pre-fix build fails at that step. Reduced-motion checks updated to the new contract. The shimmer gate now measures a non-reacting state with a median of three windows (idle reaction poses were read as shimmer).
+- Companion rig, voice, motion state, single companion, articulation and phone checks PASS; full release gate 11 PASS. Installed-app appearance, physical speaker audibility and speech naturalness remain unverified. Installation remains manual.
+
 ## [0.7.79] - 2026-11-07
 
 ### Fixed

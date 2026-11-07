@@ -74,13 +74,15 @@ async def main():
                 checks.append('explicit off persists and reports its state; enabling resumes animation')
 
                 await page.emulate_media(reduced_motion='reduce')
-                await page.get_by_text('기기의 동작 줄이기 설정으로 정지', exact=True).wait_for()
+                await page.wait_for_function('()=>document.querySelector(".companion-avatar").dataset.osReducedMotion==="true"')
+                await page.get_by_text('고개·눈·몸 움직임 켜짐', exact=True).wait_for()
                 assert await toggle.is_checked()
-                assert await avatar.evaluate('e=>e.getAnimations({subtree:true}).length') == 0
-                for name in ['인사', '기쁨', '갸웃', '졸기']:
-                    assert await page.get_by_role('button', name=name, exact=True).is_disabled()
-                await page.screenshot(path=str(OUT / 'reduced-motion-reason.png'))
-                checks.append('OS reduced motion explains the checked switch and disables unavailable reactions')
+                assert await avatar.get_attribute('data-motion') == 'on'
+                assert await avatar.evaluate('e=>e.getAnimations({subtree:true}).length') > 0
+                for name in ['인사', '기쁨', '갸웃']:
+                    assert await page.get_by_role('button', name=name, exact=True).is_enabled()
+                await page.screenshot(path=str(OUT / 'reduced-motion-override.png'))
+                checks.append('switch ON overrides OS reduced motion (Windows animation effects off): rig animates, reactions enabled')
                 await page.emulate_media(reduced_motion='no-preference')
                 await page.get_by_text('고개·눈·몸 움직임 켜짐', exact=True).wait_for()
                 await page.get_by_role('button', name='인사', exact=True).click()

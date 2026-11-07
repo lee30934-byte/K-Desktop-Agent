@@ -91,7 +91,9 @@ export default function CompanionAvatar({ mood, motion, style, compact, expanded
   const reset = useRef<ReturnType<typeof setTimeout>>();
   const lastReaction = useRef<number | null>(null);
   const shownFrame = useRef<number | null>(null);
-  const motionState: CompanionMotionState = !motion ? 'disabled' : reduced ? 'reduced' : !visible ? 'hidden' : 'playing';
+  // The in-app switch is an explicit choice: it wins over the OS "reduce motion" / Windows
+  // "Animation effects off" hint (K 2026-11-07). Turning the switch off still stops everything.
+  const motionState: CompanionMotionState = !motion ? 'disabled' : !visible ? 'hidden' : 'playing';
   const moving = motionState === 'playing';
   const dozing = moving && mood === 'idle' && drowsy;
   const frame = dozing ? DOZE_FRAME : mood === 'idle' && moving && reaction !== null ? reaction : COMPANION_FRAMES[mood];
@@ -230,7 +232,7 @@ export default function CompanionAvatar({ mood, motion, style, compact, expanded
   };
   return <button ref={root} type="button" className={`companion-avatar tone-${style}${compact ? ' is-compact' : ''}`}
     data-mood={mood} data-frame={frame} data-rig="layered" data-dozing={dozing ? 'true' : undefined}
-    data-motion={moving ? 'on' : 'off'} data-motion-state={motionState} aria-expanded={expanded}
+    data-motion={moving ? 'on' : 'off'} data-motion-state={motionState} data-os-reduced-motion={reduced ? 'true' : 'false'} aria-expanded={expanded}
     aria-label="K 비서 아바타 · 기능 열기" title="누르면 기능 열기 · 끌어서 이동"
     onPointerMove={event => {
       if (!moving || event.buttons || event.pointerType === 'touch') return;

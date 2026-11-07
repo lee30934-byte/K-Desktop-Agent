@@ -86,6 +86,24 @@ async def main():
                 assert await choice.input_value() == 'cedar'
                 checks.append('runtime catalog loads and chosen voice survives reload')
 
+                # Regression (K 2026-11-07, installed v0.7.79): opening the menu from the minimized
+                # companion never requested the catalog, leaving only the engine default.
+                await page.evaluate("localStorage.setItem('kda_companion_layout_v1', JSON.stringify({minimized:true}))")
+                await page.reload()
+                before = await page.evaluate("window.actions.filter(a=>a.action==='list').length")
+                if await page.get_by_role('button', name='비서 창 펼치기', exact=True).count() == 0:
+                    await page.get_by_role('button', name='비서 창 최소화', exact=True).click()
+                await page.get_by_role('button', name='비서 창 펼치기', exact=True).wait_for()
+                await page.get_by_role('button', name='K 비서 아바타 · 기능 열기', exact=True).click()
+                await page.get_by_role('button', name='꾸미기', exact=True).click()
+                await page.wait_for_function(f"window.actions.filter(a=>a.action==='list').length>{before}")
+                await page.wait_for_function("document.querySelector('[aria-label=\"비서 목소리\"]').options.length===4")
+                await page.get_by_role('button', name='비서 기능 접기', exact=True).click()
+                await page.get_by_role('button', name='비서 창 펼치기', exact=True).click()
+                checks.append('menu opened from the minimized companion still loads the voice catalog')
+                await appearance()
+                await page.wait_for_function("!document.querySelector('[aria-label=\"비서 목소리\"]').disabled")
+
                 await page.get_by_role('button', name='목소리 미리듣기', exact=True).click()
                 await page.wait_for_function("window.actions.some(a=>a.action==='start'&&a.preview)")
                 assert await page.evaluate('window.microphoneRequests') == 0

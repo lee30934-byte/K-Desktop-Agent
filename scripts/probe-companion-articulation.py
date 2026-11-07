@@ -80,15 +80,16 @@ async def main():
                 checks.append('motion switch stops all rig animation and pointer offset')
                 await page.get_by_label('움직임 켜기', exact=False).check()
                 await page.emulate_media(reduced_motion='reduce')
-                await page.wait_for_function("document.querySelector('.companion-avatar').dataset.motion==='off'")
-                assert await avatar.evaluate('e=>e.getAnimations({subtree:true}).length') == 0
+                await page.wait_for_function("document.querySelector('.companion-avatar').dataset.osReducedMotion==='true'")
+                assert await page.evaluate("document.querySelector('.companion-avatar').dataset.motion") == 'on'
+                assert await avatar.evaluate('e=>e.getAnimations({subtree:true}).length') > 0
                 await page.emulate_media(reduced_motion='no-preference')
                 await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'))")
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.motion==='off'")
                 assert await avatar.evaluate('e=>e.getAnimations({subtree:true}).length') == 0
                 await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'))")
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.motion==='on'")
-                checks.append('OS reduced motion and hidden documents stop the rig; visibility resumes it')
+                checks.append('switch ON overrides OS reduced motion; hidden documents stop the rig; visibility resumes it')
 
                 animation_names = {}
                 for mood in ['listening', 'speaking', 'muted', 'error', 'idle']:

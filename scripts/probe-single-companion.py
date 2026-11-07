@@ -79,13 +79,14 @@ async def main():
                 checks.append('appearance and motion persist; requested reaction uses the same avatar')
                 await page.screenshot(path=str(OUT / 'appearance.png'))
                 await page.emulate_media(reduced_motion='reduce')
-                await page.wait_for_function("document.querySelector('.companion-avatar').dataset.motion==='off'")
+                await page.wait_for_function("document.querySelector('.companion-avatar').dataset.osReducedMotion==='true'")
+                assert await page.evaluate("document.querySelector('.companion-avatar').dataset.motion") == 'on'
                 await page.emulate_media(reduced_motion='no-preference')
                 await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'))")
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.motion==='off'")
                 await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'))")
                 await page.wait_for_function("document.querySelector('.companion-avatar').dataset.motion==='on'")
-                checks.append('reduced motion and hidden-document pause disable animation')
+                checks.append('switch ON keeps animating under OS reduced motion; hidden-document pause disables animation')
 
                 await page.get_by_role('button', name='비서 기능 접기', exact=True).click()
                 before = await widget.bounding_box()

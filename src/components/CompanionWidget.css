@@ -164,7 +164,7 @@
   .companion-widget.is-open .companion-avatar { width:128px; height:128px; }
   .companion-widget.is-open .companion-bubble { display:none; }
 }
-@media(prefers-reduced-motion:reduce) { .companion-widget *,.companion-widget *::after { animation:none !important; transition:none !important; } }
+@media(prefers-reduced-motion:reduce) { .companion-widget *:not(.companion-avatar, .companion-avatar *),.companion-widget *:not(.companion-avatar *)::after { animation:none !important; transition:none !important; } }
 
 /* Chat avoidance: AssistantWidget measures the docked widget and publishes the overlap. */
 :root[data-companion-reserve] .main-chat .messages { padding-right:calc(var(--space-xl) + var(--companion-reserve,0px)); }

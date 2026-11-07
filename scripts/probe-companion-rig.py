@@ -196,14 +196,22 @@ async def main():
                 metrics['renderTier'] = render
                 assert render['cell'] == 160 and render['cell'] <= render['width'] * 1.55, render
                 assert not render['filtered'] and render['notComposited'] == 0, render
-                vals = []
-                for _ in range(30):
-                    vals.append(sharpness(png(await figs.nth(0).screenshot(animations='allow'))))
-                    await page.wait_for_timeout(60)
-                cv = float(np.std(vals) / np.mean(vals) * 100)
+                # Measure 'listening' (index 1): idle swaps to random reaction poses every 7-14 s and a pose
+                # change alters sharpness itself, which read as shimmer (1.2 -> 4.8% inside one run).
+                # Median of 3 windows guards against host CPU load;
+                # the pre-fix shimmer was 4.5-5.9%, so the median keeps the gate discriminating.
+                rounds = []
+                for _ in range(3):
+                    vals = []
+                    for _ in range(20):
+                        vals.append(sharpness(png(await figs.nth(1).screenshot(animations='allow'))))
+                        await page.wait_for_timeout(60)
+                    rounds.append(float(np.std(vals) / np.mean(vals) * 100))
+                cv = float(np.median(rounds))
                 metrics['compactShimmerCvPct'] = round(cv, 2)
-                assert cv < 3.0, cv
-                checks.append('shimmer: 112px uses the 160px tier, no CSS filter in the rig, moving layers composited, sharpness CV < 3% while animating')
+                metrics['compactShimmerCvRoundsPct'] = [round(r, 2) for r in rounds]
+                assert cv < 3.0, rounds
+                checks.append('shimmer: 112px uses the 160px tier, no CSS filter in the rig, moving layers composited, sharpness CV median-of-3 < 3% while animating')
 
                 # --- blink + gaze
                 await page.evaluate('items=>window.renderAvatarGallery(items)', [{'mood': 'idle'}])
@@ -297,10 +305,10 @@ async def main():
                 a = png(await page.locator('#avatar-gallery .companion-avatar').screenshot())
                 await page.wait_for_timeout(1200)
                 b = png(await page.locator('#avatar-gallery .companion-avatar').screenshot())
-                state = await page.evaluate('document.querySelector("#avatar-gallery .companion-avatar").dataset.motionState')
+                state = await page.evaluate('[document.querySelector("#avatar-gallery .companion-avatar").dataset.motionState, document.querySelector("#avatar-gallery .companion-avatar").dataset.osReducedMotion]')
                 metrics['reducedMotionChangedPixels'] = changed(a, b)
-                assert state == 'reduced' and changed(a, b) == 0, (state, changed(a, b))
-                checks.append('reduced motion: rig is completely still and reports the reduced state')
+                assert state == ['playing', 'true'] and changed(a, b) >= 250, (state, changed(a, b))
+                checks.append('OS reduced motion (Windows animation effects off): switch ON still animates (>=250 px in 1.2s)')
             finally:
                 await browser.close()
         assert not errors, errors
