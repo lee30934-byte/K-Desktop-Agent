@@ -79,6 +79,7 @@ type SidecarEventPayload =
   | { type: "turn_waiting"; id: string; conversationId: string; detail: string }
   | { type: "turn_started" | "turn_stopping" | "turn_stopped"; id: string; conversationId: string; agentId?: string | null }
   | { type: "interrupt_warning" | "interrupt_rejected"; id: string; conversationId?: string; message: string }
+  | { type: "desktop_bypass"; id: string; conversation_id?: string | null; rule: string; message: string }
   | { type: "desktop_stall"; id: string; conversation_id?: string | null; state: "ok" | "waiting_user" | "no_progress" | "stalled"; idleMs: number; message: string | null }
   | { type: "ready"; version: string }
   | {

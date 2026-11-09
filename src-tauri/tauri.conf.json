@@ -47,6 +47,7 @@
     ],
     "resources": [
       "../sidecar/dist/**/*",
+      "../sidecar/hooks/**/*",
       "../sidecar/node_modules/**/*",
       "../sidecar/package.json",
       "../node-bundle/**/*",

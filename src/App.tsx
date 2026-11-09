@@ -1568,7 +1568,7 @@ export default function App() {
     }
     // v0.7.57 — 실패·정지 턴은 자동 이어가기 대상이 아니다 (텍스트만 정리).
     if (["error", "turn_stopped"].includes(ev.type)) autoContinueTextRef.current.delete(event.turn_id ?? event.id);
-    const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "codex_elicitation_request", "codex_elicitation_resolved", "codex_approval_request", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window", "desktop_stall"]);
+    const routedTypes = new Set(["assistant_delta", "tool_use", "tool_result", "done", "error", "orchestrate_delta", "orchestrate_status", "turn_heartbeat", "turn_started", "turn_waiting", "turn_stopping", "turn_stopped", "interrupt_warning", "interrupt_rejected", "safety_alert", "ask_user_question", "elicitation_request", "codex_elicitation_request", "codex_elicitation_resolved", "codex_approval_request", "long_task_started", "long_task_done", "long_task_heartbeat", "session_recovery_triggered", "model_context_window", "desktop_stall", "desktop_bypass"]);
     const eventTurnId = event.turn_id ?? event.taskId ?? event.id;
     const taskWatchActivity = taskWatchTurnsRef.current.get(eventTurnId);
     if (taskWatchActivity) taskWatchActivity.lastActivityAt = Date.now();
@@ -1606,6 +1606,10 @@ export default function App() {
         if (eventConversationId === activeConversationIdRef.current) pushSystem(event.message, "warn");
         if (ev.type === "interrupt_rejected") rejectStopWaiters(eventTurnId, new Error(event.message));
       }
+      return;
+    }
+    if (ev.type === "desktop_bypass") {
+      if (eventConversationId && eventConversationId === activeConversationIdRef.current && typeof event.message === "string") pushSystem(event.message, "warn");
       return;
     }
     if (ev.type === "desktop_stall") {

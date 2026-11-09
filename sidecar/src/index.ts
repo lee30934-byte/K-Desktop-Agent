@@ -57,7 +57,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import treeKill from "tree-kill";
 import * as path from "node:path";
 import * as os from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 // Phase 135 — Gemini CLI 구독 OAuth 내장 로그인 (로컬 loopback 콜백 서버 + 토큰 교환)
 import http from "node:http";
 import { randomBytes } from "node:crypto";
@@ -2232,6 +2232,20 @@ function reportDesktopStall(msg: { id: string; conversation_id?: string | null }
   emit({ type: "desktop_stall", id: msg.id, conversation_id: msg.conversation_id ?? null, state: r.state, idleMs: r.idleMs, message } as any);
 }
 
+// Codex 셸 명령의 화면 직접 조작 시도 감지 — 실행 전 차단은 불가(danger-full-access)하므로 표시·기록만 한다.
+const desktopBypassModule: Promise<{ detectDesktopBypass: (c: unknown) => { id: string; label: string } | null } | null> =
+  import(pathToFileURL(path.resolve(__dirname_local, "..", "hooks", "desktopBypass.mjs")).href).catch(() => null);
+function reportCodexDesktopBypass(msg: { id: string; conversation_id?: string | null }, command: unknown): void {
+  if (typeof command !== "string" || !command) return;
+  void desktopBypassModule.then((mod) => {
+    const hit = mod?.detectDesktopBypass(command);
+    if (!hit) return;
+    logToFile("warn", `Codex desktop bypass detected id=${msg.id} rule=${hit.id}`);
+    emit({ type: "desktop_bypass", id: msg.id, conversation_id: msg.conversation_id ?? null, rule: hit.id,
+      message: `Codex 가 셸로 화면/입력을 직접 조작하는 명령을 실행했습니다 (${hit.label}). 입력 잠금·대상 창 확인이 적용되지 않습니다.` } as any);
+  }).catch(() => { /* 감지 실패는 무시 */ });
+}
+
 // ─── 턴 관리 ───────────────────────────────────────────
 
 // "chatgpt-web" = KDA 소유 WebView2 창(BrowserHost)으로 ChatGPT 에 직접 묻는 경로.
@@ -3782,6 +3796,8 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   // dev (sidecar/src/index.ts) 와 release (sidecar/dist/index.js) 모두 한 단계 위로 가서 hooks/ 도달.
   const overwriteGuardPath = path.resolve(__dirname_local, "..", "hooks", "preToolUse-overwriteGuard.mjs");
   const pitfallGuardPath = path.resolve(__dirname_local, "..", "hooks", "preToolUse-pitfallGuard.mjs");
+  // (3) desktopGuard — 셸로 SendKeys/user32/pyautogui/UIA 를 직접 쓰는 화면 조작 우회를 실행 전 차단.
+  const desktopGuardPath = path.resolve(__dirname_local, "..", "hooks", "preToolUse-desktopGuard.mjs");
   const hookSettings = {
     hooks: {
       PreToolUse: [
@@ -3795,6 +3811,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
           matcher: "Bash",
           hooks: [
             { type: "command", command: `node "${pitfallGuardPath}"` },
+            { type: "command", command: `node "${desktopGuardPath}"` },
           ],
         },
       ],
@@ -3879,7 +3896,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   const attachmentsCount = msg.attachments?.length ?? 0;
   logToFile(
     "info",
-    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} argsLen=${argsTotalLen} tmpFiles=${tmpFiles.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} settingsBytes=${settingsBytes} mcpBytes=${mcpBytes} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hooks=overwriteGuard+pitfallGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b historyOriginal=${promptHistory.originalItems} historySent=${promptHistory.sentItems} historyOmitted=${promptHistory.omittedItems} historyApproxChars=${promptHistory.approxChars}`
+    `CLI query start id=${msg.id} len=${msg.content.length} promptBytes=${Buffer.byteLength(promptWithHistory, "utf-8")} argsLen=${argsTotalLen} tmpFiles=${tmpFiles.length} resume=${msg.agent_id ?? "none"} mcp=${Object.keys(mcpConfig).length} mcpFile=${mcpConfigFile ? "yes" : "no/inline"} settingsBytes=${settingsBytes} mcpBytes=${mcpBytes} perms=${permSummary} disallowed=${toolFlags.disallowed.length} locked=${toolFlags.lockedCount} hooks=overwriteGuard+pitfallGuard+desktopGuard attachments=${attachmentsCount}${attachmentsDir ? ` attDir=${attachmentsDir}` : ""} memory=${memory.count}/${memory.bytes}b historyOriginal=${promptHistory.originalItems} historySent=${promptHistory.sentItems} historyOmitted=${promptHistory.omittedItems} historyApproxChars=${promptHistory.approxChars}`
   );
   // 진단용 head50 (Phase F 2026-05-06 사고 재발 시 즉시 원인 잡기 위해)
   logToFile(
@@ -5287,6 +5304,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
           }
           case "item.started": {
             const it = event.item;
+            if (it?.type === "command_exec") reportCodexDesktopBypass(msg, it.command ?? it.text);
             if (it?.type === "command_exec" || it?.type === "mcp_tool_call") {
               markActiveToolStart(it.id ?? it.type);
               desktopStall.toolStarted(it.id ?? it.type, it.type === "mcp_tool_call" ? it.tool : it.type);
