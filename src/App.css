@@ -2819,6 +2819,22 @@
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 176, 64, 0.35);
 }
 
+/* v0.7.82: k-personal 자동 업데이트 알림 — 실패는 경고색, 클릭으로 닫힘 */
+.session-refresh-toast.kpm-notice {
+  bottom: 200px;
+  cursor: pointer;
+}
+.session-refresh-toast.kpm-notice[data-kind="error"] {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 176, 64, 0.2) 0%,
+    rgba(255, 176, 64, 0.08) 100%
+  );
+  border-color: rgba(255, 176, 64, 0.5);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 176, 64, 0.35);
+  animation: toastSlideIn 300ms ease;
+}
+
 @keyframes toastSlideIn {
   from {
     opacity: 0;

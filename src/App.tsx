@@ -6030,7 +6030,8 @@ export default function App() {
       {/* v0.7.82: k-personal 자동 업데이트 결과 (실패는 닫을 때까지 유지) */}
       {kpmNotice && (
         <div
-          className={`session-refresh-toast${kpmNotice.kind === "error" ? " restart-toast" : ""}`}
+          className="session-refresh-toast kpm-notice"
+          data-kind={kpmNotice.kind}
           role={kpmNotice.kind === "error" ? "alert" : "status"}
           onClick={() => setKpmNotice(null)}
           title="클릭하면 닫힘"
