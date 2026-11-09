@@ -74,3 +74,13 @@ test("toolBridge bounds screen-tool calls by family", () => {
   assert.match(src, /startsWith\('web_'\)\) return 45_000/);
   assert.match(src, /callTool\(name, request\.params\.arguments \?\? \{\}, toolTimeoutMs\(name\)\)/);
 });
+
+test("Claude path routes k-personal through toolBridge with a direct fallback switch", () => {
+  const src = readFileSync(new URL("../sidecar/src/index.ts", import.meta.url), "utf8");
+  const start = src.indexOf("async function handleViaClaudeCLI");
+  const end = src.indexOf("async function handleViaCodexCLI");
+  const claude = src.slice(start, end);
+  assert.match(claude, /claudeBridge = turnToolBridge\(msg\)/);
+  assert.match(claude, /KDA_CLAUDE_DIRECT_MCP !== "1"/);
+  assert.ok((claude.match(/cleanupClaudeBridge\(\);/g) ?? []).length >= 2, "bridge dir cleaned on both exit paths");
+});

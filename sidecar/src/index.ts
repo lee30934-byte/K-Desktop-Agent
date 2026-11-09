@@ -3498,7 +3498,21 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
   if (process.env.KDA_STDIN_TRACE) {
     emit({ type: "log", level: "info", message: `[stdin-trace] handleViaClaudeCLI enter id=${msg.id} attachments=${msg.attachments?.length ?? 0}` });
   }
+  // 2026-11-09 — Claude 도 Codex/Gemini 와 같은 toolBridge 를 거친다(턴 정책·화면 도구 시간 제한을 한 곳에서 강제).
+  // 브리지 런타임이 없거나 KDA_CLAUDE_DIRECT_MCP=1 이면 종전처럼 server.py 직결로 되돌린다.
   const mcpConfig = buildMCPConfig(cachedMCPHealth);
+  let claudeBridge: { dir: string; command: string; args: string[] } | null = null;
+  if (mcpConfig["k-personal"] && process.env.KDA_CLAUDE_DIRECT_MCP !== "1") {
+    try {
+      claudeBridge = turnToolBridge(msg);
+      mcpConfig["k-personal"] = { type: "stdio", command: claudeBridge.command, args: claudeBridge.args, env: {} };
+    } catch (e) {
+      logToFile("warn", `Claude toolBridge 준비 실패 — server.py 직결로 진행: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const cleanupClaudeBridge = () => {
+    if (claudeBridge) { try { rmSync(claudeBridge.dir, { recursive: true, force: true }); } catch { /* ignore */ } claudeBridge = null; }
+  };
 
   // 첨부 파일을 임시 폴더에 풀고, prompt 에 path 안내를 덧붙임.
   // 임시 폴더는 finally 에서 통째로 삭제.
@@ -3843,6 +3857,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     for (const f of tmpFiles) {
       try { unlinkSync(f); } catch { /* cleanup error ignored */ }
     }
+    cleanupClaudeBridge();
     if (attachmentsDir) {
       try { rmSync(attachmentsDir, { recursive: true, force: true }); } catch { /* cleanup error ignored */ }
     }
@@ -4413,6 +4428,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     }
     // 첨부 임시 폴더 통째 정리 — Read 도구 호출이 끝난 뒤이므로 안전.
     // (Claude CLI 가 비동기로 Read 를 부르는 건 이 turn 안에서만이고, await 가 끝나면 이미 완료.)
+    cleanupClaudeBridge();
     if (attachmentsDir) {
       try {
         rmSync(attachmentsDir, { recursive: true, force: true });
