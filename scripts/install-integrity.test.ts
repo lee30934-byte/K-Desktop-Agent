@@ -42,6 +42,16 @@ test("NSIS: 시작 때 완료 표시 삭제, 마지막 단계에서 버전 기�
   assert.ok(post.lastIndexOf("endPointerCheck:") < post.indexOf("install-complete.txt"));
 });
 
+test("클릭 실수 방지: 파일 복사 중 [취소] 비활성, 업데이트는 passive(선택 화면 없음)", () => {
+  const nsh = read("../src-tauri/installer-hooks.nsh");
+  const pre = nsh.slice(nsh.indexOf("!macro NSIS_HOOK_PREINSTALL"), nsh.indexOf("!macroend"));
+  assert.match(pre, /GetDlgItem \$0 \$HWNDPARENT 2\n\s*EnableWindow \$0 0/);
+  const conf = JSON.parse(read("../src-tauri/tauri.conf.json"));
+  assert.equal(conf.plugins.updater.windows.installMode, "passive");
+  const rs = read("../src-tauri/src/lib.rs");
+  assert.match(rs, /"\/P"\.to_string\(\), "\/R"\.to_string\(\), "\/UPDATE"\.to_string\(\)/);
+});
+
 test("Rust: 시작 시 검사·이벤트, 명령 등록, 서명 검증 전에는 실행하지 않음", () => {
   const rs = read("../src-tauri/src/lib.rs");
   assert.match(rs, /^mod install_integrity;$/m);

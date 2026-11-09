@@ -23,6 +23,14 @@
   ; 앱이 다음 시작 때 이를 "불완전 설치"로 감지해 재설치를 안내/수행한다.
   Delete "$INSTDIR\install-complete.txt"
 
+  ; v0.7.84 — 파일 복사가 시작된 뒤에는 [취소] 를 막는다 (클릭 실수로 반쯤 설치되는 것 방지).
+  ; NSIS 는 취소 버튼이 꺼져 있으면 창의 X(닫기)도 무시한다. 재설치 선택 화면 등 복사 전 단계의
+  ; 취소는 그대로 가능하고, 그때는 아무 파일도 바뀌지 않는다.
+  Push $0
+  GetDlgItem $0 $HWNDPARENT 2
+  EnableWindow $0 0
+  Pop $0
+
   ; 디버그: 이 hook 이 컴파일에 박혔는지 빌드 로그에서 확인 가능
   DetailPrint "K Desktop Agent: checking existing desktop shortcuts (Phase 16)"
 
