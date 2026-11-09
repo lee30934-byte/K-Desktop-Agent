@@ -1,3 +1,16 @@
+## [0.7.82] - 2026-11-09
+
+### Fixed
+- Screen control for Claude and Codex. Desktop-turn stall states: once a turn uses `ui_`/`cc_`/`web_` tools, KDA shows "waiting for approval", "no progress" (90s) or "stalled" (180s) as a notice. It never stops the turn automatically.
+- Claude now reaches k-personal through the same per-turn tool bridge as Codex/Gemini (turn deny policy at discovery and dispatch). Screen tools are time-bounded: `cc_` 15s, `ui_` 20s, `web_` 45s. `KDA_CLAUDE_DIRECT_MCP=1` restores the direct connection.
+- Shell screen-input bypass (SendKeys, user32 input APIs, pyautogui, AutoHotkey, shell UIAutomationClient) is blocked before execution for Claude. For Codex it is detected and shown, but it cannot be pre-blocked under danger-full-access.
+- Installer now bundles `sidecar/hooks`. Previously the hooks were missing from installed builds, so the overwrite and pitfall guards never ran there.
+
+### Validation and limits
+- Desktop stall unit and wiring tests 9/9; desktopGuard hook tests 16/16. Real Claude CLI 2.1.293 through the bridge: k-personal connected, success `isError=false`, missing-window click `is_error=true`, denied tool not discoverable. Full release gate 11 PASS.
+- The k-personal fixes (honest `isError` failures, `uiautomation` 2.x PatternId fix, Unicode typing readback, input lock and target-window check) live in the separate K-Personal-MCP repository and ship separately from this app.
+- Not yet verified: installed-app notices, a live Codex stall reproduction, and real mouse/keyboard input runs.
+
 ## [0.7.81] - 2026-11-08
 
 ### Fixed
