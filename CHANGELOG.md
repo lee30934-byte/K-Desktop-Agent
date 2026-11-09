@@ -5,11 +5,14 @@
 - Claude now reaches k-personal through the same per-turn tool bridge as Codex/Gemini (turn deny policy at discovery and dispatch). Screen tools are time-bounded: `cc_` 15s, `ui_` 20s, `web_` 45s. `KDA_CLAUDE_DIRECT_MCP=1` restores the direct connection.
 - Shell screen-input bypass (SendKeys, user32 input APIs, pyautogui, AutoHotkey, shell UIAutomationClient) is blocked before execution for Claude. For Codex it is detected and shown, but it cannot be pre-blocked under danger-full-access.
 - Installer now bundles `sidecar/hooks`. Previously the hooks were missing from installed builds, so the overwrite and pitfall guards never ran there.
+- k-personal (MCP tools) now reaches every PC with the app. The release build bundles the exact K-Personal-MCP commit pinned in `kpersonal.lock.json` (previously the main HEAD at build time) and verifies its `KPM_VERSION`. On startup KDA upgrades an installed k-personal whose `KPM_VERSION` is lower: fast-forward for a clean git checkout, otherwise copy the bundled files after backing up overwritten ones to `~/.kda/backups/kpersonal-<time>`. It then runs `pip install -r requirements.txt` (`uiautomation` pinned to 2.0.29). A checkout with uncommitted edits is left untouched and reported. `data/`, databases and user plugins are never touched. Failures show as a notice and are retried on the next start.
+- The installer's k-personal file list was hand-written and would have left out the new `tool_errors.py`/`input_guard.py` modules, so the tool server would fail to start on a new PC. It is now a glob.
 
 ### Validation and limits
 - Desktop stall unit and wiring tests 9/9; desktopGuard hook tests 16/16. Real Claude CLI 2.1.293 through the bridge: k-personal connected, success `isError=false`, missing-window click `is_error=true`, denied tool not discoverable. Full release gate 11 PASS.
-- The k-personal fixes (honest `isError` failures, `uiautomation` 2.x PatternId fix, Unicode typing readback, input lock and target-window check) live in the separate K-Personal-MCP repository and ship separately from this app.
-- Not yet verified: installed-app notices, a live Codex stall reproduction, and real mouse/keyboard input runs.
+- The k-personal fixes (honest `isError` failures, `uiautomation` 2.x PatternId fix, Unicode typing readback, input lock and target-window check) are bundled through the pinned commit (KPM_VERSION 2).
+- k-personal upgrade: Rust unit tests 4/4 and a lock/wiring regression test 23/23. Simulated old installs: a plain copy and an old git checkout both upgraded to KPM_VERSION 2, with data and plugins kept and the second run a no-op. A git checkout with a local edit was left unchanged. Real Korean typing into a test-owned window matched exactly and was `verified`. A wrong target window was refused and the value stayed unchanged.
+- Not yet verified: installed-app notices, the upgrade run on a real second PC, and a live Codex stall reproduction.
 
 ## [0.7.81] - 2026-11-08
 

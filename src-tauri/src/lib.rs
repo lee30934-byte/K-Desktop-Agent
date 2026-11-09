@@ -4,6 +4,7 @@ mod browser_host;
 mod browser_host_bridge;
 mod media_preview;
 mod execution_recovery;
+mod kpersonal_upgrade;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -935,6 +936,53 @@ fn resolve_kpersonal_mcp_server() -> Result<PathBuf, String> {
         }
     }
     Err("K-Personal MCP server.py 못 찾음 (USERPROFILE/Documents · ~ · install_dir/bundled-mcp · dev sibling 모두 없음)".into())
+}
+
+/// v0.7.82: install_dir 안의 bundled-mcp 폴더 (번들 사본). 없으면 None (dev 빌드).
+fn find_bundled_mcp_dir() -> Option<PathBuf> {
+    let install = install_dir()?;
+    [
+        install.join("bundled-mcp"),
+        install.join("resources").join("bundled-mcp"),
+        install.join("resources").join("_up_").join("bundled-mcp"),
+        install.join("_up_").join("bundled-mcp"),
+    ]
+    .into_iter()
+    .find(|p| p.join("server.py").exists())
+}
+
+/// v0.7.82: 이미 설치된 k-personal 이 번들보다 낮은 버전이면 업그레이드 (백그라운드 스레드).
+/// 결과는 ~/.kda/kpersonal-update-status.json + "kpersonal-update" 이벤트.
+fn spawn_kpersonal_upgrade(app: AppHandle) {
+    std::thread::spawn(move || {
+        let Some(bundle) = find_bundled_mcp_dir() else {
+            log_lifecycle("runtime.log", "kpersonal upgrade: bundled-mcp 없음 — skip (dev 빌드)");
+            return;
+        };
+        let Ok(home) = std::env::var("USERPROFILE") else { return };
+        let home = PathBuf::from(home);
+        let env_override = std::env::var("K_PERSONAL_MCP_PATH").ok();
+        let Some(target) = kpersonal_upgrade::resolve_active_dir(&home, env_override.as_deref()) else {
+            log_lifecycle("runtime.log", "kpersonal upgrade: 설치된 k-personal 없음 — skip");
+            return;
+        };
+        if let Some(install) = install_dir() {
+            if target.starts_with(&install) {
+                return;
+            }
+        }
+        let status = kpersonal_upgrade::run_upgrade(&bundle, &target, &home);
+        log_lifecycle(
+            "runtime.log",
+            &format!("kpersonal upgrade: {}", serde_json::to_string(&status).unwrap_or_default()),
+        );
+        let _ = app.emit("kpersonal-update", status);
+    });
+}
+
+#[tauri::command]
+fn get_kpersonal_update_status() -> serde_json::Value {
+    kpersonal_upgrade::read_status()
 }
 
 /// Phase 26 (v0.5.13): 새 PC 의 K 가 setup.exe 깐 직후 ~/Documents/K-Personal-MCP/ 가 없으면
@@ -5443,6 +5491,8 @@ pub fn run_with_options(start_minimized: bool) {
             // install_dir 의 bundled-mcp 를 ~/Documents/K-Personal-MCP/ 로 자동 복사.
             // K 의 본 PC 에선 폴더 이미 있어 skip — 옛 todos/notes/habits 보존.
             deploy_bundled_mcp_if_needed();
+            // v0.7.82: 이미 설치된 PC 의 k-personal 도 번들 버전으로 맞춘다 (KPM_VERSION 비교).
+            spawn_kpersonal_upgrade(handle.clone());
 
             // Tray
             if let Err(e) = setup_tray(&handle) {
@@ -5693,6 +5743,7 @@ pub fn run_with_options(start_minimized: bool) {
             run_install_deps,
             // Phase 66 (v0.6.1) — K-Personal MCP 자동 설치
             check_kpersonal_mcp,
+            get_kpersonal_update_status,
             install_kpersonal_mcp,
             // Phase 67 (v0.6.2) — MCP 도구 인스펙터 + 카탈로그 + 커스텀 도구 plugin 빌더
             list_mcp_tools,

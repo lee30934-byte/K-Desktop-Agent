@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { describeKpersonalUpdate, KpersonalNotice } from "./kpersonalUpdate";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import Sidebar from "./components/Sidebar";
 import MainChat from "./components/MainChat";
@@ -1544,6 +1545,39 @@ export default function App() {
       clearInterval(t);
     };
   }, []);
+
+  // ─── v0.7.82: k-personal 자동 업그레이드 결과 알림 ──────────────────
+  const [kpmNotice, setKpmNotice] = useState<KpersonalNotice>(null);
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    const show = (status: unknown) => {
+      try {
+        const n = describeKpersonalUpdate(status, Math.floor(Date.now() / 1000));
+        if (!cancelled && n) setKpmNotice(n);
+      } catch (e) {
+        console.error("[kpersonal-update] notice failed", e);
+      }
+    };
+    (async () => {
+      try {
+        unlisten = await listen("kpersonal-update", (ev) => show(ev.payload));
+        // 이벤트가 리스너 등록 전에 끝났을 수 있으므로 저장된 결과도 한 번 읽는다.
+        show(await invoke("get_kpersonal_update_status"));
+      } catch (e) {
+        console.error("[kpersonal-update] listen failed", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+  useEffect(() => {
+    if (kpmNotice?.kind !== "ok") return;
+    const t = setTimeout(() => setKpmNotice(null), 8000);
+    return () => clearTimeout(t);
+  }, [kpmNotice]);
 
   // ─── 트레이에서 Settings 열기 이벤트 ──────────────────
   useEffect(() => {
@@ -5992,6 +6026,19 @@ export default function App() {
         onSelect={handleSelectConversation}
         onClose={handleCloseLibrary}
       />
+
+      {/* v0.7.82: k-personal 자동 업데이트 결과 (실패는 닫을 때까지 유지) */}
+      {kpmNotice && (
+        <div
+          className={`session-refresh-toast${kpmNotice.kind === "error" ? " restart-toast" : ""}`}
+          role={kpmNotice.kind === "error" ? "alert" : "status"}
+          onClick={() => setKpmNotice(null)}
+          title="클릭하면 닫힘"
+        >
+          <span className="toast-icon">{kpmNotice.kind === "error" ? "⚠" : "🧰"}</span>
+          <span className="toast-text">{kpmNotice.text}</span>
+        </div>
+      )}
 
       {/* 세션 자동 갱신 토스트 */}
       {sessionRefreshToast && (

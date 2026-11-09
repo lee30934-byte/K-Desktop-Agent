@@ -496,16 +496,16 @@ Invoke-Step "Phase 26 (bundled-mcp auto deploy)" {
 
     # (c) tauri.conf.json bundle.resources 에 bundled-mcp 12 entry 박힘
     $confContent = Get-Content "src-tauri/tauri.conf.json" -Raw
-    $bundledRefs = ([regex]::Matches($confContent, '"\.\./bundled-mcp/')).Count
-    if ($bundledRefs -lt 7) {
-        throw "tauri.conf.json: bundled-mcp resources entries 부족 (받은 $bundledRefs, 7+ 필요) (Phase 26)"
+    # v0.7.82: 손으로 적은 파일 목록 대신 glob — 새 모듈 누락 방지
+    if ($confContent -notmatch '"\.\./bundled-mcp/\*\*/\*"') {
+        throw "tauri.conf.json: bundled-mcp resources glob(../bundled-mcp/**/*) 없음 (Phase 26 / v0.7.82)"
     }
-    Write-Host "  OK tauri.conf.json bundle.resources has $bundledRefs bundled-mcp entries" -ForegroundColor DarkGray
+    Write-Host "  OK tauri.conf.json bundle.resources has bundled-mcp glob" -ForegroundColor DarkGray
 
     # (d) release.yml 에 git clone step 박힘
     $releaseYml = Get-Content ".github/workflows/release.yml" -Raw
-    if ($releaseYml -notmatch 'git clone --depth=1 https://github\.com/lee30934-byte/K-Personal-MCP\.git bundled-mcp') {
-        throw ".github/workflows/release.yml: K-Personal-MCP git clone step 없음 (Phase 26)"
+    if ($releaseYml -notmatch 'git clone https://github\.com/lee30934-byte/K-Personal-MCP\.git bundled-mcp' -or $releaseYml -notmatch 'kpersonal\.lock\.json') {
+        throw ".github/workflows/release.yml: K-Personal-MCP 고정 커밋 clone step 없음 (Phase 26 / v0.7.82)"
     }
     if ($releaseYml -notmatch "Fetch K-Personal-MCP source") {
         throw ".github/workflows/release.yml: 'Fetch K-Personal-MCP source' step name 없음 (Phase 26)"

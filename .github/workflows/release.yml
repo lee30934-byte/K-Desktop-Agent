@@ -89,21 +89,30 @@ jobs:
           Pop-Location
 
       - name: Fetch K-Personal-MCP source
-        # Phase 26 (v0.5.13): K-Personal MCP 도구 서버 코드를 매 빌드마다 fetch.
+        # Phase 26 (v0.5.13) + v0.7.82: K-Personal MCP 도구 서버 코드를 번들.
+        # v0.7.82: main HEAD 대신 kpersonal.lock.json 의 고정 커밋을 번들한다 (버전핀).
+        # KPM_VERSION 이 lock 의 kpmVersion 과 다르면 빌드를 실패시킨다.
         # data/, __pycache__/ 는 source repo 의 .gitignore 로 이미 제외됨 — code 만 옴.
-        # K 가 K-Personal-MCP 에 push 하면 다음 KDA 빌드에 자동 반영.
-        # Public repo 라 인증 불필요. depth=1 로 빠르게.
-        # v0.5.14 fix: `cd ...; git ...` sub-expression 이 pwsh 에서 ParserError → Push-Location/Pop-Location 으로 분리.
         shell: pwsh
         run: |
-          git clone --depth=1 https://github.com/lee30934-byte/K-Personal-MCP.git bundled-mcp
+          $lock = Get-Content kpersonal.lock.json -Raw | ConvertFrom-Json
+          git clone https://github.com/lee30934-byte/K-Personal-MCP.git bundled-mcp
+          if ($LASTEXITCODE -ne 0) { throw "K-Personal-MCP clone failed" }
           Push-Location bundled-mcp
+          git checkout --quiet $lock.commit
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "K-Personal-MCP commit $($lock.commit) not found" }
           $sha = git rev-parse HEAD
           Pop-Location
-          $count = (Get-ChildItem bundled-mcp -Recurse -File | Measure-Object).Count
-          Write-Host "K-Personal-MCP fetched: SHA=$sha, files=$count"
+          if ($sha -ne $lock.commit) { throw "K-Personal-MCP SHA mismatch: $sha != $($lock.commit)" }
+          $kpm = (Get-Content bundled-mcp/KPM_VERSION -Raw).Trim()
+          if ($kpm -ne "$($lock.kpmVersion)") { throw "KPM_VERSION $kpm != lock $($lock.kpmVersion)" }
+          foreach ($req in @('server.py','requirements.txt','modules/tool_errors.py','modules/input_guard.py')) {
+            if (-not (Test-Path "bundled-mcp/$req")) { throw "bundled-mcp missing $req" }
+          }
           # .git 폴더 제거 — bundle.resources 에 들어가면 안 됨 (크기 + privacy)
           Remove-Item -Recurse -Force bundled-mcp/.git
+          $count = (Get-ChildItem bundled-mcp -Recurse -File | Measure-Object).Count
+          Write-Host "K-Personal-MCP fetched: SHA=$sha, KPM_VERSION=$kpm, files=$count"
 
       - name: Bundle Node.js
         shell: pwsh
