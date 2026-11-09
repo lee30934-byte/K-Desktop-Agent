@@ -120,6 +120,7 @@ import {
   type GeminiContent,
 } from "./restTools.js";
 import { STATUSLINE_SOURCE } from "./statusLineSource.js";
+import { DesktopStallMonitor, desktopStallMessage } from "./desktopStall.js";
 // v0.7.48 — REA(Reverse Engineer Anything) MCP 선택적 주입 정책 (순수 모듈, 빌드 없이 테스트).
 import {
   buildReaClaudeServer,
@@ -2222,6 +2223,15 @@ function emitTurnHeartbeat(
   });
 }
 
+// 화면 작업 턴 멈춤 감시 결과를 상태가 바뀔 때만 UI 로 알린다(자동 종료 없음).
+function reportDesktopStall(msg: { id: string; conversation_id?: string | null }, monitor: DesktopStallMonitor, now: number): void {
+  const r = monitor.evaluate(now);
+  if (!r.changed) return;
+  const message = desktopStallMessage(r.state, r.idleMs);
+  logToFile(r.state === "ok" ? "info" : "warn", `desktop stall state=${r.state} id=${msg.id} idleMs=${r.idleMs}`);
+  emit({ type: "desktop_stall", id: msg.id, conversation_id: msg.conversation_id ?? null, state: r.state, idleMs: r.idleMs, message } as any);
+}
+
 // ─── 턴 관리 ───────────────────────────────────────────
 
 // "chatgpt-web" = KDA 소유 WebView2 창(BrowserHost)으로 ChatGPT 에 직접 묻는 경로.
@@ -3919,6 +3929,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     let sawResult = false;
     // idle 워치독 기준 시각 — stdout/stderr 출력이 올 때마다 갱신.
     let lastActivity = Date.now();
+    const desktopStall = new DesktopStallMonitor();
     const activeToolCalls = new Set<string>();
     let activeToolStartedAt: number | null = null;
     const markActiveToolStart = (toolId: string | undefined | null) => {
@@ -3937,6 +3948,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
     // catch 에서 명시적 error emit → 프론트 streaming 해제. 15s 간격으로 점검.
     idleWatchdog = setInterval(() => {
       const now = Date.now();
+      reportDesktopStall(msg, desktopStall, now);
       const idle = now - lastActivity;
       const activeWorkMs = activeToolStartedAt === null ? null : now - activeToolStartedAt;
       if (activeToolCalls.size > 0) {
@@ -4055,6 +4067,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
 
     for await (const line of rl) {
       lastActivity = Date.now(); // idle 워치독 리셋 — 자식이 살아있다는 신호
+      desktopStall.progress();
       if (!line.trim()) continue;
 
       try {
@@ -4092,6 +4105,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
                   }
                 } else if (block.type === "tool_use") {
                   markActiveToolStart(block.id);
+                  desktopStall.toolStarted(block.id, block.name);
                   // Phase 50 — 모델이 AskUserQuestion (Claude 의 user-question tool) 호출 시
                   // sidecar 가 KDA UI 로 라우팅. 기존 path 에선 그냥 tool_use 메시지로만 보였고
                   // 답할 방법이 없어 K 가 옵션을 직접 선택할 수 없었음. 이걸 ask_user_question
@@ -4144,6 +4158,7 @@ async function handleViaClaudeCLI(msg: UserMessage): Promise<void> {
               for (const block of message.content) {
                 if (block.type === "tool_result") {
                   markActiveToolDone(block.tool_use_id);
+                  desktopStall.toolDone(block.tool_use_id);
                   // Phase 98 — image content part 를 별도 추출. 종전엔 normalizeToolOutput 이
                   // image 를 JSON.stringify 로 dump 해 K 화면에 base64 텍스트만 보였음.
                   const { text, images } = splitToolContent(block.content);
@@ -4905,6 +4920,8 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
     // idle 워치독 기준 시각 — stdout 라인/stderr chunk 올 때마다 갱신.
     let lastActivity = Date.now();
+    const desktopStall = new DesktopStallMonitor();
+    const desktopApprovalByItem = new Map<string, string>();
     // 15s 간격으로 무이벤트 시간 점검. 임계 초과 시 자식 트리 강제 종료.
     const activeToolCalls = new Set<string>();
     let activeToolStartedAt: number | null = null;
@@ -4916,11 +4933,17 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
     };
     const markActiveToolDone = (toolId: string | undefined | null) => {
       if (toolId) activeToolCalls.delete(toolId);
+      if (toolId) {
+        desktopStall.toolDone(toolId);
+        const approvalToken = desktopApprovalByItem.get(toolId);
+        if (approvalToken) { desktopApprovalByItem.delete(toolId); desktopStall.waitEnded(approvalToken); }
+      }
       if (activeToolCalls.size === 0) activeToolStartedAt = null;
       lastActivity = Date.now();
     };
     idleWatchdog = setInterval(() => {
       const now = Date.now();
+      reportDesktopStall(msg, desktopStall, now);
       const idle = now - lastActivity;
       const activeWorkMs = activeToolStartedAt === null ? null : now - activeToolStartedAt;
       if (activeToolCalls.size > 0) {
@@ -5056,6 +5079,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
 
     for await (const line of rl) {
       lastActivity = Date.now(); // idle 워치독 리셋 — 자식이 살아있다는 신호
+      desktopStall.progress();
       if (!line.trim()) continue;
       try {
         const rawEvent = JSON.parse(line);
@@ -5137,6 +5161,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             break;
           }
           case "elicitation.requested": {
+            desktopStall.waitStarted(String(event.token));
             emit({ type: "codex_elicitation_request", id: msg.id, conversation_id: msg.conversation_id ?? null,
               token: event.token, traceId: event.traceId, threadId: event.threadId, turnId: event.turnId,
               serverName: event.serverName, message: event.message, schema: event.schema, expiresAt: event.expiresAt });
@@ -5144,10 +5169,13 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             break;
           }
           case "elicitation.resolved": {
+            desktopStall.waitEnded(String(event.token));
             emit({ type: "codex_elicitation_resolved", id: msg.id, conversation_id: msg.conversation_id ?? null, token: event.token });
             break;
           }
           case "approval.requested": {
+            desktopStall.waitStarted(String(event.token));
+            if (event.itemId) desktopApprovalByItem.set(String(event.itemId), String(event.token));
             emit({
               type: "codex_approval_request",
               id: msg.id,
@@ -5245,6 +5273,7 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             const it = event.item;
             if (it?.type === "command_exec" || it?.type === "mcp_tool_call") {
               markActiveToolStart(it.id ?? it.type);
+              desktopStall.toolStarted(it.id ?? it.type, it.type === "mcp_tool_call" ? it.tool : it.type);
             }
             break;
           }

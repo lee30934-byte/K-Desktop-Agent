@@ -7,6 +7,13 @@ const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const denied = new Set<string>(config.denied);
 const client = new MCPClient('k-personal', config.command, config.args, config.env);
 let known = new Set<string>();
+// 화면 도구는 짧게 끊어 멈춘 호출 하나가 턴 전체를 붙잡지 않게 한다(기타 도구는 MCPClient 기본값).
+function toolTimeoutMs(name: string): number | undefined {
+  if (name.startsWith('cc_')) return 15_000;
+  if (name.startsWith('ui_')) return 20_000;
+  if (name.startsWith('web_')) return 45_000;
+  return undefined;
+}
 const output = (v: unknown) => process.stdout.write(JSON.stringify(v) + '\n');
 async function handle(request: any) {
   if (request.id === undefined) return;
@@ -26,7 +33,7 @@ async function handle(request: any) {
       case 'tools/call': {
         const name = request.params?.name;
         if (denied.has(name) || !known.has(name)) throw new Error('Tool not permitted in this KDA turn');
-        result = await client.callTool(name, request.params.arguments ?? {});
+        result = await client.callTool(name, request.params.arguments ?? {}, toolTimeoutMs(name));
         break;
       }
       default: throw new Error('Unsupported MCP method');
