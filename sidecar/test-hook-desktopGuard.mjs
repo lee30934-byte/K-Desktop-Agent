@@ -32,6 +32,18 @@ const cases = [
   { name: "git grep 은 통과", payload: bash(`git grep -n SetCursorPos`), expectCode: 0 },
   { name: "cd 후 grep 도 통과", payload: bash(`cd /c/x && grep -n pyautogui modules/computer_control.py`), expectCode: 0 },
   { name: "일반 테스트 실행은 통과", payload: bash(`py test_uia_actions.py`), expectCode: 0 },
+  // v0.7.83 오탐 수정: 설치본에서 실제로 차단됐던 명령 (2026-11-09)
+  { name: "cd + for 루프 안 grep 검색은 통과 (v0.7.82 오탐 재현)", payload: bash(`cd "/c/Users/lee30/OneDrive/문서/K-Personal-MCP" && for f in a.py b.py; do echo "== $f"; grep -nE "SendKeys|notepad|Popen" $f | head -12; done`), expectCode: 0 },
+  { name: "공백 있는 cd 경로 + grep 통과", payload: bash(`cd "/c/my dir" && grep -n SendKeys x.py`), expectCode: 0 },
+  { name: "PowerShell Select-String 검색 통과", payload: { tool_name: "PowerShell", tool_input: { command: "Get-ChildItem *.py | Select-String -Pattern 'SendKeys|pyautogui'" } }, expectCode: 0 },
+  { name: "powershell -Command 로 감싼 rg 검색 통과 (Codex 형식)", payload: bash(`"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n 'SetCursorPos' src"`), expectCode: 0 },
+  { name: "grep 2>&1 리다이렉션 + pyautogui 검색 통과", payload: bash(`grep -rn pyautogui modules 2>&1 | head`), expectCode: 0 },
+  // 우회 방지: 검색 구간 뒤에 실행이 붙으면 계속 차단
+  { name: "grep 뒤 ; 실행 구간은 차단", payload: bash(`grep x f; py -c "import pyautogui; pyautogui.click(1,1)"`), expectCode: 2, expectStderrContains: "Python" },
+  { name: "grep 뒤 파이프로 powershell SendKeys 차단", payload: bash(`rg x f | powershell -c "[System.Windows.Forms.SendKeys]::SendWait('a')"`), expectCode: 2, expectStderrContains: "SendKeys" },
+  { name: "grep 안 명령 치환은 차단", payload: bash(`grep $(py -c "import pyautogui") f`), expectCode: 2 },
+  { name: "if 조건의 실행은 차단", payload: bash(`if py -c "import pyautogui"; then echo ok; fi`), expectCode: 2 },
+  { name: "cmd /c 로 감싼 SendKeys 차단", payload: bash(`cmd /c "powershell -c (New-Object -ComObject WScript.Shell).SendKeys('x')"`), expectCode: 2 },
   { name: "다른 도구(Read)는 무관", payload: { tool_name: "Read", tool_input: { file_path: "pyautogui.py" } }, expectCode: 0 },
   { name: "KDA_DESKTOP_GUARD=0 이면 비활성", payload: bash(`py -c "import pyautogui"`), env: { KDA_DESKTOP_GUARD: "0" }, expectCode: 0 },
   { name: "깨진 입력은 통과(fail-open)", payload: "not json", expectCode: 0 },

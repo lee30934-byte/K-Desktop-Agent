@@ -1,3 +1,13 @@
+## [0.7.83] - 2026-11-09
+
+### Fixed
+- Shell screen-input guard false positive: v0.7.82 looked only at the first word of the whole command, so a read-only search such as `cd x && for f in ...; do grep "SendKeys" $f; done` was blocked as a key-input attempt. The command is now split into segments at unquoted `&&`, `||`, `;`, `|`, `&` and newlines, and a segment whose command is a search/read command (grep, rg, git, Select-String, cat ...) is not checked for its search terms. Wrapped commands (`powershell -Command "..."`, `bash -c "..."`, `cmd /c "..."`) are analyzed by their inner command.
+- Bypass protection kept: a search segment that contains command substitution (`$(...)`, `<(...)`, backticks) is still checked, and any execution segment chained after a search (`;`, `|`, `&&`) is still blocked.
+
+### Validation and limits
+- desktopGuard hook tests 26/26 (10 new: the real blocked command from the v0.7.82 installed build, spaced cd paths, Select-String, Codex-style `powershell -Command` wrapper, `2>&1` redirection, and five bypass cases that must stay blocked).
+- Still pattern-based: `-EncodedCommand`, prepared script files and compiled executables are not inspected.
+
 ## [0.7.82] - 2026-11-09
 
 ### Fixed
