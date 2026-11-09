@@ -1,3 +1,15 @@
+## [0.7.84] - 2026-11-09
+
+### Fixed
+- Incomplete installs are detected. The installer now deletes `install-complete.txt` when it starts and writes the version into it as its very last step (after all files, registry and shortcuts). On startup KDA compares that marker with the running version and records `complete` / `incomplete` / `dev` in `install-integrity.json`. Previously a cancelled v0.7.83 install left the new executable with old `sidecar/hooks`, and the auto-update record still said "installed" because only the executable version was checked.
+- An incomplete install shows a warning with a **Reinstall** button. Reinstall downloads the installer and its `.sig` from the GitHub release (direct download URL first, GitHub API asset URL if that fails), verifies the signature with the same minisign public key as the updater, and only then runs it in passive mode (`/P /R`), which restarts KDA when done. A failed verification never runs the file.
+- Auto-update no longer reports "installed" for an incomplete install: it reinstalls automatically (at most 2 attempts per version), otherwise records `incomplete` and leaves the warning on screen.
+- Updater failures have a fallback. If the in-app updater cannot download or install (for example the GitHub download server returning 504, seen on 2026-11-09), the auto-update path retries through the signed direct/API download. The update banner gains an **Install another way** button for the same fallback.
+
+### Validation and limits
+- Rust unit tests 7/7; the real v0.7.83 installer verifies against the updater key and a one-byte tampered copy is rejected; a live download through both the direct URL and the GitHub API route verified. Install-integrity regression tests 6/6 and layout check 16/16.
+- Not yet verified: the marker written by a real installed build (first confirmed on this PC when v0.7.84 installs), and a real cancelled-install run of the new installer. Cancelling at the installer's "app is running" prompt also removes the marker and can produce a harmless reinstall prompt.
+
 ## [0.7.83] - 2026-11-09
 
 ### Fixed

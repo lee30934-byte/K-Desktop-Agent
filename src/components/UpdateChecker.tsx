@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { invoke } from '@tauri-apps/api/core';
 
 interface UpdateInfo {
   version: string;
@@ -20,6 +21,7 @@ export function UpdateChecker() {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const [fallbackBusy, setFallbackBusy] = useState(false);
 
   useEffect(() => {
     checkForUpdate();
@@ -85,6 +87,18 @@ export function UpdateChecker() {
     }
   }
 
+  async function installViaFallback() {
+    if (!updateInfo?.version) return;
+    setFallbackBusy(true);
+    try {
+      await invoke('repair_install', { version: updateInfo.version, reason: 'manual-update-fallback', auto: false });
+      // 성공하면 설치 프로그램이 실행되고 앱이 곧 종료된다.
+    } catch (e) {
+      setError(`대체 경로도 실패: ${e instanceof Error ? e.message : String(e)}`);
+      setFallbackBusy(false);
+    }
+  }
+
   function dismissUpdate() {
     // Phase 37: localStorage 에 영구 저장 — 같은 버전은 다시 알림 안 뜸
     if (updateInfo?.version) {
@@ -138,7 +152,24 @@ export function UpdateChecker() {
         </div>
       )}
 
-      {error && <div className="update-error">{error}</div>}
+      {error && (
+        <div className="update-error">
+          {error}
+          {/* v0.7.84 — 업데이터 다운로드 실패(예: GitHub 다운로드 서버 504) 시 대체 경로.
+              직접 주소 → GitHub API 경로로 받아 같은 공개키로 서명 검증 후 설치. */}
+          {updateInfo?.version && (
+            <button
+              type="button"
+              className="update-btn secondary"
+              disabled={fallbackBusy}
+              onClick={installViaFallback}
+              style={{ marginLeft: 8 }}
+            >
+              {fallbackBusy ? '받는 중…' : '다른 경로로 설치'}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

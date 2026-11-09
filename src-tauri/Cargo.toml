@@ -1,6 +1,6 @@
 [package]
 name = "k-desktop-agent"
-version = "0.7.83"
+version = "0.7.84"
 description = "K Desktop Agent - personal automation chat app"
 authors = ["K"]
 edition = "2021"
@@ -41,6 +41,10 @@ url = "2"
 # 비공식 endpoint 라 OpenAI 변경 시 깨질 수 있으므로 호출 측은 silently fail + UI 가 stale 표시.
 # rustls-tls 사용 — Windows 의 schannel 의존 회피, 빌드 환경 일관성.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+# v0.7.84 — 불완전 설치 복구: 내려받은 설치 파일을 업데이터와 같은 minisign 공개키로 검증.
+# 두 crate 모두 tauri-plugin-updater 가 이미 쓰는 버전(Cargo.lock)이라 추가 빌드 부담 없음.
+minisign-verify = "0.2"
+base64 = "0.22"
 
 # Phase 119 (v0.6.74) — 탐색기式 셸 썸네일 미리보기 (IShellItemImageFactory::GetImage).
 # windows 0.61 은 tauri 가 이미 transitive 로 가져오는 버전 → 중복 빌드 없음.

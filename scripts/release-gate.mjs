@@ -275,6 +275,7 @@ const NODE_TEST_SUITES = [
   { file: "scripts/telegram-app.test.ts", runner: "tsx" }, // actual App handler with isolated transports
   { file: "scripts/auto-continue.test.ts", runner: "tsx" }, // v0.7.57
   { file: "scripts/auto-update.test.ts", runner: "tsx" }, // v0.7.57
+  { file: "scripts/install-integrity.test.ts", runner: "tsx" }, // v0.7.84 incomplete install detection, signed repair, updater fallback
   { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
 ];
 

@@ -19,6 +19,10 @@
 ;      'NSIS_HOOK_PREINSTALL' 매크로 확인.
 
 !macro NSIS_HOOK_PREINSTALL
+  ; v0.7.84 — 설치 완료 표시 제거. 설치가 중간에 취소/실패하면 표시가 없는 상태로 남고,
+  ; 앱이 다음 시작 때 이를 "불완전 설치"로 감지해 재설치를 안내/수행한다.
+  Delete "$INSTDIR\install-complete.txt"
+
   ; 디버그: 이 hook 이 컴파일에 박혔는지 빌드 로그에서 확인 가능
   DetailPrint "K Desktop Agent: checking existing desktop shortcuts (Phase 16)"
 
@@ -85,4 +89,11 @@
     DetailPrint "K Desktop Agent: data-pointer.txt already exists — preserving K's choice"
 
   endPointerCheck:
+
+  ; v0.7.84 — 설치 완료 표시. POSTINSTALL 은 모든 파일 복사·레지스트리·바로가기 뒤에 실행되므로
+  ; 이 파일이 있고 내용이 앱 버전과 같을 때만 "끝까지 설치됨" 으로 본다 (마지막 단계로 둘 것).
+  FileOpen $9 "$INSTDIR\install-complete.txt" w
+  FileWrite $9 "${VERSION}"
+  FileClose $9
+  DetailPrint "K Desktop Agent: install-complete marker written (${VERSION})"
 !macroend

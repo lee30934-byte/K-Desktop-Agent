@@ -2824,6 +2824,40 @@
   bottom: 200px;
   cursor: pointer;
 }
+/* v0.7.84 — 불완전 설치 알림 (k-personal 알림 위에 겹치지 않게 더 위) */
+.session-refresh-toast.install-notice {
+  bottom: 270px;
+  cursor: default;
+  align-items: center;
+  gap: 10px;
+}
+.install-notice-detail {
+  display: block;
+  margin-top: 4px;
+  opacity: 0.75;
+  font-size: 11px;
+}
+.install-notice-btn {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 176, 64, 0.7);
+  background: rgba(255, 176, 64, 0.18);
+  color: inherit;
+  cursor: pointer;
+}
+.install-notice-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.install-notice-close {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
 .session-refresh-toast.kpm-notice[data-kind="error"] {
   background: linear-gradient(
     180deg,

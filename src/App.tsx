@@ -131,6 +131,7 @@ import { useStableCallback } from "./utils/useStableCallback";
 import { classifyTurnEnding, buildAutoContinuePrompt, AutoContinueChain, isAutoContinueMessage } from "./autoContinue";
 import { isCommandCenterDispatch } from "./telegramLedger";
 import { decideAutoUpdate, updaterVersionMatches, AUTO_UPDATE_POLL_MS } from "./autoUpdate";
+import { decideIncompleteAction, describeInstallIntegrity, type InstallNotice } from "./installIntegrity";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch as relaunchApp } from "@tauri-apps/plugin-process";
 import { getVersion as getAppVersion } from "@tauri-apps/api/app";
@@ -1578,6 +1579,39 @@ export default function App() {
     const t = setTimeout(() => setKpmNotice(null), 8000);
     return () => clearTimeout(t);
   }, [kpmNotice]);
+
+  // ─── v0.7.84: 불완전 설치 알림 + [다시 설치] ──────────────────
+  const [installNotice, setInstallNotice] = useState<InstallNotice>(null);
+  const [installRepairState, setInstallRepairState] = useState<{ busy: boolean; error?: string }>({ busy: false });
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    const show = (v: unknown) => {
+      try { if (!cancelled) setInstallNotice(describeInstallIntegrity(v)); }
+      catch (e) { console.error("[install-integrity] notice failed", e); }
+    };
+    (async () => {
+      try {
+        unlisten = await listen("install-integrity", (ev) => show(ev.payload));
+        show(await invoke("get_install_integrity"));
+      } catch (e) {
+        console.error("[install-integrity] listen failed", e);
+      }
+    })();
+    return () => { cancelled = true; if (unlisten) unlisten(); };
+  }, []);
+  const repairInstallNow = useStableCallback(async () => {
+    if (installRepairState.busy) return;
+    if (conversationTurnGateRef.current.activeConversationIds().size > 0 &&
+        !window.confirm("진행 중인 대화가 있습니다. 재설치하면 앱이 재시작되어 진행 중인 작업이 끊깁니다. 계속할까요?")) return;
+    setInstallRepairState({ busy: true });
+    try {
+      await invoke("repair_install", { reason: "manual", auto: false });
+      // 성공하면 설치 프로그램이 실행되고 앱이 곧 종료된다.
+    } catch (e) {
+      setInstallRepairState({ busy: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
 
   // ─── 트레이에서 Settings 열기 이벤트 ──────────────────
   useEffect(() => {
@@ -3457,9 +3491,28 @@ export default function App() {
       case "invalid":
         await finish("invalid", { detail: d.why });
         return;
-      case "installed":
-        await finish("installed");
+      case "installed": {
+        // v0.7.84 — 실행 파일 버전만으로 "설치 완료" 라고 하지 않는다. 설치 완료 표시까지 확인.
+        let integrity: unknown = null;
+        try { integrity = await invoke("get_install_integrity"); } catch (e) { logger.warn("[AutoUpdate] integrity 확인 실패", e); }
+        const next = decideIncompleteAction(integrity);
+        if (next === "complete") { await finish("installed", { integrity }); return; }
+        if (next === "give-up") {
+          await finish("incomplete", { integrity, detail: "설치가 불완전하고 자동 재설치 한도를 넘음 — 화면의 [다시 설치] 필요" });
+          return;
+        }
+        if (busy) return; // 진행 중 턴이 있으면 다음 tick 에 다시 판단
+        autoUpdateInstallingRef.current = true;
+        try {
+          void invoke("auto_update_log", { line: `[${stamp}] INCOMPLETE-REPAIR current=${current}` }).catch(() => {});
+          await invoke("repair_install", { version: current, reason: "auto-update-incomplete", auto: true });
+        } catch (e) {
+          await finish("incomplete", { integrity, detail: `자동 재설치 실패: ${e instanceof Error ? e.message : String(e)}` });
+        } finally {
+          autoUpdateInstallingRef.current = false;
+        }
         return;
+      }
       case "expired":
         await finish("expired", { detail: "요청 후 3시간 경과 — 설치하지 않음" });
         return;
@@ -3477,7 +3530,15 @@ export default function App() {
           void invoke("auto_update_log", { line: `[${new Date().toLocaleString("sv-SE")}] INSTALLED-RELAUNCH requested=${d.version}` }).catch(() => {});
           await relaunchApp();
         } catch (e) {
-          await finish("error", { detail: e instanceof Error ? e.message : String(e) });
+          // v0.7.84 — 업데이터 다운로드/설치 실패(예: GitHub 다운로드 서버 504) 시 대체 경로:
+          // 직접 주소 → GitHub API 경로로 설치 파일을 받아 같은 공개키로 서명 검증 후 실행.
+          const first = e instanceof Error ? e.message : String(e);
+          void invoke("auto_update_log", { line: `[${new Date().toLocaleString("sv-SE")}] UPDATER-FAILED requested=${d.version} error=${first} → fallback` }).catch(() => {});
+          try {
+            await invoke("repair_install", { version: d.version, reason: "updater-failed", auto: true });
+          } catch (e2) {
+            await finish("error", { detail: `업데이터 실패: ${first} / 대체 경로 실패: ${e2 instanceof Error ? e2.message : String(e2)}` });
+          }
         } finally {
           autoUpdateInstallingRef.current = false;
         }
@@ -6038,6 +6099,22 @@ export default function App() {
         >
           <span className="toast-icon">{kpmNotice.kind === "error" ? "⚠" : "🧰"}</span>
           <span className="toast-text">{kpmNotice.text}</span>
+        </div>
+      )}
+
+      {/* v0.7.84: 설치가 중간에 취소/실패한 경우 — 닫을 때까지 유지, [다시 설치] 제공 */}
+      {installNotice && (
+        <div className="session-refresh-toast kpm-notice install-notice" data-kind="error" role="alert">
+          <span className="toast-icon">⚠</span>
+          <span className="toast-text">
+            {installNotice.text}
+            {installNotice.detail && <small className="install-notice-detail">{installNotice.detail}</small>}
+            {installRepairState.error && <small className="install-notice-detail">재설치 실패: {installRepairState.error}</small>}
+          </span>
+          <button type="button" className="install-notice-btn" disabled={installRepairState.busy} onClick={() => { void repairInstallNow(); }}>
+            {installRepairState.busy ? "받는 중…" : "다시 설치"}
+          </button>
+          <button type="button" className="install-notice-close" aria-label="닫기" onClick={() => setInstallNotice(null)}>✕</button>
         </div>
       )}
 

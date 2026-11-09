@@ -5,6 +5,7 @@ mod browser_host_bridge;
 mod media_preview;
 mod execution_recovery;
 mod kpersonal_upgrade;
+mod install_integrity;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -983,6 +984,106 @@ fn spawn_kpersonal_upgrade(app: AppHandle) {
 #[tauri::command]
 fn get_kpersonal_update_status() -> serde_json::Value {
     kpersonal_upgrade::read_status()
+}
+
+// ─── v0.7.84: 설치 완료 검사 · 재설치 ───────────────────────────────
+// 설치가 중간에 취소되면 실행 파일만 새 버전이고 나머지는 옛 파일로 남을 수 있다 (2026-11-09 실측).
+// NSIS 가 마지막 단계에 쓰는 install-complete.txt 로 판정하고, 불완전하면 화면 알림 + 재설치를 제공한다.
+
+fn install_integrity_now(app: &AppHandle) -> serde_json::Value {
+    let version = app.package_info().version.to_string();
+    let mut v = match install_dir() {
+        Some(dir) => install_integrity::check(&version, &dir),
+        None => serde_json::json!({ "state": "dev", "appVersion": version }),
+    };
+    let repair = install_integrity::read_json(&data_root().join(install_integrity::REPAIR_FILE));
+    v["autoAttempts"] = serde_json::json!(install_integrity::auto_attempts(&repair, &version));
+    v["maxAutoAttempts"] = serde_json::json!(install_integrity::MAX_AUTO_ATTEMPTS);
+    if let Some(err) = repair.get("lastError").filter(|_| repair.get("version").and_then(|x| x.as_str()) == Some(version.as_str())) {
+        v["lastRepairError"] = err.clone();
+    }
+    v
+}
+
+fn run_install_integrity_check(app: &AppHandle) {
+    let v = install_integrity_now(app);
+    let _ = install_integrity::write_json(&data_root().join(install_integrity::STATUS_FILE), &v);
+    log_lifecycle("runtime.log", &format!("install integrity: {}", v));
+    let _ = app.emit("install-integrity", v);
+}
+
+#[tauri::command]
+fn get_install_integrity(app: AppHandle) -> serde_json::Value {
+    install_integrity_now(&app)
+}
+
+/// 서명 검증된 설치 파일을 받아 passive 모드(/P /R: 진행창만, 끝나면 앱 재실행)로 실행하고 앱을 종료한다.
+/// version 생략 = 현재 버전 재설치. auto=true 면 버전별 자동 시도 횟수 제한을 적용한다.
+/// 업데이터 다운로드가 실패했을 때의 대체 경로로도 쓴다 (version = 새 버전).
+#[tauri::command]
+async fn repair_install(app: AppHandle, version: Option<String>, reason: String, auto: Option<bool>) -> Result<serde_json::Value, String> {
+    let current = app.package_info().version.to_string();
+    let version = version.map(|v| v.trim().trim_start_matches('v').to_string()).unwrap_or_else(|| current.clone());
+    if !install_integrity::valid_version(&version) {
+        return Err(format!("버전 형식 오류: {}", version));
+    }
+    let auto = auto.unwrap_or(false);
+    let root = data_root();
+    let repair_path = root.join(install_integrity::REPAIR_FILE);
+    let prev = install_integrity::read_json(&repair_path);
+    let attempts = install_integrity::auto_attempts(&prev, &version);
+    if auto && attempts >= install_integrity::MAX_AUTO_ATTEMPTS {
+        return Err(format!("자동 재설치 한도({}회) 초과 — [다시 설치]를 직접 눌러 주세요", install_integrity::MAX_AUTO_ATTEMPTS));
+    }
+    let record = |stage: &str, err: Option<&str>| {
+        let v = serde_json::json!({
+            "version": version, "reason": reason, "stage": stage,
+            "autoAttempts": if auto { attempts + 1 } else { attempts },
+            "lastError": err, "at": chrono_lite_now(),
+        });
+        let _ = install_integrity::write_json(&repair_path, &v);
+        let _ = auto_update_log(format!("[{}] REPAIR-{} version={} reason={}{}", chrono_lite_now(), stage.to_uppercase(), version, reason, err.map(|e| format!(" error={}", e)).unwrap_or_default()));
+    };
+    record("start", None);
+    let pubkey = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|u| u.get("pubkey"))
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "업데이터 공개키를 찾지 못함".to_string())?;
+    let (exe, sig, via) = match install_integrity::download_installer(&version).await {
+        Ok(x) => x,
+        Err(e) => { record("download-failed", Some(&e)); return Err(e); }
+    };
+    if let Err(e) = install_integrity::verify_signature(&exe, &sig, &pubkey) {
+        record("verify-failed", Some(&e));
+        return Err(format!("{} — 설치 파일을 실행하지 않았습니다", e));
+    }
+    let path = install_integrity::installer_cache_path(&root, &version);
+    if let Some(p) = path.parent() { let _ = std::fs::create_dir_all(p); }
+    let tmp = path.with_extension("exe.part");
+    if let Err(e) = std::fs::write(&tmp, &exe).and_then(|_| std::fs::rename(&tmp, &path)) {
+        let msg = format!("설치 파일 저장 실패: {}", e);
+        record("save-failed", Some(&msg));
+        return Err(msg);
+    }
+    let args = vec!["/P".to_string(), "/R".to_string(), "/UPDATE".to_string()];
+    match spawn_detached(&path.to_string_lossy(), &args, None, &[], None) {
+        Ok((pid, _)) => {
+            record("launched", None);
+            log_lifecycle("runtime.log", &format!("install repair: launched v{} via={} pid={} reason={}", version, via, pid, reason));
+            let app2 = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                app2.exit(0);
+            });
+            Ok(serde_json::json!({ "launched": true, "version": version, "via": via, "pid": pid }))
+        }
+        Err(e) => { record("launch-failed", Some(&e)); Err(e) }
+    }
 }
 
 /// Phase 26 (v0.5.13): 새 PC 의 K 가 setup.exe 깐 직후 ~/Documents/K-Personal-MCP/ 가 없으면
@@ -5493,6 +5594,8 @@ pub fn run_with_options(start_minimized: bool) {
             deploy_bundled_mcp_if_needed();
             // v0.7.82: 이미 설치된 PC 의 k-personal 도 번들 버전으로 맞춘다 (KPM_VERSION 비교).
             spawn_kpersonal_upgrade(handle.clone());
+            // v0.7.84: 설치가 끝까지 됐는지 검사 (설치 완료 표시 vs 실행 파일 버전).
+            run_install_integrity_check(&handle);
 
             // Tray
             if let Err(e) = setup_tray(&handle) {
@@ -5744,6 +5847,8 @@ pub fn run_with_options(start_minimized: bool) {
             // Phase 66 (v0.6.1) — K-Personal MCP 자동 설치
             check_kpersonal_mcp,
             get_kpersonal_update_status,
+            get_install_integrity,
+            repair_install,
             install_kpersonal_mcp,
             // Phase 67 (v0.6.2) — MCP 도구 인스펙터 + 카탈로그 + 커스텀 도구 plugin 빌더
             list_mcp_tools,

@@ -2347,9 +2347,11 @@ dependencies = [
 
 [[package]]
 name = "k-desktop-agent"
-version = "0.7.83"
+version = "0.7.84"
 dependencies = [
+ "base64 0.22.1",
  "image",
+ "minisign-verify",
  "notify",
  "notify-debouncer-mini",
  "reqwest 0.12.28",
