@@ -250,7 +250,11 @@ async function start(input) {
   if (server) throw new Error("bridge already started");
   const codex = input.codex;
   if (typeof codex !== "string" || !codex || typeof input.prompt !== "string") throw new Error("invalid bridge start");
-  server = spawn(codex, ["app-server", "--stdio"], {
+  // v0.7.84 — Codex 내장 computer_use(스크린샷+마우스·키보드 직접 조작)는 끈다.
+  // KDA 의 입력 잠금·대상 창 확인·실패 신호·멈춤 감시를 모두 우회하고, PC 마다 사용 가능 여부가 달라
+  // (2026-11-10 다른 PC 에서 사용 확인, 이 PC 는 computerUseLocal unavailable) 동작이 갈렸다.
+  // 화면 조작은 k-personal(ui_/cc_/web_) 한 경로로만 한다. browser_use 등 다른 기능은 그대로.
+  server = spawn(codex, ["app-server", "--stdio", "--disable", "computer_use"], {
     stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32", windowsHide: true,
     env: process.env,
   });

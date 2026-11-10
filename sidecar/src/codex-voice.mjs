@@ -27,7 +27,8 @@ export class CodexVoiceSession {
   constructor(codex, emit, spawnProcess = spawn) {
     this.emit = emit;
     this.cwd = mkdtempSync(join(tmpdir(), 'kda-voice-'));
-    this.process = spawnProcess(codex, ['app-server', '--stdio'], {
+    // v0.7.84 — 음성 세션도 Codex 내장 computer_use 를 끈다 (화면 조작은 k-personal 경로만).
+    this.process = spawnProcess(codex, ['app-server', '--stdio', '--disable', 'computer_use'], {
       cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32', windowsHide: true,
     });
