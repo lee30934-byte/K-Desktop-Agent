@@ -35,6 +35,12 @@ interface MainChatProps {
   onOpenAssistant?: () => void;
   previewReady?: boolean;
   onOpenPreview?: () => void;
+  // v0.7.86 UI 5단계 (o2) — 입력창 컨텍스트 링·넛지 슬롯, ⋯ '세션·사용량 보기'와 세션 버튼 2개, 주의 칩 클릭
+  composerContext?: ReactNode;
+  composerNudge?: ReactNode;
+  onOpenSession?: () => void;
+  onManualRefresh?: () => void;
+  onCompressContext?: () => void;
   // v0.7.49 — 채팅창 안(입력창 위)에 표시할 알림 배너 (작업 결과 확인 대기 / 응답 정체 등).
   notices?: ReactNode;
   conversationId: string;
@@ -116,6 +122,11 @@ function MainChat({
   onOpenAssistant,
   previewReady = false,
   onOpenPreview,
+  composerContext,
+  composerNudge,
+  onOpenSession,
+  onManualRefresh,
+  onCompressContext,
   notices,
   conversationId,
   isStopping,
@@ -237,7 +248,8 @@ function MainChat({
         </div>
         )}
         <div className="main-header-right">
-          {isO2 && (warnings ?? []).map((w) => <Chip key={w} tone="warn" icon="⚠">{w}</Chip>)}
+          {isO2 && (warnings ?? []).map((w) => <Chip key={w} tone="warn" icon="⚠" onClick={onOpenSession}
+            title={onOpenSession ? "세션·사용량 보기" : undefined}>{w}</Chip>)}
           {!isO2 && <ApprovalToggle />}
           {previewReady && onOpenPreview && (
             <Chip tone="accent" icon="📄" className="preview-ready-chip" onClick={onOpenPreview} title="미리보기 패널 열기">미리보기 준비됨</Chip>
@@ -265,6 +277,15 @@ function MainChat({
                 <button type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); onOpenPreview(); }}
                   aria-label="미리보기 패널 열기">미리보기 패널 열기</button>
               )}
+              {[
+                onOpenSession && ["세션·사용량 보기", onOpenSession],
+                onManualRefresh && ["↻ 새 세션으로 이어가기", onManualRefresh],
+                onCompressContext && ["📦 요약해서 새 대화로 이어가기", onCompressContext],
+              ].filter((x): x is [string, () => void] => !!x).map(([label, run]) => (
+                <button key={label} type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); run(); }}>
+                  {label}
+                </button>
+              ))}
             </div>
           </details>
           {isO2 ? <StatusBadge status={status} /> : <ClassicStatusBadge status={status} />}
@@ -381,6 +402,8 @@ function MainChat({
           queuedSend={queuedSend}
           onCancelQueuedSend={onCancelQueuedSend}
           onFlushQueueNow={onFlushQueueNow}
+          contextSlot={composerContext}
+          contextNudge={composerNudge}
         />
       </div>
     </section>

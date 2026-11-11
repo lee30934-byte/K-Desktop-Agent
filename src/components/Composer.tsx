@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, memo, FormEvent, KeyboardEvent, DragEvent, ChangeEvent, ClipboardEvent } from "react";
+import { useState, useRef, useEffect, memo, type ReactNode, FormEvent, KeyboardEvent, DragEvent, ChangeEvent, ClipboardEvent } from "react";
 import type { FileAttachment, PromptTemplate } from "../types";
 import PromptPicker from "./PromptPicker";
 import type { SendMode } from "../conversationControl";
@@ -22,6 +22,9 @@ interface ComposerProps {
   onCancelQueuedSend?: () => void;
   // Phase 49 (v0.5.37) — 큐 즉시 전송 (작업 중단 + 새 turn)
   onFlushQueueNow?: () => void;
+  // v0.7.86 UI 5단계 (o2 전용) — 카드 안 컨텍스트 링 / 카드 위 70% 넛지. classic 은 넘기지 않는다.
+  contextSlot?: ReactNode;
+  contextNudge?: ReactNode;
 }
 
 // 파일 타입별 아이콘
@@ -65,6 +68,8 @@ function Composer({
   queuedSend,
   onCancelQueuedSend,
   onFlushQueueNow,
+  contextSlot,
+  contextNudge,
 }: ComposerProps) {
   const [input, setInput] = useState(() => { try { return sessionStorage.getItem("kda_draft_" + conversationId) ?? ""; } catch { return ""; } });
   const [sendMode, setSendMode] = useState<SendMode>("steer");
@@ -537,6 +542,7 @@ function Composer({
         <div className="composer-height-grip-bar" />
       </div>
 
+      {contextNudge}
       {isStreaming && <div className="composer-steering-bar">
         <div className="composer-send-modes" role="group" aria-label="작업 중 메시지 전송 방식">
           <button type="button" aria-pressed={sendMode === "steer"} onClick={() => setSendMode("steer")}>추가 지시 · 질문</button>
@@ -595,6 +601,8 @@ function Composer({
           onSelect={handlePromptSelect}
           onClose={handlePromptPickerClose}
         />
+
+        {contextSlot}
 
         {isStreaming ? (
           <div className="composer-stop-group">

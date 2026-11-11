@@ -296,8 +296,10 @@ for (const [label, p] of [
   }
 
   if (existsSync(metricsTsx)) {
-    const t = readFileSync(metricsTsx, "utf-8");
-    if (t.includes("RateLimitCard") && t.includes("formatRemaining")) {
+    // v0.7.86 UI 5단계 — RateLimitCard 는 metricsShared.tsx 로 옮겨 MetricsPanel·SessionUsagePanel 이 공유
+    const sharedTsx = path.join(projectRoot, "src", "components", "metricsShared.tsx");
+    const t = readFileSync(metricsTsx, "utf-8") + (existsSync(sharedTsx) ? readFileSync(sharedTsx, "utf-8") : "");
+    if (t.includes("<RateLimitCard") && t.includes("formatRemaining")) {
       ok("MetricsPanel Phase 15.5: RateLimitCard UI 박힘");
     } else {
       ng("MetricsPanel Phase 15.5: 카드 UI 누락");

@@ -5336,3 +5336,69 @@
 .header-assistant-btn[aria-pressed="true"], .main-header-right .task-activity-toggle[aria-expanded="true"] { background: var(--accent-soft); color: var(--fg); }
 /* o2 는 칩만(팝오버 없음) — classic 의 작업 팝오버는 예전 z-index 80 유지 */
 :root[data-layout="o2"] .main-header-right .task-activity { z-index: auto; }
+
+/* ════════════════════════════════════════════════════════════════
+   v0.7.86 UI 5단계 — MetricsPanel 해체 (o2 전용)
+   하단 metrics 행을 없애고, 컨텍스트는 입력창 링(+70% 넛지), 나머지는 슬라이드오버 '세션·사용량' 탭.
+   classic 은 위의 .app 그리드(metrics 행)와 .metrics footer 를 그대로 쓴다.
+   ════════════════════════════════════════════════════════════════ */
+:root[data-layout="o2"] .app {
+  grid-template-rows: 1fr;
+  grid-template-areas: "sidebar main side-panel";
+}
+@media (max-width: 900px) {
+  :root[data-layout="o2"] .app { grid-template-areas: "main"; }
+}
+
+/* 입력창 안 컨텍스트 링 */
+.context-ring { position: relative; align-self: flex-end; flex: none; }
+.context-ring-btn { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px;
+  border: 0; border-radius: var(--radius-ctl, 8px); background: transparent; color: var(--fg-muted); cursor: pointer;
+  font: 500 var(--fs-caption, 12px)/1 var(--font-ui); }
+.context-ring-btn:hover, .context-ring-btn[aria-expanded="true"] { background: var(--surface-hover); color: var(--fg); }
+.context-ring-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.context-ring-btn--warn .context-ring-pct { color: var(--warn); }
+.context-ring-btn--danger .context-ring-pct { color: var(--danger); }
+.context-ring-dot { position: absolute; top: 5px; left: 18px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn);
+  box-shadow: 0 0 0 2px var(--bg-3); }
+/* 입력창은 화면 아래라 팝오버는 위로 연다 */
+.ui-popover.context-ring-popover { top: auto; bottom: calc(100% + 8px); width: 280px; padding: var(--space-3, 12px);
+  display: flex; flex-direction: column; gap: var(--space-2, 8px); }
+.context-ring-popover__title { font: 600 var(--fs-ui, 13px)/1.3 var(--font-ui); }
+.context-ring-popover__rows, .session-usage__rows { margin: 0; display: grid; gap: 4px; font-size: var(--fs-caption, 12px); }
+.context-ring-popover__rows > div, .session-usage__rows > div { display: flex; justify-content: space-between; gap: 12px; }
+.context-ring-popover__rows dt, .session-usage__rows dt { color: var(--fg-muted); }
+.context-ring-popover__rows dd, .session-usage__rows dd { margin: 0; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.session-usage__rows > div.is-warn dt, .session-usage__rows > div.is-warn dd { color: var(--warn); }
+.context-ring-popover__actions .context-refresh-btn, .context-ring-popover__actions .context-compress-btn,
+.session-usage__actions .context-refresh-btn, .session-usage__actions .context-compress-btn { font-family: var(--font-ui); letter-spacing: 0; text-align: left; }
+.context-ring-popover__more { align-self: flex-end; border: 0; background: transparent; color: var(--accent); cursor: pointer;
+  font: 500 var(--fs-caption, 12px)/1.4 var(--font-ui); padding: 2px 4px; }
+.context-ring-popover__more:hover { text-decoration: underline; }
+
+/* 입력창 위 70% 넛지 */
+.context-nudge { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius-ctl, 8px); background: var(--surface-raised, var(--bg-2));
+  color: var(--fg-muted); font: 500 var(--fs-caption, 12px)/1.4 var(--font-ui); }
+.context-nudge__pct { color: var(--warn); }
+.context-nudge__action { border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+.context-nudge__action:hover { text-decoration: underline; }
+.context-nudge__close { margin-left: auto; border: 0; background: transparent; color: var(--fg-subtle); cursor: pointer; font-size: 12px; }
+
+/* 슬라이드오버 '세션·사용량' 탭 */
+.right-pane--session { padding: var(--space-4, 16px); }
+.session-usage { display: flex; flex-direction: column; gap: var(--space-4, 16px); font-family: var(--font-ui); }
+.session-usage__section { display: flex; flex-direction: column; gap: var(--space-2, 8px); }
+.session-usage__heading { margin: 0; font: 600 var(--fs-ui, 13px)/1.3 var(--font-ui); color: var(--fg); }
+.session-usage__hint { margin: 0; font-size: var(--fs-caption, 12px); color: var(--fg-muted); line-height: 1.5; }
+.session-usage__hint--muted { color: var(--fg-subtle); font-size: 11px; }
+.session-usage__actions { display: flex; flex-direction: column; }
+.session-usage__stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.session-usage__stats > div { display: flex; flex-direction: column; gap: 2px; padding: 8px; border: 1px solid var(--line);
+  border-radius: var(--radius-ctl, 8px); }
+.session-usage__stats span { color: var(--fg-muted); font-size: 11px; }
+.session-usage__stats strong { font-size: var(--fs-ui, 13px); font-weight: 600; }
+.session-usage__limits { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.session-usage__error { padding: 8px 10px; border: 1px solid var(--warn); border-radius: var(--radius-ctl, 8px);
+  color: var(--warn); font-size: var(--fs-caption, 12px); line-height: 1.4; overflow-wrap: anywhere; }
+.session-usage__error-actions { display: flex; gap: 4px; margin-top: 6px; }

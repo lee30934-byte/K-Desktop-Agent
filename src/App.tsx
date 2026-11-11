@@ -12,6 +12,8 @@ import MobileDesktopBridge from "./components/MobileDesktopBridge";
 import type { VoiceHandlers } from "./voiceControl";
 import { isVoiceCallActive } from "./voiceSession";
 import MetricsPanel from "./components/MetricsPanel";
+import ContextRing, { ContextNudge } from "./components/ContextRing";
+import SessionUsagePanel from "./components/SessionUsagePanel";
 import Settings from "./components/Settings";
 import type {
   ChatMessage,
@@ -5804,6 +5806,50 @@ export default function App() {
     setRecoverableTasks([]);
   };
 
+  // v0.7.86 UI 5단계 — MetricsPanel 해체(o2): 같은 값을 입력창 링 · 세션·사용량 탭 · 헤더 주의 칩이 나눠 쓴다.
+  const activeRateLimit =
+    activeProvider === "codex" ? rateLimitCodex : activeProvider === "claude" ? rateLimitAnthropic : null;
+  const activeCodexUsageError = activeProvider === "codex" ? codexUsageError : null;
+  const rateLimitWarnings = ([["5시간", activeRateLimit?.primary], ["주간", activeRateLimit?.secondary]] as const)
+    .filter(([, w]) => typeof w?.used_pct === "number" && w.used_pct >= 80)
+    .map(([label, w]) => `${label} 한도 ${Math.round(w!.used_pct!)}%`);
+  // 링·넛지는 memo 된 Composer 로 들어가므로 스트리밍 델타마다 새 엘리먼트가 생기지 않게 고정한다.
+  const composerContext = useMemo(() => !isO2 ? undefined : (
+    <ContextRing
+      metrics={metrics}
+      maxContextTokens={currentModelMaxTokens}
+      estimatedContextTokens={estimatedContextTokens}
+      onManualRefresh={triggerSessionRefresh}
+      onCompressContext={handleCompressContext}
+      isCompressing={isCompressing}
+      hasUsageError={!!activeCodexUsageError}
+      onOpenSessionPanel={() => setRightPanel("session")}
+    />
+  ), [isO2, metrics, currentModelMaxTokens, estimatedContextTokens, triggerSessionRefresh, handleCompressContext, isCompressing, activeCodexUsageError]);
+  const composerNudge = useMemo(() => !isO2 ? undefined : (
+    <ContextNudge
+      metrics={metrics}
+      maxContextTokens={currentModelMaxTokens}
+      estimatedContextTokens={estimatedContextTokens}
+      onManualRefresh={triggerSessionRefresh}
+    />
+  ), [isO2, metrics, currentModelMaxTokens, estimatedContextTokens, triggerSessionRefresh]);
+  const usageProps = {
+    metrics,
+    mcpConnected: mcpState.connected,
+    currentModel: currentModelLabel,
+    maxContextTokens: currentModelMaxTokens,
+    maxContextSource: currentModelMaxTokensInfo.source,
+    estimatedContextTokens,
+    onManualRefresh: triggerSessionRefresh,
+    onCompressContext: handleCompressContext,
+    isCompressing,
+    rateLimit: activeRateLimit,
+    codexUsageError: activeCodexUsageError,
+    codexUsageRawPayload: activeProvider === "codex" ? codexUsageRawPayload : null,
+    onRetryCodexUsage: pollCodexUsage,
+  };
+
   return (
     <div className="app">
       <UpdateChecker />
@@ -5859,7 +5905,8 @@ export default function App() {
         })()}
         warnings={[
           ...(mcpState.connected ? [] : ["도구 연결 끊김"]),
-          ...(activeProvider === "codex" && codexUsageError ? ["Codex 사용량 조회 오류"] : []),
+          ...(activeCodexUsageError ? ["Codex 사용량 조회 오류"] : []),
+          ...rateLimitWarnings,
         ]}
         onOpenEngineSettings={openSettingsAi}
         onOpenSafetySettings={openSettingsSafety}
@@ -5927,6 +5974,11 @@ export default function App() {
         onOpenAssistant={isO2 ? () => toggleRightPanel("assistant") : undefined}
         previewReady={isO2 && !!sidePanelItem && rightPanel !== "preview"}
         onOpenPreview={isO2 ? () => setSidePanelOpen(true) : undefined}
+        composerContext={composerContext}
+        composerNudge={composerNudge}
+        onOpenSession={isO2 ? () => setRightPanel("session") : undefined}
+        onManualRefresh={isO2 ? triggerSessionRefresh : undefined}
+        onCompressContext={isO2 ? handleCompressContext : undefined}
         conversationId={activeConversationId ?? "new"}
         isStopping={!!activeConversationId && conversationTurnGateRef.current.runs.get(activeConversationId)?.state === "stopping"}
         queuedCount={activeConversationId ? conversationTurnGateRef.current.queues.get(activeConversationId)?.length ?? 0 : 0}
@@ -5960,27 +6012,8 @@ export default function App() {
         }
       />
 
-      <MetricsPanel
-        metrics={metrics}
-        mcpConnected={mcpState.connected}
-        currentModel={currentModelLabel}
-        maxContextTokens={currentModelMaxTokens}
-        maxContextSource={currentModelMaxTokensInfo.source}
-        estimatedContextTokens={estimatedContextTokens}
-        onManualRefresh={triggerSessionRefresh}
-        onCompressContext={handleCompressContext}
-        isCompressing={isCompressing}
-        rateLimit={
-          activeProvider === "codex"
-            ? rateLimitCodex
-            : activeProvider === "claude"
-              ? rateLimitAnthropic
-              : null
-        }
-        codexUsageError={activeProvider === "codex" ? codexUsageError : null}
-        codexUsageRawPayload={activeProvider === "codex" ? codexUsageRawPayload : null}
-        onRetryCodexUsage={pollCodexUsage}
-      />
+      {/* v0.7.86 UI 5단계 — classic 만 하단 footer. o2 는 입력창 링 + 슬라이드오버 '세션·사용량' 탭으로 나눴다 */}
+      {!isO2 && <MetricsPanel {...usageProps} />}
 
       {/* v0.7.86 UI 4단계 — o2 는 우측 슬라이드오버, classic 은 예전 SidePanel(가장자리 ⟨ 버튼, 그리드 3번째 열) */}
       {isO2 ? (
@@ -5995,7 +6028,7 @@ export default function App() {
           width={slideOverWidth}
           onResize={setSlideOverWidth}
           tabs={<div className="ui-tabs" role="tablist" aria-label="우측 패널 탭">
-            {([["preview", "미리보기"], ["tasks", "작업"], ["assistant", "비서"]] as const).map(([id, label]) => (
+            {([["preview", "미리보기"], ["tasks", "작업"], ["session", "세션·사용량"], ["assistant", "비서"]] as const).map(([id, label]) => (
               <button key={id} type="button" role="tab" className="ui-tab" aria-selected={rightPanel === id}
                 aria-controls={`right-pane-${id}`} onClick={() => setRightPanel(id)}>{label}</button>
             ))}
@@ -6043,6 +6076,9 @@ export default function App() {
               </section>
             )}
             <TaskActivityPanel {...taskPanelProps} mode="inline" />
+          </div>
+          <div id="right-pane-session" role="tabpanel" className="right-pane right-pane--session" hidden={rightPanel !== "session"}>
+            <SessionUsagePanel {...usageProps} active={rightPanel === "session"} />
           </div>
           <div id="right-pane-assistant" role="tabpanel" className="right-pane right-pane--assistant companion-host" hidden={rightPanel !== "assistant"}
             ref={setAssistantPanelHost} />
