@@ -9,6 +9,8 @@
 
 - Codex's built-in `computer_use` (screenshots plus direct mouse/keyboard control) is disabled on every Codex app-server KDA starts (chat turns and voice: `--disable computer_use`). It bypassed KDA's input lock, target-window check, honest failure results and stall watch, and its availability differed per PC (used on another PC on 2026-11-10; unavailable on this one). Screen control now goes only through the k-personal tools (`ui_` / `cc_` / `web_`). Other Codex features such as `browser_use` are unchanged.
 
+- Companion avatar: the antenna ball was cut flat in poses 3-8, most visibly while working. In the source sheet those poses' ball crosses into the bottom of the cell above, and the atlas build discarded that strip as neighbour bleed. The build now recovers the strip (green ball/glow pixels connected across the boundary only, so the feet of the figure above never come along) and puts it on the head layer; head sheets for all tones and tiers are regenerated. `scripts/check-companion-antenna.py` fails any head cell whose ball has no glow above its opaque top: on the old assets it fails 30 of 45 checked cells (frames 3-8), on the new ones it passes all 108.
+
 ### Validation and limits
 - Rust unit tests 7/7; the real v0.7.83 installer verifies against the updater key and a one-byte tampered copy is rejected; a live download through both the direct URL and the GitHub API route verified. Install-integrity regression tests 6/6 and layout check 16/16.
 - Not yet verified: the marker written by a real installed build (first confirmed on this PC when v0.7.84 installs), and a real cancelled-install run of the new installer. Cancelling at the installer's "app is running" prompt also removes the marker and can produce a harmless reinstall prompt.

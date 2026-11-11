@@ -94,7 +94,7 @@ export const COMPANION_RIG: { cell: number; scale: number; frames: Record<number
    ],
    "blink": true,
    "front": false,
-   "top": 16.2
+   "top": 13.6
   },
   "4": {
    "pivot": [
@@ -116,7 +116,7 @@ export const COMPANION_RIG: { cell: number; scale: number; frames: Record<number
    ],
    "blink": true,
    "front": true,
-   "top": 16.2
+   "top": 13.0
   },
   "5": {
    "pivot": [
@@ -138,7 +138,7 @@ export const COMPANION_RIG: { cell: number; scale: number; frames: Record<number
    ],
    "blink": false,
    "front": true,
-   "top": 16.2
+   "top": 14.0
   },
   "6": {
    "pivot": [
@@ -160,7 +160,7 @@ export const COMPANION_RIG: { cell: number; scale: number; frames: Record<number
    ],
    "blink": false,
    "front": false,
-   "top": 16.2
+   "top": 12.4
   },
   "7": {
    "pivot": [
@@ -182,7 +182,7 @@ export const COMPANION_RIG: { cell: number; scale: number; frames: Record<number
    ],
    "blink": true,
    "front": true,
-   "top": 16.2
+   "top": 12.6
   },
   "8": {
    "pivot": [
@@ -204,7 +204,7 @@ export const COMPANION_RIG: { cell: number; scale: number; frames: Record<number
    ],
    "blink": true,
    "front": false,
-   "top": 16.2
+   "top": 11.8
   }
  }
 };

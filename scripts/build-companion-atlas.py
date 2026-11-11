@@ -32,6 +32,7 @@ OUT = ROOT / "src" / "assets" / "companion"
 RIG = ROOT / "src" / "components" / "companionRig.ts"
 CELL = 500          # output cell (source cell is 418)
 TOP_PAD = 44        # room for antenna glow + head rotation
+ANTENNA_OVERFLOW = 24  # source rows above a cell that may hold this figure's antenna ball + glow (ball measured max 9)
 BASELINE = CELL - 24
 TONES = {
     # mint is the approved original art; the others recolour only the ceramic shell.
@@ -335,10 +336,40 @@ def build(debug: Path | None):
             raise SystemExit(f"frame {f}: top {top} < pad {TOP_PAD}")
         assert ox.min() + dx > 8 and ox.max() + dx < CELL - 8, f"frame {f} horizontal overflow"
 
+        # 2026-11-11: in the 2nd/3rd source rows the antenna ball crosses the top cell
+        # edge (up to 9 source px for the working pose) into the bottom of the cell above,
+        # which clean_cell() of that cell discards as bleed -> the ball was cut flat.
+        # Recover that strip, limited to this figure's antenna columns, and put it on the
+        # head layer just above the cell. The figure above ends near 95% of its cell, so
+        # the strip never contains its feet.
+        ball_strip = None
+        if f // 3 > 0:
+            hy, hx = np.nonzero(head_img[..., 3] > 0)
+            top_cols = hx[hy <= hy.min() + 3]
+            sx0, sx1 = max(0, int(top_cols.min()) - 8), min(S, int(top_cols.max()) + 9)
+            y_hi = (f // 3) * S
+            strip = src[y_hi - ANTENNA_OVERFLOW:y_hi, (f % 3) * S:(f % 3 + 1) * S].copy()
+            cand = np.zeros(strip.shape[:2], bool)
+            sr, sg = strip[..., 0].astype(int), strip[..., 1].astype(int)
+            # green ball/glow only: the ceramic feet of the figure above are neutral (r≈g)
+            green_px = (strip[..., 3] > 0) & (sg > sr + 12)
+            cand[:, sx0:sx1] = green_px[:, sx0:sx1]
+            # only what continues across the boundary into this cell's ball (feet of the
+            # figure above never touch the boundary row)
+            labels, _ = components(cand)
+            touching = set(np.unique(labels[-1][cand[-1]])) - {0}
+            keep = np.isin(labels, list(touching)) if touching else np.zeros_like(cand)
+            strip[~keep] = 0
+            if keep.any():
+                ball_strip = strip
+                top = min(top, int(np.nonzero(keep)[0].min()) - ANTENNA_OVERFLOW + dy)
+
         def place(name, img):
             gy, gx = (f // 3) * CELL, (f % 3) * CELL
             canvas = np.zeros((CELL, CELL, 4), np.uint8)
             canvas[dy:dy + S, dx:dx + S] = img
+            if ball_strip is not None and name.startswith("head-"):
+                canvas[dy - ANTENNA_OVERFLOW:dy, dx:dx + S] = ball_strip
             sheets[name][gy:gy + CELL, gx:gx + CELL] = canvas
 
         for tone_name, tone in TONES.items():

@@ -276,7 +276,8 @@ const NODE_TEST_SUITES = [
   { file: "scripts/auto-continue.test.ts", runner: "tsx" }, // v0.7.57
   { file: "scripts/auto-update.test.ts", runner: "tsx" }, // v0.7.57
   { file: "scripts/install-integrity.test.ts", runner: "tsx" },
-  { file: "scripts/codex-computer-use.test.ts", runner: "tsx" }, // v0.7.84 Codex built-in computer_use disabled on every app-server spawn // v0.7.84 incomplete install detection, signed repair, updater fallback
+  { file: "scripts/codex-computer-use.test.ts", runner: "tsx" },
+  { file: "scripts/companion-antenna.test.ts", runner: "tsx" }, // v0.7.84 antenna ball not cut flat on any pose/tone/tier // v0.7.84 Codex built-in computer_use disabled on every app-server spawn // v0.7.84 incomplete install detection, signed repair, updater fallback
   { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
 ];
 
