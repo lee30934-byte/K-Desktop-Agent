@@ -159,7 +159,7 @@ function MetricsPanel({
             className={`context-percent mono ${contextColor ? `text-${contextColor}` : ""}`}
             title={
               contextOverflowed
-                ? `실제 측정치 ${rawContextUsage.toFixed(1)}% — tool 결과 누적 부풀음 가능. 세션 초기화 또는 압축 권장.`
+                ? `실제 측정치 ${rawContextUsage.toFixed(1)}% — tool 결과 누적 부풀음 가능. 새 세션으로 이어가기 또는 새 대화로 이어가기 권장.`
                 : undefined
             }
           >
@@ -252,9 +252,9 @@ function MetricsPanel({
                   setShowContextDetails(false);
                 }}
                 disabled={isCompressing}
-                title="대화를 요약하고 새 세션으로 이어서 진행"
+                title="지금까지 대화를 요약해 새 대화를 만들고 그곳에서 이어갑니다. 현재 대화는 그대로 보존됩니다."
               >
-                {isCompressing ? "⏳ 압축 중..." : "📦 대화 압축 & 이어하기"}
+                {isCompressing ? "⏳ 요약 중..." : "📦 요약해서 새 대화로 이어가기"}
               </button>
             )}
             {onManualRefresh && (
@@ -265,9 +265,9 @@ function MetricsPanel({
                   onManualRefresh();
                   setShowContextDetails(false);
                 }}
-                title="세션 수동 갱신 (대화 초기화)"
+                title="지금까지 대화를 요약해 넘기고, 같은 대화 안에서 AI 엔진 세션만 새로 시작합니다. 메시지는 지워지지 않고 컨텍스트 사용량과 세션 통계만 0부터 다시 쌓입니다."
               >
-                🔄 세션 초기화
+                ↻ 새 세션으로 이어가기 <span className="btn-sub">맥락 유지 · 같은 대화</span>
               </button>
             )}
           </div>

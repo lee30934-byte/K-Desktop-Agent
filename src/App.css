@@ -5278,3 +5278,6 @@
 .sidebar-backup > summary { padding: 4px 0 10px; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
 .sidebar-backup .tool-item { margin-top: 4px; }
 .chat-options summary:focus-visible, .sidebar-backup summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* v0.7.86 UI 0단계 — 버튼 보조 라벨 (예: 새 세션으로 이어가기 · 맥락 유지) */
+.context-refresh-btn .btn-sub, .context-compress-btn .btn-sub { display: block; font-size: 0.78em; opacity: 0.7; margin-top: 2px; }

@@ -78,7 +78,7 @@ try:
             run = page.evaluate("c=>{localStorage.setItem('kda_auto_approve',c.enabled?'1':'0'); return window.show(c)}",
                 {'requests': requests, 'enabled': enabled, **patch})
             page.wait_for_function('(run)=>document.querySelector("[data-run]")?.dataset.run===String(run)', arg=run)
-        switch = page.get_by_role('switch', name='자동 승인').first
+        switch = page.get_by_role('switch', name='확인 없이 실행').first
         show([request()])
         expect(page.get_by_role('dialog')).to_be_visible()
         expect(switch).to_have_attribute('aria-checked', 'false')
@@ -88,7 +88,7 @@ try:
         assert page.evaluate('window.responses[0].content') == {'approve': True}
         checks.append('OFF manual approval executes once')
         show([request('pending')])
-        page.get_by_role('dialog').get_by_role('switch', name='자동 승인').click()
+        page.get_by_role('dialog').get_by_role('switch', name='확인 없이 실행').click()
         page.wait_for_function('window.responses.length===1')
         expect(page.get_by_role('dialog')).to_have_count(0)
         assert page.evaluate('window.attempts') == 1

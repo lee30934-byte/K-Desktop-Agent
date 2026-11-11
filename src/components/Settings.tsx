@@ -3050,9 +3050,9 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // 권한 레벨 라벨
   function getPermissionLabel(level: PermissionLevel): string {
     switch (level) {
-      case "auto": return "자동 승인";
-      case "ask": return "매번 확인";
-      case "manual": return "수동만";
+      case "auto": return "허용";
+      case "ask": return "실행 전 묻기";
+      case "manual": return "차단";
     }
   }
 
@@ -3277,27 +3277,27 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
           {/* 에이전트 권한 섹션 */}
           <section className="settings-section" data-tab="agent">
-            <div className="eyebrow">승인 방식</div>
+            <div className="eyebrow">실행 확인</div>
             <div className="settings-row">
               <div className="settings-row-info">
-                <div className="settings-row-title">확인창 없이 자동 승인</div>
+                <div className="settings-row-title">확인 없이 실행</div>
                 <div className="settings-row-desc">
-                  ON: 모든 대화의 Codex 도구 확인·명령·파일 승인 요청을 창 없이 처리합니다.
+                  ON: 모든 대화의 Codex 명령·파일 승인 요청과 MCP 입력 확인을 창 없이 처리합니다.
                   OFF: 필요한 요청에 확인창을 표시합니다. 앱에서 Ctrl+Alt+A로도 전환합니다.
                   새 설치의 기본값은 OFF이며 선택은 이 PC에 저장됩니다.
-                  입력이 필요한 질문·인증, 개별 도구 잠금, SafeMode 차단은 유지합니다.
+                  입력이 필요한 질문·인증, 아래 기능별 허용 범위·개별 도구 잠금, SafeMode 차단은 그대로 적용됩니다.
                 </div>
               </div>
               <ApprovalToggle />
             </div>
           </section>
           <section className="settings-section" data-tab="agent">
-            <div className="eyebrow">에이전트 권한</div>
+            <div className="eyebrow">기능별 허용 범위</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
-                <div className="settings-row-title">기능별 실행 권한</div>
+                <div className="settings-row-title">기능별 허용 범위</div>
                 <div className="settings-row-desc">
-                  각 기능의 실행 방식을 설정합니다
+                  기능마다 AI가 KDA 도구를 쓸 수 있는 범위를 정합니다 (허용 / 실행 전 묻기 / 차단)
                 </div>
               </div>
 
@@ -3314,32 +3314,28 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
                 }}
               >
                 <div style={{ fontWeight: 600, marginBottom: "4px" }}>
-                  ✓ 권한 게이트 활성 (Claude Max 모드 한정)
+                  ✓ 적용 범위
                 </div>
                 <div style={{ opacity: 0.85, lineHeight: 1.55 }}>
-                  • <strong>자동 승인</strong>: 도구를 자유롭게 호출합니다.<br />
-                  • <strong>매번 확인</strong>: 도구 호출 전 모델이 K님께 한국어로
-                  의도 설명 후 명시적 동의 (예: "응", "진행해")를 받아야만 실행합니다.
-                  (sidecar 가 stdin 프로토콜이라 CLI interactive prompt 를 쓸 수 없어
-                  모델 협조에 의존하는 <em>soft enforcement</em>.)<br />
-                  • <strong>수동만</strong>: Claude CLI 의{" "}
-                  <code>--disallowed-tools</code> 에 박혀 호출 자체가 거부됩니다 (hard).<br />
-                  • <code>Bash</code> 는 파일 쓰기·삭제·앱 실행 셋이 모두{" "}
-                  자동 승인일 때만 허용. 하나라도 ask/manual 이면 차단.<br />
-                  • <code>Task</code>, <code>Monitor</code>, <code>Skill</code>,
-                  <code> NotebookEdit</code> 같은 우회 통로는 항상 차단.<br />
-                  • 더 세밀한 제어가 필요하면 아래 <strong>"정밀 잠금"</strong> 섹션에서
-                  도구 단위로 잠그세요.<br />
-                  • 이 토글은 Claude CLI 경로 전용입니다. Codex / Gemini CLI 는 자체
-                  승인 체계로 작동하고, REST 모드 (OpenAI/Gemini/OpenRouter) 의 도구
-                  호출은 sidecar 가 직접 중계해 이 설정과 무관합니다.
+                  • <strong>허용</strong>: 해당 기능의 도구를 바로 씁니다.<br />
+                  • <strong>실행 전 묻기</strong>: 도구를 쓰기 전에 AI가 의도를 설명하고
+                  K님 동의(예: "응", "진행해")를 받도록 지시합니다. 모델 협조에 의존하는
+                  안내이며 <em>Claude 엔진에서만</em> 적용됩니다.<br />
+                  • <strong>차단</strong>: 해당 도구를 목록에서 빼고 호출을 거부합니다 (강제).<br />
+                  • <strong>모든 엔진(Claude·Codex·Gemini·REST)</strong>에서 k-personal 도구(파일 정리·앱·화면·웹 등)의
+                  "차단"과 아래 "정밀 잠금", SafeMode가 강제 적용됩니다.<br />
+                  • Claude 엔진은 추가로 <code>Bash</code>를 파일 쓰기·삭제·앱 실행이 모두
+                  허용일 때만 열고, <code>Task</code>·<code>Monitor</code>·<code>Skill</code>·
+                  <code>NotebookEdit</code> 같은 우회 통로는 항상 막습니다.<br />
+                  • 주의: Codex·Gemini 엔진 <em>자체</em>의 셸·파일 편집 도구는 이 설정으로 막히지 않습니다.
+                  막아야 하면 해당 작업에서 Claude 엔진을 쓰세요.<br />
                 </div>
               </div>
 
               <div className="permissions-legend">
-                <span className="perm-badge perm-auto">자동 승인</span>
-                <span className="perm-badge perm-ask">매번 확인</span>
-                <span className="perm-badge perm-manual">수동만</span>
+                <span className="perm-badge perm-auto">허용</span>
+                <span className="perm-badge perm-ask">실행 전 묻기</span>
+                <span className="perm-badge perm-manual">차단</span>
               </div>
 
               {/* 파일 권한 */}
@@ -3726,7 +3722,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               <div className="settings-row-info">
                 <div className="settings-row-title">개별 도구 잠금 ({lockedTools.size}개 잠김)</div>
                 <div className="settings-row-desc">
-                  카테고리 토글이 자동 승인이어도 여기서 체크한 도구는 호출 자체가 거부됩니다.
+                  기능별 허용 범위가 "허용"이어도 여기서 체크한 k-personal·Claude 도구는 모든 엔진에서 호출이 거부됩니다 (Codex·Gemini 자체 셸·파일 편집은 제외).
                   카테고리 단위로는 너무 거친 통제가 필요할 때 사용하세요.
                 </div>
               </div>

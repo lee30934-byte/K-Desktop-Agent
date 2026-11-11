@@ -5271,14 +5271,14 @@ export default function App() {
         ? `100%+ ⚠ (실측 ${refreshContextSnapshot.rawPct}%, ${refreshContextSnapshot.source})`
         : `${refreshContextSnapshot.pct}% (${refreshContextSnapshot.source})`;
       pushSystem(
-        `🔄 세션 갱신됨 (${pctMsg} 도달). 대화 맥락 유지됩니다.`,
+        `↻ 새 세션으로 이어감 (컨텍스트 ${pctMsg} 시점) · 요약으로 맥락 유지`,
         refreshContextSnapshot.overflowed ? "warn" : "info"
       );
 
       logger.log("[Session] 세션 갱신 완료");
     } catch (err) {
       console.error("[Session] 세션 갱신 실패:", err);
-      pushSystem("세션 갱신에 실패했습니다.", "error");
+      pushSystem("새 세션으로 이어가지 못했습니다.", "error");
     } finally {
       isRefreshingSessionRef.current = false;
     }
@@ -5304,7 +5304,7 @@ export default function App() {
     if (!confirmed) return;
 
     setIsCompressing(true);
-    pushSystem("📦 대화 압축 중... 잠시만 기다려주세요.", "info");
+    pushSystem("📦 대화를 요약하는 중... 잠시만 기다려주세요.", "info");
 
     let summaryTurnId = "";
     try {
@@ -5368,7 +5368,7 @@ export default function App() {
       refreshBaselineRef.current = 0;
 
       pushSystem(
-        `✅ 대화 압축 완료! 새 세션 "${currentConv.title} (continued)"에서 이어갑니다.`,
+        `✅ 요약 완료! 새 대화 "${currentConv.title} (continued)"에서 이어갑니다. 현재 대화는 보존됩니다.`,
         "info"
       );
 
@@ -5379,7 +5379,7 @@ export default function App() {
         releaseConversationTurn(activeConversationId, summaryTurnId);
       }
       console.error("[Compress] 대화 압축 실패:", err);
-      pushSystem("대화 압축에 실패했습니다: " + (err as Error).message, "error");
+      pushSystem("요약해서 새 대화로 이어가지 못했습니다: " + (err as Error).message, "error");
     } finally {
       setIsCompressing(false);
     }
@@ -6122,7 +6122,7 @@ export default function App() {
       {sessionRefreshToast && (
         <div className="session-refresh-toast">
           <span className="toast-icon">🔄</span>
-          <span className="toast-text">세션이 자동 갱신되었습니다</span>
+          <span className="toast-text">새 세션으로 자동으로 이어갔어요 · 대화 맥락 유지</span>
         </div>
       )}
 

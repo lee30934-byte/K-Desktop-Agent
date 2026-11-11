@@ -123,8 +123,8 @@ export const SAFE_MODE_POLICIES: Record<SafeMode, SafeModePolicy> = {
     title: "🟡 균형",
     description: "위험도 높음 이상 카테고리를 자동 ask 로 강등 (auto 였던 것만).",
     effect: [
-      "🟠 높음 카테고리 → 매번 확인",
-      "🔴 치명 카테고리 → 매번 확인",
+      "🟠 높음 카테고리 → 실행 전 묻기",
+      "🔴 치명 카테고리 → 실행 전 묻기",
       "🟢 낮음 / 🟡 보통 카테고리는 그대로",
     ],
   },
@@ -133,9 +133,9 @@ export const SAFE_MODE_POLICIES: Record<SafeMode, SafeModePolicy> = {
     title: "🔴 엄격",
     description: "보통 이상은 ask 로, 높음 이상은 manual 로. 일부 치명 도구는 자동 차단.",
     effect: [
-      "🟡 보통 카테고리 → 매번 확인",
-      "🟠 높음 카테고리 → 수동만",
-      "🔴 치명 카테고리 → 수동만",
+      "🟡 보통 카테고리 → 실행 전 묻기",
+      "🟠 높음 카테고리 → 차단",
+      "🔴 치명 카테고리 → 차단",
       "fm_organize_folder / fm_restore_file / app_kill 자동 차단",
     ],
   },
