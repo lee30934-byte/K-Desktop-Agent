@@ -5685,6 +5685,9 @@ export default function App() {
   // setSettingsOpen / setCommandPaletteOpen 자체는 React가 안정 ref 보장하지만,
   // (() => setSettingsOpen(true)) 같이 한 번 감싸면 매 렌더 새 함수가 됨.
   const openSettings = useStableCallback(() => setSettingsOpen(true));
+  // v0.7.86 UI 3단계 — 헤더 칩에서 특정 설정 탭으로 바로 이동
+  const openSettingsAi = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "ai"); } catch { /* ignore */ } setSettingsOpen(true); });
+  const openSettingsSafety = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "agent"); } catch { /* ignore */ } setSettingsOpen(true); });
   const closeSettings = useStableCallback(() => setSettingsOpen(false));
   const closeCommandPalette = useStableCallback(() => setCommandPaletteOpen(false));
 
@@ -5757,6 +5760,19 @@ export default function App() {
       />
 
       <MainChat
+        // v0.7.86 UI 3단계 — 헤더 정보 (실제 대화 제목 · 엔진 · 폴더 · 주의 칩 · 안전 칩 설정 바로가기)
+        title={conversations.find((c) => c.id === activeConversationId)?.title}
+        engineLabel={`${providerLabel(activeProvider)} · ${currentModelLabel}`}
+        folderLabel={(() => {
+          const fid = conversations.find((c) => c.id === activeConversationId)?.folderId;
+          return fid ? folders.find((f) => f.id === fid)?.name : undefined;
+        })()}
+        warnings={[
+          ...(mcpState.connected ? [] : ["도구 연결 끊김"]),
+          ...(activeProvider === "codex" && codexUsageError ? ["Codex 사용량 조회 오류"] : []),
+        ]}
+        onOpenEngineSettings={openSettingsAi}
+        onOpenSafetySettings={openSettingsSafety}
         // v0.7.49 — 대기/정체 배너는 채팅창 안(입력창 위)에 그린다. 종전엔 .app 그리드의
         // 직계 자식(grid-area 없음)이라 암묵 행을 만들어 왼쪽 아래에 끼고 채팅창 높이를 줄였다.
         // v0.7.86 UI 2단계 — 알림 띠를 공통 <Notice> 로 통일. 조건식·핸들러·className·role 은 그대로.

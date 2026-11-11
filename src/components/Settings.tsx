@@ -1255,6 +1255,15 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       localStorage.setItem(LS_ACTIVE_SETTINGS_TAB, activeTab);
     } catch {}
   }, [activeTab]);
+  // v0.7.86 UI 3단계 — Settings 는 항상 마운트돼 있어 위 초기값은 앱 시작 때 한 번만 읽힌다.
+  // 헤더 칩·첫 실행 안내처럼 "특정 탭으로 열기" 요청이 반영되도록 열릴 때마다 다시 읽는다.
+  useEffect(() => {
+    if (!open) return;
+    try {
+      const saved = localStorage.getItem(LS_ACTIVE_SETTINGS_TAB) as SettingsTabId | null;
+      if (saved && SETTINGS_TABS.some((t) => t.id === saved)) setActiveTab(saved);
+    } catch {}
+  }, [open]);
   const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
   const [addingFolder, setAddingFolder] = useState(false);
 

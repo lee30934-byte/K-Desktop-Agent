@@ -13,13 +13,21 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
-import ApprovalToggle from "./ApprovalToggle";
+import SafetyChip from "./SafetyChip";
+import { Chip } from "../ui";
 import type { SendMode } from "../conversationControl";
 import type { ChatMessage, ConnectionStatus, FileAttachment } from "../types";
 import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFilters";
 
 interface MainChatProps {
   activityPanel?: ReactNode;
+  // v0.7.86 UI 3단계 — 헤더: 실제 대화 제목 · 엔진 칩 · 폴더 · 주의 칩 · 안전 칩
+  title?: string;
+  engineLabel?: string;
+  folderLabel?: string;
+  warnings?: string[];
+  onOpenEngineSettings?: () => void;
+  onOpenSafetySettings?: () => void;
   // v0.7.49 — 채팅창 안(입력창 위)에 표시할 알림 배너 (작업 결과 확인 대기 / 응답 정체 등).
   notices?: ReactNode;
   conversationId: string;
@@ -91,6 +99,12 @@ function formatToolName(name: string): string {
 
 function MainChat({
   activityPanel,
+  title,
+  engineLabel,
+  folderLabel,
+  warnings,
+  onOpenEngineSettings,
+  onOpenSafetySettings,
   notices,
   conversationId,
   isStopping,
@@ -190,13 +204,21 @@ function MainChat({
       {/* 탑 헤더 */}
       <div className="main-header">
         <CornerBrackets corners={["tl", "tr"]} size={14} />
-        <div>
-          <div className="eyebrow">K DESKTOP AGENT</div>
-          <div className="main-title display">대화</div>
+        <div className="main-title-block">
+          <div className="main-title" title={title || "새 대화"}>{title || "새 대화"}</div>
+          <div className="main-subline">
+            {engineLabel && (
+              <button type="button" className="engine-chip" onClick={onOpenEngineSettings} title="AI 엔진·모델 설정">
+                {engineLabel} <span aria-hidden>▾</span>
+              </button>
+            )}
+            {folderLabel && <span className="main-folder" title="폴더">📁 {folderLabel}</span>}
+          </div>
         </div>
         <div className="main-header-right">
-          <ApprovalToggle />
+          {(warnings ?? []).map((w) => <Chip key={w} tone="warn" icon="⚠">{w}</Chip>)}
           {activityPanel}
+          <SafetyChip onOpenSettings={onOpenSafetySettings} />
           <details className="chat-options">
             <summary aria-label="대화 옵션" title="대화 옵션">⋯</summary>
             <div className="chat-options-body">
@@ -513,18 +535,19 @@ const MessageList = memo(function MessageList({
 // 다른 state 변화 (settingsOpen 등) 로 인한 부모 리렌더에선 스킵됨.
 export default memo(MainChat);
 
+// v0.7.86 UI 3단계 — 상태 배지를 점 하나로 축소. 정상일 땐 점만, 문제일 땐 한국어 문구도 표시.
 function StatusBadge({ status }: { status: ConnectionStatus }) {
   const label: Record<ConnectionStatus, string> = {
-    connecting: "CONNECTING",
-    connected: "LIVE",
-    disconnected: "OFFLINE",
-    error: "ERROR",
+    connecting: "연결 중",
+    connected: "준비됨",
+    disconnected: "오프라인",
+    error: "오류",
   };
-
+  const showText = status === "disconnected" || status === "error";
   return (
-    <div className={`status-badge status-badge-${status}`}>
+    <div className={`status-badge status-badge-${status}`} title={label[status]} role="status" aria-label={`엔진 상태: ${label[status]}`}>
       <div className="status-dot" />
-      <span className="mono">{label[status]}</span>
+      {showText && <span className="status-text">{label[status]}</span>}
     </div>
   );
 }
