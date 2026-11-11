@@ -6777,6 +6777,28 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                 </div>
               </div>
             </div>
+            {/* v0.7.86 UI 최종 점검 — 앱 안 단축키 (창이 앞에 있을 때) */}
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">앱 안 단축키</div>
+                <div className="settings-row-desc">이 창이 앞에 있을 때만 동작합니다</div>
+              </div>
+              <div className="shortcuts-list">
+                {([
+                  ["Ctrl+K / Ctrl+P", "명령 팔레트"],
+                  ["Ctrl+Alt+A", "확인 없이 실행 켜기/끄기"],
+                  ["Ctrl+L", "라이브러리"],
+                  ["Ctrl+B", "사이드바 접기/펼치기 (O2)"],
+                  ["Ctrl+,", "설정 열기"],
+                  ["Esc", "패널·창 닫기"],
+                ] as const).map(([key, desc]) => (
+                  <div key={key} className="shortcut-item">
+                    <span className="shortcut-key mono">{key}</span>
+                    <span className="shortcut-desc">{desc}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </section>
 
           {/* Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기) */}

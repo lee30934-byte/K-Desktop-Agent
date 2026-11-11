@@ -197,7 +197,7 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
         >
           <div>
             <div style={{ fontSize: 14, fontWeight: 600 }}>
-              📜 프로젝트 지침 — {folder.name}
+              📜 폴더 지침 — {folder.name}
             </div>
             <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2 }}>
               이 폴더에 속한 새 대화의 첫 메시지에 자동으로 박힙니다.

@@ -5420,6 +5420,12 @@
   padding: 1px 8px; font: 500 var(--fs-caption)/1.6 var(--font-ui); cursor: pointer; white-space: nowrap; }
 .engine-chip:hover { color: var(--fg); background: var(--surface-hover); }
 .main-folder { color: var(--fg-subtle); font-size: var(--fs-caption); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+button.main-folder { padding: 0; background: transparent; border: 0; cursor: pointer; font: inherit; font-size: var(--fs-caption); }
+button.main-folder:hover { color: var(--text-primary); }
+/* v0.7.86 UI 최종 점검 — ⋯ 첫 줄 '확인 없이 실행' 스위치, '이 대화의 엔진' 선택 */
+.chat-options-body .chat-options-approval[aria-checked="true"] { color: var(--warn); }
+.chat-options-engine { display: grid; gap: 4px; padding: 6px 10px; color: var(--text-secondary); font-size: 12px; }
+.chat-options-engine select { width: 100%; padding: 4px 6px; background: var(--bg-1); color: var(--text-primary); border: 1px solid var(--border-default); border-radius: 6px; font: inherit; font-size: 12px; }
 .main-header-right { display: flex; align-items: center; gap: var(--space-2); }
 .safety-popover { width: 300px; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
 .safety-popover__row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
@@ -5461,7 +5467,7 @@
 .recovery-panel-kind { flex: none; font-family: var(--font-mono); font-size: 10px; color: var(--fg-muted, #9cafbd); }
 .recovery-panel-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recovery-panel-age { flex: none; font-size: 10px; color: var(--fg-subtle, #7d8f9c); }
-.header-assistant-btn[aria-pressed="true"], .main-header-right .task-activity-toggle[aria-expanded="true"] { background: var(--accent-soft); color: var(--fg); }
+.header-assistant-btn[aria-pressed="true"], :root[data-layout="o2"] .main-header-right .task-activity-toggle[aria-expanded="true"] { background: var(--accent-soft); color: var(--fg); }
 /* o2 는 칩만(팝오버 없음) — classic 의 작업 팝오버는 예전 z-index 80 유지 */
 :root[data-layout="o2"] .main-header-right .task-activity { z-index: auto; }
 

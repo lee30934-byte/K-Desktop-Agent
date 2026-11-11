@@ -841,7 +841,7 @@ function Sidebar({
       // Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 진입
       if (onEditFolderInstructions) {
         items.push({
-          label: "📜 프로젝트 지침…",
+          label: "📜 폴더 지침…",
           action: () => onEditFolderInstructions(id),
         });
       }

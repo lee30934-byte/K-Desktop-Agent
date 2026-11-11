@@ -1504,6 +1504,11 @@ export default function App() {
         e.preventDefault();
         setCommandPaletteOpen((prev) => !prev);
       }
+      // Ctrl+, (v0.7.86 UI 최종 점검): 설정 열기 — 두 배치 공통
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
       // Escape: 닫기
       if (e.key === "Escape" && commandPaletteOpen) {
         setCommandPaletteOpen(false);
@@ -5997,10 +6002,20 @@ export default function App() {
       <MainChat
         // v0.7.86 UI 3단계 — 헤더 정보 (실제 대화 제목 · 엔진 · 폴더 · 주의 칩 · 안전 칩 설정 바로가기)
         title={conversations.find((c) => c.id === activeConversationId)?.title}
-        engineLabel={`${providerLabel(activeProvider)} · ${currentModelLabel}`}
+        // 대화에 엔진이 고정돼 있으면 그 엔진을 보여 준다(전송도 그 엔진으로 감). 모델은 그 엔진 기본값.
+        engineLabel={(() => {
+          const pin = conversations.find((c) => c.id === activeConversationId)?.provider;
+          return pin && pin !== activeProvider ? `${providerLabel(pin)} · 이 대화 고정` : `${providerLabel(activeProvider)} · ${currentModelLabel}`;
+        })()}
         folderLabel={(() => {
           const fid = conversations.find((c) => c.id === activeConversationId)?.folderId;
           return fid ? folders.find((f) => f.id === fid)?.name : undefined;
+        })()}
+        conversationProvider={activeConversationId ? (conversations.find((c) => c.id === activeConversationId)?.provider ?? null) : undefined}
+        onSetConversationProvider={isO2 && activeConversationId ? (p) => { void handleSetConversationProvider(activeConversationId, p); } : undefined}
+        onEditFolderInstructions={(() => {
+          const fid = conversations.find((c) => c.id === activeConversationId)?.folderId;
+          return isO2 && fid ? () => { void handleEditFolderInstructions(fid); } : undefined;
         })()}
         warnings={[
           ...(mcpState.connected ? [] : ["도구 연결 끊김"]),

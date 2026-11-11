@@ -16,6 +16,8 @@ import Message from "./Message";
 import Composer from "./Composer";
 import ApprovalToggle from "./ApprovalToggle";
 import SafetyChip from "./SafetyChip";
+import { useApprovalMode } from "../utils/useApprovalMode";
+import { PINNABLE_PROVIDERS, providerLabel } from "../providerResolve";
 import { Chip } from "../ui";
 import { Icon, type IconName } from "../ui/icons";
 import type { SendMode } from "../conversationControl";
@@ -47,6 +49,10 @@ interface MainChatProps {
   onCompressContext?: () => void;
   // v0.7.86 UI 6단계 (o2) — ⋯ '이 대화 내보내기' (사이드바 백업 메뉴와 같은 함수)
   onExportConversation?: () => void;
+  // v0.7.86 UI 최종 점검 (o2) — ⋯ '이 대화의 엔진'(undefined = 활성 대화 없음, null = 전역 따름) · '폴더 지침 편집'
+  conversationProvider?: string | null;
+  onSetConversationProvider?: (provider: string | null) => void;
+  onEditFolderInstructions?: () => void;
   // v0.7.49 — 채팅창 안(입력창 위)에 표시할 알림 배너 (작업 결과 확인 대기 / 응답 정체 등).
   notices?: ReactNode;
   conversationId: string;
@@ -132,6 +138,9 @@ function MainChat({
   composerNudge,
   onOpenSession,
   onExportConversation,
+  conversationProvider,
+  onSetConversationProvider,
+  onEditFolderInstructions,
   onManualRefresh,
   onCompressContext,
   notices,
@@ -241,6 +250,7 @@ function MainChat({
 
   // v0.7.86 UI 3b단계 — "classic" 배치에선 이전 헤더(제목 블록 + 확인 없이 실행 버튼 + 영문 상태 배지)
   const { isO2 } = useUiLayout();
+  const approval = useApprovalMode();
 
   // v0.7.86 UI 7단계 — 대화 폭·어시스턴트 표시 LS 값을 :root data-* 로 (토글 UI 는 8단계)
   useEffect(() => {
@@ -267,7 +277,9 @@ function MainChat({
                 {engineLabel} <span aria-hidden>▾</span>
               </button>
             )}
-            {folderLabel && <span className="main-folder" title="폴더">📁 {folderLabel}</span>}
+            {folderLabel && (onEditFolderInstructions
+              ? <button type="button" className="main-folder" onClick={onEditFolderInstructions} title="폴더 지침 편집">📁 {folderLabel} <span aria-hidden>📎</span></button>
+              : <span className="main-folder" title="폴더">📁 {folderLabel}</span>)}
           </div>
         </div>
         ) : (
@@ -292,6 +304,12 @@ function MainChat({
           <details className="chat-options">
             <summary aria-label="대화 옵션" title="대화 옵션">{isO2 ? <Icon name="more" /> : "⋯"}</summary>
             <div className="chat-options-body">
+              {isO2 && (
+                <button type="button" className="chat-options-approval" role="switch" aria-checked={approval.enabled}
+                  onClick={approval.toggle} title="Ctrl+Alt+A">
+                  확인 없이 실행 · {approval.enabled ? "켜짐" : "꺼짐"}
+                </button>
+              )}
           <button
             className={`copy-chat-btn ${copyStatus === "copied" ? "copied" : ""}`}
             onClick={handleCopyChat}
@@ -302,6 +320,20 @@ function MainChat({
               <button type="button" onClick={() => setShowToolCardsPersist(!showToolCards)} aria-pressed={showToolCards}>
                 {showToolCards ? "도구 호출 숨기기" : "도구 호출 보기"}
               </button>
+              {isO2 && onSetConversationProvider && conversationProvider !== undefined && (
+                <label className="chat-options-engine">
+                  이 대화의 엔진
+                  <select value={conversationProvider ?? ""} aria-label="이 대화의 엔진"
+                    onChange={(e) => onSetConversationProvider(e.target.value || null)}>
+                    {PINNABLE_PROVIDERS.map((p) => <option key={p ?? "global"} value={p ?? ""}>{providerLabel(p)}</option>)}
+                  </select>
+                </label>
+              )}
+              {isO2 && onEditFolderInstructions && (
+                <button type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); onEditFolderInstructions(); }}>
+                  폴더 지침 편집
+                </button>
+              )}
               {onOpenPreview && (
                 <button type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); onOpenPreview(); }}
                   aria-label="미리보기 패널 열기">미리보기 패널 열기</button>
