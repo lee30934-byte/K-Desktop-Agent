@@ -5304,3 +5304,8 @@
 .brand-name.brand-name-o2 { font-family: var(--font-ui); font-weight: 700; letter-spacing: 0; text-transform: none; font-size: 22px; line-height: 1; }
 .brand-name.brand-name-o2 sub { font-size: 0.55em; vertical-align: -0.25em; margin-left: 1px; color: var(--accent); }
 .sidebar-brand .brand-sub { font-family: var(--font-ui); letter-spacing: 0; text-transform: none; font-size: var(--fs-caption); color: var(--fg-muted); }
+
+/* v0.7.86 — 브랜드 한 줄: [심볼] O₂ AGENT ········ v0.x.y */
+.sidebar-brand .brand-text.brand-text-inline { flex: 1; min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.brand-name.brand-name-o2 .brand-word { margin-left: 8px; font-size: 15px; font-weight: 600; letter-spacing: 0.22em; color: var(--fg); vertical-align: 0.12em; }
+.sidebar-brand .brand-sub.brand-version { font-family: var(--font-mono); font-size: 11px; color: var(--fg-subtle); letter-spacing: 0; white-space: nowrap; }

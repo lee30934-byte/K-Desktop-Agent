@@ -1470,11 +1470,10 @@ function Sidebar({
           {/* v0.7.86 — O2 심볼 (GPT 이미지 생성, evidence/o2-symbol-20261111/b). 앱 아이콘과 같은 원본 */}
           <img src={o2Mark} width={30} height={30} alt="" draggable={false} />
         </div>
-        <div className="brand-text">
-          <div className="brand-name brand-name-o2" title="O2 — 동원의 에이전트" aria-label="O2">O<sub>2</sub></div>
-          <div className="brand-sub">
-            {appVersion ? `동원의 에이전트 · v${appVersion}` : "동원의 에이전트"}
-          </div>
+        {/* v0.7.86 — K 요청: 줄바꿈 없이 한 줄로 'O₂ AGENT' + 오른쪽 끝 버전. 부제는 툴팁 */}
+        <div className="brand-text brand-text-inline" title={`O2 — 동원의 에이전트${appVersion ? ` · v${appVersion}` : ""}`}>
+          <span className="brand-name brand-name-o2" aria-label="O2 AGENT">O<sub>2</sub><span className="brand-word">AGENT</span></span>
+          {appVersion && <span className="brand-sub brand-version">v{appVersion}</span>}
         </div>
       </div>
 
