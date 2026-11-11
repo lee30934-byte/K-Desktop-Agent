@@ -133,6 +133,7 @@ import { seedRouteTargets, sanitizeTargets, type RouteTarget } from "./telegramR
 import { processTelegramUpdate, TelegramUpdateLedger } from "./telegramUpdateLedger";
 import { useStableCallback } from "./utils/useStableCallback";
 import { useUiLayout } from "./utils/useUiLayout";
+import { exportConversationToFile } from "./utils/conversationBackup";
 import { classifyTurnEnding, buildAutoContinuePrompt, AutoContinueChain, isAutoContinueMessage } from "./autoContinue";
 import { isCommandCenterDispatch } from "./telegramLedger";
 import { decideAutoUpdate, updaterVersionMatches, AUTO_UPDATE_POLL_MS } from "./autoUpdate";
@@ -502,14 +503,51 @@ export default function App() {
   const handleSidePanelClose = useStableCallback(() => {
     setSidePanelItem(null);
   });
-  // CSS variable 동기화
+  // v0.7.86 UI 6단계 (o2) — 사이드바 레일(56px). Ctrl+B 또는 심볼 클릭으로 접고 편다.
+  // 1100px 미만은 자동 레일이고, 그때 펼치면 본문을 밀지 않고 위에 겹쳐(오버레이) 보인다.
+  // classic 은 레일 없음 (예전 사이드바 그대로).
+  const [sidebarRailPref, setSidebarRailPref] = useState<boolean>(() => {
+    try { return localStorage.getItem("kda_sidebar_rail") === "1"; } catch { return false; }
+  });
+  const [narrowWindow, setNarrowWindow] = useState(() => window.innerWidth < 1100);
+  const [narrowSidebarOpen, setNarrowSidebarOpen] = useState(false);
   useEffect(() => {
-    document.documentElement.style.setProperty("--sidebar-width", `${sidebarWidth}px`);
+    const onResize = () => setNarrowWindow(window.innerWidth < 1100);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  useEffect(() => { if (!narrowWindow) setNarrowSidebarOpen(false); }, [narrowWindow]);
+  useEffect(() => {
+    try { localStorage.setItem("kda_sidebar_rail", sidebarRailPref ? "1" : "0"); } catch {}
+  }, [sidebarRailPref]);
+  const sidebarRail = isO2 && (narrowWindow ? !narrowSidebarOpen : sidebarRailPref);
+  const sidebarOverlay = isO2 && narrowWindow && narrowSidebarOpen;
+  const toggleSidebarRail = useStableCallback(() => {
+    if (narrowWindow) setNarrowSidebarOpen((v) => !v);
+    else setSidebarRailPref((v) => !v);
+  });
+  useEffect(() => {
+    if (!isO2) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleSidebarRail();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isO2, toggleSidebarRail]);
+  // CSS variable 동기화 (레일이면 그리드 열만 56px, 저장된 폭은 그대로 둔다)
+  useEffect(() => {
+    document.documentElement.style.setProperty("--sidebar-width", `${sidebarRail || sidebarOverlay ? 56 : sidebarWidth}px`);
+    document.documentElement.style.setProperty("--sidebar-open-width", `${sidebarWidth}px`);
     try {
       localStorage.setItem("kda_sidebar_width", String(sidebarWidth));
     } catch {}
-  }, [sidebarWidth]);
+  }, [sidebarWidth, sidebarRail, sidebarOverlay]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // 좁은 창 오버레이는 대화를 고르면 다시 레일로 (본문을 가리지 않게)
+  useEffect(() => { setNarrowSidebarOpen(false); }, [activeConversationId]);
   const [status, setStatus] = useState<ConnectionStatus>("connected");
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
@@ -5737,6 +5775,18 @@ export default function App() {
   // setSettingsOpen / setCommandPaletteOpen 자체는 React가 안정 ref 보장하지만,
   // (() => setSettingsOpen(true)) 같이 한 번 감싸면 매 렌더 새 함수가 됨.
   const openSettings = useStableCallback(() => setSettingsOpen(true));
+  // v0.7.86 UI 6단계 (o2) — 사이드바 하단 [다시 연결]: 설정 › 런타임의 재기동과 같은 reload_sidecar.
+  // 진행 중인 응답이 있으면 끊기므로 한 번 묻는다.
+  const handleReconnectTools = useStableCallback(async () => {
+    if (streamingConvIds.size > 0 && !window.confirm("진행 중인 응답이 있어요. 실행 엔진을 다시 시작하면 끊깁니다. 다시 연결할까요?")) return;
+    try {
+      await invoke("reload_sidecar");
+    } catch (err) {
+      console.error("reload_sidecar failed:", err);
+      alert("다시 연결하지 못했어요. 설정 › 런타임에서 확인해 주세요.");
+    }
+  });
+  const handleExportActiveConversation = useStableCallback(() => { void exportConversationToFile(activeConversationId); });
   // v0.7.86 UI 3단계 — 헤더 칩에서 특정 설정 탭으로 바로 이동
   const openSettingsAi = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "ai"); } catch { /* ignore */ } setSettingsOpen(true); });
   const openSettingsSafety = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "agent"); } catch { /* ignore */ } setSettingsOpen(true); });
@@ -5851,10 +5901,13 @@ export default function App() {
   };
 
   return (
-    <div className="app">
+    <div className={`app${sidebarRail ? " app--sidebar-rail" : ""}${sidebarOverlay ? " app--sidebar-overlay" : ""}`}>
       <UpdateChecker />
-      {/* Phase 38 (v0.5.26) — 사이드바 폭 조절 handle. Sidebar 우측 가장자리, drag 로 200~600px */}
-      <SidebarResizer width={sidebarWidth} onChange={setSidebarWidth} />
+      {/* Phase 38 (v0.5.26) — 사이드바 폭 조절 handle. Sidebar 우측 가장자리, drag 로 200~600px
+          v0.7.86 UI 6단계 — o2 레일·오버레이일 땐 숨기고, o2 에선 더블클릭하면 레일로 접는다 */}
+      {!sidebarRail && !sidebarOverlay && (
+        <SidebarResizer width={sidebarWidth} onChange={setSidebarWidth} onCollapse={isO2 ? toggleSidebarRail : undefined} />
+      )}
 
       {controlConfirmation && <ActionConfirmation
         title="실행 엔진 복구"
@@ -5893,6 +5946,11 @@ export default function App() {
         streamingConvIds={streamingConvIds}
         onOpenLibrary={handleOpenLibrary}
         onSetConversationProvider={handleSetConversationProvider}
+        rail={sidebarRail}
+        onToggleRail={toggleSidebarRail}
+        taskCount={[...conversationTurnGateRef.current.runs.values()].filter((r) => r.state === "running" || r.state === "stopping").length}
+        onOpenTasks={isO2 ? () => toggleRightPanel("tasks") : undefined}
+        onReconnectTools={isO2 ? handleReconnectTools : undefined}
       />
 
       <MainChat
@@ -5979,6 +6037,7 @@ export default function App() {
         onOpenSession={isO2 ? () => setRightPanel("session") : undefined}
         onManualRefresh={isO2 ? triggerSessionRefresh : undefined}
         onCompressContext={isO2 ? handleCompressContext : undefined}
+        onExportConversation={isO2 && activeConversationId ? handleExportActiveConversation : undefined}
         conversationId={activeConversationId ?? "new"}
         isStopping={!!activeConversationId && conversationTurnGateRef.current.runs.get(activeConversationId)?.state === "stopping"}
         queuedCount={activeConversationId ? conversationTurnGateRef.current.queues.get(activeConversationId)?.length ?? 0 : 0}

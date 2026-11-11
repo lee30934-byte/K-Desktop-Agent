@@ -41,6 +41,8 @@ interface MainChatProps {
   onOpenSession?: () => void;
   onManualRefresh?: () => void;
   onCompressContext?: () => void;
+  // v0.7.86 UI 6단계 (o2) — ⋯ '이 대화 내보내기' (사이드바 백업 메뉴와 같은 함수)
+  onExportConversation?: () => void;
   // v0.7.49 — 채팅창 안(입력창 위)에 표시할 알림 배너 (작업 결과 확인 대기 / 응답 정체 등).
   notices?: ReactNode;
   conversationId: string;
@@ -125,6 +127,7 @@ function MainChat({
   composerContext,
   composerNudge,
   onOpenSession,
+  onExportConversation,
   onManualRefresh,
   onCompressContext,
   notices,
@@ -281,6 +284,7 @@ function MainChat({
                 onOpenSession && ["세션·사용량 보기", onOpenSession],
                 onManualRefresh && ["↻ 새 세션으로 이어가기", onManualRefresh],
                 onCompressContext && ["📦 요약해서 새 대화로 이어가기", onCompressContext],
+                onExportConversation && ["📤 이 대화 내보내기", onExportConversation],
               ].filter((x): x is [string, () => void] => !!x).map(([label, run]) => (
                 <button key={label} type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); run(); }}>
                   {label}

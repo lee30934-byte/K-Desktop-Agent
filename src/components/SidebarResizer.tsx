@@ -5,6 +5,8 @@ interface Props {
   onChange: (next: number) => void;
   min?: number;
   max?: number;
+  // v0.7.86 UI 6단계 (o2) — 있으면 더블클릭 = 레일로 접기 (없으면 예전처럼 기본 폭 복원)
+  onCollapse?: () => void;
 }
 
 /**
@@ -17,6 +19,7 @@ export default function SidebarResizer({
   onChange,
   min = 200,
   max = 600,
+  onCollapse,
 }: Props) {
   const [dragging, setDragging] = useState(false);
   const dragStartRef = useRef<{ x: number; w: number } | null>(null);
@@ -49,6 +52,7 @@ export default function SidebarResizer({
   }, [dragging, min, max, onChange]);
 
   const handleDoubleClick = () => {
+    if (onCollapse) { onCollapse(); return; }
     // 더블클릭 시 기본 폭 (260) 으로 복원
     onChange(260);
   };
@@ -63,7 +67,7 @@ export default function SidebarResizer({
         setDragging(true);
       }}
       onDoubleClick={handleDoubleClick}
-      title="좌우 드래그로 사이드바 폭 조절 · 더블클릭 = 기본값 (260px)"
+      title={onCollapse ? "좌우 드래그로 사이드바 폭 조절 · 더블클릭 = 접기" : "좌우 드래그로 사이드바 폭 조절 · 더블클릭 = 기본값 (260px)"}
       aria-label="사이드바 폭 조절"
       role="separator"
     >

@@ -5402,3 +5402,89 @@
 .session-usage__error { padding: 8px 10px; border: 1px solid var(--warn); border-radius: var(--radius-ctl, 8px);
   color: var(--warn); font-size: var(--fs-caption, 12px); line-height: 1.4; overflow-wrap: anywhere; }
 .session-usage__error-actions { display: flex; gap: 4px; margin-top: 6px; }
+
+/* ════════════════════════════════════════════════════════════════
+   v0.7.86 UI 6단계 — 사이드바 단순화 (o2 전용, .sidebar--o2)
+   브랜드 · [＋ 새 대화] · 내비 3줄(검색/라이브러리/작업) · '대화' 섹션(📁+ ☑ ⋯) · 하단 고정 행(연결 상태 + ⚙ 설정).
+   레일(56px): Ctrl+B / 심볼 클릭 / 1100px 미만 자동. 1100px 미만에서 펼치면 본문 위에 겹쳐 보인다.
+   classic 은 위쪽의 예전 .sidebar 규칙만 쓴다.
+   ════════════════════════════════════════════════════════════════ */
+.sidebar.sidebar--o2 { padding: var(--space-md) var(--space-sm) var(--space-sm); }
+.sidebar--o2 .sidebar-brand { padding: 0 4px var(--space-md); margin-bottom: var(--space-sm); }
+.brand-logo.brand-logo-btn { padding: 0; background: transparent; border: 0; border-radius: var(--radius-ctl, 8px); cursor: pointer; flex: none; }
+.brand-logo.brand-logo-btn:hover { background: var(--surface-hover); }
+.brand-logo.brand-logo-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sidebar--o2 .sb-top { padding: 0 4px; margin-bottom: 6px; }
+.sidebar--o2 .sb-top .new-chat-btn { min-width: 0; }
+.sidebar--o2 .new-chat-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-nav { display: flex; flex-direction: column; gap: 1px; padding: 0 0 6px; }
+.sb-nav-item { height: var(--row-h, 32px); display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: var(--radius-ctl, 8px);
+  background: transparent; color: var(--fg-muted); font: 400 var(--fs-sub)/1 var(--font-ui); cursor: pointer; text-align: left; }
+.sb-nav-item:hover { background: var(--surface-hover); color: var(--fg); }
+.sb-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sb-nav-icon { width: 18px; text-align: center; font-size: 13px; }
+.sb-kbd { margin-left: auto; font: 400 11px/1 var(--font-mono); color: var(--fg-subtle); }
+.sb-badge { margin-left: auto; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); font: 600 11px/1 var(--font-ui); }
+.sidebar--o2 .sb-search { padding: 0 0 2px; }
+.sb-sec-head { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 8px 6px 4px 10px; }
+.sidebar--o2 .sb-sec-head .section-label { margin: 0; padding: 0; }
+.sb-sec-tools { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
+.sb-sec-head:hover .sb-sec-tools, .sb-sec-head:focus-within .sb-sec-tools,
+.sb-sec-tools:has([aria-pressed="true"], [aria-expanded="true"]) { opacity: 1; }
+.sb-sec-tools button { width: 26px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: var(--fg-subtle); font-size: 12px; cursor: pointer; }
+.sb-sec-tools button:hover { background: var(--surface-hover); color: var(--fg); }
+.sb-sec-tools button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.sb-sec-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sb-sec-menu { position: absolute; right: 4px; top: calc(100% + 2px); z-index: 70; min-width: 168px; display: grid; gap: 2px; padding: 6px;
+  background: var(--surface-overlay); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 12px 32px #0006; }
+.sb-sec-menu button { padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-muted); text-align: left;
+  font: 400 var(--fs-caption)/1.2 var(--font-ui); cursor: pointer; }
+.sb-sec-menu button:hover, .sb-sec-menu button:focus-visible { background: var(--surface-hover); color: var(--fg); outline: none; }
+/* 대량 정리 바: o2 는 ☑ 를 켰을 때만, 목록 아래에 (renderExplorer 는 그대로, 순서만 CSS 로) */
+.sidebar--o2:not(.sidebar--bulk) .bulk-organize-bar { display: none !important; }
+.sidebar--o2 .bulk-organize-bar { order: 3; border-top: 1px solid var(--line); }
+/* 행 hover ⋯ (우클릭과 같은 메뉴) */
+.explorer-row-more { display: none; flex: none; width: 22px; height: 22px; margin-left: auto; padding: 0; place-items: center; border: 0; border-radius: 6px;
+  background: transparent; color: var(--fg-muted); font-size: 14px; line-height: 1; cursor: pointer; }
+.explorer-item:hover .explorer-row-more, .explorer-row-more:focus-visible { display: grid; }
+.explorer-row-more:hover { background: var(--surface-hover); color: var(--fg); }
+.explorer-row-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+/* 하단 고정 행 */
+.sb-foot { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 8px 4px 0 10px;
+  border-top: 1px solid var(--line); font: 400 var(--fs-caption)/1.2 var(--font-ui); }
+.sb-conn { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--fg-subtle); }
+.sb-conn-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-conn--off { color: var(--danger); }
+.sb-conn--off .status-dot { background: var(--danger); }
+.sb-reconnect { flex: none; padding: 3px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: transparent; color: var(--fg);
+  font: 500 11px/1.2 var(--font-ui); cursor: pointer; }
+.sb-reconnect:hover { background: var(--surface-hover); }
+.sb-settings { flex: none; height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; border-radius: var(--radius-ctl, 8px);
+  background: transparent; color: var(--fg-muted); font: 400 var(--fs-sub)/1 var(--font-ui); cursor: pointer; }
+.sb-settings:hover { background: var(--surface-hover); color: var(--fg); }
+.sb-settings:focus-visible, .sb-reconnect:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 레일 */
+.sidebar.sidebar--rail { padding: 10px 0; align-items: center; }
+.sb-rail { display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; width: 100%; }
+.sb-rail .brand-logo-btn { width: 36px; height: 36px; margin-bottom: 6px; }
+.sb-rail-btn { position: relative; width: 36px; height: 36px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--radius-ctl, 8px);
+  background: transparent; color: var(--fg-muted); font-size: 15px; cursor: pointer; }
+.sb-rail-btn:hover { background: var(--surface-hover); color: var(--fg); }
+.sb-rail-btn[aria-label="새 대화"] { font-size: 20px; font-weight: 300; }
+.sb-rail-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sb-rail-badge { position: absolute; top: 2px; right: 1px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px; display: grid; place-items: center;
+  background: var(--accent); color: var(--bg-1); font: 700 9px/1 var(--font-ui); }
+.sb-rail-grow { flex: 1; }
+.sb-rail-dot { margin: 8px 0; }
+.sb-rail-reconnect .status-dot { background: var(--danger); }
+.sidebar.sidebar--rail [data-corner-bracket] { display: none; }
+/* 1100px 미만: 예전 220px 고정 폭 대신 레일 폭(--sidebar-width)을 쓰고, 펼치면 본문 위에 겹친다 */
+@media (max-width: 1100px) {
+  :root[data-layout="o2"] .app { grid-template-columns: var(--sidebar-width, 56px) 1fr var(--side-panel-width, 0px); }
+}
+:root[data-layout="o2"] .app.app--sidebar-overlay .sidebar {
+  position: fixed; z-index: 75; top: var(--space-md); bottom: var(--space-md); left: var(--space-md);
+  width: var(--sidebar-open-width, 260px); box-shadow: 0 16px 48px #0008;
+}

@@ -33,7 +33,8 @@ const cssHasArea = (cls) => /grid-area:\s*[\w-]+/.test(cssRule(cls) ?? "");
 
 // ── 1. .app 직계 자식 분류 ───────────────────────────────────────────────
 console.log("\n[1] .app grid 직계 자식 — grid-area 또는 position:fixed 필수");
-const start = app.indexOf('\n    <div className="app">\n');
+// v0.7.86 UI 6단계 — 루트에 레일/오버레이 modifier 클래스가 붙어 템플릿 문자열일 수 있다.
+const start = app.search(/\n    <div className=(?:"app"|\{`app[^`]*`\})>\n/);
 const end = app.indexOf("\n    </div>\n", start);
 check(".app 루트 블록 탐지", start > 0 && end > start);
 const body = app.slice(start, end).split("\n").slice(2);

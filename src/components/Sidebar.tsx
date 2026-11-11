@@ -1,6 +1,5 @@
 import o2Mark from "../assets/o2-mark.png";
 import { memo, useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
-import { save, open } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   DndContext,
@@ -14,14 +13,13 @@ import {
 } from "@dnd-kit/core";
 import CornerBrackets from "./CornerBrackets";
 import type { Conversation, Folder } from "../types";
+// v0.7.86 UI 6단계 — 내보내기/백업/가져오기는 공용 유틸 (헤더 ⋯ '이 대화 내보내기'와 공유)
 import {
-  exportConversation,
-  exportAllConversations,
-  importConversation,
-  importAllConversations,
-  type ExportedConversation,
-  type ExportedBackup,
-} from "../db";
+  exportConversationToFile,
+  exportAllConversationsToFile,
+  importConversationsFromFile,
+} from "../utils/conversationBackup";
+import { useUiLayout } from "../utils/useUiLayout";
 // Phase 144 (v0.7.20) — W1 대화별 엔진 라벨/선택지 (App 과 동일 source)
 import { providerLabel, PINNABLE_PROVIDERS } from "../providerResolve";
 
@@ -86,6 +84,12 @@ interface SidebarProps {
   onOpenLibrary?: () => void;
   // Phase 144 (v0.7.20) — W1 대화별 엔진(provider) 고정. null = 전역 설정 따름.
   onSetConversationProvider?: (id: string, provider: string | null) => Promise<void> | void;
+  // v0.7.86 UI 6단계 (o2 전용) — 레일(56px) 접기, ⚡ 작업 내비, 하단 [다시 연결]
+  rail?: boolean;
+  onToggleRail?: () => void;
+  taskCount?: number;
+  onOpenTasks?: () => void;
+  onReconnectTools?: () => void;
 }
 
 function Sidebar({
@@ -114,7 +118,34 @@ function Sidebar({
   streamingConvIds,
   onOpenLibrary,
   onSetConversationProvider,
+  rail = false,
+  onToggleRail,
+  taskCount = 0,
+  onOpenTasks,
+  onReconnectTools,
 }: SidebarProps) {
+  // v0.7.86 UI 6단계 — o2 는 단순화된 사이드바(내비 3줄 · '대화' 섹션 · 하단 고정 행 · 레일),
+  // classic 은 예전 구조(새 폴더/📚 버튼 줄 · 검색창 · 백업 details · 환경설정 · K-PERSONAL footer) 그대로.
+  const { isO2 } = useUiLayout();
+  const railMode = isO2 && rail;
+  // o2 내비 '🔍 검색' — 누르면 같은 자리에서 입력창으로 펼침
+  const [searchOpen, setSearchOpen] = useState(false);
+  // o2 '대화' 섹션 제목 ⋯ — 백업·가져오기 (8단계에서 설정 › 데이터·백업으로 옮길 때까지 여기 둔다)
+  const [backupMenuOpen, setBackupMenuOpen] = useState(false);
+  const backupMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!backupMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (backupMenuRef.current && !backupMenuRef.current.contains(e.target as Node)) setBackupMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setBackupMenuOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [backupMenuOpen]);
   // 제목 inline edit (대화/폴더 공용)
   const [editingState, setEditingState] = useState<
     | { kind: "conversation"; id: string; title: string }
@@ -791,69 +822,10 @@ function Sidebar({
     );
   };
 
-  // 현재 대화 내보내기
-  const handleExportCurrent = async () => {
-    if (!activeConversationId) {
-      alert("내보낼 대화를 선택하세요.");
-      return;
-    }
-    const data = await exportConversation(activeConversationId);
-    if (!data) {
-      alert("대화를 찾을 수 없습니다.");
-      return;
-    }
-    const filePath = await save({
-      defaultPath: `conversation_${data.conversation.title.replace(/[^a-zA-Z0-9가-힣]/g, "_")}.json`,
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
-    if (filePath) {
-      const fs = await import("@tauri-apps/plugin-fs");
-      await fs.writeTextFile(filePath, JSON.stringify(data, null, 2));
-      alert(`내보내기 완료: ${filePath}`);
-    }
-  };
-
-  const handleExportAll = async () => {
-    const data = await exportAllConversations();
-    const filePath = await save({
-      defaultPath: `k_agent_backup_${new Date().toISOString().slice(0, 10)}.json`,
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
-    if (filePath) {
-      const fs = await import("@tauri-apps/plugin-fs");
-      await fs.writeTextFile(filePath, JSON.stringify(data, null, 2));
-      alert(`전체 백업 완료: ${data.conversations.length}개 대화`);
-    }
-  };
-
-  const handleImport = async () => {
-    const filePath = await open({
-      filters: [{ name: "JSON", extensions: ["json"] }],
-      multiple: false,
-    });
-    if (!filePath) return;
-    try {
-      const fs = await import("@tauri-apps/plugin-fs");
-      const content = await fs.readTextFile(filePath as string);
-      const data = JSON.parse(content);
-      if (data.conversations && Array.isArray(data.conversations)) {
-        const backup = data as ExportedBackup;
-        const imported = await importAllConversations(backup);
-        alert(`${imported}개 대화 가져오기 완료!`);
-      } else if (data.conversation && data.messages) {
-        const conv = data as ExportedConversation;
-        await importConversation(conv, true);
-        alert(`"${conv.conversation.title}" 가져오기 완료!`);
-      } else {
-        alert("유효하지 않은 백업 파일입니다.");
-        return;
-      }
-      onRefreshConversations?.();
-    } catch (e) {
-      console.error("Import error:", e);
-      alert("가져오기 실패: " + (e as Error).message);
-    }
-  };
+  // 현재 대화 내보내기 / 전체 백업 / 가져오기 — 본문은 utils/conversationBackup.ts
+  const handleExportCurrent = () => exportConversationToFile(activeConversationId);
+  const handleExportAll = () => exportAllConversationsToFile();
+  const handleImport = () => importConversationsFromFile(onRefreshConversations);
 
   // ─── 우클릭 메뉴 렌더 ───────────────────────────────────────
   const renderContextMenu = () => {
@@ -962,6 +934,25 @@ function Sidebar({
   // Windows 탐색기 패러다임 — 한 화면에 한 폴더만 + breadcrumb + 위로 가기.
   // 폴더 더블클릭 = 진입, 대화 클릭 = 활성화. 우클릭 메뉴는 기존과 동일.
   // 검색 결과가 있으면 검색 hit 만 표시 (현재 폴더 무관 — 검색은 글로벌).
+  // v0.7.86 UI 6단계 (o2) — 행 hover ⋯ : 우클릭과 같은 메뉴. 드래그(PointerSensor)·클릭·더블클릭으로 새지 않게 막는다.
+  const renderRowMore = (type: "folder" | "conversation", id: string) => (
+    <button
+      type="button"
+      className="explorer-row-more"
+      aria-label={type === "folder" ? "폴더 메뉴" : "대화 메뉴"}
+      title="메뉴 (우클릭과 같음)"
+      onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        const r = e.currentTarget.getBoundingClientRect();
+        setContextMenu({ type, id, x: r.left, y: r.bottom + 2 });
+      }}
+    >
+      ⋯
+    </button>
+  );
+
   const renderExplorerItem = (item: Folder | Conversation, kind: "folder" | "conversation") => {
     if (kind === "folder") {
       const f = item as Folder;
@@ -1032,6 +1023,7 @@ function Sidebar({
               {convCount > 0 ? `💬${convCount}` : ""}
             </span>
           )}
+          {isO2 && !isEditing && renderRowMore("folder", f.id)}
         </DndFolder>
       );
     } else {
@@ -1145,6 +1137,7 @@ function Sidebar({
               }}
             />
           )}
+          {isO2 && !isEditing && !bulkSelectMode && renderRowMore("conversation", c.id)}
         </DraggableConv>
       );
     }
@@ -1457,19 +1450,173 @@ function Sidebar({
     );
   };
 
+  // ─── v0.7.86 UI 6단계 — o2 사이드바 조각 (classic 은 아래 JSX 의 예전 구조) ───────────
+  // 새 대화: 탐색기에서 폴더 안이면 그 폴더에 만들고 폴더 지침 자동 적용 (classic 과 같은 동작)
+  const handleNewConversationHere = () => {
+    onNewConversation(viewMode === "explorer" ? currentFolderId : null);
+  };
+  const currentFolderName = currentFolderId ? folders.find((f) => f.id === currentFolderId)?.name : undefined;
+  const toggleBulkMode = () => {
+    const nextMode = !bulkSelectMode;
+    setBulkSelectMode(nextMode);
+    if (!nextMode) setSelectedConvIds(new Set<string>());
+  };
+  const connLabel = mcpConnected ? "컴퓨터 도구 연결됨" : "도구 연결 끊김";
+
+  const renderO2Top = () => (
+    <>
+      <div className="sidebar-actions sb-top">
+        <button
+          className="new-chat-btn"
+          onClick={handleNewConversationHere}
+          title={currentFolderName ? "현재 폴더 안에 새 대화 (폴더 지침 자동 적용)" : "새 대화"}
+        >
+          <span className="plus">+</span>
+          <span className="new-chat-label">새 대화{currentFolderName ? ` (📁 ${currentFolderName})` : ""}</span>
+        </button>
+      </div>
+      <nav className="sb-nav" aria-label="사이드바 메뉴">
+        {onSearchConversations && (searchOpen || searchQuery ? (
+          <div className="sidebar-search sb-search">
+            <input
+              type="text"
+              className="search-input"
+              placeholder="제목 / 메시지 검색"
+              aria-label="대화 검색"
+              autoFocus
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { setSearchQuery(""); setSearchOpen(false); }
+              }}
+              onBlur={() => { if (!searchQuery) setSearchOpen(false); }}
+            />
+            {searchQuery && (
+              <button className="search-clear" onClick={() => { setSearchQuery(""); setSearchOpen(false); }} title="검색 해제">
+                ✕
+              </button>
+            )}
+          </div>
+        ) : (
+          <button type="button" className="sb-nav-item" onClick={() => setSearchOpen(true)}>
+            <span className="sb-nav-icon" aria-hidden="true">🔍</span><span>검색</span>
+          </button>
+        ))}
+        {onOpenLibrary && (
+          <button type="button" className="sb-nav-item" onClick={onOpenLibrary} title="대화 라이브러리 — 모든 대화를 카드로 크게 보기">
+            <span className="sb-nav-icon" aria-hidden="true">📚</span><span>라이브러리</span><span className="sb-kbd">Ctrl+L</span>
+          </button>
+        )}
+        {onOpenTasks && (
+          <button type="button" className="sb-nav-item" onClick={onOpenTasks} title="작업 패널 열기">
+            <span className="sb-nav-icon" aria-hidden="true">⚡</span><span>작업</span>
+            {taskCount > 0 && <span className="sb-badge" aria-label={`실행 중 ${taskCount}개`}>{taskCount}</span>}
+          </button>
+        )}
+      </nav>
+    </>
+  );
+
+  const renderSectionHead = () => (
+    <div className="sb-sec-head" ref={backupMenuRef}>
+      <span className="eyebrow section-label">대화</span>
+      <span className="sb-sec-tools">
+        {onCreateFolder && (
+          <button type="button" onClick={() => handleNewSubfolder(null)} aria-label="새 폴더"
+            title={currentFolderName ? "현재 폴더 안에 새 폴더" : "새 폴더"}>📁+</button>
+        )}
+        <button type="button" onClick={toggleBulkMode} aria-pressed={bulkSelectMode} aria-label="여러 대화 선택"
+          title={bulkSelectMode ? "정리 종료" : "여러 대화 선택해서 폴더로 이동"}>☑</button>
+        <button type="button" onClick={() => setBackupMenuOpen((v) => !v)} aria-haspopup="menu" aria-expanded={backupMenuOpen}
+          aria-label="백업·가져오기" title="백업·가져오기">⋯</button>
+      </span>
+      {backupMenuOpen && (
+        <div className="sb-sec-menu" role="menu" aria-label="백업·가져오기">
+          {([
+            ["📤", "대화 내보내기", handleExportCurrent],
+            ["💾", "전체 백업", handleExportAll],
+            ["📥", "가져오기", handleImport],
+          ] as const).map(([icon, label, run]) => (
+            <button key={label} type="button" role="menuitem" onClick={() => { setBackupMenuOpen(false); void run(); }}>
+              <span aria-hidden="true">{icon}</span> {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderO2Foot = () => (
+    <div className="sb-foot">
+      <span className={`sb-conn${mcpConnected ? "" : " sb-conn--off"}`} title="K-Personal MCP (컴퓨터 도구)">
+        <span className={`status-dot ${mcpConnected ? "status-dot-live" : "status-dot-off"}`} aria-hidden="true" />
+        {/* 끊겼을 땐 [다시 연결] 자리를 위해 짧게 (전체 문구는 툴팁) */}
+        <span className="sb-conn-label" title={connLabel}>{mcpConnected ? connLabel : "연결 끊김"}</span>
+        {!mcpConnected && onReconnectTools && (
+          <button type="button" className="sb-reconnect" onClick={onReconnectTools}>다시 연결</button>
+        )}
+      </span>
+      <button type="button" className="sb-settings" onClick={onOpenSettings} title="설정">
+        <span aria-hidden="true">⚙</span><span>설정</span>
+      </button>
+    </div>
+  );
+
+  // 레일(56px): 심볼 · ＋ · 🔍 · 📚 · ⚡ · (빈 공간) · ● · ⚙
+  const renderRail = () => (
+    <nav className="sb-rail" aria-label="사이드바 (접힘)">
+      <button type="button" className="brand-logo brand-logo-btn" onClick={onToggleRail}
+        aria-label="사이드바 펼치기" title={`O2 AGENT${appVersion ? ` v${appVersion}` : ""} · 사이드바 펼치기 (Ctrl+B)`}>
+        <img src={o2Mark} width={28} height={28} alt="" draggable={false} />
+      </button>
+      <button type="button" className="sb-rail-btn" onClick={handleNewConversationHere} aria-label="새 대화"
+        title={currentFolderName ? `새 대화 (📁 ${currentFolderName})` : "새 대화"}>+</button>
+      {onSearchConversations && (
+        <button type="button" className="sb-rail-btn" aria-label="검색" title="검색 (사이드바를 펼칩니다)"
+          onClick={() => { setSearchOpen(true); onToggleRail?.(); }}>🔍</button>
+      )}
+      {onOpenLibrary && (
+        <button type="button" className="sb-rail-btn" onClick={onOpenLibrary} aria-label="라이브러리" title="라이브러리 (Ctrl+L)">📚</button>
+      )}
+      {onOpenTasks && (
+        <button type="button" className="sb-rail-btn" onClick={onOpenTasks} aria-label="작업" title={taskCount > 0 ? `작업 ${taskCount}개 실행 중` : "작업"}>
+          ⚡{taskCount > 0 && <span className="sb-rail-badge">{taskCount}</span>}
+        </button>
+      )}
+      <span className="sb-rail-grow" />
+      {mcpConnected || !onReconnectTools ? (
+        <span className={`status-dot ${mcpConnected ? "status-dot-live" : "status-dot-off"} sb-rail-dot`} role="img" aria-label={connLabel} title={connLabel} />
+      ) : (
+        <button type="button" className="sb-rail-btn sb-rail-reconnect" onClick={onReconnectTools} aria-label="도구 다시 연결" title="도구 연결 끊김 · 눌러서 다시 연결">
+          <span className="status-dot status-dot-off" aria-hidden="true" />
+        </button>
+      )}
+      <button type="button" className="sb-rail-btn" onClick={onOpenSettings} aria-label="설정" title="설정">⚙</button>
+    </nav>
+  );
+
   // 트리 root level (parent_id = null) 자식 폴더 + 대화
   const rootFolders = tree.childFolders.get(null) ?? [];
   const rootConvs = tree.convsInFolder.get(null) ?? [];
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${isO2 ? " sidebar--o2" : ""}${railMode ? " sidebar--rail" : ""}${bulkSelectMode ? " sidebar--bulk" : ""}`}>
       <DndContext sensors={sensors} onDragStart={handleDndStart} onDragEnd={handleDndEnd}>
+      {railMode ? renderRail() : (<>
       {/* 브랜드 헤더 */}
       <div className="sidebar-brand">
+        {isO2 ? (
+          // v0.7.86 UI 6단계 — o2 는 심볼을 누르면 레일로 접힘 (Ctrl+B)
+          <button type="button" className="brand-logo brand-logo-btn" onClick={onToggleRail}
+            aria-label="사이드바 접기" title={`O2 AGENT${appVersion ? ` v${appVersion}` : ""} · 클릭하면 접기 (Ctrl+B)`}>
+            <img src={o2Mark} width={30} height={30} alt="" draggable={false} />
+          </button>
+        ) : (
         <div className="brand-logo" aria-hidden="true">
           {/* v0.7.86 — O2 심볼 (GPT 이미지 생성, evidence/o2-symbol-20261111/b). 앱 아이콘과 같은 원본 */}
           <img src={o2Mark} width={30} height={30} alt="" draggable={false} />
         </div>
+        )}
         {/* v0.7.86 — K 요청: 줄바꿈 없이 한 줄로 'O₂ AGENT' + 오른쪽 끝 버전. 부제는 툴팁 */}
         <div className="brand-text brand-text-inline" title={`O2 — 동원의 에이전트${appVersion ? ` · v${appVersion}` : ""}`}>
           <span className="brand-name brand-name-o2" aria-label="O2 AGENT">O<sub>2</sub><span className="brand-word">AGENT</span></span>
@@ -1477,6 +1624,7 @@ function Sidebar({
         </div>
       </div>
 
+      {isO2 ? renderO2Top() : (<>
       {/* 새 대화 + 새 폴더 + 라이브러리 버튼 */}
       <div className="sidebar-actions">
         <button
@@ -1545,14 +1693,17 @@ function Sidebar({
           )}
         </div>
       )}
+      </>)}
 
       {/* Phase 36 (v0.5.24): 즐겨찾기는 별도 섹션 X — ★ 아이콘 + 자동 정렬로 통합 */}
 
       {/* 대화 목록 (Phase 108: 트리 / 탐색기 viewMode 분기) */}
       <div className="sidebar-section sidebar-tree-section">
+        {isO2 ? renderSectionHead() : (
         <div className="eyebrow section-label">
           {viewMode === "explorer" ? "탐색기" : "대화 목록"}
         </div>
+        )}
         {viewMode === "explorer" ? (
           renderExplorer()
         ) : (
@@ -1572,6 +1723,7 @@ function Sidebar({
         )}
       </div>
 
+      {isO2 ? renderO2Foot() : (<>
       {/* 백업/복구 */}
       <details className="sidebar-section sidebar-backup">
         <summary>백업·가져오기</summary>
@@ -1605,6 +1757,8 @@ function Sidebar({
           K-PERSONAL · {mcpConnected ? "connected" : "offline"}
         </span>
       </div>
+      </>)}
+      </>)}
 
       <CornerBrackets corners={["tl", "bl"]} size={12} />
 
