@@ -1,3 +1,10 @@
+## [0.7.85] - 2026-11-11
+
+First published build of the v0.7.84 changes below (the v0.7.84 tag's CI stopped before building, so no v0.7.84 release exists).
+
+### Fixed
+- Release CI installs Pillow and numpy before the release gate. The new avatar antenna check (`scripts/check-companion-antenna.py`) needs them to decode the head sheets; the v0.7.84 CI run failed with `No module named 'numpy'` while every local check passed.
+
 ## [0.7.84] - 2026-11-09
 
 ### Fixed

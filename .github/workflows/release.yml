@@ -41,6 +41,12 @@ jobs:
         shell: pwsh
         run: npm run release:guard -- ${{ github.ref_name }}
 
+      - name: Install Python deps for asset checks
+        # v0.7.84 — scripts/check-companion-antenna.py (companion-antenna.test.ts) 가 Pillow + numpy 로
+        # 아바타 머리 시트를 디코드한다. 러너 기본 Python 에는 없다 (2026-11-11 CI 실패: No module named 'numpy').
+        shell: pwsh
+        run: py -3 -m pip install --disable-pip-version-check --quiet "pillow>=10,<13" "numpy>=1.26,<3"
+
       - name: Release gate (fast — static checks + regression)
         # Phase 139 (#8) — 릴리스 전 자동 게이트. webview 캐시 메타, 금지 의존성/삭제
         # 기능 재유입, 회귀테스트 일괄을 빌드 전에 한 번에 강제한다. 빌드/cargo 는 아래
