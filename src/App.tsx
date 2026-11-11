@@ -1,3 +1,5 @@
+import { Fragment } from "react";
+import { Notice, NoticeStack, Button } from "./ui";
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
@@ -5754,141 +5756,73 @@ export default function App() {
         onSetConversationProvider={handleSetConversationProvider}
       />
 
-      {/* Phase 79 (v0.6.22) — Task State Manager: 끊긴 long_task 복구 배너.
-          startup 시 listRecoverableLongTasks 결과가 있으면 표시. K 가 직접 "버림" 누르거나
-          conversation 으로 이동해서 수동 복구. v1 엔 자동 resume 없음 (안전 우선). */}
-      {recoverableTasks.length > 0 && (
-        <div
-          style={{
-            position: "fixed",
-            top: 8,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 1000,
-            background: "rgba(255, 170, 0, 0.15)",
-            border: "1px solid rgba(255, 170, 0, 0.5)",
-            borderRadius: 6,
-            padding: "8px 14px",
-            fontSize: "0.85em",
-            display: "flex",
-            gap: 12,
-            alignItems: "center",
-            maxWidth: "90vw",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-          }}
-        >
-          <span style={{ fontWeight: 600 }}>⏸ 복구 가능한 작업 {recoverableTasks.length}개</span>
-          <span style={{ opacity: 0.8, fontSize: "0.85em" }}>
-            (이전 세션의 끊긴 long task — sidecar 정상 종료 신호가 안 옴)
-          </span>
-          <button
-            className="settings-btn"
-            style={{ padding: "2px 8px", fontSize: "0.85em" }}
-            onClick={() => {
-              const summary = recoverableTasks
-                .map((t) => {
-                  const age = Math.round((Date.now() - t.updated_at) / 60000);
-                  return `• [${t.kind}] ${t.title ?? "(제목 없음)"}  — ${age}분 전 마지막 evidence (conv=${t.conversation_id ?? "없음"})`;
-                })
-                .join("\n");
-              alert(`복구 가능한 작업 목록:\n\n${summary}\n\n각 작업의 대화를 선택해서 직접 이어가세요. 자동 resume 은 다음 phase 에서 지원 예정.`);
-            }}
-          >
-            📋 상세
-          </button>
-          <button
-            className="settings-btn"
-            style={{ padding: "2px 8px", fontSize: "0.85em" }}
-            onClick={async () => {
-              if (!confirm(`${recoverableTasks.length}개 작업을 모두 "버림" 으로 mark 합니다 (DB 에서 status='abandoned'). 진행할까요?`)) return;
-              for (const t of recoverableTasks) {
-                try {
-                  await discardLongTask(t.id);
-                } catch (e) {
-                  logger.warn(`[RecoveryBanner] discard 실패 id=${t.id}: ${e}`);
-                }
-              }
-              setRecoverableTasks([]);
-            }}
-          >
-            🗑️ 모두 버림
-          </button>
-          <button
-            className="settings-btn"
-            style={{ padding: "2px 8px", fontSize: "0.85em" }}
-            onClick={() => setRecoverableTasks([])}
-            title="배너만 숨김 — DB 의 row 는 그대로 유지"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
       <MainChat
         // v0.7.49 — 대기/정체 배너는 채팅창 안(입력창 위)에 그린다. 종전엔 .app 그리드의
         // 직계 자식(grid-area 없음)이라 암묵 행을 만들어 왼쪽 아래에 끼고 채팅창 높이를 줄였다.
-        notices={<>
-        {workspaceSaveError && <div role="alert" className="task-automation-paused">작업 목록·예약 저장 실패 · 재시작 전 저장 공간과 로그를 확인해 주세요.</div>}
+        // v0.7.86 UI 2단계 — 알림 띠를 공통 <Notice> 로 통일. 조건식·핸들러·className·role 은 그대로.
+        // (복구 가능한 작업 배너는 화면 위 fixed 오버레이였는데 제목을 가려서 이 띠로 옮김)
+        notices={<NoticeStack>
+        {recoverableTasks.length > 0 && (
+          <Notice tone="warn" className="recovery-notice" role="status"
+            onClose={() => setRecoverableTasks([])} closeLabel="배너만 숨김 — DB 의 row 는 그대로 유지"
+            actions={<Fragment>
+              <Button size="sm" onClick={() => {
+                const summary = recoverableTasks
+                  .map((t) => {
+                    const age = Math.round((Date.now() - t.updated_at) / 60000);
+                    return `• [${t.kind}] ${t.title ?? "(제목 없음)"}  — ${age}분 전 마지막 evidence (conv=${t.conversation_id ?? "없음"})`;
+                  })
+                  .join("\n");
+                alert(`복구 가능한 작업 목록:\n\n${summary}\n\n각 작업의 대화를 선택해서 직접 이어가세요. 자동 resume 은 다음 phase 에서 지원 예정.`);
+              }}>상세</Button>
+              <Button size="sm" variant="ghost" onClick={async () => {
+                if (!confirm(`${recoverableTasks.length}개 작업을 모두 "버림" 으로 mark 합니다 (DB 에서 status='abandoned'). 진행할까요?`)) return;
+                for (const t of recoverableTasks) {
+                  try {
+                    await discardLongTask(t.id);
+                  } catch (e) {
+                    logger.warn(`[RecoveryBanner] discard 실패 id=${t.id}: ${e}`);
+                  }
+                }
+                setRecoverableTasks([]);
+              }}>모두 버림</Button>
+            </Fragment>}>
+            <strong>복구 가능한 작업 {recoverableTasks.length}개</strong>
+            <span className="ui-notice__meta"> · 이전 세션에서 끊긴 긴 작업 (정상 종료 신호 없음)</span>
+          </Notice>
+        )}
+        {workspaceSaveError && <Notice tone="danger" role="alert" className="task-automation-paused">작업 목록·예약 저장 실패 · 재시작 전 저장 공간과 로그를 확인해 주세요.</Notice>}
         {([...conversationTurnGateRef.current.runs.values()].some(r => r.state === "stopping" && r.stopError) || recoveringExecution) &&
-          <div role="alert" className="task-automation-paused" style={{ padding: "10px 12px" }}>
-            <span>{recoveringExecution ? "실행 엔진 복구 중 · 자동 실행 보류" : "정지 확인이 지연됩니다. 앱 안에서 실행 엔진을 복구할 수 있습니다."}</span>
-            <button disabled={recoveringExecution} onClick={() => setControlConfirmation({ kind: "recover" })}>실행 엔진 복구</button>
-          </div>}
+          <Notice tone="danger" role="alert" className="task-automation-paused"
+            actions={<Button size="sm" variant="danger" disabled={recoveringExecution} onClick={() => setControlConfirmation({ kind: "recover" })}>실행 엔진 복구</Button>}>
+            {recoveringExecution ? "실행 엔진 복구 중 · 자동 실행 보류" : "정지 확인이 지연됩니다. 앱 안에서 실행 엔진을 복구할 수 있습니다."}
+          </Notice>}
         {visibleTaskWatchWaiting.length > 0 && (
-          <div role="status" className="task-watch-waiting" style={{ padding: "8px 12px", color: "var(--warn)", background: "var(--bg-2)", fontSize: "0.85em" }}>
-            <button className="settings-btn" style={{ float: "right", padding: "2px 8px", fontSize: "0.85em" }} onClick={dismissTaskWatchWaiting} title="이 알림 숨김 · 작업 감시는 계속됨">✕</button>
+          <Notice tone="warn" role="status" className="task-watch-waiting"
+            onClose={dismissTaskWatchWaiting} closeLabel="이 알림 숨김 · 작업 감시는 계속됨">
             <strong>이 대화의 작업 결과 확인 대기 {visibleTaskWatchWaiting.length}건</strong>
             {visibleTaskWatchWaiting.slice(0, 3).map((w) => (
-              <div key={w.id}>
+              <div key={w.id} className="ui-notice__row">
                 {w.title} · {watchBlockLabel(w.reason)}
                 {w.resolvable && (
-                  <button className="settings-btn task-watch-resolve" style={{ marginLeft: 8, padding: "1px 8px", fontSize: "0.85em" }}
+                  <Button size="sm" className="task-watch-resolve" style={{ marginLeft: 8 }}
                     onClick={() => { void resolveTaskWatchWaiting(w); }}
-                    title="결과를 확인했으면 이 감시 기록을 보관 폴더(task-watch/archive/resolved)로 옮깁니다 · 삭제하지 않음">확인 완료</button>
+                    title="결과를 확인했으면 이 감시 기록을 보관 폴더(task-watch/archive/resolved)로 옮깁니다 · 삭제하지 않음">확인 완료</Button>
                 )}
               </div>
             ))}
-            {taskWatchResolveError && <div role="alert">보관 실패: {taskWatchResolveError}</div>}
-          </div>
+            {taskWatchResolveError && <div role="alert" className="ui-notice__error">보관 실패: {taskWatchResolveError}</div>}
+          </Notice>
         )}
         {/* Phase 121 (v0.6.76) — dead-stream 워치독 배너. 비파괴적: 자동 중단 안 함. */}
         {isStreaming && streamStalled && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 12px",
-              margin: "0 12px 8px",
-              background: "rgba(220,160,40,0.12)",
-              border: "1px solid rgba(220,160,40,0.4)",
-              borderRadius: 8,
-              fontSize: "0.88em",
-            }}
-          >
-            <span style={{ flex: 1 }}>
-              ⏳ 응답이 90초 넘게 멈춰 있어요. 아직 긴 작업 중일 수도 있지만, 멈춘 것 같으면 중단하고 다시 시도하세요.
-            </span>
-            <button
-              className="settings-btn"
-              style={{ padding: "2px 10px", fontSize: "0.85em" }}
-              onClick={() => {
-                void handleInterrupt();
-              }}
-            >
-              🛑 중단
-            </button>
-            <button
-              className="settings-btn"
-              style={{ padding: "2px 8px", fontSize: "0.85em" }}
-              onClick={() => setStreamStalled(false)}
-              title="배너만 숨김 — 작업은 계속 진행"
-            >
-              ✕
-            </button>
-          </div>
+          <Notice tone="warn" className="stream-stall-notice"
+            onClose={() => setStreamStalled(false)} closeLabel="배너만 숨김 — 작업은 계속 진행"
+            actions={<Button size="sm" variant="danger" onClick={() => { void handleInterrupt(); }}>■ 정지</Button>}>
+            응답이 90초 넘게 멈춰 있어요. 아직 긴 작업 중일 수도 있지만, 멈춘 것 같으면 정지하고 다시 시도하세요.
+          </Notice>
         )}
-        </>}
+        </NoticeStack>}
         activityPanel={<><MobileDesktopBridge handlers={assistantHandlers} conversations={conversations} /><AssistantWidget conversationId={activeConversationId}
           conversations={conversations} messages={messages} runningIds={streamingConvIds}
           computerConnected={mcpState.connected} onSelect={id => { void handleSelectConversation(id); }} onSettings={openSettings}

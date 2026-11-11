@@ -91,8 +91,9 @@ check("직계 자식 탐지 수가 현실적 (>= 15)", chunks.length >= 15, `got
 // ── 2. 배너는 MainChat notices 로 ────────────────────────────────────────
 console.log("\n[2] 작업 대기/정체 배너는 채팅창 안 (notices)");
 const mainChatOpen = app.indexOf("      <MainChat\n");
-const noticesStart = app.indexOf("notices={<>", mainChatOpen);
-const noticesEnd = app.indexOf("</>}", noticesStart);
+// v0.7.86 UI 2단계: notices 는 <NoticeStack> 으로 감싼다
+const noticesStart = app.indexOf("notices={<NoticeStack>", mainChatOpen);
+const noticesEnd = app.indexOf("</NoticeStack>}", noticesStart);
 const noticesBlock = app.slice(noticesStart, noticesEnd);
 check("MainChat 에 notices prop", mainChatOpen > 0 && noticesStart > mainChatOpen && noticesEnd > noticesStart);
 check("task-watch-waiting 배너가 notices 안", /task-watch-waiting/.test(noticesBlock) && /watchBlockLabel\(w\.reason\)/.test(noticesBlock));

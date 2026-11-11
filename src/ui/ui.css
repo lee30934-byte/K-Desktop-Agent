@@ -77,3 +77,6 @@
   border-radius: var(--radius-card); background: var(--surface-overlay); box-shadow: var(--shadow-overlay); color: var(--fg); }
 .ui-popover--end { right: 0; }
 .ui-popover--start { left: 0; }
+.ui-notice__meta { color: var(--fg-muted); }
+.ui-notice__row { margin-top: 4px; color: var(--fg-muted); }
+.ui-notice__error { margin-top: 4px; color: var(--danger); }
