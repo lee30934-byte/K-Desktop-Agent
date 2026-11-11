@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { QUICK_PROMPTS } from "../utils/quickPrompts";
 
 interface Command {
   id: string;
@@ -47,63 +48,14 @@ export default function CommandPalette({
       action: () => { onOpenSettings(); onClose(); },
       category: "settings",
     },
-    // Quick prompts
-    {
-      id: "screenshot",
-      label: "현재 화면 스크린샷 분석",
-      icon: "📷",
-      action: () => { onSendMessage("현재 화면을 스크린샷으로 캡처해서 분석해줘"); onClose(); },
+    // Quick prompts — 빈 화면 제안 카드와 같은 목록 (src/utils/quickPrompts.ts)
+    ...QUICK_PROMPTS.map((p): Command => ({
+      id: p.id,
+      label: p.label,
+      icon: p.icon,
+      action: () => { onSendMessage(p.prompt); onClose(); },
       category: "quick",
-    },
-    {
-      id: "todo-list",
-      label: "할 일 목록 보기",
-      icon: "✅",
-      action: () => { onSendMessage("할 일 목록 보여줘"); onClose(); },
-      category: "quick",
-    },
-    {
-      id: "notes",
-      label: "메모 목록 보기",
-      icon: "📝",
-      action: () => { onSendMessage("메모 목록 보여줘"); onClose(); },
-      category: "quick",
-    },
-    {
-      id: "habits",
-      label: "습관 체크 현황",
-      icon: "📊",
-      action: () => { onSendMessage("습관 현황 보여줘"); onClose(); },
-      category: "quick",
-    },
-    {
-      id: "disk-usage",
-      label: "디스크 사용량 확인",
-      icon: "💾",
-      action: () => { onSendMessage("C 드라이브 용량 확인해줘"); onClose(); },
-      category: "quick",
-    },
-    {
-      id: "recent-files",
-      label: "최근 수정된 파일",
-      icon: "📁",
-      action: () => { onSendMessage("다운로드 폴더에서 최근 수정된 파일 보여줘"); onClose(); },
-      category: "quick",
-    },
-    {
-      id: "running-apps",
-      label: "실행 중인 앱 목록",
-      icon: "🖥️",
-      action: () => { onSendMessage("실행 중인 프로세스 목록 보여줘"); onClose(); },
-      category: "quick",
-    },
-    {
-      id: "clipboard",
-      label: "클립보드 내용 확인",
-      icon: "📋",
-      action: () => { onSendMessage("현재 클립보드에 뭐가 있어?"); onClose(); },
-      category: "quick",
-    },
+    })),
   ];
 
   // 필터링된 명령

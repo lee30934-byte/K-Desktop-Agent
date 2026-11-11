@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, memo, type ReactNode, FormEvent, KeyboardE
 import type { FileAttachment, PromptTemplate } from "../types";
 import PromptPicker from "./PromptPicker";
 import type { SendMode } from "../conversationControl";
+import { useUiLayout } from "../utils/useUiLayout";
 const attachmentDrafts = new Map<string, FileAttachment[]>();
 
 interface ComposerProps {
@@ -26,6 +27,9 @@ interface ComposerProps {
   contextSlot?: ReactNode;
   contextNudge?: ReactNode;
 }
+
+// v0.7.86 UI 7단계 (o2) — 기본 안내 문구 (스펙 4.4 C2). classic 은 예전 문구 그대로.
+const O2_PLACEHOLDER = "무엇이든 요청하세요 · Enter 전송 · Shift+Enter 줄바꿈";
 
 // 파일 타입별 아이콘
 function getFileIcon(type: string): string {
@@ -64,13 +68,32 @@ function Composer({
   onSubmit,
   onInterrupt,
   onHardStop,
-  placeholder = "메시지를 입력하세요. Enter로 전송, Shift+Enter로 줄바꿈.",
+  placeholder,
   queuedSend,
   onCancelQueuedSend,
   onFlushQueueNow,
   contextSlot,
   contextNudge,
 }: ComposerProps) {
+  // v0.7.86 UI 7단계 — o2: 카드형 입력창, '>' 없음, ↑ 보내기, [■ 정지 ▾] + [↑ 지금 반영/예약]. classic 은 예전 그대로.
+  const { isO2 } = useUiLayout();
+  const basePlaceholder = placeholder ?? (isO2 ? O2_PLACEHOLDER : "메시지를 입력하세요. Enter로 전송, Shift+Enter로 줄바꿈.");
+  const [stopMenuOpen, setStopMenuOpen] = useState(false);
+  const stopMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (!isStreaming) setStopMenuOpen(false); }, [isStreaming]);
+  useEffect(() => {
+    if (!stopMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (stopMenuRef.current && !stopMenuRef.current.contains(e.target as Node)) setStopMenuOpen(false);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === "Escape") setStopMenuOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [stopMenuOpen]);
   const [input, setInput] = useState(() => { try { return sessionStorage.getItem("kda_draft_" + conversationId) ?? ""; } catch { return ""; } });
   const [sendMode, setSendMode] = useState<SendMode>("steer");
   const [submitting, setSubmitting] = useState(false);
@@ -575,7 +598,7 @@ function Composer({
           accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.txt,.md,.json,.xml,.csv,.zip,.rar,.7z,.tar,.gz,.js,.ts,.py,.java,.c,.cpp,.html,.css"
         />
 
-        <div className="composer-prefix mono">{">"}</div>
+        {!isO2 && <div className="composer-prefix mono">{">"}</div>}
 
         <textarea
           ref={textareaRef}
@@ -588,7 +611,7 @@ function Composer({
               ? "연결 대기 중..."
               : isStreaming
                 ? sendMode === "steer" ? "추가 상황, 방향 변경 또는 질문을 입력하세요." : "완료 후 실행할 메시지를 입력하세요."
-                : placeholder
+                : basePlaceholder
           }
           disabled={disabled}
           style={{ height: `${composerHeight}px`, resize: "none" }}
@@ -604,41 +627,105 @@ function Composer({
 
         {contextSlot}
 
-        {isStreaming ? (
-          <div className="composer-stop-group">
-            <button
-              type="button"
-              onClick={onInterrupt}
-              className="composer-btn composer-btn-stop"
-              title="현재 대화의 실행을 정지하고 예약·자동 이어가기를 보류합니다"
-            >
-              <span className="stop-icon">■</span>
-              {isStopping ? "정지 재요청" : "정지"}
-            </button>
-            {onHardStop && (
+        {isO2 ? (
+          <div className="composer-actions">
+            {isStreaming && (
+              <div className="composer-stop-split" ref={stopMenuRef}>
+                <button
+                  type="button"
+                  onClick={onInterrupt}
+                  className="composer-btn composer-btn-stop"
+                  title="현재 대화의 실행을 정지하고 예약·자동 이어가기를 보류합니다"
+                >
+                  <span className="stop-icon">■</span>
+                  {isStopping ? "정지 재요청" : "정지"}
+                </button>
+                {onHardStop && (
+                  <button
+                    type="button"
+                    className="composer-btn composer-stop-more"
+                    aria-label="정지 옵션"
+                    aria-haspopup="menu"
+                    aria-expanded={stopMenuOpen}
+                    title="정지 옵션"
+                    onClick={() => setStopMenuOpen((v) => !v)}
+                  >
+                    ▾
+                  </button>
+                )}
+                {onHardStop && stopMenuOpen && (
+                  <div className="composer-stop-menu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="composer-btn-hardstop"
+                      onClick={() => { setStopMenuOpen(false); onHardStop(); }}
+                      title="모든 대화의 실행을 정지하고 자동 실행을 보류합니다"
+                    >
+                      전체 작업 정지
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {isStreaming ? (
               <button
-                type="button"
-                onClick={onHardStop}
-                className="composer-btn composer-btn-hardstop"
-                title="모든 대화의 실행을 정지하고 자동 실행을 보류합니다"
+                type="submit"
+                className="composer-btn composer-btn-send composer-btn-send--steer"
+                disabled={disabled || submitting || isStopping || (!input.trim() && !files.length)}
+                title={sendMode === "steer" ? "추가 지시를 지금 반영합니다" : "완료 후 순서대로 보냅니다"}
               >
-                전체 정지
+                <span aria-hidden>↑</span> {sendMode === "steer" ? "지금 반영" : "예약"}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={disabled || (!input.trim() && files.length === 0)}
+                className="composer-btn composer-btn-send composer-btn-send--icon"
+                aria-label="보내기"
+                title="보내기 (Enter)"
+              >
+                <span aria-hidden>↑</span>
               </button>
             )}
           </div>
-        ) : (
-          <button
-            type="submit"
-            disabled={disabled || (!input.trim() && files.length === 0)}
-            className="composer-btn composer-btn-send"
-          >
-            SEND
-            <span className="send-arrow">→</span>
-          </button>
-        )}
-        {isStreaming && <button type="submit" className="composer-btn composer-btn-send" disabled={disabled || submitting || isStopping || (!input.trim() && !files.length)}>
-          {sendMode === "steer" ? "지금 반영" : "예약"}
-        </button>}
+        ) : (<>
+          {isStreaming ? (
+            <div className="composer-stop-group">
+              <button
+                type="button"
+                onClick={onInterrupt}
+                className="composer-btn composer-btn-stop"
+                title="현재 대화의 실행을 정지하고 예약·자동 이어가기를 보류합니다"
+              >
+                <span className="stop-icon">■</span>
+                {isStopping ? "정지 재요청" : "정지"}
+              </button>
+              {onHardStop && (
+                <button
+                  type="button"
+                  onClick={onHardStop}
+                  className="composer-btn composer-btn-hardstop"
+                  title="모든 대화의 실행을 정지하고 자동 실행을 보류합니다"
+                >
+                  전체 정지
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              type="submit"
+              disabled={disabled || (!input.trim() && files.length === 0)}
+              className="composer-btn composer-btn-send"
+            >
+              SEND
+              <span className="send-arrow">→</span>
+            </button>
+          )}
+          {isStreaming && <button type="submit" className="composer-btn composer-btn-send" disabled={disabled || submitting || isStopping || (!input.trim() && !files.length)}>
+            {sendMode === "steer" ? "지금 반영" : "예약"}
+          </button>}
+        </>)}
       </form>
     </div>
   );

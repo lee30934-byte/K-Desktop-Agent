@@ -2,6 +2,7 @@ import {
   useRef,
   useState,
   useCallback,
+  useEffect,
   useMemo,
   memo,
   type Dispatch,
@@ -20,6 +21,8 @@ import type { SendMode } from "../conversationControl";
 import type { ChatMessage, ConnectionStatus, FileAttachment } from "../types";
 import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFilters";
 import { useUiLayout } from "../utils/useUiLayout";
+import { applyChatDisplay, CHAT_DISPLAY_EVENT } from "../utils/chatDisplay";
+import { suggestionPrompts } from "../utils/quickPrompts";
 
 interface MainChatProps {
   activityPanel?: ReactNode;
@@ -226,6 +229,17 @@ function MainChat({
 
   // v0.7.86 UI 3b단계 — "classic" 배치에선 이전 헤더(제목 블록 + 확인 없이 실행 버튼 + 영문 상태 배지)
   const { isO2 } = useUiLayout();
+
+  // v0.7.86 UI 7단계 — 대화 폭·어시스턴트 표시 LS 값을 :root data-* 로 (토글 UI 는 8단계)
+  useEffect(() => {
+    applyChatDisplay();
+    window.addEventListener(CHAT_DISPLAY_EVENT, applyChatDisplay);
+    window.addEventListener("storage", applyChatDisplay);
+    return () => {
+      window.removeEventListener(CHAT_DISPLAY_EVENT, applyChatDisplay);
+      window.removeEventListener("storage", applyChatDisplay);
+    };
+  }, []);
 
   return (
     <section className="main-chat">
@@ -509,7 +523,7 @@ const MessageList = memo(function MessageList({
             : r.categoryId !== activeFilter.value;
       }
       return (
-        <div style={dimmed ? DIM_STYLE : NORMAL_STYLE}>
+        <div className="chat-col" style={dimmed ? DIM_STYLE : NORMAL_STYLE}>
           <Message
             message={msg}
             onPreviewRequest={onPreviewRequest}
@@ -629,7 +643,34 @@ function StatusBadge({ status }: { status: ConnectionStatus }) {
   );
 }
 
+// v0.7.86 UI 7단계 (o2) — 빈 화면: 인사 + 제안 카드 4개 (팔레트 빠른 요청과 같은 목록).
+// 카드를 누르면 입력창에 문장만 채운다 (바로 실행하지 않음 — K 가 확인 후 Enter).
+function fillComposer(prompt: string) {
+  window.dispatchEvent(new CustomEvent("kda-builder-prompt", { detail: { prompt } }));
+}
+
 function EmptyState() {
+  const { isO2 } = useUiLayout();
+  if (isO2) {
+    return (
+      <div className="empty-state empty-state--o2">
+        <div className="empty-content">
+          <div className="empty-title">무엇을 도와드릴까요?</div>
+          <div className="empty-suggestions" role="list" aria-label="제안">
+            {suggestionPrompts().map((p) => (
+              <button key={p.id} type="button" role="listitem" className="empty-suggestion"
+                onClick={() => fillComposer(p.prompt)} title="입력창에 채우기">
+                <span className="empty-suggestion-icon" aria-hidden>{p.icon}</span>
+                <span className="empty-suggestion-label">{p.label}</span>
+                <span className="empty-suggestion-prompt">{p.prompt}</span>
+              </button>
+            ))}
+          </div>
+          <div className="empty-hint-o2">파일은 끌어다 놓거나 📎로 첨부할 수 있어요</div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="empty-state">
       <div className="empty-grid" />

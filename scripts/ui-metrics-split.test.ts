@@ -38,7 +38,8 @@ test("o2: 입력창 컨텍스트 링 + 70% 넛지 (classic 은 슬롯 없음)", 
   assert.match(app, /onOpenSessionPanel=\{\(\) => setRightPanel\("session"\)\}/);
   assert.match(chat, /contextSlot=\{composerContext\}\n\s+contextNudge=\{composerNudge\}/);
   assert.match(composer, /\{contextNudge\}\n\s+\{isStreaming && <div className="composer-steering-bar">/);
-  assert.match(composer, /\{contextSlot\}\n\n\s+\{isStreaming \? \(/);
+  // 7단계: 링 바로 뒤가 o2 버튼 묶음(composer-actions)
+  assert.match(composer, /\{contextSlot\}\n\n\s+\{isO2 \? \(\n\s+<div className="composer-actions">/);
   // 링: 60/80% 색 경계, 팝오버 요약 + 세션 버튼 2개(같은 핸들러) + 자세히
   assert.match(ring, /if \(overflowed \|\| pct >= 80\) return "danger";\n  if \(pct >= 60\) return "warn";/);
   assert.match(ring, /<Popover open=\{open\}/);
