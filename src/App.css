@@ -5299,3 +5299,8 @@
 .safety-popover__error { color: var(--danger); font-size: var(--fs-caption); }
 .main-header .status-badge { gap: 6px; padding: 0 4px; background: transparent; border: 0; }
 .main-header .status-badge .status-text { font: 500 var(--fs-caption)/1 var(--font-ui); }
+
+/* v0.7.86 — O2 브랜드: 숫자 0 과 헷갈리지 않게 둥근 산세리프 + 아래첨자 2 (O₂) */
+.brand-name.brand-name-o2 { font-family: var(--font-ui); font-weight: 700; letter-spacing: 0; text-transform: none; font-size: 22px; line-height: 1; }
+.brand-name.brand-name-o2 sub { font-size: 0.55em; vertical-align: -0.25em; margin-left: 1px; color: var(--accent); }
+.sidebar-brand .brand-sub { font-family: var(--font-ui); letter-spacing: 0; text-transform: none; font-size: var(--fs-caption); color: var(--fg-muted); }

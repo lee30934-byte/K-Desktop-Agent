@@ -1473,7 +1473,7 @@ function Sidebar({
           </svg>
         </div>
         <div className="brand-text">
-          <div className="brand-name" title="O2 — 동원의 에이전트">O2</div>
+          <div className="brand-name brand-name-o2" title="O2 — 동원의 에이전트" aria-label="O2">O<sub>2</sub></div>
           <div className="brand-sub">
             {appVersion ? `동원의 에이전트 · v${appVersion}` : "동원의 에이전트"}
           </div>
