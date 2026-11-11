@@ -46,10 +46,10 @@ test("o2: 입력창 컨텍스트 링 + 70% 넛지 (classic 은 슬롯 없음)", 
   assert.match(ring, /onClick=\{\(\) => \{ onManualRefresh\(\); close\(\); \}\}/);
   assert.match(ring, /onClick=\{\(\) => \{ onCompressContext\(\); close\(\); \}\}/);
   assert.match(ring, /세션·사용량 자세히/);
-  // 넛지: 70% 이상, '컨텍스트 n% · ↻ 새 세션으로 이어가기'
+  // 넛지: 70% 이상, fidA 목업 문구 '컨텍스트 n% 사용 중 · 응답이 느려질 수 있어요  [↻ 새 세션으로 이어가기]'
   assert.match(ring, /const high = u\.contextUsage >= 70;/);
-  assert.match(ring, /컨텍스트 \{Math\.round\(u\.contextUsage\)\}%/);
-  assert.match(ring, /↻ 새 세션으로 이어가기\n/);
+  assert.match(ring, /컨텍스트 <span className="context-nudge__pct mono">\{Math\.round\(u\.contextUsage\)\}%<\/span> 사용 중 · 응답이 느려질 수 있어요/);
+  assert.match(ring, /<Icon name="rotate" size=\{14\} \/>새 세션으로 이어가기\n/);
   // 매초 tick 은 SessionElapsed 만 (팝오버가 열렸을 때만)
   assert.match(ring, /<SessionElapsed startedAt=\{metrics\.startedAt\} active=\{open\} \/>/);
   assert.doesNotMatch(ring, /setInterval/);

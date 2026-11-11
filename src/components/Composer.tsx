@@ -112,7 +112,8 @@ function Composer({
       const saved = parseInt(localStorage.getItem("kda_composer_height") || "", 10);
       if (!Number.isNaN(saved) && saved >= 60 && saved <= 600) return saved;
     } catch {}
-    return 100;
+    // fidA — o2 는 목업처럼 낮은 카드(약 2줄)로 시작. 손잡이로 늘린 값은 위에서 그대로 쓴다. classic 은 예전 100px.
+    return isO2 ? 60 : 100;
   });
   const heightDragRef = useRef<{ startY: number; startH: number } | null>(null);
   const [resizingHeight, setResizingHeight] = useState(false);

@@ -10,6 +10,8 @@ import { loadPreview, getCategory, isUrl } from "./SidePanel";
 import InlineMediaPlayer from "./InlineMediaPlayer";
 import { isMediaStreamUrl } from "../utils/mediaStream";
 import logger from "../utils/logger";
+import { useUiLayout } from "../utils/useUiLayout";
+import { Icon } from "../ui/icons";
 // Phase 85 (v0.6.28) — Tool Safety Layer 후속. tool_use 카드 risk 배지.
 import { RISK_BADGES } from "../utils/toolSafety";
 // v0.7.50 — 화면용 로딩에서 잘린 도구 원문을 필요할 때만 DB 에서 읽는다.
@@ -169,6 +171,8 @@ function CodeBlock({ children }: { children: ReactNode }) {
 
 function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps) {
   const [copied, setCopied] = useState(false);
+  // v0.7.86 fidA (o2) — 파일 링크는 파일 칩 카드, 답변 아래 작은 동작 줄(복사). classic 은 예전 그대로.
+  const { isO2 } = useUiLayout();
 
   if (message.role === "tool") {
     return <ToolMessageView message={message} onFilterToggle={onToolFilterToggle} />;
@@ -260,6 +264,21 @@ function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps
                       {children}
                     </a>
                   );
+                  // fidA (o2) — 로컬 파일 링크는 목업의 파일 칩 ('design-spec.md · 클릭하면 미리보기'). 동작은 같은 미리보기.
+                  if (isO2 && href && !isUrl(href) && mediaKind !== "video" && mediaKind !== "audio" && !/^(mailto:|#)/i.test(href)) {
+                    return (
+                      <a href={href} className="md-link md-file-chip" title="클릭 = 미리보기"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          if (onPreviewRequest) onPreviewRequest(href, label);
+                          else open(href).catch((err) => logger.error("[Message file chip] open 실패:", err));
+                        }}>
+                        <Icon name="file" />
+                        <span className="md-file-chip__name">{children}</span>
+                        <span className="md-file-chip__hint">· 클릭하면 미리보기</span>
+                      </a>
+                    );
+                  }
                   if (href && (mediaKind === "video" || mediaKind === "audio")) {
                     return (
                       <>
@@ -327,6 +346,13 @@ function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps
       </div>
       {message.role === "user" && (message as any).attachments?.length > 0 && (
         <AttachmentPreviewList attachments={(message as any).attachments} />
+      )}
+      {isO2 && isAssistant && !isStreaming && (
+        <div className="msg-actbar" role="group" aria-label="답변 동작">
+          <button type="button" className="msg-act" onClick={handleCopy} aria-label="답변 복사" title={copied ? "복사됨" : "복사"}>
+            <Icon name={copied ? "check" : "copy"} size={14} />
+          </button>
+        </div>
       )}
     </div>
   );

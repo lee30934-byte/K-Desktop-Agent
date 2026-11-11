@@ -118,6 +118,8 @@ import {
 } from "./folderContext";
 import type { Folder } from "./types";
 import "./App.css";
+// v0.7.86 fidA — o2 메인 화면 목업 충실도 (App.css 다음에 불러와 같은 특이도면 이긴다)
+import "./styles/o2-fidelity.css";
 import logger from "./utils/logger";
 import {
   TelegramTurnTracker,
@@ -142,6 +144,9 @@ import { decideIncompleteAction, describeInstallIntegrity, type InstallNotice } 
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch as relaunchApp } from "@tauri-apps/plugin-process";
 import { getVersion as getAppVersion } from "@tauri-apps/api/app";
+// v0.7.86 UI 목업 충실도(fidA) — 개발용 화면 비교 픽스처 (배포 빌드에서는 항상 null)
+import { readMockupFixture } from "./dev/mockupFixture";
+import TaskWatchNotice from "./components/TaskWatchNotice";
 // Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
 import {
   loadSchedule,
@@ -5026,11 +5031,36 @@ export default function App() {
     void handleSelectConversation(id);
   }, [dbReady, handleSelectConversation]);
 
+  // v0.7.86 fidA — 개발용 목업 픽스처(?fixture=mockup, DEV 전용): 메모리 상태만 채운다. DB·파일·localStorage 쓰기 없음.
+  const mockupFixture = useMemo(() => readMockupFixture(), []);
   useEffect(() => {
-    if (dbReady && activeConversationId) {
+    if (!mockupFixture || !dbReady) return;
+    const fx = mockupFixture;
+    setConversations(fx.conversations);
+    setFolders(fx.folders);
+    setActiveConversationId(fx.activeConversationId);
+    setMcpState((s) => ({ ...s, connected: true }));
+    setTaskWatchWaiting(fx.waiting);
+    const control = conversationTurnGateRef.current;
+    for (const id of fx.streamingIds) {
+      control.runs.set(id, { conversationId: id, turnId: `fx-${id}`, state: "running", startedAt: Date.now(), updatedAt: Date.now(), detail: "목업 픽스처" });
+    }
+    const timer = window.setTimeout(() => {
+      setMessages(fx.messages);
+      setMetrics((m) => ({ ...m, maxTurnContextTokens: Math.round(currentModelMaxTokens * fx.contextRatio) }));
+      setStreamingConvIds(new Set(fx.streamingIds));
+      setControlVersion((v) => v + 1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+    // 픽스처는 시작 시 한 번만 채운다 (분모만 읽음)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mockupFixture, dbReady]);
+
+  useEffect(() => {
+    if (dbReady && activeConversationId && !mockupFixture) {
       try { localStorage.setItem(ACTIVE_CONVERSATION_KEY, activeConversationId); } catch {}
     }
-  }, [dbReady, activeConversationId]);
+  }, [dbReady, activeConversationId, mockupFixture]);
 
   useEffect(() => {
     if (pendingLongTaskAutoResume || !dbReady || status !== "connected") return;
@@ -6004,12 +6034,24 @@ export default function App() {
         title={conversations.find((c) => c.id === activeConversationId)?.title}
         // 대화에 엔진이 고정돼 있으면 그 엔진을 보여 준다(전송도 그 엔진으로 감). 모델은 그 엔진 기본값.
         engineLabel={(() => {
+          if (mockupFixture) return mockupFixture.engineLabel;
           const pin = conversations.find((c) => c.id === activeConversationId)?.provider;
           return pin && pin !== activeProvider ? `${providerLabel(pin)} · 이 대화 고정` : `${providerLabel(activeProvider)} · ${currentModelLabel}`;
         })()}
         folderLabel={(() => {
           const fid = conversations.find((c) => c.id === activeConversationId)?.folderId;
-          return fid ? folders.find((f) => f.id === fid)?.name : undefined;
+          if (!fid) return undefined;
+          // fidA (o2) — 목업처럼 상위 폴더까지 '업무 / 디자인' (classic 헤더는 폴더를 그리지 않음)
+          const names: string[] = [];
+          const seen = new Set<string>();
+          for (let cur: string | null | undefined = fid; cur && !seen.has(cur); ) {
+            seen.add(cur);
+            const f = folders.find((x) => x.id === cur);
+            if (!f) break;
+            names.unshift(f.name);
+            cur = f.parentId;
+          }
+          return names.length ? names.join(" / ") : undefined;
         })()}
         conversationProvider={activeConversationId ? (conversations.find((c) => c.id === activeConversationId)?.provider ?? null) : undefined}
         onSetConversationProvider={isO2 && activeConversationId ? (p) => { void handleSetConversationProvider(activeConversationId, p); } : undefined}
@@ -6017,7 +6059,7 @@ export default function App() {
           const fid = conversations.find((c) => c.id === activeConversationId)?.folderId;
           return isO2 && fid ? () => { void handleEditFolderInstructions(fid); } : undefined;
         })()}
-        warnings={[
+        warnings={mockupFixture?.warnings ?? [
           ...(mcpState.connected ? [] : ["도구 연결 끊김"]),
           ...(activeCodexUsageError ? ["Codex 사용량 조회 오류"] : []),
           ...rateLimitWarnings,
@@ -6047,7 +6089,12 @@ export default function App() {
             actions={<Button size="sm" variant="danger" disabled={recoveringExecution} onClick={() => setControlConfirmation({ kind: "recover" })}>실행 엔진 복구</Button>}>
             {recoveringExecution ? "실행 엔진 복구 중 · 자동 실행 보류" : "정지 확인이 지연됩니다. 앱 안에서 실행 엔진을 복구할 수 있습니다."}
           </Notice>}
-        {visibleTaskWatchWaiting.length > 0 && (
+        {/* fidA — o2 는 목업의 한 줄 띠(TaskWatchNotice), classic 은 아래 예전 띠 */}
+        {isO2 && visibleTaskWatchWaiting.length > 0 && (
+          <TaskWatchNotice items={visibleTaskWatchWaiting} labelFor={watchBlockLabel} error={taskWatchResolveError}
+            onResolve={(w) => { void resolveTaskWatchWaiting(w); }} onDismiss={dismissTaskWatchWaiting} />
+        )}
+        {!isO2 && visibleTaskWatchWaiting.length > 0 && (
           <Notice tone="warn" role="status" className="task-watch-waiting"
             onClose={dismissTaskWatchWaiting} closeLabel="이 알림 숨김 · 작업 감시는 계속됨">
             <strong>이 대화의 작업 결과 확인 대기 {visibleTaskWatchWaiting.length}건</strong>

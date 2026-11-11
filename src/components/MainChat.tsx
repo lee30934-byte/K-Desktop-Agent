@@ -263,6 +263,27 @@ function MainChat({
     };
   }, []);
 
+  // v0.7.86 fidA (o2) — 헤더·알림 띠의 아래 끝(px)을 :root --o2-chrome-bottom 으로 알려 준다.
+  // 비서 아바타 기본 위치(끌어 옮기지 않았을 때)가 이 아래에서 시작해 헤더 칩·알림 띠를 덮지 않는다.
+  const noticesRef = useRef<HTMLDivElement>(null);
+  const hasNotices = !!notices;
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!isO2) { root.style.removeProperty("--o2-chrome-bottom"); return; }
+    const update = () => {
+      const header = document.querySelector(".main-chat > .main-header");
+      const bottom = Math.max(header?.getBoundingClientRect().bottom ?? 0, noticesRef.current?.getBoundingClientRect().bottom ?? 0);
+      root.style.setProperty("--o2-chrome-bottom", `${Math.round(bottom)}px`);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    const header = document.querySelector(".main-chat > .main-header");
+    if (header) ro.observe(header);
+    if (noticesRef.current) ro.observe(noticesRef.current);
+    window.addEventListener("resize", update);
+    return () => { ro.disconnect(); window.removeEventListener("resize", update); root.style.removeProperty("--o2-chrome-bottom"); };
+  }, [isO2, hasNotices]);
+
   return (
     <section className="main-chat">
       {/* 탑 헤더 */}
@@ -274,12 +295,14 @@ function MainChat({
           <div className="main-subline">
             {engineLabel && (
               <button type="button" className="engine-chip" onClick={onOpenEngineSettings} title="AI 엔진·모델 설정">
-                {engineLabel} <span aria-hidden>▾</span>
+                {/* fidA — 목업: 'Codex · gpt-5 ⌄' (엔진은 밝게, 모델은 흐리게) */}
+                <EngineChipLabel label={engineLabel} />
+                <Icon name="chevronDown" size={14} />
               </button>
             )}
             {folderLabel && (onEditFolderInstructions
-              ? <button type="button" className="main-folder" onClick={onEditFolderInstructions} title="폴더 지침 편집">📁 {folderLabel} <span aria-hidden>📎</span></button>
-              : <span className="main-folder" title="폴더">📁 {folderLabel}</span>)}
+              ? <button type="button" className="main-folder" onClick={onEditFolderInstructions} title="폴더 지침 편집">{folderLabel} <Icon name="paperclip" size={14} /></button>
+              : <span className="main-folder" title="폴더">{folderLabel}</span>)}
           </div>
         </div>
         ) : (
@@ -289,7 +312,7 @@ function MainChat({
         </div>
         )}
         <div className="main-header-right">
-          {isO2 && (warnings ?? []).map((w) => <Chip key={w} tone="warn" icon={<Icon name="alert" size={14} />} onClick={onOpenSession}
+          {isO2 && (warnings ?? []).map((w) => <Chip key={w} tone="warn" icon={/한도/.test(w) ? <Icon name="clock" size={14} /> : <Icon name="alert" size={14} />} onClick={onOpenSession}
             title={onOpenSession ? "세션·사용량 보기" : undefined}>{w}</Chip>)}
           {!isO2 && <ApprovalToggle />}
           {previewReady && onOpenPreview && (
@@ -297,6 +320,7 @@ function MainChat({
           )}
           {activityPanel}
           {isO2 && <SafetyChip onOpenSettings={onOpenSafetySettings} />}
+          {isO2 && <span className="main-header-sep" aria-hidden="true" />}
           {onOpenAssistant && (
             <button type="button" className="ui-iconbtn header-assistant-btn" aria-label="비서 패널" title="비서 패널 열기"
               aria-pressed={assistantOpen} onClick={onOpenAssistant}>{isO2 ? <Icon name="assistant" /> : "◐"}</button>
@@ -411,6 +435,8 @@ function MainChat({
           </span>
         </div>
       )}
+      {/* fidA (o2) — 알림 띠는 목업처럼 헤더 바로 아래, 본문 폭 전체 (classic 은 예전처럼 입력창 위) */}
+      {isO2 && notices ? <div className="chat-notices chat-notices--top" ref={noticesRef}>{notices}</div> : null}
       {/* 메시지 영역 */}
       <div className="main-body">
         <div className="messages">
@@ -443,7 +469,7 @@ function MainChat({
         )}
 
         {/* v0.7.49 — 알림 배너: 레이아웃 흐름 안에서 메시지 영역만 줄인다. */}
-        {notices ? <div className="chat-notices">{notices}</div> : null}
+        {!isO2 && notices ? <div className="chat-notices">{notices}</div> : null}
 
         {/* 진행 중 표시 — 스트리밍 중에만 노출, 마지막 pending tool 라벨 표시 */}
         <ProgressIndicator messages={messages} isStreaming={isStreaming} />
@@ -668,6 +694,13 @@ function ClassicStatusBadge({ status }: { status: ConnectionStatus }) {
       <span className="mono">{label[status]}</span>
     </div>
   );
+}
+
+// v0.7.86 fidA — 엔진 칩 글자: 'Codex · gpt-5' → 엔진은 밝게, ' · 모델' 은 흐리게 (목업 .chip.engine .m)
+function EngineChipLabel({ label }: { label: string }) {
+  const at = label.indexOf(" · ");
+  if (at < 0) return <span>{label}</span>;
+  return <span>{label.slice(0, at)}<span className="engine-chip__model"> · {label.slice(at + 3)}</span></span>;
 }
 
 // v0.7.86 UI 3단계 — 상태 배지를 점 하나로 축소. 정상일 땐 점만, 문제일 땐 한국어 문구도 표시.

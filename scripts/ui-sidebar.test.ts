@@ -58,7 +58,9 @@ test("o2: 새 대화 · 내비 3줄 (검색은 같은 자리에서 입력창으�
   const top = fnBody(sidebar, "renderO2Top");
   assert.match(top, /onClick=\{handleNewConversationHere\}/);
   assert.match(fnBody(sidebar, "handleNewConversationHere"), /onNewConversation\(viewMode === "explorer" \? currentFolderId : null\)/);
-  assert.match(top, /새 대화\{currentFolderName \? ` \(📁 \$\{currentFolderName\}\)` : ""\}/);
+  // fidA — 목업처럼 글자는 '새 대화' + Ctrl+N, 지금 폴더는 아래 경로·툴팁·aria-label 로
+  assert.match(top, /<span className="new-chat-label">새 대화<\/span>\n\s+<span className="sb-kbd" aria-hidden="true">Ctrl\+N<\/span>/);
+  assert.match(top, /aria-label=\{currentFolderName \? `새 대화 \(📁 \$\{currentFolderName\}\)` : "새 대화"\}/);
   assert.match(top, /searchOpen \|\| searchQuery \?/);
   assert.match(top, /onClick=\{\(\) => setSearchOpen\(true\)\}/);
   assert.match(top, /<span>검색<\/span>/);

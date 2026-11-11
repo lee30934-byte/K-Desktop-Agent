@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useState } from "react";
 import type { SessionMetrics } from "../types";
 import { Popover, Ring } from "../ui";
 import { computeContextUsage, formatTokens, SessionElapsed } from "./metricsShared";
+import { Icon } from "../ui/icons";
 
 // v0.7.86 UI 5단계 — o2 배치: MetricsPanel 의 Context 카드를 입력창 안 링으로 옮긴다.
 // 클릭하면 요약 팝오버(사용/최대/남은 + 경과 + 세션 버튼 2개), 자세한 진단은 '세션·사용량' 탭.
@@ -122,15 +123,15 @@ export const ContextNudge = memo(function ContextNudge({
   if (!high || dismissed || !onManualRefresh) return null;
   return (
     <div className="context-nudge" role="status">
-      <span className="context-nudge__pct mono">컨텍스트 {Math.round(u.contextUsage)}%</span>
-      <span aria-hidden>·</span>
+      {/* fidA — 목업: '컨텍스트 72% 사용 중 · 응답이 느려질 수 있어요  [↻ 새 세션으로 이어가기]' */}
+      <span className="context-nudge__text">컨텍스트 <span className="context-nudge__pct mono">{Math.round(u.contextUsage)}%</span> 사용 중 · 응답이 느려질 수 있어요</span>
       <button
         type="button"
         className="context-nudge__action"
         onClick={onManualRefresh}
         title="지금까지 대화를 요약해 넘기고, 같은 대화 안에서 AI 엔진 세션만 새로 시작합니다. 메시지는 지워지지 않습니다."
       >
-        ↻ 새 세션으로 이어가기
+        <Icon name="rotate" size={14} />새 세션으로 이어가기
       </button>
       <button type="button" className="context-nudge__close" aria-label="안내 숨기기" onClick={() => setDismissed(true)}>✕</button>
     </div>

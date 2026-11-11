@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PendingSend, RunView } from "../conversationControl";
 import { TASK_PANEL_OPEN_KEY } from "../conversationWorkspace";
+import { Icon } from "../ui/icons";
 
 interface Props {
   runs: RunView[];
@@ -50,7 +51,15 @@ export default function TaskActivityPanel(props: Props) {
     {props.allPaused && <span>· 자동 실행 보류</span>}
     {mode === "popover" && <span aria-hidden="true">{open ? "▴" : "▾"}</span>}
   </button>;
-  if (mode === "chip") return <aside className="task-activity" aria-label="대화별 작업 현황">{toggle}</aside>;
+  // v0.7.86 fidA (o2 헤더 칩) — 목업 '⚡ 2 실행 · 1 예약'. 누르면 작업 패널. (popover/inline 은 예전 문구 그대로)
+  if (mode === "chip") return <aside className="task-activity" aria-label="대화별 작업 현황">
+    <button className="task-activity-toggle task-activity-toggle--chip" type="button" aria-expanded={expanded}
+      onClick={() => props.onOpenPanel?.()} title="작업 패널 열기" aria-label={`작업 현황: ${active.length}개 실행${queueCount > 0 ? ` · ${queueCount}개 예약` : ""}`}>
+      <Icon name="zap" size={14} />
+      <span><strong className="n">{active.length}</strong> 실행{queueCount > 0 && <> · <strong className="n">{queueCount}</strong> 예약</>}</span>
+      {props.allPaused && <span>· 자동 실행 보류</span>}
+    </button>
+  </aside>;
   const body = <div className={mode === "inline" ? "task-activity-inline" : "task-activity-popover"}>
       <div className="task-activity-heading"><strong>대화별 작업</strong>
         <button type="button" onClick={props.onStopAll} disabled={!active.length && !queueCount}>전체 작업 정지</button>

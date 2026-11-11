@@ -46,7 +46,7 @@ test("o2 사이드바·레일 — 이모지 대신 라인 아이콘, classic 은
   const rail = fnBody(sidebar, "renderRail");
   const foot = fnBody(sidebar, "renderO2Foot");
   const sec = fnBody(sidebar, "renderSectionHead");
-  for (const [body, names] of [[top, ["plus", "search", "library", "zap"]], [rail, ["plus", "search", "library", "zap", "settings"]],
+  for (const [body, names] of [[top, ["plus", "search", "book", "zap"]], [rail, ["plus", "search", "book", "zap", "settings"]],
     [foot, ["settings"]], [sec, ["folderPlus", "checkSquare"]]] as const) {
     for (const n of names) assert.ok(body.includes(`<Icon name="${n}"`), `${n} 아이콘`);
     assert.doesNotMatch(body, /[🔍📚⚡⚙☑]|📁\+/u);
@@ -60,7 +60,8 @@ test("o2 사이드바·레일 — 이모지 대신 라인 아이콘, classic 은
 });
 
 test("o2 헤더·입력창·슬라이드오버 — 라인 아이콘, classic 은 ◐ ⋯ 📎 📄 그대로", () => {
-  assert.match(chat, /icon=\{<Icon name="alert" size=\{14\} \/>\}/);
+  // fidA — 한도 경고는 목업처럼 시계, 그 밖의 경고는 ⚠
+  assert.match(chat, /icon=\{\/한도\/\.test\(w\) \? <Icon name="clock" size=\{14\} \/> : <Icon name="alert" size=\{14\} \/>\}/);
   assert.match(chat, /\{isO2 \? <Icon name="assistant" \/> : "◐"\}/);
   assert.match(chat, /\{isO2 \? <Icon name="more" \/> : "⋯"\}/);
   assert.match(chat, /icon=\{isO2 \? <Icon name="file" size=\{14\} \/> : "📄"\}/);

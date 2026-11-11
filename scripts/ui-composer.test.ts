@@ -94,10 +94,11 @@ test("메시지 열: 항목을 chat-col 로 감싸고 o2 CSS 만 가운데 --cha
   }
 });
 
-test("대화 폭·문서형: LS 값만 읽고 기본은 보통 폭 + 말풍선형 (F12)", () => {
+// fidA (2026-11-11) — K 가 목업을 승인해 o2 답변 기본 표시를 문서형으로 바꿈 (말풍선형은 직접 고를 때만).
+test("대화 폭·문서형: LS 값만 읽고 기본은 보통 폭 + 문서형 (F12, fidA)", () => {
   assert.match(display, /export const CHAT_WIDTH_KEY = "kda_chat_width";/);
   assert.match(display, /export const ASSISTANT_STYLE_KEY = "kda_assistant_style";/);
-  assert.match(display, /=== "document" \? "document" : "bubble"/);
+  assert.match(display, /=== "bubble" \? "bubble" : "document"/);
   assert.match(display, /v === "narrow" \|\| v === "wide" \? v : "normal"/);
   assert.match(chat, /applyChatDisplay\(\);\n\s+window\.addEventListener\(CHAT_DISPLAY_EVENT, applyChatDisplay\);/);
   assert.match(css, /:root\[data-chat-width="narrow"\] \{ --chat-max-width: 680px; \}/);

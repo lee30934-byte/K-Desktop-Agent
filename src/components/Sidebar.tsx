@@ -1,4 +1,5 @@
 import o2Mark from "../assets/o2-mark.png";
+import { readMockupFixture } from "../dev/mockupFixture";
 import { memo, useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -165,6 +166,25 @@ function Sidebar({
   // Phase 108 — Explorer 모드에서 현재 표시 중인 폴더 ID. null = 루트.
   // viewMode 가 tree 면 무시됨. explorer 모드로 토글한 직후엔 자동으로 루트부터 시작.
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  // v0.7.86 fidA — 개발용 목업 픽스처(DEV + ?fixture=mockup)면 픽스처 폴더가 들어온 뒤 한 번만 그 폴더로 (배포 빌드는 null)
+  const fixtureFolderRef = useRef<string | null>(readMockupFixture()?.currentFolderId ?? null);
+  useEffect(() => {
+    const id = fixtureFolderRef.current;
+    if (id && folders.some((f) => f.id === id)) { fixtureFolderRef.current = null; setCurrentFolderId(id); }
+  }, [folders]);
+  // v0.7.86 fidA (o2) — Ctrl+N = 새 대화 (지금 폴더 안). 목업의 [새 대화  Ctrl+N]. classic 은 단축키 없음(예전 그대로).
+  const newHereRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!isO2) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        newHereRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isO2]);
 
   // 브랜드 헤더 버전 — Tauri 앱 버전(tauri.conf.json/Cargo)을 따라감.
   // 하드코딩 "V0.1.0" 금지 (릴리스해도 안 바뀌던 버그). getVersion 으로 런타임 주입.
@@ -954,7 +974,7 @@ function Sidebar({
           key={`folder-${f.id}`}
           folderId={f.id}
           className="explorer-item explorer-folder"
-          style={{
+          style={isO2 ? undefined : {
             display: "flex",
             alignItems: "center",
             gap: 10,
@@ -975,15 +995,15 @@ function Sidebar({
             e.stopPropagation();
             setContextMenu({ type: "folder", id: f.id, x: e.clientX, y: e.clientY });
           }}
-          onMouseEnter={(e) => {
+          onMouseEnter={isO2 ? undefined : (e) => {
             (e.currentTarget as HTMLElement).style.background = "var(--bg-2, rgba(255,255,255,0.05))";
           }}
-          onMouseLeave={(e) => {
+          onMouseLeave={isO2 ? undefined : (e) => {
             (e.currentTarget as HTMLElement).style.background = "transparent";
           }}
           title={`더블클릭=진입 · 우클릭=메뉴 · 드래그 = 이동 · 하위 ${childCount}폴더 / ${convCount}대화`}
         >
-          <span style={{ fontSize: 16 }}>{f.icon ?? "📁"}</span>
+          <span className="explorer-icon" style={isO2 ? undefined : { fontSize: 16 }}>{f.icon ?? "📁"}</span>
           {isEditing ? (
             <input
               ref={editInputRef}
@@ -999,11 +1019,11 @@ function Sidebar({
               placeholder="이름 (Enter=저장, Esc=취소)"
             />
           ) : (
-            <span style={{ flex: 1, fontSize: 13, color: f.color ?? "var(--text, #e8eaff)" }}>
+            <span className="explorer-title" style={isO2 ? (f.color ? { color: f.color } : undefined) : { flex: 1, fontSize: 13, color: f.color ?? "var(--text, #e8eaff)" }}>
               {f.name}
             </span>
           )}
-          {(childCount > 0 || convCount > 0) && (
+          {!isO2 && (childCount > 0 || convCount > 0) && (
             <span style={{ fontSize: 10, opacity: 0.45 }}>
               {childCount > 0 ? `📁${childCount} ` : ""}
               {convCount > 0 ? `💬${convCount}` : ""}
@@ -1030,7 +1050,7 @@ function Sidebar({
           convId={c.id}
           disabled={isEditing || bulkSelectMode}
           className={`explorer-item explorer-conv ${active ? "active" : ""} ${selected ? "selected" : ""}`}
-          style={{
+          style={isO2 ? undefined : {
             display: "flex",
             alignItems: "center",
             gap: 10,
@@ -1056,12 +1076,12 @@ function Sidebar({
             e.stopPropagation();
             setContextMenu({ type: "conversation", id: c.id, x: e.clientX, y: e.clientY });
           }}
-          onMouseEnter={(e) => {
+          onMouseEnter={isO2 ? undefined : (e) => {
             if (!active && !selected) {
               (e.currentTarget as HTMLElement).style.background = "var(--bg-2, rgba(255,255,255,0.05))";
             }
           }}
-          onMouseLeave={(e) => {
+          onMouseLeave={isO2 ? undefined : (e) => {
             if (!active && !selected) {
               (e.currentTarget as HTMLElement).style.background = "transparent";
             }
@@ -1078,7 +1098,7 @@ function Sidebar({
               style={{ width: 14, height: 14, flexShrink: 0 }}
             />
           )}
-          <span style={{ fontSize: 14 }}>
+          <span className={`explorer-icon${c.isFavorite ? " is-star" : ""}`} style={isO2 ? undefined : { fontSize: 14 }}>
             {c.isFavorite ? "★" : c.icon ?? "💬"}
           </span>
           {isEditing ? (
@@ -1096,7 +1116,8 @@ function Sidebar({
             />
           ) : (
             <span
-              style={{
+              className="explorer-title"
+              style={isO2 ? (c.color ? { color: c.color } : undefined) : {
                 flex: 1,
                 fontSize: 13,
                 color: c.color ?? "var(--text, #e8eaff)",
@@ -1109,7 +1130,9 @@ function Sidebar({
             </span>
           )}
           {/* Phase 111 (v0.6.60) — streaming 중인 conv 옆 ● dot */}
-          {streamingConvIds?.has(c.id) && (
+          {streamingConvIds?.has(c.id) && (isO2 ? (
+            <span className="explorer-live" title="이 대화에서 작업 진행 중" aria-label="작업 진행 중" />
+          ) : (
             <span
               title="이 대화에서 작업 진행 중"
               style={{
@@ -1122,7 +1145,7 @@ function Sidebar({
                 animation: "kda-pulse 1.4s ease-in-out infinite",
               }}
             />
-          )}
+          ))}
           {isO2 && !isEditing && !bulkSelectMode && renderRowMore("conversation", c.id)}
         </DraggableConv>
       );
@@ -1321,6 +1344,65 @@ function Sidebar({
     );
   };
 
+  // ─── v0.7.86 fidA (o2) — 목업 모양의 탐색기 ─────────────────────────────
+  // classic 의 renderExplorer 는 그대로 두고 o2 만 별도로 그린다. 같은 DnD 컴포넌트·우클릭 메뉴·대량 정리를 쓴다.
+  // 위: 경로(루트 › 업무, 누르면 그 폴더로 이동 · 끌어다 놓으면 그 폴더로 옮김 · Backspace = 위로)
+  // 목록: ★ 고정 대화(어느 폴더에 있든) → '폴더' → '대화'. 비어 있으면 작은 안내 문구만.
+  const renderO2Explorer = () => {
+    const hit = (c: Conversation) => !visibleConvIds || visibleConvIds.has(c.id);
+    const subFolders = (tree.childFolders.get(currentFolderId) ?? []).filter((f) => !visibleConvIds || folderHasHit(f.id));
+    const convs = (tree.convsInFolder.get(currentFolderId) ?? []).filter(hit);
+    const pinned = conversations.filter((c) => c.isFavorite && hit(c));
+    const pinnedIds = new Set(pinned.map((c) => c.id));
+    const rest = convs.filter((c) => !pinnedIds.has(c.id));
+    const visibleIds = convs.map((c) => c.id);
+    const selectedVisible = visibleIds.filter((id) => selectedConvIds.has(id)).length;
+    const allSelected = visibleIds.length > 0 && selectedVisible === visibleIds.length;
+    const empty = pinned.length === 0 && subFolders.length === 0 && rest.length === 0;
+    return (
+      <div className="explorer-section sb-explorer">
+        <nav className="sb-crumb explorer-breadcrumb" aria-label="현재 폴더">
+          <Icon name="folder" size={14} />
+          <BreadcrumbDropButton plain dropId="__root__" onClick={() => setCurrentFolderId(null)} isCurrent={currentFolderId === null}
+            title="루트 · 끌어다 놓으면 루트로 옮김" label="루트" />
+          {breadcrumbPath.map((f, i) => (
+            <Fragment key={f.id}>
+              <Icon name="chevronRight" size={14} />
+              <BreadcrumbDropButton plain dropId={`folder:${f.id}`} onClick={() => setCurrentFolderId(f.id)} isCurrent={i === breadcrumbPath.length - 1}
+                title={`${f.name} · 끌어다 놓으면 이 폴더로 옮김`} label={f.name} />
+            </Fragment>
+          ))}
+        </nav>
+        <div className="explorer-body sb-tree" onContextMenu={(e) => { if (e.target === e.currentTarget) setContextMenu(null); }}>
+          {empty ? (
+            <div className="sb-empty">{visibleConvIds ? "검색 결과가 없어요" : currentFolderId ? "이 폴더는 비어 있어요" : "아직 대화가 없어요"}</div>
+          ) : (
+            <>
+              {pinned.map((c) => renderExplorerItem(c, "conversation"))}
+              {subFolders.length > 0 && <div className="sb-grp-label">폴더</div>}
+              {subFolders.map((f) => renderExplorerItem(f, "folder"))}
+              {rest.length > 0 && (pinned.length > 0 || subFolders.length > 0) && <div className="sb-grp-label">대화</div>}
+              {rest.map((c) => renderExplorerItem(c, "conversation"))}
+            </>
+          )}
+        </div>
+        {bulkSelectMode && (
+          <div className="bulk-organize-bar sb-bulk">
+            <button type="button" onClick={toggleBulkMode} title="여러 대화 선택 끝내기">정리 종료</button>
+            <button type="button" disabled={visibleIds.length === 0} onClick={() => setBulkSelectionFor(visibleIds, !allSelected)}>
+              {allSelected ? "보이는 항목 해제" : "보이는 항목 선택"}
+            </button>
+            <button type="button" disabled={selectedConvIds.size === 0 || bulkMovePending}
+              onClick={(e) => setFolderPicker({ convIds: Array.from(selectedConvIds), x: e.currentTarget.getBoundingClientRect().left, y: e.currentTarget.getBoundingClientRect().bottom + 4 })}>
+              이동 {selectedConvIds.size}
+            </button>
+            <span className="sb-bulk-count">{selectedVisible}/{visibleIds.length}</span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // ─── 색상/아이콘 picker 렌더 ───────────────────────────────
   const renderPicker = () => {
     if (!pickerState) return null;
@@ -1441,6 +1523,7 @@ function Sidebar({
   const handleNewConversationHere = () => {
     onNewConversation(viewMode === "explorer" ? currentFolderId : null);
   };
+  newHereRef.current = handleNewConversationHere;
   const currentFolderName = currentFolderId ? folders.find((f) => f.id === currentFolderId)?.name : undefined;
   const toggleBulkMode = () => {
     const nextMode = !bulkSelectMode;
@@ -1455,10 +1538,13 @@ function Sidebar({
         <button
           className="new-chat-btn"
           onClick={handleNewConversationHere}
-          title={currentFolderName ? "현재 폴더 안에 새 대화 (폴더 지침 자동 적용)" : "새 대화"}
+          title={currentFolderName ? `현재 폴더(📁 ${currentFolderName}) 안에 새 대화 · 폴더 지침 자동 적용 (Ctrl+N)` : "새 대화 (Ctrl+N)"}
+          aria-label={currentFolderName ? `새 대화 (📁 ${currentFolderName})` : "새 대화"}
         >
           <span className="plus"><Icon name="plus" /></span>
-          <span className="new-chat-label">새 대화{currentFolderName ? ` (📁 ${currentFolderName})` : ""}</span>
+          {/* fidA — 목업처럼 '새 대화' 만. 지금 폴더는 바로 아래 경로(루트 › 업무)와 툴팁에 보인다 */}
+          <span className="new-chat-label">새 대화</span>
+          <span className="sb-kbd" aria-hidden="true">Ctrl+N</span>
         </button>
       </div>
       <nav className="sb-nav" aria-label="사이드바 메뉴">
@@ -1490,7 +1576,7 @@ function Sidebar({
         ))}
         {onOpenLibrary && (
           <button type="button" className="sb-nav-item" onClick={onOpenLibrary} title="대화 라이브러리 — 모든 대화를 카드로 크게 보기">
-            <span className="sb-nav-icon" aria-hidden="true"><Icon name="library" /></span><span>라이브러리</span><span className="sb-kbd">Ctrl+L</span>
+            <span className="sb-nav-icon" aria-hidden="true"><Icon name="book" /></span><span>라이브러리</span><span className="sb-kbd">Ctrl+L</span>
           </button>
         )}
         {onOpenTasks && (
@@ -1522,7 +1608,7 @@ function Sidebar({
       <span className={`sb-conn${mcpConnected ? "" : " sb-conn--off"}`} title="K-Personal MCP (컴퓨터 도구)">
         <span className={`status-dot ${mcpConnected ? "status-dot-live" : "status-dot-off"}`} aria-hidden="true" />
         {/* 끊겼을 땐 [다시 연결] 자리를 위해 짧게 (전체 문구는 툴팁) */}
-        <span className="sb-conn-label" title={connLabel}>{mcpConnected ? connLabel : "연결 끊김"}</span>
+        <span className="sb-conn-label" title={connLabel}>{mcpConnected ? "도구 연결됨" : "연결 끊김"}</span>
         {!mcpConnected && onReconnectTools && (
           <button type="button" className="sb-reconnect" onClick={onReconnectTools}>다시 연결</button>
         )}
@@ -1547,7 +1633,7 @@ function Sidebar({
           onClick={() => { setSearchOpen(true); onToggleRail?.(); }}><Icon name="search" size={18} /></button>
       )}
       {onOpenLibrary && (
-        <button type="button" className="sb-rail-btn" onClick={onOpenLibrary} aria-label="라이브러리" title="라이브러리 (Ctrl+L)"><Icon name="library" size={18} /></button>
+        <button type="button" className="sb-rail-btn" onClick={onOpenLibrary} aria-label="라이브러리" title="라이브러리 (Ctrl+L)"><Icon name="book" size={18} /></button>
       )}
       {onOpenTasks && (
         <button type="button" className="sb-rail-btn" onClick={onOpenTasks} aria-label="작업" title={taskCount > 0 ? `작업 ${taskCount}개 실행 중` : "작업"}>
@@ -1675,7 +1761,7 @@ function Sidebar({
           {viewMode === "explorer" ? "탐색기" : "대화 목록"}
         </div>
         )}
-        {viewMode === "explorer" ? (
+        {isO2 && viewMode === "explorer" ? renderO2Explorer() : viewMode === "explorer" ? (
           renderExplorer()
         ) : (
         <DroppableRoot className="conv-list root-drop">
@@ -2027,6 +2113,8 @@ interface BreadcrumbDropButtonProps {
   isCurrent: boolean;
   title: string;
   label: string;
+  /** v0.7.86 fidA (o2) — 인라인 스타일 없이 CSS(.sb-crumb-btn)로 그리는 평평한 경로 글자 */
+  plain?: boolean;
 }
 function BreadcrumbDropButton({
   dropId,
@@ -2034,8 +2122,17 @@ function BreadcrumbDropButton({
   isCurrent,
   title,
   label,
+  plain,
 }: BreadcrumbDropButtonProps) {
   const { setNodeRef, isOver } = useDroppable({ id: dropId });
+  if (plain) {
+    return (
+      <button ref={setNodeRef} type="button" onClick={onClick} title={title} aria-current={isCurrent ? "location" : undefined}
+        className={`sb-crumb-btn${isCurrent ? " is-current" : ""}${isOver ? " is-over" : ""}`}>
+        {label}
+      </button>
+    );
+  }
   return (
     <button
       ref={setNodeRef}

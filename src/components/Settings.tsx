@@ -7778,7 +7778,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             <div className="settings-row">
               <div className="settings-row-info">
                 <div className="settings-row-title">답변 표시 방식</div>
-                <div className="settings-row-desc">말풍선형은 지금처럼, 문서형은 답변을 배경 없이 본문처럼 보여 줍니다.</div>
+                <div className="settings-row-desc">문서형(기본)은 답변을 배경 없이 본문처럼, 말풍선형은 답변을 카드에 담아 보여 줍니다.</div>
               </div>
               <Segmented<AssistantStyle>
                 label="답변 표시 방식"
