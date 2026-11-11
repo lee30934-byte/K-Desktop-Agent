@@ -94,7 +94,7 @@ async def main():
                 if await page.get_by_role('button', name='비서 창 펼치기', exact=True).count() == 0:
                     await page.get_by_role('button', name='비서 창 최소화', exact=True).click()
                 await page.get_by_role('button', name='비서 창 펼치기', exact=True).wait_for()
-                await page.get_by_role('button', name='K 비서 아바타 · 기능 열기', exact=True).click()
+                await page.get_by_role('button', name='O2 비서 아바타 · 기능 열기', exact=True).click()
                 await page.get_by_role('button', name='꾸미기', exact=True).click()
                 await page.wait_for_function(f"window.actions.filter(a=>a.action==='list').length>{before}")
                 await page.wait_for_function("document.querySelector('[aria-label=\"비서 목소리\"]').options.length===4")

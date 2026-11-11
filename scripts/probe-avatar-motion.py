@@ -81,7 +81,7 @@ async def main():
                 await page.goto(base + '/ui/review.html')
                 avatar = page.locator('.assistant-avatar')
                 await avatar.wait_for()
-                widget = page.get_by_role('complementary', name='K 비서', exact=True)
+                widget = page.get_by_role('complementary', name='O2 비서', exact=True)
                 original_position = await widget.bounding_box()
                 await avatar.click()
                 assert await avatar.get_attribute('data-reaction') == 'wave'

@@ -38,7 +38,7 @@ async def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 await page.route('https://fonts.googleapis.com/**', lambda route: route.abort())
                 await page.goto(f'http://127.0.0.1:{server.server_port}/review.html')
-                widget = page.get_by_role('complementary', name='K 비서', exact=True)
+                widget = page.get_by_role('complementary', name='O2 비서', exact=True)
                 await widget.wait_for()
                 await page.locator('.main-chat').get_by_text('자주 쓰는 기능만 보여주고 나머지는 접어두자.', exact=True).wait_for()
                 assert await page.get_by_role('button', name='통화하기', exact=True).is_visible()

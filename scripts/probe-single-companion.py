@@ -51,7 +51,7 @@ async def main():
                 page.set_default_timeout(10000)
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 await page.goto(f'http://127.0.0.1:{server.server_port}/review.html')
-                widget = page.get_by_role('complementary', name='K 비서', exact=True)
+                widget = page.get_by_role('complementary', name='O2 비서', exact=True)
                 avatar = widget.locator('.companion-avatar')
                 await avatar.wait_for()
                 assert await avatar.count() == 1

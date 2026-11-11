@@ -233,7 +233,7 @@ export default function CompanionAvatar({ mood, motion, style, compact, expanded
   return <button ref={root} type="button" className={`companion-avatar tone-${style}${compact ? ' is-compact' : ''}`}
     data-mood={mood} data-frame={frame} data-rig="layered" data-dozing={dozing ? 'true' : undefined}
     data-motion={moving ? 'on' : 'off'} data-motion-state={motionState} data-os-reduced-motion={reduced ? 'true' : 'false'} aria-expanded={expanded}
-    aria-label="K 비서 아바타 · 기능 열기" title="누르면 기능 열기 · 끌어서 이동"
+    aria-label="O2 비서 아바타 · 기능 열기" title="누르면 기능 열기 · 끌어서 이동"
     onPointerMove={event => {
       if (!moving || event.buttons || event.pointerType === 'touch') return;
       if (drowsy) setDrowsy(false);

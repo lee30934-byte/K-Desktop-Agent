@@ -81,9 +81,9 @@ function MobileApp() {
   return <main className="mobile-shell">
     <header><div className="brand"><span className="brand-mark">K</span><div><strong>함께, 어디서나</strong><small>DESKTOP COMPANION</small></div></div>
       <span className={`connection ${paired && online ? 'online' : ''}`}>{paired && online ? 'PC 연결됨' : paired ? '연결 확인 중' : '기기 연결'}</span></header>
-    <section className="companion-stage" aria-label="움직이는 K 비서">
+    <section className="companion-stage" aria-label="움직이는 O2 비서">
       <div className="stage-glow" /><CompanionAvatar mood={mood} motion={pref.motion} style={pref.style} compact={false} expanded={false} onMotionState={setMotionState} onActivate={() => setNotice('듣고 있어요. 아래에서 대화를 선택하고 이야기해 주세요.')} />
-      <p>{live ? voice?.message : paired ? target ? `${target.title} · 무엇을 도와드릴까요?` : '명령할 대화를 골라 주세요' : 'PC의 K 비서를 휴대폰으로'}</p>
+      <p>{live ? voice?.message : paired ? target ? `${target.title} · 무엇을 도와드릴까요?` : '명령할 대화를 골라 주세요' : 'PC의 O2를 휴대폰으로'}</p>
     </section>
     {!secure && <p className="alert" role="alert">음성 연결에는 HTTPS가 필요합니다. PC 설정의 개인 HTTPS 주소로 접속하세요.</p>}
     {!paired ? <section className="surface pairing"><h1>내 PC와 연결</h1><p>PC의 KDA 설정 → 휴대폰 아바타에서 연결을 켜고 일회용 코드를 입력하세요.</p>

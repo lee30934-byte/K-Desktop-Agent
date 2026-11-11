@@ -155,12 +155,12 @@ export default function AssistantWidget(props: Props) {
   const bubble = voiceTarget && voiceView
     ? voiceView.phase === 'error' ? voiceView.message : voiceView.speaking ? voiceView.lines.filter(l => l.role === 'assistant').slice(-1)[0]?.text || AVATAR_MOODS[mood] : AVATAR_MOODS[mood]
     : running ? `${running}개 작업을 진행하고 있어요.` : answer?.content.replace(/[#*`]/g, '').slice(0, 70) || '무엇을 도와드릴까요?';
-  return createPortal(<aside ref={panel} aria-label="K 비서" className={`assistant-widget companion-widget${layout.minimized ? ' is-minimized' : ''}${open ? ' is-open' : ''}`} style={positionStyle}>
+  return createPortal(<aside ref={panel} aria-label="O2 비서" className={`assistant-widget companion-widget${layout.minimized ? ' is-minimized' : ''}${open ? ' is-open' : ''}`} style={positionStyle}>
     <div className="companion-stage" tabIndex={0} role="group" aria-label="비서 창 이동 · 방향키 이동 · Home 기본 위치"
       onPointerDown={startDrag} onPointerMove={moveDrag}
       onPointerUp={() => { drag.current = null; setTimeout(() => { suppressClick.current = false; }, 0); }}
       onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }} onKeyDown={keyMove}>
-      {!layout.minimized && !open && <div className="companion-bubble" role="status"><small><i data-state={mood} />K 비서<span>{callStatus}</span></small><p title={bubble}>{bubble}</p></div>}
+      {!layout.minimized && !open && <div className="companion-bubble" role="status"><small><i data-state={mood} />O2<span>{callStatus}</span></small><p title={bubble}>{bubble}</p></div>}
       <div className="companion-figure">
         <CompanionAvatar mood={mood} motion={avatar.motion} style={avatar.style} compact={layout.minimized} expanded={open} request={reactionRequest} onMotionState={setMotionState}
         onActivate={() => { if (!suppressClick.current) setOpen(p => !p); }} />
@@ -178,7 +178,7 @@ export default function AssistantWidget(props: Props) {
       </div>
     </div>
     <div className="companion-popover" hidden={!open}>
-      <header className="companion-menu-header"><span className="companion-brand-mark" aria-hidden="true"><CompanionIcon name="style" /></span><div><strong>K 비서 <span>나의 작은 동반자</span></strong><small>{voiceTitle ?? selectedTitle}</small></div><button type="button" aria-label="비서 기능 접기" onClick={() => setOpen(false)}><CompanionIcon name="close" /></button></header>
+      <header className="companion-menu-header"><span className="companion-brand-mark" aria-hidden="true"><CompanionIcon name="style" /></span><div><strong>O2 <span>동원의 에이전트</span></strong><small>{voiceTitle ?? selectedTitle}</small></div><button type="button" aria-label="비서 기능 접기" onClick={() => setOpen(false)}><CompanionIcon name="close" /></button></header>
       <nav aria-label="비서 기능" className="companion-tabs">
         <button type="button" aria-pressed={tab === 'home'} onClick={() => setTab('home')}><CompanionIcon name="chat" />대화·작업</button>
         <button type="button" aria-pressed={tab === 'appearance'} onClick={() => setTab('appearance')}><CompanionIcon name="style" />꾸미기</button>

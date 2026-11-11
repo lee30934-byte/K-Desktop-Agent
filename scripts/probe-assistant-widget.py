@@ -34,7 +34,7 @@ async def main():
                 await page.add_init_script("navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('fixture microphone denied','NotAllowedError')}")
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 await page.goto(f'http://127.0.0.1:{server.server_port}/review.html')
-                widget = page.get_by_role('complementary', name='K 비서', exact=True)
+                widget = page.get_by_role('complementary', name='O2 비서', exact=True)
                 handle = page.get_by_role('group', name='비서 창 이동 · 방향키 이동 · Home 기본 위치', exact=True)
                 await widget.wait_for()
                 await page.get_by_text('DOT 연결 · 꺼짐', exact=True).wait_for(state='attached')

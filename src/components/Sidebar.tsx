@@ -1465,33 +1465,17 @@ function Sidebar({
       <DndContext sensors={sensors} onDragStart={handleDndStart} onDragEnd={handleDndEnd}>
       {/* 브랜드 헤더 */}
       <div className="sidebar-brand">
-        <div className="brand-logo">
-          <svg
-            width="28"
-            height="28"
-            viewBox="0 0 32 32"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M16 2 L29 9 L29 23 L16 30 L3 23 L3 9 Z"
-              stroke="var(--accent)"
-              strokeWidth="1.5"
-              fill="rgba(79, 232, 225, 0.08)"
-            />
-            <path
-              d="M11 10 L11 22 M11 16 L19 10 M11 16 L19 22"
-              stroke="var(--accent)"
-              strokeWidth="2"
-              strokeLinecap="square"
-              fill="none"
-            />
+        <div className="brand-logo" aria-hidden="true">
+          {/* v0.7.86 — O2 로고: 동원의 'ㅇ' 두 개 / 산소 분자 O₂ 를 겹친 두 원으로 */}
+          <svg width="28" height="28" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="16" r="8.5" stroke="var(--accent)" strokeWidth="2" fill="rgba(79, 232, 225, 0.08)" />
+            <circle cx="21" cy="16" r="8.5" stroke="var(--accent)" strokeWidth="2" fill="none" opacity="0.75" />
           </svg>
         </div>
         <div className="brand-text">
-          <div className="brand-name">K.AGENT</div>
+          <div className="brand-name" title="O2 — 동원의 에이전트">O2</div>
           <div className="brand-sub">
-            {appVersion ? `v${appVersion}` : "개인 비서"}
+            {appVersion ? `동원의 에이전트 · v${appVersion}` : "동원의 에이전트"}
           </div>
         </div>
       </div>
