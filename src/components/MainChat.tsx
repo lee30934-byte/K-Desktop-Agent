@@ -182,6 +182,17 @@ function MainChat({
     }
     if (!v) setActiveFilter(null); // off 면 filter 도 클리어
   }, []);
+  // v0.7.86 UI 9단계 — 명령 팔레트 '도구 호출 보기/숨기기' (localStorage 를 바꾸고 이 이벤트를 보낸다)
+  useEffect(() => {
+    const sync = () => {
+      let v = false;
+      try { v = localStorage.getItem("kda_show_tool_cards") === "1"; } catch { /* ignore */ }
+      setShowToolCards(v);
+      if (!v) setActiveFilter(null);
+    };
+    window.addEventListener("kda-show-tool-cards-changed", sync);
+    return () => window.removeEventListener("kda-show-tool-cards-changed", sync);
+  }, []);
 
   // 대화 내용 복사 함수
   const handleCopyChat = async () => {

@@ -62,7 +62,7 @@ test("설정 검색: 제목 텍스트 부분 일치 (대소문자·공백 무시
 });
 
 test("섹션: 모두 9개 그룹 중 하나 + style order, 그룹마다 1개 이상, 블록 위치는 그대로", () => {
-  const sections = [...settings.matchAll(/<section className="settings-section" data-tab="([a-z]+)" style=\{\{ order: (\d+) \}\}/g)];
+  const sections = [...settings.matchAll(/<section (?:id="settings-sec-[a-z-]+" )?className="settings-section" data-tab="([a-z]+)" style=\{\{ order: (\d+) \}\}/g)];
   const all = settings.match(/className="settings-section"/g) ?? [];
   assert.equal(sections.length, all.length, "data-tab + order 없는 섹션이 있음");
   assert.equal(all.length, 40); // 기존 37 + 적용 순서 · 대화 표시 · 대화 백업

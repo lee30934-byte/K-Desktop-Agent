@@ -151,6 +151,8 @@ import {
 
 /** v0.7.86 UI 4단계 — 우측 슬라이드오버 탭 (null = 닫힘). */
 type RightPanel = "preview" | "tasks" | "session" | "assistant" | null;
+const PALETTE_PANELS_O2: Exclude<RightPanel, null>[] = ["preview", "tasks", "session", "assistant"];
+const PALETTE_PANELS_CLASSIC: Exclude<RightPanel, null>[] = ["preview"];
 
 type SystemMemoryStatus = {
   total_physical_bytes: number;
@@ -1492,11 +1494,12 @@ export default function App() {
     return () => window.clearInterval(t);
   }, []);
 
-  // ─── 앱 내 단축키 (Ctrl+P: 명령 팔레트) ─────────────────
+  // ─── 앱 내 단축키 (Ctrl+K / Ctrl+P: 명령 팔레트) ─────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+P: 명령 팔레트 열기/닫기
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+      // Ctrl+K (v0.7.86 UI 9단계 별칭) · Ctrl+P: 명령 팔레트 열기/닫기
+      const k = e.key.toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (k === "k" || k === "p")) {
         e.preventDefault();
         setCommandPaletteOpen((prev) => !prev);
       }
@@ -5808,8 +5811,27 @@ export default function App() {
   // v0.7.86 UI 3단계 — 헤더 칩에서 특정 설정 탭으로 바로 이동
   const openSettingsAi = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "ai"); } catch { /* ignore */ } setSettingsOpen(true); });
   const openSettingsSafety = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "safety"); } catch { /* ignore */ } setSettingsOpen(true); });
-  const closeSettings = useStableCallback(() => setSettingsOpen(false));
+  const closeSettings = useStableCallback(() => { setSettingsOpen(false); setSettingsFocus(null); });
   const closeCommandPalette = useStableCallback(() => setCommandPaletteOpen(false));
+  // v0.7.86 UI 9단계 — 명령 팔레트: 설정 섹션 앵커로 이동 · 새 폴더 · 패널 열기 (두 배치 공통, 패널은 배치별)
+  const [settingsFocus, setSettingsFocus] = useState<{ id: string; nonce: number } | null>(null);
+  const openSettingsSection = useStableCallback((id: string) => {
+    setSettingsFocus({ id, nonce: Date.now() });
+    setSettingsOpen(true);
+  });
+  const handlePaletteNewFolder = useStableCallback(() => {
+    const name = window.prompt("새 폴더 이름", "")?.trim();
+    if (name) void handleCreateFolder(name, null);
+  });
+  const handlePaletteOpenPanel = useStableCallback((panel: Exclude<RightPanel, null>) => {
+    if (panel === "preview") setSidePanelOpen(true);
+    else if (isO2) setRightPanel(panel);
+  });
+  const paletteSearchConversations = useStableCallback((q: string) => handleSearchConversations(q));
+  const paletteSessionRefresh = useStableCallback(() => { void triggerSessionRefresh(); });
+  const paletteCompressContext = useStableCallback(() => { void handleCompressContext(); });
+  const paletteHardStop = useStableCallback(() => { void handleHardStop(); });
+  const paletteSelectConversation = useStableCallback((id: string) => { void handleSelectConversation(id); });
 
   const assistantHandlers: VoiceHandlers = {
     stopAll: async () => { await handleHardStop(); },
@@ -6175,6 +6197,7 @@ export default function App() {
         mcpConnected={mcpState.connected}
         activeConversationId={activeConversationId}
         onConversationsImported={refreshConversations}
+        focusSection={settingsFocus}
       />
 
       {/* Phase 114 (v0.6.69) — 첫 실행 환영 모달 (옛 Settings 강제 오픈 대체) */}
@@ -6264,6 +6287,20 @@ export default function App() {
         onSendMessage={handleSendMessage}
         onOpenSettings={openSettings}
         onNewChat={handleNewConversation}
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onSelectConversation={paletteSelectConversation}
+        onSearchConversations={paletteSearchConversations}
+        onOpenSettingsSection={openSettingsSection}
+        onSessionRefresh={activeConversationId ? paletteSessionRefresh : undefined}
+        onCompressContext={activeConversationId ? paletteCompressContext : undefined}
+        onExportConversation={activeConversationId ? handleExportActiveConversation : undefined}
+        onHardStop={paletteHardStop}
+        onOpenLibrary={handleOpenLibrary}
+        onNewFolder={handlePaletteNewFolder}
+        onOpenPanel={handlePaletteOpenPanel}
+        // o2 는 슬라이드오버 4탭, classic 은 가장자리 미리보기 패널만 (작업 팝오버·하단 미터는 늘 보임)
+        panels={isO2 ? PALETTE_PANELS_O2 : PALETTE_PANELS_CLASSIC}
       />
 
       {/* Phase 107 (v0.6.56) — 폴더 프로젝트 지침 + 첨부 편집 다이얼로그 */}

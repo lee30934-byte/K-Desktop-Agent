@@ -1,14 +1,20 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, Fragment } from "react";
 import { QUICK_PROMPTS } from "../utils/quickPrompts";
+import { useApprovalMode } from "../utils/useApprovalMode";
+import { useUiLayout } from "../utils/useUiLayout";
+import {
+  filterPaletteItems,
+  PALETTE_GROUP_LABELS,
+  SETTINGS_SECTION_ANCHORS,
+  type PaletteItem,
+} from "../utils/commandPalette";
+import type { Conversation } from "../types";
 
-interface Command {
-  id: string;
-  label: string;
-  shortcut?: string;
-  icon?: string;
-  action: () => void;
-  category: "action" | "quick" | "settings";
-}
+// v0.7.86 UI 9단계 — 그룹: 동작 / 빠른 요청 / 대화 이동 / 설정 (두 배치 공통).
+// 옛 이름(세션 초기화, 자동 승인, 대화 압축 …)은 keywords 로 남겨 검색에 걸리게 한다.
+type Command = PaletteItem;
+
+export type PalettePanel = "preview" | "tasks" | "session" | "assistant";
 
 interface CommandPaletteProps {
   open: boolean;
@@ -16,7 +22,31 @@ interface CommandPaletteProps {
   onSendMessage: (msg: string) => void;
   onOpenSettings: () => void;
   onNewChat: () => void;
+  conversations?: Conversation[];
+  activeConversationId?: string | null;
+  onSelectConversation?: (id: string) => void;
+  onSearchConversations?: (query: string) => Promise<Set<string>>;
+  onOpenSettingsSection?: (id: string) => void;
+  onSessionRefresh?: () => void;
+  onCompressContext?: () => void;
+  onExportConversation?: () => void;
+  onHardStop?: () => void;
+  onOpenLibrary?: () => void;
+  onNewFolder?: () => void;
+  // 패널 열기. o2 는 슬라이드오버 4탭, classic 은 'preview'(가장자리 SidePanel)만 넘긴다.
+  onOpenPanel?: (panel: PalettePanel) => void;
+  panels?: PalettePanel[];
 }
+
+const TOOL_CARDS_KEY = "kda_show_tool_cards";
+export const TOOL_CARDS_EVENT = "kda-show-tool-cards-changed";
+
+const PANEL_LABELS: Record<PalettePanel, [string, string, string[]]> = {
+  preview: ["미리보기 패널 열기", "🖼️", ["사이드 패널", "미리보기"]],
+  tasks: ["작업 패널 열기", "⚡", ["작업 현황", "작업"]],
+  session: ["세션·사용량 보기", "📊", ["사용량", "한도", "컨텍스트", "메트릭"]],
+  assistant: ["비서 패널 열기", "◐", ["비서", "음성", "아바타"]],
+};
 
 export default function CommandPalette({
   open,
@@ -24,44 +54,131 @@ export default function CommandPalette({
   onSendMessage,
   onOpenSettings,
   onNewChat,
+  conversations = [],
+  activeConversationId = null,
+  onSelectConversation,
+  onSearchConversations,
+  onOpenSettingsSection,
+  onSessionRefresh,
+  onCompressContext,
+  onExportConversation,
+  onHardStop,
+  onOpenLibrary,
+  onNewFolder,
+  onOpenPanel,
+  panels = [],
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [contentHits, setContentHits] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const approval = useApprovalMode();
+  const { layout, setLayout } = useUiLayout();
 
-  // 빠른 명령 목록
-  const commands: Command[] = [
-    // Actions
-    {
-      id: "new-chat",
-      label: "새 대화 시작",
-      icon: "💬",
-      shortcut: "Ctrl+N",
-      action: () => { onNewChat(); onClose(); },
-      category: "action",
-    },
-    {
-      id: "settings",
-      label: "설정 열기",
-      icon: "⚙️",
-      shortcut: "Ctrl+,",
-      action: () => { onOpenSettings(); onClose(); },
-      category: "settings",
-    },
-    // Quick prompts — 빈 화면 제안 카드와 같은 목록 (src/utils/quickPrompts.ts)
-    ...QUICK_PROMPTS.map((p): Command => ({
-      id: p.id,
-      label: p.label,
-      icon: p.icon,
-      action: () => { onSendMessage(p.prompt); onClose(); },
-      category: "quick",
-    })),
-  ];
+  // 메시지 내용 검색 (대화 이동) — 입력이 멈춘 뒤 한 번
+  useEffect(() => {
+    const q = query.trim();
+    if (!open || !onSearchConversations || q.length < 2) { setContentHits(new Set()); return; }
+    let alive = true;
+    const t = window.setTimeout(() => {
+      onSearchConversations(q).then((ids) => { if (alive) setContentHits(ids); }).catch(() => {});
+    }, 200);
+    return () => { alive = false; window.clearTimeout(t); };
+  }, [open, query, onSearchConversations]);
 
-  // 필터링된 명령
-  const filteredCommands = commands.filter((cmd) =>
-    cmd.label.toLowerCase().includes(query.toLowerCase())
-  );
+  const commands: Command[] = useMemo(() => {
+    const run = (fn: () => void) => () => { onClose(); fn(); };
+    const showToolCards = (() => { try { return localStorage.getItem(TOOL_CARDS_KEY) === "1"; } catch { return false; } })();
+    const list: Command[] = [
+      // 동작
+      { id: "new-chat", label: "새 대화", icon: "💬", group: "action", keywords: ["새 채팅", "new chat"], run: run(onNewChat) },
+      ...(onNewFolder ? [{ id: "new-folder", label: "새 폴더", icon: "📁", group: "action" as const, keywords: ["폴더 만들기"], run: run(onNewFolder) }] : []),
+      {
+        id: "toggle-approval",
+        label: approval.enabled ? "확인 없이 실행 끄기" : "확인 없이 실행 켜기",
+        hint: approval.enabled ? "지금 켜짐" : "지금 꺼짐",
+        icon: "🛡️",
+        shortcut: "Ctrl+Alt+A",
+        group: "action",
+        keywords: ["자동 승인", "자동승인", "자동 승인 ON", "자동 승인 OFF", "승인", "안전"],
+        run: run(approval.toggle),
+      },
+      ...(onSessionRefresh ? [{
+        id: "session-refresh", label: "새 세션으로 이어가기", hint: "맥락 유지 · 같은 대화", icon: "↻", group: "action" as const,
+        keywords: ["세션 초기화", "세션", "갱신", "리셋", "초기화", "컨텍스트 비우기"], run: run(onSessionRefresh),
+      }] : []),
+      ...(onCompressContext ? [{
+        id: "compress-context", label: "요약해서 새 대화로 이어가기", hint: "현재 대화는 보존", icon: "📦", group: "action" as const,
+        keywords: ["대화 압축", "압축", "이어하기", "요약"], run: run(onCompressContext),
+      }] : []),
+      ...panels.map((p): Command => ({
+        id: `panel-${p}`, label: PANEL_LABELS[p][0], icon: PANEL_LABELS[p][1], group: "action", keywords: ["패널", ...PANEL_LABELS[p][2]],
+        run: run(() => onOpenPanel?.(p)),
+      })),
+      ...(onOpenLibrary ? [{ id: "library", label: "라이브러리 열기", icon: "📚", shortcut: "Ctrl+L", group: "action" as const, keywords: ["라이브러리", "카드"], run: run(onOpenLibrary) }] : []),
+      {
+        id: "toggle-tool-cards",
+        label: showToolCards ? "도구 호출 숨기기" : "도구 호출 보기",
+        icon: "🔧",
+        group: "action",
+        keywords: ["도구 카드", "tool"],
+        run: run(() => {
+          try { localStorage.setItem(TOOL_CARDS_KEY, showToolCards ? "0" : "1"); } catch { /* ignore */ }
+          window.dispatchEvent(new Event(TOOL_CARDS_EVENT));
+        }),
+      },
+      ...(onExportConversation ? [{ id: "export-conversation", label: "이 대화 내보내기", icon: "📤", group: "action" as const, keywords: ["내보내기", "export", "백업"], run: run(onExportConversation) }] : []),
+      ...(onHardStop ? [{ id: "hard-stop", label: "전체 작업 정지", icon: "■", group: "action" as const, keywords: ["정지", "중단", "hardstop", "멈춤"], run: run(onHardStop) }] : []),
+      {
+        id: "toggle-layout",
+        label: layout === "o2" ? "화면 스타일: 클래식으로 바꾸기" : "화면 스타일: O2로 바꾸기",
+        hint: layout === "o2" ? "지금 O2" : "지금 클래식",
+        icon: "🎨",
+        group: "action",
+        keywords: ["화면 스타일", "화면 배치", "레이아웃", "배치", "classic", "클래식", "o2"],
+        run: run(() => setLayout(layout === "o2" ? "classic" : "o2")),
+      },
+      { id: "settings", label: "설정 열기", icon: "⚙️", group: "action", keywords: ["환경설정", "설정"], run: run(onOpenSettings) },
+      // 빠른 요청 — 빈 화면 제안 카드와 같은 목록 (src/utils/quickPrompts.ts)
+      ...QUICK_PROMPTS.map((p): Command => ({
+        id: p.id,
+        label: p.label,
+        icon: p.icon,
+        group: "quick",
+        run: () => { onSendMessage(p.prompt); onClose(); },
+      })),
+      // 대화 이동 — 제목 또는 메시지 내용 검색 결과
+      ...(onSelectConversation
+        ? conversations
+            .filter((c) => c.id !== activeConversationId)
+            .map((c): Command => ({
+              id: `conv-${c.id}`,
+              label: c.title || "제목 없음",
+              icon: "🗨️",
+              group: "conversation",
+              hint: contentHits.has(c.id) ? "메시지 내용 일치" : undefined,
+              keywords: contentHits.has(c.id) ? [query] : undefined,
+              run: run(() => onSelectConversation(c.id)),
+            }))
+        : []),
+      // 설정 섹션 — 그룹을 열고 그 섹션으로 스크롤
+      ...SETTINGS_SECTION_ANCHORS.map((a): Command => ({
+        id: a.id,
+        label: a.title,
+        icon: "⚙️",
+        group: "settings",
+        keywords: a.keywords,
+        run: run(() => (onOpenSettingsSection ? onOpenSettingsSection(a.id) : onOpenSettings())),
+      })),
+    ];
+    return list;
+  }, [approval.enabled, approval.toggle, layout, setLayout, panels, conversations, activeConversationId, contentHits, query,
+    onClose, onNewChat, onNewFolder, onSessionRefresh, onCompressContext, onOpenPanel, onOpenLibrary, onExportConversation,
+    onHardStop, onOpenSettings, onSendMessage, onSelectConversation, onOpenSettingsSection, open]);
+
+  // 필터링된 명령 (그룹 순서 유지, 검색어 없으면 대화 이동은 최근 6개)
+  const filteredCommands = useMemo(() => filterPaletteItems(commands, query), [commands, query]);
 
   // 선택 인덱스 보정
   useEffect(() => {
@@ -69,6 +186,10 @@ export default function CommandPalette({
       setSelectedIndex(Math.max(0, filteredCommands.length - 1));
     }
   }, [filteredCommands.length, selectedIndex]);
+  useEffect(() => { setSelectedIndex(0); }, [query]);
+  useEffect(() => {
+    listRef.current?.querySelector(".command-palette-item.selected")?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
 
   // 열릴 때 포커스 및 리셋
   useEffect(() => {
@@ -93,8 +214,9 @@ export default function CommandPalette({
           break;
         case "Enter":
           e.preventDefault();
+          if (e.nativeEvent.isComposing) break; // 한글 조합 중 Enter 는 무시
           if (filteredCommands[selectedIndex]) {
-            filteredCommands[selectedIndex].action();
+            filteredCommands[selectedIndex].run();
           } else if (query.trim()) {
             // 검색어를 바로 메시지로 전송
             onSendMessage(query.trim());
@@ -114,14 +236,15 @@ export default function CommandPalette({
 
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div className="command-palette" onClick={(e) => e.stopPropagation()}>
+      <div className="command-palette" role="dialog" aria-modal="true" aria-label="명령 팔레트" onClick={(e) => e.stopPropagation()}>
         <div className="command-palette-header">
           <span className="command-palette-icon">⌘</span>
           <input
             ref={inputRef}
             type="text"
             className="command-palette-input"
-            placeholder="명령 또는 빠른 프롬프트 검색..."
+            placeholder="명령, 대화, 설정 검색..."
+            aria-label="명령 검색"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -129,27 +252,35 @@ export default function CommandPalette({
           <span className="command-palette-hint mono">ESC</span>
         </div>
 
-        <div className="command-palette-list">
+        <div className="command-palette-list" ref={listRef} role="listbox" aria-label="명령 목록">
           {filteredCommands.length === 0 ? (
             <div className="command-palette-empty">
               <span>"{query}" 로 바로 메시지 전송 (Enter)</span>
             </div>
           ) : (
             filteredCommands.map((cmd, idx) => (
-              <div
-                key={cmd.id}
-                className={`command-palette-item ${
-                  idx === selectedIndex ? "selected" : ""
-                }`}
-                onClick={() => cmd.action()}
-                onMouseEnter={() => setSelectedIndex(idx)}
-              >
-                <span className="command-item-icon">{cmd.icon}</span>
-                <span className="command-item-label">{cmd.label}</span>
-                {cmd.shortcut && (
-                  <span className="command-item-shortcut mono">{cmd.shortcut}</span>
+              <Fragment key={cmd.id}>
+                {(idx === 0 || filteredCommands[idx - 1].group !== cmd.group) && (
+                  <div className="command-palette-group" role="presentation">{PALETTE_GROUP_LABELS[cmd.group]}</div>
                 )}
-              </div>
+                <div
+                  role="option"
+                  aria-selected={idx === selectedIndex}
+                  data-group={cmd.group}
+                  className={`command-palette-item ${
+                    idx === selectedIndex ? "selected" : ""
+                  }`}
+                  onClick={() => cmd.run()}
+                  onMouseEnter={() => setSelectedIndex(idx)}
+                >
+                  <span className="command-item-icon">{cmd.icon}</span>
+                  <span className="command-item-label">{cmd.label}</span>
+                  {cmd.hint && <span className="command-item-hint">{cmd.hint}</span>}
+                  {cmd.shortcut && (
+                    <span className="command-item-shortcut mono">{cmd.shortcut}</span>
+                  )}
+                </div>
+              </Fragment>
             ))
           )}
         </div>
@@ -158,6 +289,7 @@ export default function CommandPalette({
           <span className="mono">↑↓ 이동</span>
           <span className="mono">Enter 실행</span>
           <span className="mono">Esc 닫기</span>
+          <span className="mono">Ctrl+K 열기·닫기</span>
         </div>
       </div>
     </div>

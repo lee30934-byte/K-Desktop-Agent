@@ -14,6 +14,7 @@ import ApprovalToggle from "./ApprovalToggle";
 import { Segmented } from "../ui";
 import { useUiLayout, type UiLayout } from "../utils/useUiLayout";
 import { SETTINGS_TABS, LS_ACTIVE_SETTINGS_TAB, readSettingsTab, settingsSectionMatches, type SettingsTabId } from "../utils/settingsTabs";
+import { SETTINGS_SECTION_ANCHORS } from "../utils/commandPalette";
 import { exportConversationToFile, exportAllConversationsToFile, importConversationsFromFile } from "../utils/conversationBackup";
 import {
   readChatWidth, readAssistantStyle, applyChatDisplay,
@@ -148,6 +149,8 @@ interface SettingsProps {
   // v0.7.86 UI 8단계 — ⑧ 데이터·백업 › 대화 백업 (사이드바와 같은 유틸)
   activeConversationId?: string | null;
   onConversationsImported?: () => void;
+  // v0.7.86 UI 9단계 — 명령 팔레트 '설정' 항목: 그 그룹을 열고 섹션 앵커(id)까지 스크롤. nonce 로 같은 섹션 재요청도 반영
+  focusSection?: { id: string; nonce: number } | null;
 }
 
 // API 제공자 타입
@@ -1236,7 +1239,7 @@ function ToolImageModeToggle() {
   );
 }
 
-export default function Settings({ open, onClose, mcpConnected, activeConversationId = null, onConversationsImported }: SettingsProps) {
+export default function Settings({ open, onClose, mcpConnected, activeConversationId = null, onConversationsImported, focusSection = null }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1268,6 +1271,26 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
     if (!open) return;
     setActiveTab(readSettingsTab());
   }, [open]);
+  // v0.7.86 UI 9단계 — 팔레트에서 고른 섹션으로 이동 (위 effect 뒤에 와야 그룹이 덮어써지지 않는다)
+  useEffect(() => {
+    if (!open || !focusSection) return;
+    const anchor = SETTINGS_SECTION_ANCHORS.find((a) => a.id === focusSection.id);
+    if (!anchor) return;
+    setSettingsQuery("");
+    setActiveTab(anchor.tab);
+    let tries = 0;
+    let timer = 0;
+    const go = () => {
+      const el = document.getElementById(anchor.id);
+      if (!el && tries++ < 10) { timer = window.setTimeout(go, 50); return; }
+      if (!el) return;
+      el.scrollIntoView({ block: "start", behavior: "smooth" });
+      el.setAttribute("data-palette-focus", "true");
+      timer = window.setTimeout(() => el.removeAttribute("data-palette-focus"), 1600);
+    };
+    timer = window.setTimeout(go, 30);
+    return () => window.clearTimeout(timer);
+  }, [open, focusSection]);
   const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
   const [addingFolder, setAddingFolder] = useState(false);
 
@@ -3203,7 +3226,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           )}
 
           {/* v0.7.86 UI 3b단계 — 화면 스타일: O2(새 배치) / 클래식(이전 배치). 즉시 적용 */}
-          <section className="settings-section" data-tab="display" style={{ order: 5 }} data-testid="ui-layout-section">
+          <section id="settings-sec-ui-layout" className="settings-section" data-tab="display" style={{ order: 5 }} data-testid="ui-layout-section">
             <div className="eyebrow">화면 스타일</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -3225,7 +3248,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* UI 테마 섹션 */}
-          <section className="settings-section" data-tab="display" style={{ order: 10 }}>
+          <section id="settings-sec-theme" className="settings-section" data-tab="display" style={{ order: 10 }}>
             <div className="eyebrow">테마</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3284,7 +3307,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* 말풍선 색상 섹션 */}
-          <section className="settings-section" data-tab="display" style={{ order: 20 }}>
+          <section id="settings-sec-bubble" className="settings-section" data-tab="display" style={{ order: 20 }}>
             <div className="eyebrow">말풍선 색상</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3382,7 +3405,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* 에이전트 권한 섹션 */}
-          <section className="settings-section" data-tab="safety" style={{ order: 20 }}>
+          <section id="settings-sec-approval" className="settings-section" data-tab="safety" style={{ order: 20 }}>
             <div className="eyebrow">실행 확인</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -3397,7 +3420,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               <ApprovalToggle />
             </div>
           </section>
-          <section className="settings-section" data-tab="safety" style={{ order: 10 }}>
+          <section id="settings-sec-categories" className="settings-section" data-tab="safety" style={{ order: 10 }}>
             <div className="eyebrow">기능별 허용 범위</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3639,7 +3662,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               OFF (default, 균형): cap 8000, slice 16, threshold 0.7 — 답변 질 거의 보존
               ON (빠른 모드):        cap 4000, slice 12, threshold 0.6 — 응답속도 우선
               localStorage key kda_fast_mode. App.tsx 가 listen 해서 즉시 적용. */}
-          <section className="settings-section" data-tab="ai" style={{ order: 20 }}>
+          <section id="settings-sec-perf" className="settings-section" data-tab="ai" style={{ order: 20 }}>
             <div className="eyebrow">⚡ 성능 모드</div>
             <PerformanceModeToggle />
             {/* Phase 113.4 (v0.6.68) — 마지막 trim 통계 + 모델 한도 가시화.
@@ -3653,7 +3676,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* v0.7.1 — 실험 기능 (에이전트) 토글. ~/.kda/agent-flags.json. 전부 기본 OFF.
               효과는 다음 turn 부터 (시스템 프롬프트/도구 게이트가 turn 시작 시 고정). */}
-          <section className="settings-section" data-tab="agent" style={{ order: 10 }}>
+          <section id="settings-sec-experimental" className="settings-section" data-tab="agent" style={{ order: 10 }}>
             <div className="eyebrow">🧪 실험 기능 (에이전트)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3771,7 +3794,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 opt-in.
               ON + 엔진 2개 이상이면 매 메시지가 fan-out (병렬 질의) → 메인 엔진(Claude 우선) 종합.
               비용/시간이 엔진 수만큼 늘어나므로 기본 OFF + 명시적 선택. */}
-          <section className="settings-section" data-tab="ai" style={{ order: 30 }}>
+          <section id="settings-sec-orchestration" className="settings-section" data-tab="ai" style={{ order: 30 }}>
             <div className="eyebrow">🤝 멀티 엔진 오케스트레이션 (실험)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row" style={{ alignItems: "flex-start" }}>
@@ -3822,7 +3845,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}
-          <section className="settings-section" data-tab="safety" style={{ order: 30 }}>
+          <section id="settings-sec-precise-lock" className="settings-section" data-tab="safety" style={{ order: 30 }}>
             <div className="eyebrow">정밀 잠금</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -4001,7 +4024,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* API 키 / 인증 섹션 */}
-          <section className="settings-section" data-tab="ai" style={{ order: 10 }}>
+          <section id="settings-sec-providers" className="settings-section" data-tab="ai" style={{ order: 10 }}>
             <div className="eyebrow">AI 모델 연동</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -4508,7 +4531,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* 현재 활성 모델 표시 */}
-          <section className="settings-section" data-tab="ai" style={{ order: 0 }}>
+          <section id="settings-sec-active-model" className="settings-section" data-tab="ai" style={{ order: 0 }}>
             <div className="eyebrow">활성 모델</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -4533,7 +4556,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 15 — 외부 사용량 페이지 (새 webview 창으로 K-Desktop-Agent 안에서 그대로 보기) */}
-          <section className="settings-section" data-tab="ai" style={{ order: 40 }}>
+          <section id="settings-sec-usage-pages" className="settings-section" data-tab="ai" style={{ order: 40 }}>
             <div className="eyebrow">사용량 페이지</div>
             <div
               className="settings-row-desc"
@@ -4569,7 +4592,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 18 — 필수 도구 (의존성) 셋업 섹션 */}
-          <section className="settings-section" data-tab="advanced" style={{ order: 10 }} data-firstrun={isFirstRun ? "true" : "false"}>
+          <section id="settings-sec-setup" className="settings-section" data-tab="advanced" style={{ order: 10 }} data-firstrun={isFirstRun ? "true" : "false"}>
             <div className="eyebrow">
               필수 도구 {isFirstRun && <span style={{ color: "var(--accent)" }}>· 첫 셋업</span>}
             </div>
@@ -4797,7 +4820,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 25 (v0.5.11) — 데이터 폴더 (portable) */}
-          <section className="settings-section" data-tab="data" style={{ order: 10 }}>
+          <section id="settings-sec-data-folder" className="settings-section" data-tab="data" style={{ order: 10 }}>
             <div className="eyebrow">데이터 폴더</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -4861,7 +4884,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* 자동 업데이트 섹션 */}
-          <section className="settings-section" data-tab="general" style={{ order: 30 }}>
+          <section id="settings-sec-update" className="settings-section" data-tab="general" style={{ order: 30 }}>
             <div className="eyebrow">업데이트</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -4953,7 +4976,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 127 (v0.6.82) — 텔레그램 봇 브리지: 폰에서 KDA 원격 조작 */}
-          <section className="settings-section" data-tab="connect" style={{ order: 10 }}>
+          <section id="settings-sec-telegram" className="settings-section" data-tab="connect" style={{ order: 10 }}>
             <div className="eyebrow">텔레그램 연동 (폰에서 원격 조작)</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5065,7 +5088,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 129 (v0.6.84) — VM/원격 호환 모드: WebView2 GPU 가속 끄기 */}
-          <section className="settings-section" data-tab="advanced" style={{ order: 40 }}>
+          <section id="settings-sec-vm-compat" className="settings-section" data-tab="advanced" style={{ order: 40 }}>
             <div className="eyebrow">화면 호환 (VM · 원격 데스크톱)</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5091,7 +5114,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             </div>
           </section>
 
-          <section className="settings-section" data-tab="general" style={{ order: 10 }}>
+          <section id="settings-sec-startup" className="settings-section" data-tab="general" style={{ order: 10 }}>
             <div className="eyebrow">시작</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5112,7 +5135,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             </div>
           </section>
 
-          <section className="settings-section" data-tab="advanced" style={{ order: 20 }}>
+          <section id="settings-sec-runtime" className="settings-section" data-tab="advanced" style={{ order: 20 }}>
             <div className="eyebrow">런타임</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5137,7 +5160,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             </div>
           </section>
 
-          <section className="settings-section" data-tab="agent" style={{ order: 40 }}>
+          <section id="settings-sec-resources" className="settings-section" data-tab="agent" style={{ order: 40 }}>
             <div className="eyebrow">리소스</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-header">
@@ -5179,7 +5202,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             </div>
           </section>
 
-          <section className="settings-section" data-tab="agent" style={{ order: 20 }}>
+          <section id="settings-sec-task-recovery" className="settings-section" data-tab="agent" style={{ order: 20 }}>
             <div className="eyebrow">작업 복구</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5218,7 +5241,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 59 — Anthropic rate polling toggle (ccusage). V3 같은 백신이 ccusage 의 native binary 를 차단해 매 5분마다 알림이 뜨는 경우 off. */}
-          <section className="settings-section" data-tab="ai" style={{ order: 50 }}>
+          <section id="settings-sec-usage-tracking" className="settings-section" data-tab="ai" style={{ order: 50 }}>
             <div className="eyebrow">사용량 추적</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5255,7 +5278,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* Phase 90 (v0.6.32) — 안전장치 탭 최상단 요약 카드.
               SafeMode 현재값 + Memory Sync 상태 + Final-Review Gate + Lee Profile 한눈에. */}
-          <section className="settings-section" data-tab="safety" style={{ order: 0 }}>
+          <section id="settings-sec-safety-summary" className="settings-section" data-tab="safety" style={{ order: 0 }}>
             <div className="eyebrow">📊 안전 상태 요약</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -5606,7 +5629,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* Phase 87 (v0.6.30) — Git Memory Sync + Phase 88 가이드 + Phase 89 hybrid (team repo).
               Personal repo: lee-profile.md + memory/.  Team repo (선택): memory/ 만 (lee-profile 절대 X). */}
-          <section className="settings-section" data-tab="data" style={{ order: 40 }}>
+          <section id="settings-sec-memory-sync" className="settings-section" data-tab="data" style={{ order: 40 }}>
             <div className="eyebrow">🔄 Memory Sync (Git)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6177,7 +6200,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄. */}
-          <section className="settings-section" data-tab="safety" style={{ order: 50 }}>
+          <section id="settings-sec-safemode-schedule" className="settings-section" data-tab="safety" style={{ order: 50 }}>
             <div className="eyebrow">🕒 SafeMode 자동 전환 스케줄</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6388,7 +6411,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               카테고리별 위험도 schema + SafeMode 토글 (off/balanced/strict).
               balanced: 높음↑ 카테고리를 ask 로. strict: 보통↑ ask, 높음↑ manual + 일부 도구 자동 차단.
               실제 권한 게이트는 sidecar 가 강제 — 이 토글은 매 turn 시작 시 sidecar 로 전달. */}
-          <section className="settings-section" data-tab="safety" style={{ order: 40 }}>
+          <section id="settings-sec-tool-safety" className="settings-section" data-tab="safety" style={{ order: 40 }}>
             <div className="eyebrow">🛡️ Connector/Tool Safety Layer</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6628,7 +6651,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* Phase 81 (v0.6.25) — Lee Profile + Memory Auto-Loader.
               ~/.kda/lee-profile.md 의 내용이 매 turn 시작 시 system prompt 첫머리에 prepend.
               K 본인이 직접 정의한 응답 스타일/규칙 (예: "한국어 우선", "증거 없는 완료 보고 금지" 등). */}
-          <section className="settings-section" data-tab="agent" style={{ order: 30 }}>
+          <section id="settings-sec-profile" className="settings-section" data-tab="agent" style={{ order: 30 }}>
             <div className="eyebrow">🪪 Lee Profile (개인 응답 규칙)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6698,7 +6721,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* Phase 80 (v0.6.24) — Final-Review Gate toggle. SIGILFALL 등 대량 생성 raw 컷이
               사용자에게 노출되지 않도록 qa-report.json 의 FINAL_CANDIDATE 만 미리보기 허용. */}
-          <section className="settings-section" data-tab="safety" style={{ order: 60 }}>
+          <section id="settings-sec-final-review" className="settings-section" data-tab="safety" style={{ order: 60 }}>
             <div className="eyebrow">🛡️ Final-Review Gate</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -6730,7 +6753,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             </div>
           </section>
 
-          <section className="settings-section" data-tab="general" style={{ order: 20 }}>
+          <section id="settings-sec-shortcuts" className="settings-section" data-tab="general" style={{ order: 20 }}>
             <div className="eyebrow">단축키</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6757,7 +6780,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기) */}
-          <section className="settings-section" data-tab="advanced" style={{ order: 50 }}>
+          <section id="settings-sec-path-map" className="settings-section" data-tab="advanced" style={{ order: 50 }}>
             <div className="eyebrow">🗂️ 경로 매핑 (WSL / VM)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6864,7 +6887,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* Phase 75 (v0.6.18) — Codex 좀비 process detect + 안전 정리 */}
-          <section className="settings-section" data-tab="advanced" style={{ order: 30 }}>
+          <section id="settings-sec-zombie" className="settings-section" data-tab="advanced" style={{ order: 30 }}>
             <div className="eyebrow">🧟 좀비 codex 프로세스</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7036,7 +7059,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             </div>
           </section>
 
-          <section className="settings-section" data-tab="general" style={{ order: 40 }}>
+          <section id="settings-sec-app" className="settings-section" data-tab="general" style={{ order: 40 }}>
             <div className="eyebrow">앱</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -7054,7 +7077,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* ─── Phase 67 (v0.6.2) — MCP 도구 탭 ──────────────────────── */}
 
           {/* 67a — 현재 활성 도구 인스펙터 */}
-          <section className="settings-section" data-tab="tools" style={{ order: 10 }}>
+          <section id="settings-sec-mcp-active" className="settings-section" data-tab="tools" style={{ order: 10 }}>
             <div className="eyebrow">🔧 활성 MCP 도구</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7280,7 +7303,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* 67b — 외부 MCP 서버 카탈로그 (명령 안내 형) */}
-          <section className="settings-section" data-tab="tools" style={{ order: 20 }}>
+          <section id="settings-sec-mcp-catalog" className="settings-section" data-tab="tools" style={{ order: 20 }}>
             <div className="eyebrow">📦 추가 가능한 MCP 서버</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7378,7 +7401,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* 67c — 커스텀 plugin 빌더 */}
-          <section className="settings-section" data-tab="tools" style={{ order: 30 }}>
+          <section id="settings-sec-mcp-builder" className="settings-section" data-tab="tools" style={{ order: 30 }}>
             <div className="eyebrow">🧪 커스텀 도구 만들기</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7610,7 +7633,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* ─── 안전장치 (백업/복구) ──────────────────────── */}
-          <section className="settings-section" data-tab="data" style={{ order: 20 }}>
+          <section id="settings-sec-app-backup" className="settings-section" data-tab="data" style={{ order: 20 }}>
             <div className="eyebrow">🛡️ 안전장치</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7687,7 +7710,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* v0.7.86 UI 8단계 — ③ 권한과 안전: 적용 순서 다이어그램 (안전 상태 요약 바로 아래) */}
-          <section className="settings-section" data-tab="safety" style={{ order: 5 }} data-testid="safety-order-section">
+          <section id="settings-sec-safety-order" className="settings-section" data-tab="safety" style={{ order: 5 }} data-testid="safety-order-section">
             <div className="eyebrow">적용 순서</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7712,7 +7735,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* v0.7.86 UI 8단계 — ⑦ 화면·비서: 대화 표시 (대화 폭 · 어시스턴트 표시 방식, O2 화면에 적용) */}
-          <section className="settings-section" data-tab="display" style={{ order: 30 }} data-testid="chat-display-section">
+          <section id="settings-sec-chat-display" className="settings-section" data-tab="display" style={{ order: 30 }} data-testid="chat-display-section">
             <div className="eyebrow">대화 표시</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -7748,7 +7771,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* v0.7.86 UI 8단계 — ⑧ 데이터·백업: 대화 백업 (예전 사이드바 '백업·가져오기'와 같은 함수) */}
-          <section className="settings-section" data-tab="data" style={{ order: 30 }} data-testid="conversation-backup-section">
+          <section id="settings-sec-conversation-backup" className="settings-section" data-tab="data" style={{ order: 30 }} data-testid="conversation-backup-section">
             <div className="eyebrow">대화 백업</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -7765,7 +7788,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             </div>
           </section>
 
-          <section className="settings-section" data-tab="general" style={{ order: 50 }}>
+          <section id="settings-sec-about" className="settings-section" data-tab="general" style={{ order: 50 }}>
             <div className="eyebrow">정보</div>
             <div className="settings-meta mono">
               <div>K Desktop Agent v0.4.0</div>

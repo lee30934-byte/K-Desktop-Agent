@@ -5724,3 +5724,24 @@
 :root[data-layout="o2"] .composer-height-grip-bar { width: 32px; background: var(--line-strong); }
 :root[data-layout="o2"] .chat-notices,
 :root[data-layout="o2"] .progress-indicator { width: 100%; max-width: calc(var(--chat-max-width) + 2 * var(--space-5, 24px)); margin-left: auto; margin-right: auto; box-sizing: border-box; }
+
+/* v0.7.86 UI 9단계 — 명령 팔레트 그룹 제목 · 보조 설명 · 설정 섹션 도착 강조 (두 배치 공통) */
+.command-palette-group {
+  padding: var(--space-sm) var(--space-lg) 4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+}
+.command-palette-group:not(:first-child) { margin-top: 4px; border-top: 1px solid var(--border-subtle); }
+.command-item-hint { font-size: 12px; color: var(--text-tertiary); white-space: nowrap; }
+.command-palette-item .command-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-section[data-palette-focus="true"] { outline: 2px solid var(--accent); outline-offset: 4px; transition: outline-color 0.3s; }
+/* o2: 공통 Dialog 모양 (스펙 3.7) */
+:root[data-layout="o2"] .command-palette-overlay { background: rgba(0, 0, 0, 0.45); backdrop-filter: none; padding-top: 12vh; }
+:root[data-layout="o2"] .command-palette { width: 600px; border-radius: var(--radius-card, 16px); border-color: var(--line); box-shadow: var(--shadow-overlay); font-family: var(--font-ui); }
+:root[data-layout="o2"] .command-palette-header { background: transparent; }
+:root[data-layout="o2"] .command-palette-icon { color: var(--fg-subtle); }
+:root[data-layout="o2"] .command-palette-item { margin: 0 var(--space-sm); padding: 8px var(--space-md); border-radius: var(--radius-ctl, 10px); }
+:root[data-layout="o2"] .command-palette-item.selected { border-left: 0; padding-left: var(--space-md); background: var(--accent-soft, rgba(79, 232, 225, 0.1)); }
+:root[data-layout="o2"] .command-item-icon { font-size: 15px; width: 22px; }
+:root[data-layout="o2"] .command-palette-footer { background: transparent; justify-content: flex-start; }
