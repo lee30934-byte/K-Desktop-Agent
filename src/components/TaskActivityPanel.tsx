@@ -60,6 +60,81 @@ export default function TaskActivityPanel(props: Props) {
       {props.allPaused && <span>· 자동 실행 보류</span>}
     </button>
   </aside>;
+  const titleOf = (id: string) => props.conversations.find((c) => c.id === id)?.title ?? "대화";
+  const elapsed = (from: number) => {
+    const sec = Math.max(0, Math.floor((Date.now() - from) / 1000));
+    const m = Math.floor(sec / 60);
+    return m >= 60 ? `${Math.floor(m / 60)}시간 ${m % 60}분` : m > 0 ? `${m}분 ${sec % 60}초` : `${sec}초`;
+  };
+  const inlineBody = () => {
+    const runningIds = ids.filter((id) => { const st = props.runs.find((r) => r.conversationId === id)?.state; return st === "running" || st === "stopping"; });
+    const queuedIds = ids.filter((id) => (props.queues.get(id)?.length ?? 0) > 0);
+    const otherIds = ids.filter((id) => !runningIds.includes(id) && !queuedIds.includes(id));
+    return <div className="task-activity-inline">
+      {props.allPaused && <div className="task-automation-paused">자동 실행을 보류 중입니다.
+        <button type="button" className="so-sm so-sm--acc" onClick={props.onResumeAutomation}>자동 실행 허용</button>
+      </div>}
+      <div className="so-sect">
+        <h5 className="so-sect__h">실행 중<span className="so-sect__c">{runningIds.length}</span></h5>
+        {!runningIds.length && <p className="so-empty">실행 중인 작업이 없어요.</p>}
+        {runningIds.map((id) => {
+          const run = props.runs.find((r) => r.conversationId === id)!;
+          return <div className="so-task task-activity-row" key={id}>
+            <div className="so-task__top"><span className="so-spin" aria-hidden="true" /><b title={titleOf(id)}>{titleOf(id)}</b>
+              {run.state === "stopping" && <span className="so-tag so-tag--warn">정지 중</span>}</div>
+            <div className="so-task__sub">{run.detail} · {elapsed(run.startedAt)}</div>
+            <div className="so-task__acts">
+              <button type="button" className="so-sm task-conversation-link" onClick={() => props.onSelect(id)}>대화 열기</button>
+              <button type="button" className="so-sm so-sm--dan" onClick={() => props.onStop(id)}><Icon name="square" size={14} />{run.state === "stopping" ? "정지 재요청" : "이 작업 정지"}</button>
+            </div>
+          </div>;
+        })}
+      </div>
+      {queuedIds.length > 0 && <div className="so-sect">
+        <h5 className="so-sect__h">예약<span className="so-sect__c">{queueCount}</span></h5>
+        {queuedIds.map((id) => {
+          const queue = props.queues.get(id) ?? [];
+          const busy = runningIds.includes(id);
+          const held = props.paused.has(id) || props.allPaused;
+          return <div className={busy ? "so-task" : "so-task task-activity-row"} key={id}>
+            <div className="so-task__top"><Icon name="clock" size={14} className="so-task__ic" /><b title={titleOf(id)}>{titleOf(id)}</b>
+              {queue.length > 1 && <span className="so-tag">{queue.length}개</span>}{held && <span className="so-tag so-tag--warn">보류</span>}</div>
+            <div className="so-task__sub" title={queue[0]?.text}>완료 후 보냄: "{(queue[0]?.text ?? "").slice(0, 60)}"</div>
+            <div className="so-task__acts">
+              {!busy && <button type="button" className="so-sm so-sm--acc" onClick={() => props.onResume(id)}>예약 이어서 실행</button>}
+              <button type="button" className="so-sm" onClick={() => props.onSelect(id)}>대화 열기</button>
+            </div>
+          </div>;
+        })}
+      </div>}
+      {otherIds.length > 0 && <div className="so-sect">
+        <h5 className="so-sect__h">작업 목록<span className="so-sect__c">{otherIds.length}</span></h5>
+        {otherIds.map((id) => {
+          const run = props.runs.find((r) => r.conversationId === id);
+          return <div className="so-task task-activity-row" key={id}>
+            <div className="so-task__top"><span className={'task-run-state state-' + (run?.state ?? 'stopped')} aria-hidden="true" /><b title={titleOf(id)}>{titleOf(id)}</b></div>
+            <div className="so-task__sub">{run?.detail ?? "작업 대기"}{run && <> · 최근 진행 {new Date(run.updatedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</>}</div>
+            <div className="so-task__acts">
+              <button type="button" className="so-sm task-conversation-link" onClick={() => props.onSelect(id)}>대화 열기</button>
+              {props.onClose && <button type="button" className="so-sm" onClick={() => props.onClose?.(id)} title="대화는 보존하고 작업 목록에서만 닫기">목록에서 닫기</button>}
+            </div>
+          </div>;
+        })}
+      </div>}
+      <div className="so-tools">
+        {props.onNew && <button type="button" className="so-sm" onClick={props.onNew}><Icon name="plus" size={14} />새 대화 추가</button>}
+        {props.onAdd && <button type="button" className="so-sm" onClick={() => setAdding(!adding)}>기존 대화 추가</button>}
+        {props.onRecover && <button type="button" className="so-sm" onClick={props.onRecover} disabled={props.recovering}>
+          {props.recovering ? "실행 엔진 복구 중…" : "정지 불응 시 실행 엔진 복구"}
+        </button>}
+      </div>
+      {adding && <select className="so-select" aria-label="작업 목록에 추가할 대화" value="" onChange={event => { if (event.target.value) { props.onAdd?.(event.target.value); setAdding(false); } }}>
+        <option value="">대화 선택</option>
+        {props.conversations.filter(c => !ids.includes(c.id)).map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+      </select>}
+      <p className="so-explain">정지는 KDA가 관리하는 실행에 적용됩니다. 분리된 외부 작업은 별도 확인이 필요합니다.</p>
+    </div>;
+  };
   const body = <div className={mode === "inline" ? "task-activity-inline" : "task-activity-popover"}>
       <div className="task-activity-heading"><strong>대화별 작업</strong>
         <button type="button" onClick={props.onStopAll} disabled={!active.length && !queueCount}>전체 작업 정지</button>
@@ -100,7 +175,8 @@ export default function TaskActivityPanel(props: Props) {
       })}</div>
       <p className="task-activity-footnote">정지는 KDA가 관리하는 실행에 적용됩니다. 분리된 외부 작업은 별도 확인이 필요합니다.</p>
     </div>;
-  if (mode === "inline") return <section className="task-activity task-activity--inline" aria-label="대화별 작업 현황">{body}</section>;
+  // fidB (o2 슬라이드오버 '작업' 탭) — 목업처럼 '실행 중 · 예약 · 최근 작업' 카드. 전체 작업 정지는 패널 아래 줄(App)에 있다.
+  if (mode === "inline") return <section className="task-activity task-activity--inline" aria-label="대화별 작업 현황">{inlineBody()}</section>;
   return <aside ref={panelRef} className="task-activity" aria-label="대화별 작업 현황">
     {toggle}
     {open && body}

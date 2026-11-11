@@ -120,6 +120,7 @@ import type { Folder } from "./types";
 import "./App.css";
 // v0.7.86 fidA — o2 메인 화면 목업 충실도 (App.css 다음에 불러와 같은 특이도면 이긴다)
 import "./styles/o2-fidelity.css";
+import "./styles/o2-slideover.css";
 import logger from "./utils/logger";
 import {
   TelegramTurnTracker,
@@ -145,7 +146,7 @@ import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch as relaunchApp } from "@tauri-apps/plugin-process";
 import { getVersion as getAppVersion } from "@tauri-apps/api/app";
 // v0.7.86 UI 목업 충실도(fidA) — 개발용 화면 비교 픽스처 (배포 빌드에서는 항상 null)
-import { readMockupFixture } from "./dev/mockupFixture";
+import { readMockupFixture, devPanelOverride } from "./dev/mockupFixture";
 import TaskWatchNotice from "./components/TaskWatchNotice";
 // Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
 import {
@@ -449,6 +450,8 @@ export default function App() {
   // classic 배치는 슬라이드오버 없이 예전 SidePanel(가장자리 ⟨)·작업 팝오버·비서 팝오버를 그대로 쓴다.
   const { isO2 } = useUiLayout();
   const [rightPanel, setRightPanel] = useState<RightPanel>(() => {
+    const dev = devPanelOverride(); // fidB — DEV 전용 ?panel= (캡처용, 배포 빌드에선 항상 null)
+    if (dev) return dev;
     try {
       return localStorage.getItem("kda_side_panel_open") === "1" ? "preview" : null;
     } catch {
@@ -481,7 +484,10 @@ export default function App() {
   }, []);
   // 비서 패널(AssistantWidget)이 포털로 그려질 슬라이드오버 '비서' 탭 요소. 항상 마운트(통화 유지).
   const [assistantPanelHost, setAssistantPanelHost] = useState<HTMLDivElement | null>(null);
-  const [sidePanelItem, setSidePanelItem] = useState<SidePanelItem | null>(null);
+  const [sidePanelItem, setSidePanelItem] = useState<SidePanelItem | null>(() => {
+    const fx = devPanelOverride() === "preview" ? readMockupFixture()?.panel.preview : undefined; // fidB — DEV 픽스처 + ?panel=preview 전용 (배포 빌드에선 null)
+    return fx ? { pathOrUrl: fx.pathOrUrl, label: fx.label } : null;
+  });
   useEffect(() => {
     try {
       localStorage.setItem("kda_side_panel_open", sidePanelOpen ? "1" : "0");
@@ -5042,12 +5048,15 @@ export default function App() {
     setMcpState((s) => ({ ...s, connected: true }));
     setTaskWatchWaiting(fx.waiting);
     const control = conversationTurnGateRef.current;
-    for (const id of fx.streamingIds) {
-      control.runs.set(id, { conversationId: id, turnId: `fx-${id}`, state: "running", startedAt: Date.now(), updatedAt: Date.now(), detail: "목업 픽스처" });
+    // fidB — 목업 '작업' 탭처럼 실행 중 2개 + 예약 1개 (+ ?panel=tasks 일 때만 복구 가능한 작업 1개)
+    for (const r of fx.panel.runs) {
+      control.runs.set(r.conversationId, { conversationId: r.conversationId, turnId: `fx-${r.conversationId}`, state: "running", startedAt: Date.now() - 252_000, updatedAt: Date.now(), detail: r.detail });
     }
+    for (const q of fx.panel.queue) control.queues.set(q.conversationId, [q]);
+    if (devPanelOverride() === "tasks") setRecoverableTasks(fx.panel.recoverable);
     const timer = window.setTimeout(() => {
       setMessages(fx.messages);
-      setMetrics((m) => ({ ...m, maxTurnContextTokens: Math.round(currentModelMaxTokens * fx.contextRatio) }));
+      setMetrics(fx.panel.metrics);
       setStreamingConvIds(new Set(fx.streamingIds));
       setControlVersion((v) => v + 1);
     }, 300);
@@ -5933,17 +5942,20 @@ export default function App() {
   };
 
   // v0.7.86 UI 5단계 — MetricsPanel 해체(o2): 같은 값을 입력창 링 · 세션·사용량 탭 · 헤더 주의 칩이 나눠 쓴다.
-  const activeRateLimit =
+  const activeRateLimit = mockupFixture ? mockupFixture.panel.rateLimit :
     activeProvider === "codex" ? rateLimitCodex : activeProvider === "claude" ? rateLimitAnthropic : null;
   const activeCodexUsageError = activeProvider === "codex" ? codexUsageError : null;
   const rateLimitWarnings = ([["5시간", activeRateLimit?.primary], ["주간", activeRateLimit?.secondary]] as const)
     .filter(([, w]) => typeof w?.used_pct === "number" && w.used_pct >= 80)
     .map(([label, w]) => `${label} 한도 ${Math.round(w!.used_pct!)}%`);
   // 링·넛지는 memo 된 Composer 로 들어가므로 스트리밍 델타마다 새 엘리먼트가 생기지 않게 고정한다.
+  // fidB — DEV 픽스처는 목업 값(gpt-5 · 200K)으로 분모를 덮는다. 배포 빌드에선 mockupFixture 가 항상 null.
+  const ctxMax = mockupFixture?.panel.maxContextTokens ?? currentModelMaxTokens;
+  const fixturePreviewResult = useMemo(() => (mockupFixture ? { text: mockupFixture.panel.preview.text } : undefined), [mockupFixture]);
   const composerContext = useMemo(() => !isO2 ? undefined : (
     <ContextRing
       metrics={metrics}
-      maxContextTokens={currentModelMaxTokens}
+      maxContextTokens={ctxMax}
       estimatedContextTokens={estimatedContextTokens}
       onManualRefresh={triggerSessionRefresh}
       onCompressContext={handleCompressContext}
@@ -5951,22 +5963,22 @@ export default function App() {
       hasUsageError={!!activeCodexUsageError}
       onOpenSessionPanel={() => setRightPanel("session")}
     />
-  ), [isO2, metrics, currentModelMaxTokens, estimatedContextTokens, triggerSessionRefresh, handleCompressContext, isCompressing, activeCodexUsageError]);
+  ), [isO2, metrics, ctxMax, estimatedContextTokens, triggerSessionRefresh, handleCompressContext, isCompressing, activeCodexUsageError]);
   const composerNudge = useMemo(() => !isO2 ? undefined : (
     <ContextNudge
       metrics={metrics}
-      maxContextTokens={currentModelMaxTokens}
+      maxContextTokens={ctxMax}
       estimatedContextTokens={estimatedContextTokens}
       onManualRefresh={triggerSessionRefresh}
     />
-  ), [isO2, metrics, currentModelMaxTokens, estimatedContextTokens, triggerSessionRefresh]);
+  ), [isO2, metrics, ctxMax, estimatedContextTokens, triggerSessionRefresh]);
   const usageProps = {
     metrics,
     mcpConnected: mcpState.connected,
-    currentModel: currentModelLabel,
-    maxContextTokens: currentModelMaxTokens,
-    maxContextSource: currentModelMaxTokensInfo.source,
-    estimatedContextTokens,
+    currentModel: mockupFixture?.panel.model ?? currentModelLabel,
+    maxContextTokens: ctxMax,
+    maxContextSource: mockupFixture?.panel.maxContextSource ?? currentModelMaxTokensInfo.source,
+    estimatedContextTokens: mockupFixture ? Math.round(mockupFixture.panel.metrics.maxTurnContextTokens! * 0.97) : estimatedContextTokens,
     onManualRefresh: triggerSessionRefresh,
     onCompressContext: handleCompressContext,
     isCompressing,
@@ -6177,6 +6189,11 @@ export default function App() {
       {/* v0.7.86 UI 5단계 — classic 만 하단 footer. o2 는 입력창 링 + 슬라이드오버 '세션·사용량' 탭으로 나눴다 */}
       {!isO2 && <MetricsPanel {...usageProps} />}
 
+      {/* fidB — o2 오버레이 패널이 열리면 목업처럼 헤더 아래 본문을 살짝 어둡게. 누르면 닫힘 (고정 📌 이면 없음) */}
+      {isO2 && rightPanel !== null && !(slideOverPinned && wideWindow) && (
+        <div className="right-slideover-scrim" aria-hidden="true" onClick={closeRightPanel} />
+      )}
+
       {/* v0.7.86 UI 4단계 — o2 는 우측 슬라이드오버, classic 은 예전 SidePanel(가장자리 ⟨ 버튼, 그리드 3번째 열) */}
       {isO2 ? (
         // 우측 슬라이드오버 (미리보기 | 작업 | 비서). 한 번에 한 탭, Esc 로 닫힘.
@@ -6189,6 +6206,17 @@ export default function App() {
           className={`right-slideover${slideOverPinned && wideWindow ? " is-pinned" : ""}`}
           width={slideOverWidth}
           onResize={setSlideOverWidth}
+          footer={<>
+            <span>Esc로 닫기 · 폭 360~640 조절</span>
+            {/* 목업: '작업' 탭일 때만 아래 줄에 전체 작업 정지 */}
+            {rightPanel === "tasks" && (
+              <button type="button" className="so-sm so-sm--dan" onClick={handleHardStop}
+                disabled={![...conversationTurnGateRef.current.runs.values()].some((r) => r.state === "running" || r.state === "stopping")
+                  && ![...conversationTurnGateRef.current.queues.values()].some((q) => q.length > 0)}>
+                <Icon name="square" size={14} />전체 작업 정지
+              </button>
+            )}
+          </>}
           tabs={<div className="ui-tabs" role="tablist" aria-label="우측 패널 탭">
             {([["preview", "미리보기"], ["tasks", "작업"], ["session", "세션·사용량"], ["assistant", "비서"]] as const).map(([id, label]) => (
               <button key={id} type="button" role="tab" className="ui-tab" aria-selected={rightPanel === id}
@@ -6199,7 +6227,7 @@ export default function App() {
             <button type="button" className="ui-iconbtn" aria-pressed={slideOverPinned}
               aria-label={slideOverPinned ? "패널 고정 해제" : "패널 고정"}
               title={slideOverPinned ? "고정 해제 (본문 위에 띄우기)" : "고정 (본문 옆에 붙이기)"}
-              onClick={() => setSlideOverPinned((p) => !p)}><Icon name="pin" /></button>
+              onClick={() => setSlideOverPinned((p) => !p)}><Icon name="pin" size={14} /></button>
           ) : null}
         >
           <div id="right-pane-preview" role="tabpanel" className="right-pane right-pane--preview" hidden={rightPanel !== "preview"}>
@@ -6210,34 +6238,51 @@ export default function App() {
               onOpenChange={setSidePanelOpen}
               item={sidePanelItem}
               onClose={handleSidePanelClose}
+              fixturePreview={mockupFixture && sidePanelItem?.pathOrUrl === mockupFixture.panel.preview.pathOrUrl ? fixturePreviewResult : undefined}
             />
           </div>
           <div id="right-pane-tasks" role="tabpanel" className="right-pane right-pane--tasks" hidden={rightPanel !== "tasks"}>
-            {recoverableTasks.length > 0 && (
-              <section className="recovery-panel" aria-label="복구 가능한 작업">
-                <div className="recovery-panel-heading">
-                  <strong>복구 가능한 작업 {recoverableTasks.length}개</strong>
-                  <div className="recovery-panel-actions">
-                    <Button size="sm" variant="ghost" onClick={() => { void discardRecoverableTasks(); }}>모두 버림</Button>
-                    <Button size="sm" variant="ghost" onClick={() => setRecoverableTasks([])} title="목록만 숨김 — DB 의 row 는 그대로 유지">숨김</Button>
+            <TaskActivityPanel {...taskPanelProps} mode="inline" />
+            {/* fidB — 목업 순서: 실행 중 · 예약 → 결과 확인 대기 → 복구 가능한 작업 */}
+            {visibleTaskWatchWaiting.length > 0 && (
+              <section className="so-sect" aria-label="결과 확인 대기">
+                <h5 className="so-sect__h">결과 확인 대기<span className="so-sect__c">{visibleTaskWatchWaiting.length}</span></h5>
+                {visibleTaskWatchWaiting.map((w) => (
+                  <div key={w.id} className="so-task">
+                    <div className="so-task__top"><Icon name="file" size={14} className="so-task__ic" /><b>{w.title}</b>{w.resolvable && <span className="so-tag so-tag--warn">확인 필요</span>}</div>
+                    <div className="so-task__sub">{watchBlockLabel(w.reason)}</div>
+                    <div className="so-task__acts">
+                      {w.conversationId && <button type="button" className="so-sm" onClick={() => { void handleSelectConversation(w.conversationId!); }}>대화 열기</button>}
+                      {w.resolvable && <button type="button" className="so-sm so-sm--acc task-watch-resolve" onClick={() => { void resolveTaskWatchWaiting(w); }}
+                        title="결과를 확인했으면 이 감시 기록을 보관 폴더(task-watch/archive/resolved)로 옮깁니다 · 삭제하지 않음"><Icon name="check" size={14} />확인 완료</button>}
+                    </div>
                   </div>
-                </div>
-                <p className="recovery-panel-note">이전 세션에서 정상 종료 신호 없이 끊긴 긴 작업입니다. 대화를 열어 직접 이어가세요.</p>
-                <ul className="recovery-panel-list">
-                  {recoverableTasks.map((t) => (
-                    <li key={t.id}>
-                      <span className="recovery-panel-kind">{t.kind}</span>
-                      <span className="recovery-panel-title">{t.title ?? "(제목 없음)"}</span>
-                      <span className="recovery-panel-age">{Math.round((Date.now() - t.updated_at) / 60000)}분 전</span>
-                      {t.conversation_id
-                        ? <Button size="sm" onClick={() => { void handleSelectConversation(t.conversation_id!); }}>대화 열기</Button>
-                        : <span className="recovery-panel-age">대화 없음</span>}
-                    </li>
-                  ))}
-                </ul>
+                ))}
+                {taskWatchResolveError && <p className="so-explain so-explain--danger" role="alert">{taskWatchResolveError}</p>}
               </section>
             )}
-            <TaskActivityPanel {...taskPanelProps} mode="inline" />
+            {recoverableTasks.length > 0 && (
+              <section className="so-sect recovery-panel" aria-label="복구 가능한 작업">
+                <h5 className="so-sect__h">복구 가능한 작업<span className="so-sect__c">{recoverableTasks.length}</span>
+                  <span className="so-sect__tools">
+                    <button type="button" className="so-link" onClick={() => { void discardRecoverableTasks(); }}>모두 버림</button>
+                    <button type="button" className="so-link" onClick={() => setRecoverableTasks([])} title="목록만 숨김 — DB 의 row 는 그대로 유지">숨김</button>
+                  </span>
+                </h5>
+                {recoverableTasks.map((t) => (
+                  <div key={t.id} className="so-task">
+                    <div className="so-task__top"><Icon name="pause" size={14} className="so-task__ic" /><b>{t.title ?? "(제목 없음)"}</b><span className="so-tag">{t.kind}</span></div>
+                    <div className="so-task__sub">{Math.round((Date.now() - t.updated_at) / 60000)}분 전 마지막 기록 · 정상 종료 신호 없이 끊김</div>
+                    <div className="so-task__acts">
+                      {t.conversation_id
+                        ? <button type="button" className="so-sm so-sm--acc" onClick={() => { void handleSelectConversation(t.conversation_id!); }}>대화 열기</button>
+                        : <span className="so-task__sub">대화 없음</span>}
+                    </div>
+                  </div>
+                ))}
+                <p className="so-explain">이전 세션에서 끊긴 긴 작업입니다. 대화를 열어 직접 이어가세요.</p>
+              </section>
+            )}
           </div>
           <div id="right-pane-session" role="tabpanel" className="right-pane right-pane--session" hidden={rightPanel !== "session"}>
             <SessionUsagePanel {...usageProps} active={rightPanel === "session"} />

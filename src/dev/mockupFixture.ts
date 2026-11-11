@@ -3,8 +3,10 @@
 // 같은 예시 데이터를 메모리 상태에만 채워 캡처·비교한다.
 // 켜지는 조건: 개발 빌드(import.meta.env.DEV) + 주소에 ?fixture=mockup. 배포 빌드에서는 항상 null (DEV=false).
 // DB·파일·localStorage 에는 아무것도 쓰지 않는다 (App 이 픽스처 중엔 활성 대화 id 저장도 건너뜀).
-import type { ChatMessage, Conversation, Folder } from "../types";
+import type { ChatMessage, Conversation, Folder, RateLimitInfo, SessionMetrics } from "../types";
 import type { WaitingWatch } from "../utils/taskWatchRecovery";
+import type { PendingSend } from "../conversationControl";
+import type { DBLongTask } from "../db";
 
 type ViteEnv = { DEV?: boolean } | undefined;
 const viteEnv = (): ViteEnv => (import.meta as unknown as { env?: ViteEnv }).env;
@@ -25,6 +27,30 @@ export function devLayoutOverride(env: ViteEnv = viteEnv(), search: string = cur
   } catch { return null; }
 }
 
+export type DevPanel = "preview" | "tasks" | "session" | "assistant";
+
+/** fidB — 개발 빌드에서만 ?panel=preview|tasks|session|assistant 로 우측 패널을 열어 둔다 (캡처용, 저장 안 함). */
+export function devPanelOverride(env: ViteEnv = viteEnv(), search: string = currentSearch()): DevPanel | null {
+  if (!env?.DEV) return null;
+  try {
+    const v = new URLSearchParams(search).get("panel");
+    return v === "preview" || v === "tasks" || v === "session" || v === "assistant" ? v : null;
+  } catch { return null; }
+}
+
+/** fidB — 슬라이드오버 탭용 예시 데이터 (목업 '세션·사용량' · '작업' · '미리보기' 와 같은 값). */
+export interface MockupPanelFixture {
+  model: string;
+  maxContextTokens: number;
+  maxContextSource: string;
+  metrics: SessionMetrics;
+  rateLimit: RateLimitInfo;
+  runs: { conversationId: string; detail: string }[];
+  queue: PendingSend[];
+  recoverable: DBLongTask[];
+  preview: { pathOrUrl: string; label: string; text: string };
+}
+
 export interface MockupFixture {
   conversations: Conversation[];
   folders: Folder[];
@@ -36,6 +62,7 @@ export interface MockupFixture {
   contextRatio: number;
   engineLabel: string;
   warnings: string[];
+  panel: MockupPanelFixture;
 }
 
 const T0 = Date.UTC(2026, 10, 11, 6, 0, 0);
@@ -100,6 +127,45 @@ function buildFixture(): MockupFixture {
     contextRatio: 0.72,
     engineLabel: "Codex · gpt-5",
     warnings: ["5시간 한도 84%"],
+    panel: buildPanelFixture(),
+  };
+}
+
+function buildPanelFixture(): MockupPanelFixture {
+  const now = Date.now();
+  const at = (h: number, m: number, dayOffset = 0) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() + dayOffset);
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  };
+  return {
+    model: "gpt-5",
+    maxContextTokens: 200_000,
+    maxContextSource: "일치 (gpt-5)",
+    metrics: {
+      totalInputTokens: 1_200_000, totalOutputTokens: 86_000, turnCount: 18, toolCallCount: 42,
+      startedAt: now - (1 * 3600 + 12 * 60 + 8) * 1000, maxTurnContextTokens: 144_210, currentContextTokens: 151_002,
+    },
+    rateLimit: {
+      provider: "codex", receivedAt: now - 60_000,
+      primary: { used_pct: 84, reset_at: at(15, 40) > now ? at(15, 40) : at(15, 40, 1) },
+      secondary: { used_pct: 37, reset_at: at(9, 0, 3) },
+    },
+    runs: [
+      { conversationId: "fx-c2", detail: "엑셀 3개 시트 집계 중 · 3/5단계" },
+      { conversationId: "fx-c7", detail: "파일 이동 128 / 402 · D:\\사진\\2026" },
+    ],
+    queue: [{ id: "fx-q1", conversationId: "fx-c4", text: "액션 아이템만 표로 다시 정리해 줘", queuedAt: now - 120_000, mode: "queue" }],
+    recoverable: [{
+      id: "fx-l1", kind: "codex", conversation_id: "fx-c8", title: "블로그 초안 — 원격 근무 팁", status: "running",
+      started_at: now - 9 * 3600_000, updated_at: now - 7 * 3600_000, last_evidence_at: null, handoff_md: null, manifest_json: null,
+    }],
+    preview: {
+      pathOrUrl: "evidence/ui-redesign-20261111/design-spec.md",
+      label: "design-spec.md",
+      text: "# KDA UI 개편 디자인 스펙\n조용한 캔버스 + 안전 칩\n\n1. 결정 요약 · 2. 디자인 원칙 · 3. 화면 구조 · 4. 컨트롤 배치표 · 5. 설정 재구성 · 6. 명칭 정리 · 7. 비주얼 토큰 …",
+    },
   };
 }
 

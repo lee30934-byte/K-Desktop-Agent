@@ -70,11 +70,12 @@ export function NoticeStack({ children }: { children: ReactNode }) {
 
 /** 우측 슬라이드오버. 오버레이(그리드 열 아님) — 본문 폭을 줄이지 않는다. Esc 로 닫힘.
  *  keepMounted: 닫혀도 본문을 unmount 하지 않고 숨긴다(통화·작업 상태 유지).
- *  onResize: 왼쪽 가장자리 grip 으로 폭 조절(minWidth~maxWidth, 더블클릭 = defaultWidth). */
-export function SlideOver({ open, title, onClose, children, tabs, width, keepMounted, className, label, headerActions,
+ *  onResize: 왼쪽 가장자리 grip 으로 폭 조절(minWidth~maxWidth, 더블클릭 = defaultWidth).
+ *  footer: 본문 아래 고정 줄 (fidB — 'Esc로 닫기 · 폭 360~640 조절'). */
+export function SlideOver({ open, title, onClose, children, tabs, width, keepMounted, className, label, headerActions, footer,
   onResize, minWidth = 360, maxWidth = 640, defaultWidth = 380 }:
   { open: boolean; title?: ReactNode; onClose: () => void; children: ReactNode; tabs?: ReactNode; width?: number;
-    keepMounted?: boolean; className?: string; label?: string; headerActions?: ReactNode;
+    keepMounted?: boolean; className?: string; label?: string; headerActions?: ReactNode; footer?: ReactNode;
     onResize?: (width: number) => void; minWidth?: number; maxWidth?: number; defaultWidth?: number }) {
   const ref = useRef<HTMLElement>(null);
   const [resizing, setResizing] = useState(false);
@@ -115,10 +116,11 @@ export function SlideOver({ open, title, onClose, children, tabs, width, keepMou
         {tabs ?? <div className="ui-slideover__title">{title}</div>}
         <div className="ui-slideover__actions">
           {headerActions}
-          <button type="button" className="ui-iconbtn" aria-label="패널 닫기" title="패널 닫기 (Esc)" onClick={onClose}><Icon name="x" /></button>
+          <button type="button" className="ui-iconbtn" aria-label="패널 닫기" title="패널 닫기 (Esc)" onClick={onClose}><Icon name="x" size={footer ? 14 : undefined} /></button>
         </div>
       </header>
       <div className="ui-slideover__body">{open || keepMounted ? children : null}</div>
+      {footer && <footer className="ui-slideover__foot">{footer}</footer>}
     </aside>
   );
 }

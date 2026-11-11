@@ -71,9 +71,17 @@ export function useNowTick(intervalMs: number, active = true): number {
 }
 
 /** 세션 경과 시간. 매초 tick 은 이 작은 컴포넌트에만 머문다 (R9). */
-export function SessionElapsed({ startedAt, active = true }: { startedAt: number; active?: boolean }) {
+export function SessionElapsed({ startedAt, active = true, clock = false }: { startedAt: number; active?: boolean; clock?: boolean }) {
   const now = useNowTick(1000, active);
-  return <>{formatDuration(Math.max(0, now - startedAt))}</>;
+  const ms = Math.max(0, now - startedAt);
+  return <>{clock ? formatClock(ms) : formatDuration(ms)}</>;
+}
+
+/** fidB — 'H:MM:SS' (o2 세션 탭 '경과', 목업 1:12:08). */
+export function formatClock(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
 }
 
 /**

@@ -73,7 +73,7 @@ test("o2 헤더·입력창·슬라이드오버 — 라인 아이콘, classic 은
   assert.match(composer, /aria-label="보내기"[\s\S]{0,80}<Icon name="arrowUp" \/>/);
   assert.match(composer, /\{!isO2 && <div className="composer-prefix mono">\{">"\}<\/div>\}/, "classic '>' 유지");
   assert.match(safety, /icon=\{<Icon name=\{enabled \? "zap" : "shield"\} size=\{14\} \/>\}/);
-  assert.match(app, /onClick=\{\(\) => setSlideOverPinned\(\(p\) => !p\)\}><Icon name="pin" \/><\/button>/);
+  assert.match(app, /onClick=\{\(\) => setSlideOverPinned\(\(p\) => !p\)\}><Icon name="pin" size=\{14\} \/><\/button>/); // fidB — 목업 14px
 });
 
 test("메뉴 문구 앞 기호는 o2 에서만 뗀다 (↻ 📦 📤), 다른 문구는 그대로", () => {

@@ -5451,6 +5451,8 @@ button.main-folder:hover { color: var(--text-primary); }
    ════════════════════════════════════════════════════════════════ */
 .right-slideover .ui-slideover__body { padding: 0; display: flex; flex-direction: column; }
 .right-slideover.is-pinned { box-shadow: none; border-left: 1px solid var(--line); }
+/* fidB — o2 오버레이 패널 뒤 덮개 (App 이 o2 에서만 그림). 색·위치 세부는 styles/o2-slideover.css */
+.right-slideover-scrim { position: fixed; inset: 0; z-index: 59; }
 .right-pane { flex: 1; min-height: 0; overflow: auto; }
 .right-pane[hidden] { display: none !important; }
 .right-pane--preview { display: flex; flex-direction: column; overflow: hidden; }

@@ -58,7 +58,7 @@ test("o2: 입력창 컨텍스트 링 + 70% 넛지 (classic 은 슬롯 없음)", 
 test("o2: 슬라이드오버 '세션·사용량' 탭에 SessionUsagePanel", () => {
   assert.match(app, /\["session", "세션·사용량"\]/);
   assert.match(app, /<div id="right-pane-session" role="tabpanel" className="right-pane right-pane--session" hidden=\{rightPanel !== "session"\}>\n\s+<SessionUsagePanel \{\.\.\.usageProps\} active=\{rightPanel === "session"\} \/>/);
-  for (const s of ["↻ 새 세션으로 이어가기", "📦 요약해서 새 대화로 이어가기", "이번 세션", "사용 한도", "재시도", "Raw 보기", "분모 출처", "최근 턴 raw", "매칭"]) {
+  for (const s of ["↻ 새 세션으로 이어가기", "요약해서 새 대화로 이어가기", "이번 세션", "사용 한도", "재시도", "Raw 보기", "분모 출처", "최근 턴 raw", "매칭"]) {
     assert.ok(panel.includes(s), s);
   }
   assert.match(panel, /onClick=\{\(\) => onManualRefresh\(\)\}/);

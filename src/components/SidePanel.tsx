@@ -9,6 +9,7 @@ import { grantMediaUrl, isMediaStreamUrl, mimeForExt } from "../utils/mediaStrea
 import { readTextFile, readFile } from "@tauri-apps/plugin-fs";
 import { open as openShell } from "@tauri-apps/plugin-shell";
 import logger from "../utils/logger";
+import { Icon } from "../ui/icons";
 
 /**
  * Phase 44 (v0.5.32) — SidePanel: 대화 안 링크/파일 클릭 → 우측 패널에서 미리보기.
@@ -33,6 +34,8 @@ interface SidePanelProps {
   onClose: () => void;
   /** v0.7.86 UI 4단계 — 우측 슬라이드오버 '미리보기' 탭 안에 그린다. 폭·숨기기는 슬라이드오버가 맡는다. */
   embedded?: boolean;
+  /** fidB — DEV 픽스처(?fixture=mockup) 전용: 파일을 읽지 않고 이 결과를 그대로 보여 준다. App 은 배포 빌드에서 넘기지 않는다. */
+  fixturePreview?: PreviewResult;
 }
 
 // Phase 65 (v0.5.53 후보): Message.tsx 의 inline 이미지 미리보기에서 재사용.
@@ -412,7 +415,7 @@ export async function loadPreview(
   }
 }
 
-export default function SidePanel({ open, onOpenChange, item, onClose, embedded = false }: SidePanelProps) {
+export default function SidePanel({ open, onOpenChange, item, onClose, embedded = false, fixturePreview }: SidePanelProps) {
   const [loading, setLoading] = useState(false);
   // Phase 80 (v0.6.24): preview state 에 gate 차단 분기 추가
   const [preview, setPreview] = useState<PreviewResult & { blockedByGate?: GateResult }>({});
@@ -446,6 +449,12 @@ export default function SidePanel({ open, onOpenChange, item, onClose, embedded 
     if (!item || !open) {
       loadSeqRef.current++; // 진행 중인 로드 결과 무효화
       setPreview({});
+      return;
+    }
+    if (fixturePreview) {
+      loadSeqRef.current++;
+      setPreview(fixturePreview);
+      setLoading(false);
       return;
     }
     const category = getCategory(item.pathOrUrl);
@@ -485,7 +494,7 @@ export default function SidePanel({ open, onOpenChange, item, onClose, embedded 
         logger.log(`[SidePanel] preview 로드 성공 — hasDataUrl=${!!result.dataUrl} streamed=${!!result.streamed} hasText=${!!result.text}`);
       }
     })();
-  }, [item, open, gateOverrides]);
+  }, [item, open, gateOverrides, fixturePreview]);
 
   /**
    * v0.7.51 — 미디어 요소(video/audio/img)의 재생·로드 오류 처리.
@@ -636,18 +645,20 @@ export default function SidePanel({ open, onOpenChange, item, onClose, embedded 
           </div>
         ) : (
           <>
+            {embedded && <h5 className="so-sect__h">미리보기</h5>}
             <div className="side-panel-item-header">
+              {embedded && <Icon name="file" className="side-panel-file-ic" />}
               <div className="side-panel-filename" title={item.pathOrUrl}>
                 {item.label || item.pathOrUrl}
               </div>
               <div className="side-panel-actions">
                 <button
                   type="button"
-                  className="side-panel-action-btn"
+                  className={embedded ? "side-panel-action-btn so-sm" : "side-panel-action-btn"}
                   onClick={handleOpenExternal}
                   title="기본 앱에서 열기"
                 >
-                  🔗 외부 열기
+                  {embedded ? "기본 앱에서 열기" : "🔗 외부 열기"}
                 </button>
                 <button
                   type="button"
@@ -656,7 +667,7 @@ export default function SidePanel({ open, onOpenChange, item, onClose, embedded 
                   title={embedded ? "항목 지우기" : "미리보기 닫기"}
                   aria-label={embedded ? "항목 지우기" : "미리보기 닫기"}
                 >
-                  ✕
+                  {embedded ? <Icon name="x" size={14} /> : "✕"}
                 </button>
               </div>
             </div>

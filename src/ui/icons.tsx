@@ -33,6 +33,12 @@ const PATHS = {
   copy: <><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" /></>,
   rotate: <><path d="M21 12a9 9 0 1 1-2.6-6.4L21 8" /><path d="M21 3v5h-5" /></>,
   check: <path d="M20 6 9 17l-5-5" />,
+  // fidB — 목업 슬라이드오버 아이콘 (세션 이어가기 · 작업 카드)
+  msg: <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+  split: <><path d="M14 3h7v7" /><path d="M21 3l-8 8" /><path d="M10 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></>,
+  square: <rect x="6" y="6" width="12" height="12" rx="2" />,
+  pause: <path d="M9 5v14M15 5v14" />,
+  trash: <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />,
 } as const;
 
 export type IconName = keyof typeof PATHS;

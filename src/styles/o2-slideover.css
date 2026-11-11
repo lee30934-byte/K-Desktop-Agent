@@ -1,0 +1,292 @@
+/* ════════════════════════════════════════════════════════════════
+   v0.7.86 UI 목업 충실도 fidB — 우측 슬라이드오버 (o2 전용)
+   값은 evidence/ui-redesign-20261111/mockup.html 의 .slide / .so-* / .sect / .box / .sbtn / .stats / .lim / .task / .sm 그대로.
+   classic 배치는 슬라이드오버를 쓰지 않고(예전 SidePanel·작업 팝오버), 이 파일의 규칙은 전부 :root[data-layout="o2"] 아래라 영향 없음.
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 1. 틀: 헤더 아래에서 시작 (목업 .slide top: var(--header-h)). 고정 📌 이면 예전처럼 위 끝까지 ── */
+:root[data-layout="o2"] .right-slideover {
+  top: var(--header-h, 48px);
+  background: var(--surface-overlay);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.4);
+}
+:root[data-layout="o2"] .right-slideover.is-pinned { top: 0; box-shadow: none; }
+:root[data-layout="o2"] .right-slideover-scrim {
+  position: fixed; top: var(--header-h, 48px); right: 0; bottom: 0; left: var(--sidebar-width, 264px);
+  z-index: 59; background: rgba(5, 6, 9, 0.38);
+}
+
+/* ── 2. 탭 줄 (목업 .so-tabs): 글자 탭 + 강조색 밑줄, 오른쪽 핀·닫기 ── */
+:root[data-layout="o2"] .right-slideover .ui-slideover__head {
+  height: auto; align-items: flex-end; gap: 2px; padding: 8px 8px 0 10px; border-bottom: 1px solid var(--line);
+}
+:root[data-layout="o2"] .right-slideover .ui-tabs { gap: 2px; align-self: flex-end; }
+:root[data-layout="o2"] .right-slideover .ui-tab {
+  height: 34px; padding: 0 10px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: transparent; color: var(--fg-muted); font: 400 var(--fs-sub, 13px)/1 var(--font-ui);
+}
+:root[data-layout="o2"] .right-slideover .ui-tab:hover { background: transparent; color: var(--fg); }
+:root[data-layout="o2"] .right-slideover .ui-tab[aria-selected="true"] {
+  background: transparent; color: var(--fg); border-bottom-color: var(--accent); font-weight: 500;
+}
+:root[data-layout="o2"] .right-slideover .ui-tab:focus-visible { outline-offset: -2px; }
+:root[data-layout="o2"] .right-slideover .ui-slideover__actions { align-self: center; padding-bottom: 0; gap: 2px; margin-bottom: -2px; }
+:root[data-layout="o2"] .right-slideover .ui-slideover__actions .ui-iconbtn { width: 28px; height: 28px; margin-bottom: 4px; }
+:root[data-layout="o2"] .right-slideover .ui-slideover__actions .ui-iconbtn[aria-pressed="true"] { color: var(--accent); }
+
+/* ── 3. 본문 · 아래 줄 (목업 .so-body 16px · .so-foot) ── */
+:root[data-layout="o2"] .right-slideover .right-pane--session,
+:root[data-layout="o2"] .right-slideover .right-pane--tasks { padding: 16px; }
+:root[data-layout="o2"] .right-slideover .ui-slideover__foot {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 37px;
+  padding: 10px 16px; border-top: 1px solid var(--line); color: var(--fg-subtle); font: 400 12px/1.2 var(--font-ui);
+}
+
+/* ── 4. 공통 조각 (목업 .sect · .box · .meter · .sbtn · .sm · .tag · .okline) ── */
+:root[data-layout="o2"] .right-slideover .so-sect { margin-bottom: 20px; }
+:root[data-layout="o2"] .right-slideover .so-sect--last { margin-bottom: 4px; }
+:root[data-layout="o2"] .right-slideover .so-sect__h {
+  display: flex; align-items: center; gap: 6px; margin: 0 0 8px;
+  font: 500 var(--fs-caption, 12px)/1.4 var(--font-ui); color: var(--fg-subtle);
+}
+:root[data-layout="o2"] .right-slideover .so-sect__c { margin-left: auto; color: var(--fg-subtle); font-weight: 500; }
+:root[data-layout="o2"] .right-slideover .so-sect__c.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+:root[data-layout="o2"] .right-slideover .so-sect__tools { display: inline-flex; gap: 10px; margin-left: 10px; }
+:root[data-layout="o2"] .right-slideover .so-link {
+  padding: 0; border: 0; background: transparent; color: var(--fg-muted); font: 400 12px/1.4 var(--font-ui); cursor: pointer;
+}
+:root[data-layout="o2"] .right-slideover .so-link:hover { color: var(--fg); text-decoration: underline; }
+:root[data-layout="o2"] .right-slideover .so-box {
+  background: var(--surface-raised); border: 1px solid var(--line); border-radius: 12px; padding: 12px;
+}
+:root[data-layout="o2"] .right-slideover .so-tone--accent { color: var(--accent); }
+:root[data-layout="o2"] .right-slideover .so-tone--warn { color: var(--warn); }
+:root[data-layout="o2"] .right-slideover .so-tone--danger { color: var(--danger); }
+:root[data-layout="o2"] .right-slideover .so-meter {
+  height: 6px; margin: 10px 0; border-radius: 3px; background: rgba(255, 255, 255, 0.07); overflow: hidden;
+}
+:root[data-layout="o2"] .right-slideover .so-meter i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+:root[data-layout="o2"] .right-slideover .so-meter--warn i { background: var(--warn); }
+:root[data-layout="o2"] .right-slideover .so-meter--danger i { background: var(--danger); }
+:root[data-layout="o2"] .right-slideover .so-explain {
+  margin: 0; padding: 2px 2px 0; font: 400 12px/1.6 var(--font-ui); color: var(--fg-subtle);
+}
+:root[data-layout="o2"] .right-slideover .so-explain b { font-weight: 500; color: var(--fg-muted); }
+:root[data-layout="o2"] .right-slideover .so-explain--warn { color: var(--warn); margin-top: 8px; }
+:root[data-layout="o2"] .right-slideover .so-explain--danger { color: var(--danger); margin-top: 4px; }
+:root[data-layout="o2"] .right-slideover .so-empty { margin: 0 0 4px; font: 400 12px/1.6 var(--font-ui); color: var(--fg-subtle); }
+:root[data-layout="o2"] .right-slideover .so-sm {
+  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 1px solid var(--line-strong);
+  border-radius: 7px; background: transparent; color: var(--fg-muted); font: 400 12px/1 var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+:root[data-layout="o2"] .right-slideover .so-sm:hover:not(:disabled) { background: var(--surface-hover); color: var(--fg); }
+:root[data-layout="o2"] .right-slideover .so-sm:disabled { opacity: 0.45; cursor: default; }
+:root[data-layout="o2"] .right-slideover .so-sm--acc { border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--accent); }
+:root[data-layout="o2"] .right-slideover .so-sm--dan { border-color: rgba(239, 68, 68, 0.3); color: #f58b8b; }
+:root[data-layout="o2"] .right-slideover .so-tag {
+  flex: none; padding: 1px 7px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); color: var(--fg-muted);
+  font: 400 11px/1.5 var(--font-ui);
+}
+:root[data-layout="o2"] .right-slideover .so-tag--warn { background: var(--warn-soft); color: var(--warn); }
+:root[data-layout="o2"] .right-slideover .so-okline {
+  display: flex; align-items: center; gap: 8px; font: 400 var(--fs-sub, 13px)/1.4 var(--font-ui); color: var(--fg-muted);
+}
+:root[data-layout="o2"] .right-slideover .so-okline--sub { margin-top: 8px; font-size: 12px; color: var(--fg-subtle); }
+:root[data-layout="o2"] .right-slideover .so-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--ok); }
+:root[data-layout="o2"] .right-slideover .so-okline--sub .so-dot { width: 6px; height: 6px; }
+:root[data-layout="o2"] .right-slideover .so-okline.is-warn { color: var(--warn); }
+:root[data-layout="o2"] .right-slideover .so-okline.is-warn .so-dot { background: var(--warn); }
+:root[data-layout="o2"] .right-slideover .so-okline.is-danger { color: #f58b8b; overflow-wrap: anywhere; }
+:root[data-layout="o2"] .right-slideover .so-okline.is-danger .so-dot { background: var(--danger); }
+
+/* ── 5. 세션·사용량 탭 ── */
+:root[data-layout="o2"] .right-slideover .so-big { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+:root[data-layout="o2"] .right-slideover .so-big__v {
+  font: 600 var(--fs-hero, 28px)/1.1 var(--font-mono); letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+:root[data-layout="o2"] .right-slideover .so-big__sub { font-size: 13px; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:root[data-layout="o2"] .right-slideover .so-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; font-size: 12px; }
+:root[data-layout="o2"] .right-slideover .so-grid3 span { display: block; color: var(--fg-subtle); }
+:root[data-layout="o2"] .right-slideover .so-grid3 b { font-weight: 500; color: var(--fg); }
+:root[data-layout="o2"] .right-slideover .so-grid3 b.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+:root[data-layout="o2"] .right-slideover .so-diag {
+  display: flex; flex-direction: column; gap: 3px; margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--fg-subtle);
+}
+:root[data-layout="o2"] .right-slideover .so-diag > div { display: flex; justify-content: space-between; gap: 12px; }
+:root[data-layout="o2"] .right-slideover .so-diag dd { margin: 0; text-align: right; min-width: 0; overflow-wrap: anywhere; color: var(--fg-muted); font-weight: 400; }
+:root[data-layout="o2"] .right-slideover .so-diag dd.mono { font-family: var(--font-ui); }
+:root[data-layout="o2"] .right-slideover .so-diag > div.is-warn :is(dt, dd) { color: var(--warn); }
+
+/* 세션 이어가기 카드 (목업 .sbtn — 둘 다 무채색, 권장일 때만 강조색 테두리) */
+:root[data-layout="o2"] .right-slideover .so-sbtn {
+  display: flex; align-items: center; gap: 12px; width: 100%; margin: 0 0 8px; padding: 11px 12px;
+  border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-raised);
+  color: var(--fg); text-align: left; font-family: var(--font-ui); letter-spacing: 0; cursor: pointer;
+  transition: background var(--dur-hover, 120ms);
+}
+:root[data-layout="o2"] .right-slideover .so-sbtn:hover:not(:disabled) { background: #1a1f29; }
+:root[data-layout="o2"] .right-slideover .so-sbtn:disabled { opacity: 0.55; cursor: default; }
+:root[data-layout="o2"] .right-slideover .so-sbtn.is-primary {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)), var(--surface-raised);
+}
+:root[data-layout="o2"] .right-slideover .so-sbtn__ic {
+  display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05); color: var(--fg-muted);
+}
+:root[data-layout="o2"] .right-slideover .so-sbtn.is-primary .so-sbtn__ic { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+:root[data-layout="o2"] .right-slideover .so-sbtn b { display: block; font: 500 var(--fs-ui, 14px)/1.35 var(--font-ui); }
+:root[data-layout="o2"] .right-slideover .so-sbtn small { display: block; margin-top: 1px; font: 400 12px/1.35 var(--font-ui); color: var(--fg-subtle); }
+
+/* 이번 세션 — 테두리 한 줄에 5칸 (목업 .stats) */
+:root[data-layout="o2"] .right-slideover .so-stats {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; overflow: hidden;
+  background: var(--line); border: 1px solid var(--line); border-radius: 12px;
+}
+:root[data-layout="o2"] .right-slideover .so-stats > div { min-width: 0; padding: 10px 4px; background: var(--surface-raised); text-align: center; }
+:root[data-layout="o2"] .right-slideover .so-stats span { display: block; font: 400 11px/1.4 var(--font-ui); color: var(--fg-subtle); }
+:root[data-layout="o2"] .right-slideover .so-stats b {
+  display: block; margin-top: 2px; font: 500 13px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* 사용 한도 (목업 .lim) */
+:root[data-layout="o2"] .right-slideover .so-lims { display: flex; flex-direction: column; gap: 12px; }
+:root[data-layout="o2"] .right-slideover .so-lim__top { display: flex; justify-content: space-between; font: 400 var(--fs-sub, 13px)/1.4 var(--font-ui); color: var(--fg); }
+:root[data-layout="o2"] .right-slideover .so-lim__v { color: var(--fg-muted); font-family: var(--font-mono); }
+:root[data-layout="o2"] .right-slideover .so-lim .so-meter { margin: 6px 0 4px; }
+:root[data-layout="o2"] .right-slideover .so-lim small { font: 400 12px/1.4 var(--font-ui); color: var(--fg-subtle); }
+:root[data-layout="o2"] .right-slideover .so-lim--calm .so-meter i { background: color-mix(in srgb, var(--accent) 50%, #202a30); }
+:root[data-layout="o2"] .right-slideover .so-lim--warn .so-lim__v { color: var(--warn); }
+:root[data-layout="o2"] .right-slideover .so-lim--warn .so-meter i { background: var(--warn); }
+:root[data-layout="o2"] .right-slideover .so-lim--danger .so-lim__v { color: var(--danger); }
+:root[data-layout="o2"] .right-slideover .so-lim--danger .so-meter i { background: var(--danger); }
+:root[data-layout="o2"] .right-slideover .so-error { display: flex; flex-direction: column; gap: 10px; }
+:root[data-layout="o2"] .right-slideover .so-error .so-task__acts { margin-top: 0; }
+
+/* ── 6. 작업 탭 (목업 .task) ── */
+:root[data-layout="o2"] .right-slideover .task-activity--inline { position: static; }
+:root[data-layout="o2"] .right-slideover .task-activity-inline { display: block; padding: 0; border: 0; background: transparent; box-shadow: none; }
+:root[data-layout="o2"] .right-slideover .so-task {
+  margin-bottom: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised);
+}
+:root[data-layout="o2"] .right-slideover .so-task__top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+:root[data-layout="o2"] .right-slideover .so-task__top b {
+  flex: 1; min-width: 0; font: 500 var(--fs-ui, 14px)/1.35 var(--font-ui); color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+:root[data-layout="o2"] .right-slideover .so-task__ic { flex: none; color: var(--fg-muted); }
+:root[data-layout="o2"] .right-slideover .so-task__sub {
+  margin-top: 4px; font: 400 12px/1.45 var(--font-ui); color: var(--fg-subtle); overflow-wrap: anywhere;
+}
+:root[data-layout="o2"] .right-slideover .so-task__acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+:root[data-layout="o2"] .right-slideover .so-spin {
+  flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+:root[data-layout="o2"] .right-slideover .so-task .task-run-state { flex: none; width: 8px; height: 8px; padding: 0; border-radius: 50%; background: var(--fg-subtle); font-size: 0; }
+:root[data-layout="o2"] .right-slideover .so-task .task-run-state.state-completed { background: var(--ok); }
+:root[data-layout="o2"] .right-slideover .so-task .task-run-state:is(.state-failed, .state-interrupted) { background: var(--danger); }
+:root[data-layout="o2"] .right-slideover .so-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+:root[data-layout="o2"] .right-slideover .so-select {
+  width: 100%; margin: 0 0 10px; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface-raised); color: var(--fg); font: 400 12px/1.4 var(--font-ui);
+}
+:root[data-layout="o2"] .right-slideover .task-activity-inline .task-automation-paused {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 16px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-size: 12px;
+}
+:root[data-layout="o2"] .right-slideover .recovery-panel { margin: 0 0 4px; padding: 0; border: 0; background: transparent; font-size: inherit; }
+
+/* ── 7. 미리보기 탭 (목업: 소제목 + 상자 안에 파일 줄 · 내용) ── */
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-content { padding: 16px; overflow: auto; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-item-header {
+  display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px; margin: 0;
+  background: var(--surface-raised); border: 1px solid var(--line); border-bottom: 0; border-radius: 12px 12px 0 0;
+}
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-file-ic { flex: none; color: var(--fg); }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-filename {
+  flex: 1; min-width: 0; font: 400 13px/1.4 var(--font-ui); color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-action-btn.close {
+  display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 7px;
+  background: transparent; color: var(--fg-subtle);
+}
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-action-btn.close:hover { background: var(--surface-hover); color: var(--fg); }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-preview {
+  padding: 0 12px 12px; background: var(--surface-raised); border: 1px solid var(--line); border-top: 0; border-radius: 0 0 12px 12px;
+}
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-text {
+  margin: 0; padding: 0; border: 0; background: transparent; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 400 13px/1.7 var(--font-ui); color: var(--fg-muted);
+}
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-empty { padding: 32px 8px; color: var(--fg-subtle); font-size: 12px; }
+
+/* ── 8. 비서 탭 (목업: 소제목 · 작은 분할 버튼 · 최근 답변 상자 · '음성으로 이야기하기' 카드) ── */
+:root[data-layout="o2"] .right-slideover .companion-popover.is-hosted { padding: 16px; color: var(--fg); font-family: var(--font-ui); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-menu-header { gap: 8px; margin-bottom: 8px; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-brand-mark { display: none; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-menu-header strong { font: 500 12px/1.4 var(--font-ui); color: var(--fg-subtle); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-menu-header strong span,
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-menu-header small { font-size: 11px; color: var(--fg-subtle); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-menu-header button { width: 26px; height: 26px; border-radius: 7px; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-tabs {
+  display: inline-flex; gap: 0; margin: 0 0 12px; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-app);
+}
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-tabs button {
+  flex: none; height: 26px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent;
+  color: var(--fg-subtle); font: 400 12px/1 var(--font-ui); box-shadow: none;
+}
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-tabs button:hover { color: var(--fg); background: transparent; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-tabs button[aria-pressed="true"] {
+  background: rgba(106, 161, 255, 0.14); color: #9cc0ff; font-weight: 500;
+}
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-tabs .companion-icon { display: none; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-home:not([hidden]) { display: flex; flex-direction: column; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-home > .companion-recent:first-of-type { order: 1; margin-top: 0; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-home > .companion-primary-actions { order: 2; margin-top: 10px; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-home > .companion-recent ~ .companion-recent { order: 3; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-primary-actions button {
+  justify-content: flex-start; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 12px;
+  background: var(--surface-raised); color: var(--fg); font: 500 var(--fs-ui, 14px)/1.35 var(--font-ui); filter: none;
+}
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-primary-actions button:hover { background: #1a1f29; filter: none; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-primary-actions button:last-child {
+  flex: none; color: var(--fg-muted); font-weight: 400; font-size: 12px;
+}
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent { margin-top: 20px; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent h3 { margin: 0 0 8px; font: 500 12px/1.4 var(--font-ui); color: var(--fg-subtle); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent > button[aria-label] {
+  padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised);
+  color: var(--fg-muted); font: 400 13px/1.7 var(--font-ui);
+}
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent > button:not([aria-label]) {
+  padding: 8px; border-radius: 8px; color: var(--fg-muted); font: 400 13px/1.4 var(--font-ui);
+}
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent p { font: 400 12px/1.6 var(--font-ui); color: var(--fg-subtle); }
+
+/* ── 9. 겹침 순서 · 작업 탭 순서 · 미리보기 머리줄 보정 ── */
+/* 비서 아바타(z 60)도 열린 패널 뒤에서 함께 어두워지도록: 덮개 61 · 패널 62 (팝오버 70 은 그대로 위) */
+:root[data-layout="o2"] .right-slideover { z-index: 62; }
+:root[data-layout="o2"] .right-slideover-scrim { z-index: 61; }
+/* 작업 탭: TaskActivityPanel 의 카드 묶음과 App 의 '결과 확인 대기 · 복구 가능한 작업' 을 한 열로 잇고,
+   새 대화 추가·기존 대화 추가·엔진 복구 도구와 안내 문구는 맨 아래로 (목업 순서) */
+:root[data-layout="o2"] .right-slideover .right-pane--tasks:not([hidden]) { display: flex; flex-direction: column; }
+:root[data-layout="o2"] .right-slideover .right-pane--tasks .task-activity--inline,
+:root[data-layout="o2"] .right-slideover .right-pane--tasks .task-activity-inline { display: contents; }
+:root[data-layout="o2"] .right-slideover .right-pane--tasks .so-tools { order: 10; }
+:root[data-layout="o2"] .right-slideover .right-pane--tasks .so-select { order: 11; }
+:root[data-layout="o2"] .right-slideover .right-pane--tasks .task-activity-inline > .so-explain { order: 12; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-content { gap: 0; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-item-header { flex-direction: row; text-align: left; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-actions { flex-wrap: nowrap; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-preview { flex: none; align-items: stretch; overflow: visible; }
+/* 세션 탭: 예전 .session-usage flex gap(16px) 대신 목업 .sect margin 20px 만, 줄 높이도 목업 기본값에 가깝게 */
+:root[data-layout="o2"] .right-slideover .session-usage { display: block; line-height: 1.35; }
+:root[data-layout="o2"] .right-slideover .so-grid3, :root[data-layout="o2"] .right-slideover .so-diag { line-height: 1.35; }
+/* 반투명 색 테마(glass-acrylic)에서 뒤 글자가 비치지 않게 — 불투명 테마에는 영향 없음 */
+:root[data-layout="o2"] .right-slideover:not(.is-pinned) { -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
