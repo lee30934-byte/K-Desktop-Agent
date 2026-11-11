@@ -205,12 +205,12 @@ Invoke-Step "Phase 16 (settings tabs + NSIS shortcut hook)" {
     }
     Write-Host "  OK Settings.tsx: $sectionsAll sections, all data-tab tagged" -ForegroundColor DarkGray
 
-    # (b) all 5 tab IDs present
-    foreach ($tab in @("ai", "agent", "appearance", "system", "safety")) {
+    # (b) all 9 group IDs present (v0.7.86 UI 8단계 — 9개 그룹)
+    foreach ($tab in @("general", "ai", "safety", "agent", "tools", "connect", "display", "data", "advanced")) {
         $found = Select-String -Path "src/components/Settings.tsx" -Pattern "data-tab=.$tab." -Quiet
         if (-not $found) { throw "Settings.tsx missing tab: $tab" }
     }
-    Write-Host "  OK All 5 tab IDs present (ai/agent/appearance/system/safety)" -ForegroundColor DarkGray
+    Write-Host "  OK All 9 group IDs present" -ForegroundColor DarkGray
 
     # (c) NSIS hook file + tauri.conf.json registration
     if (-not (Test-Path "src-tauri/installer-hooks.nsh")) { throw "src-tauri/installer-hooks.nsh missing" }
@@ -536,7 +536,9 @@ Invoke-Step "Phase 72 (Settings tabs ↔ App.css selectors 정합성)" {
 
     # (a) Settings.tsx 의 tabs 배열에서 `{ id: "X", icon: "...", label: "..." }` 패턴의 X 추출
     $settingsContent = Get-Content $settingsPath -Raw
-    $tabIds = [regex]::Matches($settingsContent, '\{\s*id:\s*"([a-z-]+)",\s*icon:\s*"') |
+    # v0.7.86 UI 8단계 — 탭 배열은 src/utils/settingsTabs.ts 로 옮겼다
+    $tabsContent = Get-Content "src/utils/settingsTabs.ts" -Raw -Encoding UTF8
+    $tabIds = [regex]::Matches($tabsContent, '\{\s*id:\s*"([a-z-]+)",\s*icon:\s*"') |
         ForEach-Object { $_.Groups[1].Value } |
         Sort-Object -Unique
     if ($tabIds.Count -lt 5) {

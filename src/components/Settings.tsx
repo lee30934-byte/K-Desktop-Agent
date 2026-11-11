@@ -13,6 +13,13 @@ import CornerBrackets from "./CornerBrackets";
 import ApprovalToggle from "./ApprovalToggle";
 import { Segmented } from "../ui";
 import { useUiLayout, type UiLayout } from "../utils/useUiLayout";
+import { SETTINGS_TABS, LS_ACTIVE_SETTINGS_TAB, readSettingsTab, settingsSectionMatches, type SettingsTabId } from "../utils/settingsTabs";
+import { exportConversationToFile, exportAllConversationsToFile, importConversationsFromFile } from "../utils/conversationBackup";
+import {
+  readChatWidth, readAssistantStyle, applyChatDisplay,
+  CHAT_WIDTH_KEY, ASSISTANT_STYLE_KEY, CHAT_DISPLAY_EVENT,
+  type ChatWidth, type AssistantStyle,
+} from "../utils/chatDisplay";
 import type { WatchedFolder } from "../types";
 // Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기용)
 import { getPathMappings, type PathMapping } from "./SidePanel";
@@ -138,6 +145,9 @@ interface SettingsProps {
   open: boolean;
   onClose: () => void;
   mcpConnected: boolean;
+  // v0.7.86 UI 8단계 — ⑧ 데이터·백업 › 대화 백업 (사이드바와 같은 유틸)
+  activeConversationId?: string | null;
+  onConversationsImported?: () => void;
 }
 
 // API 제공자 타입
@@ -802,20 +812,7 @@ const THEMES: Theme[] = [
   },
 ];
 
-// Phase 16: Settings 탭 분리 — 16개 섹션을 5개 카테고리로 그룹핑
-type SettingsTabId = "ai" | "agent" | "appearance" | "system" | "tools" | "safety";
-
-const SETTINGS_TABS: { id: SettingsTabId; icon: string; label: string }[] = [
-  { id: "ai", icon: "🤖", label: "AI" },
-  { id: "agent", icon: "🛡️", label: "에이전트" },
-  { id: "appearance", icon: "🎨", label: "외관" },
-  { id: "system", icon: "⚙️", label: "시스템" },
-  // Phase 67 (v0.6.2) — MCP 도구 인스펙터 + 카탈로그 + 커스텀 plugin 빌더
-  { id: "tools", icon: "🔧", label: "MCP 도구" },
-  { id: "safety", icon: "🆘", label: "안전장치" },
-];
-
-const LS_ACTIVE_SETTINGS_TAB = "kda_active_settings_tab";
+// Phase 16: Settings 탭 분리 → v0.7.86 UI 8단계 9개 그룹 (목록·이전 규칙은 utils/settingsTabs.ts)
 
 // Phase 67 (v0.6.2) — 커스텀 plugin 빌더의 "새 도구" 기본 템플릿.
 // K-Personal-MCP/modules/kda_plugins/kda_example.py 와 같은 패턴 — 익숙해지면 빠른 시작 가능.
@@ -1239,7 +1236,7 @@ function ToolImageModeToggle() {
   );
 }
 
-export default function Settings({ open, onClose, mcpConnected }: SettingsProps) {
+export default function Settings({ open, onClose, mcpConnected, activeConversationId = null, onConversationsImported }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1247,13 +1244,19 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const { layout: uiLayout, setLayout: setUiLayout } = useUiLayout();
 
   // Phase 16: 활성 탭 (localStorage 영속) — 마지막에 K가 본 탭으로 복귀
-  const [activeTab, setActiveTab] = useState<SettingsTabId>(() => {
-    try {
-      const saved = localStorage.getItem(LS_ACTIVE_SETTINGS_TAB) as SettingsTabId | null;
-      if (saved && SETTINGS_TABS.some((t) => t.id === saved)) return saved;
-    } catch {}
-    return "ai";
-  });
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(readSettingsTab);
+  // v0.7.86 UI 8단계 — 설정 검색 · ⑦ 대화 표시
+  const isO2 = uiLayout === "o2";
+  const [settingsQuery, setSettingsQuery] = useState("");
+  const [searchHits, setSearchHits] = useState(0);
+  const settingsBodyRef = useRef<HTMLDivElement | null>(null);
+  const [chatWidth, setChatWidthState] = useState<ChatWidth>(readChatWidth);
+  const [assistantStyle, setAssistantStyleState] = useState<AssistantStyle>(readAssistantStyle);
+  const setChatDisplay = (key: string, value: string) => {
+    try { localStorage.setItem(key, value); } catch { /* ignore */ }
+    applyChatDisplay();
+    window.dispatchEvent(new Event(CHAT_DISPLAY_EVENT));
+  };
   useEffect(() => {
     try {
       localStorage.setItem(LS_ACTIVE_SETTINGS_TAB, activeTab);
@@ -1263,10 +1266,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   // 헤더 칩·첫 실행 안내처럼 "특정 탭으로 열기" 요청이 반영되도록 열릴 때마다 다시 읽는다.
   useEffect(() => {
     if (!open) return;
-    try {
-      const saved = localStorage.getItem(LS_ACTIVE_SETTINGS_TAB) as SettingsTabId | null;
-      if (saved && SETTINGS_TABS.some((t) => t.id === saved)) setActiveTab(saved);
-    } catch {}
+    setActiveTab(readSettingsTab());
   }, [open]);
   const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
   const [addingFolder, setAddingFolder] = useState(false);
@@ -3078,6 +3078,39 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     }
   }
 
+  // 설정 검색 — 섹션 DOM 의 제목 텍스트로 맞는 섹션에 data-search-hit 를 단다 (블록 내부는 건드리지 않음).
+  // 섹션이 조건부로 늦게 붙을 수 있어 매 렌더 다시 센다.
+  useEffect(() => {
+    const body = settingsBodyRef.current;
+    if (!open || !body) return;
+    let hits = 0;
+    body.querySelectorAll<HTMLElement>("section[data-tab]").forEach((sec) => {
+      const texts = Array.from(sec.querySelectorAll<HTMLElement>(".eyebrow, .settings-row-title")).map((el) => el.textContent ?? "");
+      const hit = settingsSectionMatches(texts, settingsQuery);
+      if (hit) {
+        hits++;
+        sec.setAttribute("data-search-hit", "true");
+        sec.setAttribute("data-group-label", SETTINGS_TABS.find((t) => t.id === sec.dataset.tab)?.label ?? "");
+      } else {
+        sec.removeAttribute("data-search-hit");
+      }
+    });
+    if (hits !== searchHits) setSearchHits(hits);
+  });
+  useEffect(() => { if (!open) setSettingsQuery(""); }, [open]);
+  // o2 전체 페이지: Esc 로 대화로 돌아간다 (검색 중이면 먼저 검색어만 지움). 다른 대화상자가 떠 있으면 양보
+  useEffect(() => {
+    if (!open || !isO2) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (settingsQuery) { setSettingsQuery(""); return; }
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, isO2, settingsQuery, onClose]);
+
   if (!open) return null;
 
   const currentProvider = API_PROVIDERS.find(p => p.id === activeProvider);
@@ -3090,32 +3123,56 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
     network: permissions.filter(p => p.category === "network"),
   };
 
+  const searching = settingsQuery.trim().length > 0;
+  const activeGroup = SETTINGS_TABS.find((t) => t.id === activeTab) ?? SETTINGS_TABS[1];
+
   return (
-    <div className="settings-overlay" onClick={onClose}>
-      <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
-        <CornerBrackets corners={["tl", "tr", "bl", "br"]} size={12} />
+    // v0.7.86 UI 8단계 — o2: 본문 영역 전체 페이지(← / Esc 로 대화로). classic: 예전 모달 오버레이
+    <div className={`settings-overlay${isO2 ? " settings-overlay--page" : ""}`} onClick={isO2 ? undefined : onClose}>
+      <div className="settings-panel" onClick={(e) => e.stopPropagation()}
+        {...(isO2 ? { role: "region", "aria-label": "설정" } : {})}>
+        {!isO2 && <CornerBrackets corners={["tl", "tr", "bl", "br"]} size={12} />}
 
         <div className="settings-header">
+          {isO2 && (
+            <button type="button" className="settings-back" onClick={onClose} aria-label="대화로 돌아가기" title="대화로 돌아가기 (Esc)">
+              ←
+            </button>
+          )}
           <div>
             <div className="eyebrow">설정</div>
-            <h2 className="display settings-title">환경설정</h2>
+            <h2 className="display settings-title">{isO2 ? "설정" : "환경설정"}</h2>
           </div>
-          <button className="settings-close" onClick={onClose} aria-label="닫기">
-            ×
-          </button>
+          {!isO2 && (
+            <button className="settings-close" onClick={onClose} aria-label="닫기">
+              ×
+            </button>
+          )}
         </div>
 
-        {/* Phase 16: 5개 탭 nav — 16 섹션이 5 그룹으로 분리됨 */}
+        {/* v0.7.86 UI 8단계 — 설정 검색 (그룹을 가로질러 섹션 제목으로 찾기) */}
+        <div className="settings-search">
+          <input
+            type="search"
+            className="settings-search-input"
+            placeholder="설정 검색"
+            aria-label="설정 검색"
+            value={settingsQuery}
+            onChange={(e) => setSettingsQuery(e.target.value)}
+          />
+        </div>
+
+        {/* 9개 그룹 nav (두 배치 공통). o2 는 왼쪽 세로 목록, classic 은 예전 가로 탭 */}
         <nav className="settings-tabs" role="tablist" aria-label="환경설정 탭">
           {SETTINGS_TABS.map((tab) => (
             <button
               key={tab.id}
               type="button"
               role="tab"
-              aria-selected={activeTab === tab.id}
+              aria-selected={!searching && activeTab === tab.id}
               aria-controls={`settings-tabpanel-${tab.id}`}
-              className={`settings-tab ${activeTab === tab.id ? "active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
+              className={`settings-tab ${!searching && activeTab === tab.id ? "active" : ""}`}
+              onClick={() => { setSettingsQuery(""); setActiveTab(tab.id); }}
             >
               <span className="settings-tab-icon" aria-hidden="true">
                 {tab.icon}
@@ -3126,13 +3183,27 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         </nav>
 
         <div
+          ref={settingsBodyRef}
           className="settings-body"
           data-active-tab={activeTab}
+          data-searching={searching ? "true" : undefined}
           role="tabpanel"
           id={`settings-tabpanel-${activeTab}`}
         >
+          {searching ? (
+            <div className="settings-search-summary" role="status" style={{ order: -1 }}>
+              {searchHits > 0 ? `'${settingsQuery.trim()}' 검색 결과 ${searchHits}개` : `'${settingsQuery.trim()}'에 맞는 설정이 없습니다`}
+            </div>
+          ) : (
+            // 그룹 요약 카드 (o2 에서만 보임 — classic 은 예전 모양 유지)
+            <div className="settings-group-intro" style={{ order: -1 }}>
+              <div className="settings-group-intro-title"><span aria-hidden="true">{activeGroup.icon}</span> {activeGroup.label}</div>
+              <div className="settings-group-intro-desc">{activeGroup.desc}</div>
+            </div>
+          )}
+
           {/* v0.7.86 UI 3b단계 — 화면 스타일: O2(새 배치) / 클래식(이전 배치). 즉시 적용 */}
-          <section className="settings-section" data-tab="appearance" data-testid="ui-layout-section">
+          <section className="settings-section" data-tab="display" style={{ order: 5 }} data-testid="ui-layout-section">
             <div className="eyebrow">화면 스타일</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -3154,7 +3225,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* UI 테마 섹션 */}
-          <section className="settings-section" data-tab="appearance">
+          <section className="settings-section" data-tab="display" style={{ order: 10 }}>
             <div className="eyebrow">테마</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3213,7 +3284,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 말풍선 색상 섹션 */}
-          <section className="settings-section" data-tab="appearance">
+          <section className="settings-section" data-tab="display" style={{ order: 20 }}>
             <div className="eyebrow">말풍선 색상</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3311,7 +3382,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 에이전트 권한 섹션 */}
-          <section className="settings-section" data-tab="agent">
+          <section className="settings-section" data-tab="safety" style={{ order: 20 }}>
             <div className="eyebrow">실행 확인</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -3326,7 +3397,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               <ApprovalToggle />
             </div>
           </section>
-          <section className="settings-section" data-tab="agent">
+          <section className="settings-section" data-tab="safety" style={{ order: 10 }}>
             <div className="eyebrow">기능별 허용 범위</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3568,7 +3639,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               OFF (default, 균형): cap 8000, slice 16, threshold 0.7 — 답변 질 거의 보존
               ON (빠른 모드):        cap 4000, slice 12, threshold 0.6 — 응답속도 우선
               localStorage key kda_fast_mode. App.tsx 가 listen 해서 즉시 적용. */}
-          <section className="settings-section" data-tab="agent">
+          <section className="settings-section" data-tab="ai" style={{ order: 20 }}>
             <div className="eyebrow">⚡ 성능 모드</div>
             <PerformanceModeToggle />
             {/* Phase 113.4 (v0.6.68) — 마지막 trim 통계 + 모델 한도 가시화.
@@ -3582,7 +3653,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
           {/* v0.7.1 — 실험 기능 (에이전트) 토글. ~/.kda/agent-flags.json. 전부 기본 OFF.
               효과는 다음 turn 부터 (시스템 프롬프트/도구 게이트가 turn 시작 시 고정). */}
-          <section className="settings-section" data-tab="agent">
+          <section className="settings-section" data-tab="agent" style={{ order: 10 }}>
             <div className="eyebrow">🧪 실험 기능 (에이전트)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3700,7 +3771,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           {/* Phase 137 (v0.7.9) — 멀티 에이전트 오케스트레이션 opt-in.
               ON + 엔진 2개 이상이면 매 메시지가 fan-out (병렬 질의) → 메인 엔진(Claude 우선) 종합.
               비용/시간이 엔진 수만큼 늘어나므로 기본 OFF + 명시적 선택. */}
-          <section className="settings-section" data-tab="agent">
+          <section className="settings-section" data-tab="ai" style={{ order: 30 }}>
             <div className="eyebrow">🤝 멀티 엔진 오케스트레이션 (실험)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row" style={{ alignItems: "flex-start" }}>
@@ -3751,7 +3822,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}
-          <section className="settings-section" data-tab="agent">
+          <section className="settings-section" data-tab="safety" style={{ order: 30 }}>
             <div className="eyebrow">정밀 잠금</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -3930,7 +4001,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* API 키 / 인증 섹션 */}
-          <section className="settings-section" data-tab="ai">
+          <section className="settings-section" data-tab="ai" style={{ order: 10 }}>
             <div className="eyebrow">AI 모델 연동</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -4437,7 +4508,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 현재 활성 모델 표시 */}
-          <section className="settings-section" data-tab="ai">
+          <section className="settings-section" data-tab="ai" style={{ order: 0 }}>
             <div className="eyebrow">활성 모델</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -4462,7 +4533,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 15 — 외부 사용량 페이지 (새 webview 창으로 K-Desktop-Agent 안에서 그대로 보기) */}
-          <section className="settings-section" data-tab="ai">
+          <section className="settings-section" data-tab="ai" style={{ order: 40 }}>
             <div className="eyebrow">사용량 페이지</div>
             <div
               className="settings-row-desc"
@@ -4498,7 +4569,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 18 — 필수 도구 (의존성) 셋업 섹션 */}
-          <section className="settings-section" data-tab="system" data-firstrun={isFirstRun ? "true" : "false"}>
+          <section className="settings-section" data-tab="advanced" style={{ order: 10 }} data-firstrun={isFirstRun ? "true" : "false"}>
             <div className="eyebrow">
               필수 도구 {isFirstRun && <span style={{ color: "var(--accent)" }}>· 첫 셋업</span>}
             </div>
@@ -4726,7 +4797,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 25 (v0.5.11) — 데이터 폴더 (portable) */}
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="data" style={{ order: 10 }}>
             <div className="eyebrow">데이터 폴더</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -4790,7 +4861,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 자동 업데이트 섹션 */}
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="general" style={{ order: 30 }}>
             <div className="eyebrow">업데이트</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -4882,7 +4953,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 127 (v0.6.82) — 텔레그램 봇 브리지: 폰에서 KDA 원격 조작 */}
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="connect" style={{ order: 10 }}>
             <div className="eyebrow">텔레그램 연동 (폰에서 원격 조작)</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -4994,7 +5065,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 129 (v0.6.84) — VM/원격 호환 모드: WebView2 GPU 가속 끄기 */}
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="advanced" style={{ order: 40 }}>
             <div className="eyebrow">화면 호환 (VM · 원격 데스크톱)</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5020,7 +5091,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="general" style={{ order: 10 }}>
             <div className="eyebrow">시작</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5041,7 +5112,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="advanced" style={{ order: 20 }}>
             <div className="eyebrow">런타임</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5066,7 +5137,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="agent" style={{ order: 40 }}>
             <div className="eyebrow">리소스</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-header">
@@ -5108,7 +5179,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="agent" style={{ order: 20 }}>
             <div className="eyebrow">작업 복구</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5147,7 +5218,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 59 — Anthropic rate polling toggle (ccusage). V3 같은 백신이 ccusage 의 native binary 를 차단해 매 5분마다 알림이 뜨는 경우 off. */}
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="ai" style={{ order: 50 }}>
             <div className="eyebrow">사용량 추적</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -5184,7 +5255,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
           {/* Phase 90 (v0.6.32) — 안전장치 탭 최상단 요약 카드.
               SafeMode 현재값 + Memory Sync 상태 + Final-Review Gate + Lee Profile 한눈에. */}
-          <section className="settings-section" data-tab="safety">
+          <section className="settings-section" data-tab="safety" style={{ order: 0 }}>
             <div className="eyebrow">📊 안전 상태 요약</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -5535,7 +5606,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
           {/* Phase 87 (v0.6.30) — Git Memory Sync + Phase 88 가이드 + Phase 89 hybrid (team repo).
               Personal repo: lee-profile.md + memory/.  Team repo (선택): memory/ 만 (lee-profile 절대 X). */}
-          <section className="settings-section" data-tab="safety">
+          <section className="settings-section" data-tab="data" style={{ order: 40 }}>
             <div className="eyebrow">🔄 Memory Sync (Git)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6106,7 +6177,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄. */}
-          <section className="settings-section" data-tab="safety">
+          <section className="settings-section" data-tab="safety" style={{ order: 50 }}>
             <div className="eyebrow">🕒 SafeMode 자동 전환 스케줄</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6317,7 +6388,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
               카테고리별 위험도 schema + SafeMode 토글 (off/balanced/strict).
               balanced: 높음↑ 카테고리를 ask 로. strict: 보통↑ ask, 높음↑ manual + 일부 도구 자동 차단.
               실제 권한 게이트는 sidecar 가 강제 — 이 토글은 매 turn 시작 시 sidecar 로 전달. */}
-          <section className="settings-section" data-tab="safety">
+          <section className="settings-section" data-tab="safety" style={{ order: 40 }}>
             <div className="eyebrow">🛡️ Connector/Tool Safety Layer</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6557,7 +6628,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           {/* Phase 81 (v0.6.25) — Lee Profile + Memory Auto-Loader.
               ~/.kda/lee-profile.md 의 내용이 매 turn 시작 시 system prompt 첫머리에 prepend.
               K 본인이 직접 정의한 응답 스타일/규칙 (예: "한국어 우선", "증거 없는 완료 보고 금지" 등). */}
-          <section className="settings-section" data-tab="safety">
+          <section className="settings-section" data-tab="agent" style={{ order: 30 }}>
             <div className="eyebrow">🪪 Lee Profile (개인 응답 규칙)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6627,7 +6698,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
           {/* Phase 80 (v0.6.24) — Final-Review Gate toggle. SIGILFALL 등 대량 생성 raw 컷이
               사용자에게 노출되지 않도록 qa-report.json 의 FINAL_CANDIDATE 만 미리보기 허용. */}
-          <section className="settings-section" data-tab="safety">
+          <section className="settings-section" data-tab="safety" style={{ order: 60 }}>
             <div className="eyebrow">🛡️ Final-Review Gate</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -6659,7 +6730,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="general" style={{ order: 20 }}>
             <div className="eyebrow">단축키</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6686,7 +6757,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기) */}
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="advanced" style={{ order: 50 }}>
             <div className="eyebrow">🗂️ 경로 매핑 (WSL / VM)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6793,7 +6864,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* Phase 75 (v0.6.18) — Codex 좀비 process detect + 안전 정리 */}
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="advanced" style={{ order: 30 }}>
             <div className="eyebrow">🧟 좀비 codex 프로세스</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -6965,7 +7036,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section" data-tab="system">
+          <section className="settings-section" data-tab="general" style={{ order: 40 }}>
             <div className="eyebrow">앱</div>
             <div className="settings-row">
               <div className="settings-row-info">
@@ -6983,7 +7054,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           {/* ─── Phase 67 (v0.6.2) — MCP 도구 탭 ──────────────────────── */}
 
           {/* 67a — 현재 활성 도구 인스펙터 */}
-          <section className="settings-section" data-tab="tools">
+          <section className="settings-section" data-tab="tools" style={{ order: 10 }}>
             <div className="eyebrow">🔧 활성 MCP 도구</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7209,7 +7280,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 67b — 외부 MCP 서버 카탈로그 (명령 안내 형) */}
-          <section className="settings-section" data-tab="tools">
+          <section className="settings-section" data-tab="tools" style={{ order: 20 }}>
             <div className="eyebrow">📦 추가 가능한 MCP 서버</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7307,7 +7378,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* 67c — 커스텀 plugin 빌더 */}
-          <section className="settings-section" data-tab="tools">
+          <section className="settings-section" data-tab="tools" style={{ order: 30 }}>
             <div className="eyebrow">🧪 커스텀 도구 만들기</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7539,7 +7610,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           </section>
 
           {/* ─── 안전장치 (백업/복구) ──────────────────────── */}
-          <section className="settings-section" data-tab="safety">
+          <section className="settings-section" data-tab="data" style={{ order: 20 }}>
             <div className="eyebrow">🛡️ 안전장치</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
@@ -7615,7 +7686,86 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
             </div>
           </section>
 
-          <section className="settings-section" data-tab="safety">
+          {/* v0.7.86 UI 8단계 — ③ 권한과 안전: 적용 순서 다이어그램 (안전 상태 요약 바로 아래) */}
+          <section className="settings-section" data-tab="safety" style={{ order: 5 }} data-testid="safety-order-section">
+            <div className="eyebrow">적용 순서</div>
+            <div className="settings-row settings-row-vertical">
+              <div className="settings-row-info">
+                <div className="settings-row-title">도구를 실행할 때 거치는 순서</div>
+                <div className="settings-row-desc">위 단계에서 막히면 아래 단계까지 가지 않습니다.</div>
+              </div>
+              <ol className="safety-order" aria-label="안전 적용 순서">
+                {[
+                  ["기능별 허용 범위", "기능마다 허용 · 실행 전 묻기 · 차단"],
+                  ["실행 확인", "'확인 없이 실행'이 켜져 있으면 묻지 않음"],
+                  ["개별 도구 잠금", "잠근 도구는 항상 차단"],
+                  ["SafeMode", "위험도에 따라 막거나 묻기 (스케줄로 자동 전환)"],
+                  ["결과물 검수", "미리보기 전에 결과물 QA 검사"],
+                ].map(([title, desc], i) => (
+                  <li key={title} className="safety-order-step">
+                    <span className="safety-order-num" aria-hidden="true">{i + 1}</span>
+                    <span className="safety-order-text"><strong>{title}</strong><span>{desc}</span></span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </section>
+
+          {/* v0.7.86 UI 8단계 — ⑦ 화면·비서: 대화 표시 (대화 폭 · 어시스턴트 표시 방식, O2 화면에 적용) */}
+          <section className="settings-section" data-tab="display" style={{ order: 30 }} data-testid="chat-display-section">
+            <div className="eyebrow">대화 표시</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">대화 폭</div>
+                <div className="settings-row-desc">메시지 열의 최대 폭입니다. O2 화면에 적용됩니다.</div>
+              </div>
+              <Segmented<ChatWidth>
+                label="대화 폭"
+                value={chatWidth}
+                options={[
+                  { value: "narrow", label: "좁게" },
+                  { value: "normal", label: "보통" },
+                  { value: "wide", label: "넓게" },
+                ]}
+                onChange={(v) => { setChatWidthState(v); setChatDisplay(CHAT_WIDTH_KEY, v); }}
+              />
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">답변 표시 방식</div>
+                <div className="settings-row-desc">말풍선형은 지금처럼, 문서형은 답변을 배경 없이 본문처럼 보여 줍니다.</div>
+              </div>
+              <Segmented<AssistantStyle>
+                label="답변 표시 방식"
+                value={assistantStyle}
+                options={[
+                  { value: "bubble", label: "말풍선형" },
+                  { value: "document", label: "문서형" },
+                ]}
+                onChange={(v) => { setAssistantStyleState(v); setChatDisplay(ASSISTANT_STYLE_KEY, v); }}
+              />
+            </div>
+          </section>
+
+          {/* v0.7.86 UI 8단계 — ⑧ 데이터·백업: 대화 백업 (예전 사이드바 '백업·가져오기'와 같은 함수) */}
+          <section className="settings-section" data-tab="data" style={{ order: 30 }} data-testid="conversation-backup-section">
+            <div className="eyebrow">대화 백업</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">대화 내보내기 · 전체 백업 · 가져오기</div>
+                <div className="settings-row-desc">대화를 JSON 파일로 저장하거나, 저장한 파일에서 다시 가져옵니다.</div>
+              </div>
+              <div className="settings-btn-group">
+                <button type="button" className="settings-btn" disabled={!activeConversationId}
+                  title={activeConversationId ? "지금 연 대화를 파일로 내보내기" : "내보낼 대화를 먼저 여세요"}
+                  onClick={() => { void exportConversationToFile(activeConversationId); }}>📤 대화 내보내기</button>
+                <button type="button" className="settings-btn" onClick={() => { void exportAllConversationsToFile(); }}>💾 전체 백업</button>
+                <button type="button" className="settings-btn" onClick={() => { void importConversationsFromFile(onConversationsImported); }}>📥 가져오기</button>
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-section" data-tab="general" style={{ order: 50 }}>
             <div className="eyebrow">정보</div>
             <div className="settings-meta mono">
               <div>K Desktop Agent v0.4.0</div>

@@ -47,9 +47,10 @@ test("useUiLayout: window 이벤트·storage 로 동기화, 저장 키 사용", 
   assert.match(read("../src/main.tsx"), /applyUiLayout\(\);/);
 });
 
-test("설정 외관 탭에 '화면 스타일' (O2 / 클래식)", () => {
+test("설정 ⑦ 화면·비서 그룹에 '화면 스타일' (O2 / 클래식)", () => {
   const s = read("../src/components/Settings.tsx");
-  assert.match(s, /data-tab="appearance" data-testid="ui-layout-section"/);
+  // v0.7.86 UI 8단계 — 외관(appearance) → 화면·비서(display) 그룹
+  assert.match(s, /data-tab="display" style=\{\{ order: 5 \}\} data-testid="ui-layout-section"/);
   assert.match(s, /\{ value: "o2", label: "O2" \}/);
   assert.match(s, /\{ value: "classic", label: "클래식" \}/);
   assert.match(s, /onChange=\{setUiLayout\}/);

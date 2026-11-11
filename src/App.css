@@ -2419,13 +2419,141 @@
   display: none;
 }
 
+/* v0.7.86 UI 8단계 — 9개 그룹 (두 배치 공통). 섹션 순서는 각 section 의 style order */
+.settings-body[data-active-tab="general"] section[data-tab="general"],
 .settings-body[data-active-tab="ai"] section[data-tab="ai"],
+.settings-body[data-active-tab="safety"] section[data-tab="safety"],
 .settings-body[data-active-tab="agent"] section[data-tab="agent"],
-.settings-body[data-active-tab="appearance"] section[data-tab="appearance"],
-.settings-body[data-active-tab="system"] section[data-tab="system"],
 .settings-body[data-active-tab="tools"] section[data-tab="tools"],
-.settings-body[data-active-tab="safety"] section[data-tab="safety"] {
+.settings-body[data-active-tab="connect"] section[data-tab="connect"],
+.settings-body[data-active-tab="display"] section[data-tab="display"],
+.settings-body[data-active-tab="data"] section[data-tab="data"],
+.settings-body[data-active-tab="advanced"] section[data-tab="advanced"] {
   display: flex;
+}
+
+/* 설정 검색 — 검색 중엔 그룹과 무관하게 맞는 섹션만, 각 섹션 위에 그룹 이름 */
+.settings-body[data-searching] section[data-tab] { display: none; }
+.settings-body[data-searching] section[data-tab][data-search-hit] { display: flex; }
+.settings-body[data-searching] section[data-search-hit]::before {
+  content: attr(data-group-label);
+  font-size: var(--fs-caption, 11px);
+  color: var(--text-tertiary);
+}
+.settings-search { margin: 0 0 var(--space-md) 0; }
+.settings-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  background: var(--bg-3);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: 13px;
+}
+.settings-search-input:focus { outline: none; border-color: var(--accent-dim); }
+.settings-search-summary { font-size: 13px; color: var(--text-secondary); }
+/* 그룹 요약 카드는 o2 에서만 (classic 은 예전 모달 모양 유지) */
+.settings-group-intro { display: none; }
+.settings-btn-group { display: flex; flex-wrap: wrap; gap: var(--space-sm); justify-content: flex-end; }
+
+/* ③ 권한과 안전 — 적용 순서 다이어그램 */
+.safety-order { list-style: none; margin: var(--space-sm) 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.safety-order-step { display: flex; align-items: flex-start; gap: 10px; position: relative; }
+.safety-order-step + .safety-order-step::before {
+  content: ""; position: absolute; left: 10px; top: -6px; height: 6px; border-left: 1px solid var(--border-default);
+}
+.safety-order-num {
+  flex: none; width: 21px; height: 21px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 11px; color: var(--accent); border: 1px solid var(--accent-dim); background: var(--bg-2);
+}
+.safety-order-text { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--text-primary); }
+.safety-order-text span { font-size: 12px; color: var(--text-secondary); }
+
+/* v0.7.86 UI 8단계 (o2) — 설정은 본문 영역 전체 페이지. 사이드바는 레일(--sidebar-width 56px)로 접힘.
+   좌측 그룹 목록 232px(맨 위 검색), 내용 max-width 760. ← 버튼이나 Esc 로 대화로 돌아간다. */
+.settings-overlay.settings-overlay--page {
+  inset: 0 0 0 var(--sidebar-width, 56px);
+  background: var(--surface-app, var(--bg-1));
+  backdrop-filter: none;
+  display: block;
+  z-index: 900;
+}
+.settings-overlay--page .settings-panel {
+  min-width: 0;
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas: "head head" "search body" "nav body";
+}
+.settings-overlay--page .settings-header {
+  grid-area: head;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-md);
+  margin: 0;
+  padding: 10px var(--space-lg);
+  min-height: var(--header-h, 48px);
+  box-sizing: border-box;
+}
+.settings-overlay--page .settings-header .eyebrow { display: none; }
+.settings-overlay--page .settings-title { margin: 0; font-size: 16px; letter-spacing: 0; }
+.settings-back {
+  background: transparent; border: 1px solid var(--border-subtle); color: var(--text-secondary);
+  width: 30px; height: 30px; border-radius: var(--radius-sm); cursor: pointer; font-size: 16px; line-height: 1;
+  display: grid; place-items: center; padding: 0;
+}
+.settings-back:hover { color: var(--text-primary); border-color: var(--border-default); }
+.settings-overlay--page .settings-search { grid-area: search; margin: 0; padding: var(--space-md) var(--space-md) var(--space-sm); }
+.settings-overlay--page .settings-tabs {
+  grid-area: nav;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  margin: 0;
+  padding: 0 var(--space-md) var(--space-md);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.settings-overlay--page .settings-tab { padding: 8px 10px; }
+.settings-overlay--page .settings-tab.active {
+  color: var(--text-primary);
+  background: var(--surface-active, var(--bg-3));
+  border-color: transparent;
+  box-shadow: none;
+}
+.settings-overlay--page .settings-body {
+  grid-area: body;
+  overflow-y: auto;
+  padding: var(--space-lg) var(--space-xl) var(--space-2xl);
+  border-left: 1px solid var(--border-subtle);
+}
+.settings-overlay--page .settings-body > * { width: 100%; max-width: 760px; margin-left: auto; margin-right: auto; box-sizing: border-box; }
+.settings-overlay--page .settings-group-intro {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: var(--space-md) var(--space-lg);
+  background: var(--surface-card, var(--bg-2));
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.settings-group-intro-title { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+.settings-group-intro-desc { font-size: 13px; color: var(--text-secondary); }
+@media (max-width: 900px) {
+  .settings-overlay--page .settings-panel { grid-template-columns: 180px minmax(0, 1fr); }
 }
 
 .settings-row {

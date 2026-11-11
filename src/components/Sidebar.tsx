@@ -130,22 +130,7 @@ function Sidebar({
   const railMode = isO2 && rail;
   // o2 내비 '🔍 검색' — 누르면 같은 자리에서 입력창으로 펼침
   const [searchOpen, setSearchOpen] = useState(false);
-  // o2 '대화' 섹션 제목 ⋯ — 백업·가져오기 (8단계에서 설정 › 데이터·백업으로 옮길 때까지 여기 둔다)
-  const [backupMenuOpen, setBackupMenuOpen] = useState(false);
-  const backupMenuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!backupMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (backupMenuRef.current && !backupMenuRef.current.contains(e.target as Node)) setBackupMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setBackupMenuOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [backupMenuOpen]);
+  // v0.7.86 UI 8단계 — o2 의 백업·가져오기는 설정 › 데이터·백업 › 대화 백업으로 옮겼다 (classic 은 아래 details 그대로)
   // 제목 inline edit (대화/폴더 공용)
   const [editingState, setEditingState] = useState<
     | { kind: "conversation"; id: string; title: string }
@@ -1518,7 +1503,7 @@ function Sidebar({
   );
 
   const renderSectionHead = () => (
-    <div className="sb-sec-head" ref={backupMenuRef}>
+    <div className="sb-sec-head">
       <span className="eyebrow section-label">대화</span>
       <span className="sb-sec-tools">
         {onCreateFolder && (
@@ -1527,22 +1512,7 @@ function Sidebar({
         )}
         <button type="button" onClick={toggleBulkMode} aria-pressed={bulkSelectMode} aria-label="여러 대화 선택"
           title={bulkSelectMode ? "정리 종료" : "여러 대화 선택해서 폴더로 이동"}>☑</button>
-        <button type="button" onClick={() => setBackupMenuOpen((v) => !v)} aria-haspopup="menu" aria-expanded={backupMenuOpen}
-          aria-label="백업·가져오기" title="백업·가져오기">⋯</button>
       </span>
-      {backupMenuOpen && (
-        <div className="sb-sec-menu" role="menu" aria-label="백업·가져오기">
-          {([
-            ["📤", "대화 내보내기", handleExportCurrent],
-            ["💾", "전체 백업", handleExportAll],
-            ["📥", "가져오기", handleImport],
-          ] as const).map(([icon, label, run]) => (
-            <button key={label} type="button" role="menuitem" onClick={() => { setBackupMenuOpen(false); void run(); }}>
-              <span aria-hidden="true">{icon}</span> {label}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 

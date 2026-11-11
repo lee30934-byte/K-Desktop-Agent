@@ -520,9 +520,20 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem("kda_sidebar_rail", sidebarRailPref ? "1" : "0"); } catch {}
   }, [sidebarRailPref]);
-  const sidebarRail = isO2 && (narrowWindow ? !narrowSidebarOpen : sidebarRailPref);
-  const sidebarOverlay = isO2 && narrowWindow && narrowSidebarOpen;
+  // v0.7.86 UI 8단계 (o2) — 설정은 본문 영역 전체 페이지라 열려 있는 동안 사이드바를 레일로 접는다.
+  // (classic 은 예전 모달 오버레이)
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsPage = isO2 && settingsOpen;
+  const sidebarRail = isO2 && (settingsPage || (narrowWindow ? !narrowSidebarOpen : sidebarRailPref));
+  const sidebarOverlay = isO2 && !settingsPage && narrowWindow && narrowSidebarOpen;
   const toggleSidebarRail = useStableCallback(() => {
+    // 설정 페이지에서 레일 심볼을 누르면 설정을 닫고 사이드바를 편다
+    if (settingsPage) {
+      setSettingsOpen(false);
+      if (narrowWindow) setNarrowSidebarOpen(true);
+      else setSidebarRailPref(false);
+      return;
+    }
     if (narrowWindow) setNarrowSidebarOpen((v) => !v);
     else setSidebarRailPref((v) => !v);
   });
@@ -548,10 +559,16 @@ export default function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   // 좁은 창 오버레이는 대화를 고르면 다시 레일로 (본문을 가리지 않게)
   useEffect(() => { setNarrowSidebarOpen(false); }, [activeConversationId]);
+  // o2 설정 페이지에서 레일로 다른 대화·새 대화를 고르면 대화로 돌아간다 (첫 값 복원은 무시)
+  const prevSettingsConvRef = useRef(activeConversationId);
+  useEffect(() => {
+    if (prevSettingsConvRef.current === activeConversationId) return;
+    prevSettingsConvRef.current = activeConversationId;
+    if (isO2) setSettingsOpen(false);
+  }, [activeConversationId, isO2]);
   const [status, setStatus] = useState<ConnectionStatus>("connected");
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   // Phase 114 (v0.6.69) — 첫 실행 시 Settings 강제 오픈 대신 환영 모달.
   const [showWelcome, setShowWelcome] = useState(false);
   const [mcpState, setMcpState] = useState<MCPState>({
@@ -1206,7 +1223,8 @@ export default function App() {
     }
     if (openSettings) {
       try {
-        localStorage.setItem("kda_active_settings_tab", "system");
+        // v0.7.86 UI 8단계 — 설치·진단은 ⑨ 고급·문제 해결 그룹
+        localStorage.setItem("kda_active_settings_tab", "advanced");
       } catch {}
       setSettingsOpen(true);
     }
@@ -5789,7 +5807,7 @@ export default function App() {
   const handleExportActiveConversation = useStableCallback(() => { void exportConversationToFile(activeConversationId); });
   // v0.7.86 UI 3단계 — 헤더 칩에서 특정 설정 탭으로 바로 이동
   const openSettingsAi = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "ai"); } catch { /* ignore */ } setSettingsOpen(true); });
-  const openSettingsSafety = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "agent"); } catch { /* ignore */ } setSettingsOpen(true); });
+  const openSettingsSafety = useStableCallback(() => { try { localStorage.setItem("kda_active_settings_tab", "safety"); } catch { /* ignore */ } setSettingsOpen(true); });
   const closeSettings = useStableCallback(() => setSettingsOpen(false));
   const closeCommandPalette = useStableCallback(() => setCommandPaletteOpen(false));
 
@@ -6155,6 +6173,8 @@ export default function App() {
         open={settingsOpen}
         onClose={closeSettings}
         mcpConnected={mcpState.connected}
+        activeConversationId={activeConversationId}
+        onConversationsImported={refreshConversations}
       />
 
       {/* Phase 114 (v0.6.69) — 첫 실행 환영 모달 (옛 Settings 강제 오픈 대체) */}

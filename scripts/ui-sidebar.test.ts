@@ -1,5 +1,5 @@
 // v0.7.86 UI 개편 6단계 — 사이드바 단순화 회귀 테스트 (evidence/ui-redesign-20261111/design-spec.md 3.1, 4.1, 8장 6단계, 10장).
-// o2: 브랜드 · [＋ 새 대화] · 내비 3줄(검색/라이브러리/작업) · '대화' 섹션(📁+ ☑ ⋯백업) · 행 hover ⋯ · 하단 고정 행 · 레일(Ctrl+B, 1100px 미만 자동).
+// o2: 브랜드 · [＋ 새 대화] · 내비 3줄(검색/라이브러리/작업) · '대화' 섹션(📁+ ☑, 백업은 8단계에 설정으로) · 행 hover ⋯ · 하단 고정 행 · 레일(Ctrl+B, 1100px 미만 자동).
 // classic: 예전 구조(📁+/📚 버튼 줄 · 검색창 · '탐색기' · 백업 details · 환경설정 · K-PERSONAL footer) 그대로.
 // renderExplorer 와 DnD 로직은 손대지 않는다.
 import { test } from "node:test";
@@ -27,8 +27,9 @@ test("배치 분기: o2 만 새 구조, 레일은 o2 에서만", () => {
   assert.match(sidebar, /\{isO2 \? renderO2Top\(\) : \(<>/);
   assert.match(sidebar, /\{isO2 \? renderSectionHead\(\) : \(/);
   assert.match(sidebar, /\{isO2 \? renderO2Foot\(\) : \(<>/);
-  assert.match(app, /const sidebarRail = isO2 && \(narrowWindow \? !narrowSidebarOpen : sidebarRailPref\);/);
-  assert.match(app, /const sidebarOverlay = isO2 && narrowWindow && narrowSidebarOpen;/);
+  // 8단계 — o2 설정 페이지가 열려 있으면 레일로 접힘
+  assert.match(app, /const sidebarRail = isO2 && \(settingsPage \|\| \(narrowWindow \? !narrowSidebarOpen : sidebarRailPref\)\);/);
+  assert.match(app, /const sidebarOverlay = isO2 && !settingsPage && narrowWindow && narrowSidebarOpen;/);
 });
 
 test("classic: 예전 사이드바 구조가 classic 분기 안에 그대로", () => {
@@ -66,12 +67,12 @@ test("o2: 새 대화 · 내비 3줄 (검색은 같은 자리에서 입력창으�
   assert.match(app, /taskCount=\{\[\.\.\.conversationTurnGateRef\.current\.runs\.values\(\)\]\.filter\(\(r\) => r\.state === "running" \|\| r\.state === "stopping"\)\.length\}/);
 });
 
-test("o2: '대화' 섹션 제목 도구 — 새 폴더 · 여러 대화 선택 · 백업·가져오기(같은 핸들러)", () => {
+test("o2: '대화' 섹션 제목 도구 — 새 폴더 · 여러 대화 선택 (백업·가져오기는 8단계에 설정 › 데이터·백업으로)", () => {
   const head = fnBody(sidebar, "renderSectionHead");
   assert.match(head, /<span className="eyebrow section-label">대화<\/span>/);
   assert.match(head, /onClick=\{\(\) => handleNewSubfolder\(null\)\} aria-label="새 폴더"/);
   assert.match(head, /onClick=\{toggleBulkMode\} aria-pressed=\{bulkSelectMode\} aria-label="여러 대화 선택"/);
-  assert.match(head, /\["📤", "대화 내보내기", handleExportCurrent\],\n\s+\["💾", "전체 백업", handleExportAll\],\n\s+\["📥", "가져오기", handleImport\],/);
+  assert.doesNotMatch(head, /백업·가져오기|handleExportAll|handleImport/);
   assert.match(fnBody(sidebar, "toggleBulkMode"), /setBulkSelectMode\(nextMode\);\n\s+if \(!nextMode\) setSelectedConvIds\(new Set<string>\(\)\);/);
   // 대량 정리 바는 ☑ 켰을 때만 (renderExplorer 는 그대로, CSS 로만)
   assert.match(css, /\.sidebar--o2:not\(\.sidebar--bulk\) \.bulk-organize-bar \{ display: none !important; \}/);

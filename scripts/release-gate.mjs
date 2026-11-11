@@ -284,6 +284,7 @@ const NODE_TEST_SUITES = [
   { file: "scripts/ui-metrics-split.test.ts", runner: "tsx" }, // v0.7.86 UI 5단계 MetricsPanel 해체 (o2 링·세션 탭 / classic footer)
   { file: "scripts/ui-sidebar.test.ts", runner: "tsx" }, // v0.7.86 UI 6단계 사이드바 단순화 (o2 내비·하단 행·레일 / classic 예전 구조)
   { file: "scripts/ui-composer.test.ts", runner: "tsx" }, // v0.7.86 UI 7단계 메시지 열·입력창 카드·제안 카드 (o2) / classic 예전 입력창
+  { file: "scripts/ui-settings.test.ts", runner: "tsx" }, // v0.7.86 UI 8단계 설정 9그룹·검색·대화 백업 (o2 전체 페이지 / classic 모달)
   { file: "scripts/companion-antenna.test.ts", runner: "tsx" }, // v0.7.84 antenna ball not cut flat on any pose/tone/tier // v0.7.84 Codex built-in computer_use disabled on every app-server spawn // v0.7.84 incomplete install detection, signed repair, updater fallback
   { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
 ];
