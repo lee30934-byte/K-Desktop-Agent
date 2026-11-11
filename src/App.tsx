@@ -121,6 +121,7 @@ import "./App.css";
 // v0.7.86 fidA — o2 메인 화면 목업 충실도 (App.css 다음에 불러와 같은 특이도면 이긴다)
 import "./styles/o2-fidelity.css";
 import "./styles/o2-slideover.css";
+import "./styles/o2-settings.css";
 import logger from "./utils/logger";
 import {
   TelegramTurnTracker,
@@ -146,7 +147,7 @@ import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch as relaunchApp } from "@tauri-apps/plugin-process";
 import { getVersion as getAppVersion } from "@tauri-apps/api/app";
 // v0.7.86 UI 목업 충실도(fidA) — 개발용 화면 비교 픽스처 (배포 빌드에서는 항상 null)
-import { readMockupFixture, devPanelOverride } from "./dev/mockupFixture";
+import { readMockupFixture, devPanelOverride, devSettingsOverride } from "./dev/mockupFixture";
 import TaskWatchNotice from "./components/TaskWatchNotice";
 // Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄
 import {
@@ -5064,6 +5065,13 @@ export default function App() {
     // 픽스처는 시작 시 한 번만 채운다 (분모만 읽음)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mockupFixture, dbReady]);
+
+  // fidC — DEV 전용 ?settings=<그룹>: 픽스처가 대화를 고른 뒤 설정 페이지를 연다 (캡처용, 배포 빌드에선 항상 null)
+  useEffect(() => {
+    if (!dbReady || !devSettingsOverride()) return;
+    const t = window.setTimeout(() => setSettingsOpen(true), 600);
+    return () => window.clearTimeout(t);
+  }, [dbReady]);
 
   useEffect(() => {
     if (dbReady && activeConversationId && !mockupFixture) {

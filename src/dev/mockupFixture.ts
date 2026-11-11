@@ -38,6 +38,20 @@ export function devPanelOverride(env: ViteEnv = viteEnv(), search: string = curr
   } catch { return null; }
 }
 
+const DEV_SETTINGS_GROUPS = ["general", "ai", "safety", "agent", "tools", "connect", "display", "data", "advanced"] as const;
+export type DevSettingsGroup = (typeof DEV_SETTINGS_GROUPS)[number];
+
+/** fidC — 개발 빌드에서만 ?settings=<그룹> 으로 설정 페이지를 그 그룹으로 열어 둔다 (캡처용, 저장 안 함). ?q= 는 검색어. */
+export function devSettingsOverride(env: ViteEnv = viteEnv(), search: string = currentSearch()): { group: DevSettingsGroup; query: string } | null {
+  if (!env?.DEV) return null;
+  try {
+    const p = new URLSearchParams(search);
+    const v = p.get("settings");
+    if (!v || !(DEV_SETTINGS_GROUPS as readonly string[]).includes(v)) return null;
+    return { group: v as DevSettingsGroup, query: p.get("q") ?? "" };
+  } catch { return null; }
+}
+
 /** fidB — 슬라이드오버 탭용 예시 데이터 (목업 '세션·사용량' · '작업' · '미리보기' 와 같은 값). */
 export interface MockupPanelFixture {
   model: string;

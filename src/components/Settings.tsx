@@ -11,8 +11,11 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import CornerBrackets from "./CornerBrackets";
 import ApprovalToggle from "./ApprovalToggle";
-import { Segmented } from "../ui";
+import { Segmented, Icon, type IconName } from "../ui";
+import { useApprovalMode } from "../utils/useApprovalMode";
+import { SETTINGS_GROUP_ICONS, O2SecHead, O2Seg, O2Row, O2Switch, O2SafetySummary } from "./SettingsO2";
 import { useUiLayout, type UiLayout } from "../utils/useUiLayout";
+import { devSettingsOverride } from "../dev/mockupFixture";
 import { SETTINGS_TABS, LS_ACTIVE_SETTINGS_TAB, readSettingsTab, settingsSectionMatches, type SettingsTabId } from "../utils/settingsTabs";
 import { SETTINGS_SECTION_ANCHORS } from "../utils/commandPalette";
 import { exportConversationToFile, exportAllConversationsToFile, importConversationsFromFile } from "../utils/conversationBackup";
@@ -622,6 +625,11 @@ const TOOL_CATALOG: ToolCategory[] = [
     ],
   },
 ];
+
+// fidC — o2 권한 행의 라인 아이콘 (카테고리별)
+const PERM_CATEGORY_ICONS: Record<AgentPermission["category"], IconName> = {
+  file: "file", system: "terminal", input: "keyboard", network: "globe",
+};
 
 // 기본 에이전트 권한 설정
 const DEFAULT_PERMISSIONS: AgentPermission[] = [
@@ -1247,11 +1255,15 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
   const { layout: uiLayout, setLayout: setUiLayout } = useUiLayout();
 
   // Phase 16: 활성 탭 (localStorage 영속) — 마지막에 K가 본 탭으로 복귀
-  const [activeTab, setActiveTab] = useState<SettingsTabId>(readSettingsTab);
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(() => devSettingsOverride()?.group ?? readSettingsTab());
   // v0.7.86 UI 8단계 — 설정 검색 · ⑦ 대화 표시
   const isO2 = uiLayout === "o2";
   const [settingsQuery, setSettingsQuery] = useState("");
   const [searchHits, setSearchHits] = useState(0);
+  // fidC — o2 그룹 nav 의 오른쪽 숫자: 그룹마다 지금 보이는 섹션 수 (DOM 에서 센다, o2 에서 숨긴 섹션 제외)
+  const [groupCounts, setGroupCounts] = useState<Partial<Record<SettingsTabId, number>>>({});
+  // fidC — o2 권한과 안전: '확인 없이 실행' 스위치 (ApprovalToggle 과 같은 저장소·이벤트)
+  const { enabled: autoApprovalOn, toggle: toggleAutoApproval, error: autoApprovalError } = useApprovalMode();
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
   const [chatWidth, setChatWidthState] = useState<ChatWidth>(readChatWidth);
   const [assistantStyle, setAssistantStyleState] = useState<AssistantStyle>(readAssistantStyle);
@@ -1261,6 +1273,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
     window.dispatchEvent(new Event(CHAT_DISPLAY_EVENT));
   };
   useEffect(() => {
+    if (devSettingsOverride()) return; // fidC — DEV 캡처용 그룹은 저장하지 않는다
     try {
       localStorage.setItem(LS_ACTIVE_SETTINGS_TAB, activeTab);
     } catch {}
@@ -1269,6 +1282,8 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
   // 헤더 칩·첫 실행 안내처럼 "특정 탭으로 열기" 요청이 반영되도록 열릴 때마다 다시 읽는다.
   useEffect(() => {
     if (!open) return;
+    const dev = devSettingsOverride(); // fidC — DEV 전용 ?settings=<그룹>&q=<검색어> (배포 빌드에선 항상 null)
+    if (dev) { setActiveTab(dev.group); if (dev.query) setSettingsQuery(dev.query); return; }
     setActiveTab(readSettingsTab());
   }, [open]);
   // v0.7.86 UI 9단계 — 팔레트에서 고른 섹션으로 이동 (위 effect 뒤에 와야 그룹이 덮어써지지 않는다)
@@ -3083,6 +3098,30 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
     }
   }
 
+  // SafeMode 직접 선택 (classic 3버튼 · o2 세그먼트 공통)
+  function applySafeModeChoice(mode: SafeMode) {
+    setSafeMode(mode);
+    try {
+      localStorage.setItem("kda_safe_mode", mode);
+    } catch {
+      /* ignore */
+    }
+    // Phase 92 (v0.6.34) — K manual override 5분 보호. 다음 schedule tick (1분
+    // 단위) 이 K 의 선택을 즉시 덮어쓰지 않도록 윈도우 박음. K 가 "잠깐 풀었는데
+    // 1분 안에 도로 strict 됐다" 답답함 회피.
+    try {
+      markManualOverride();
+      setManualOverrideRemainingMs(MANUAL_OVERRIDE_WINDOW_MS);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // fidC — SafeMode 짧은 이름 (요약 칩용, 이모지 없이)
+  function safeModeShortLabel(mode: SafeMode): string {
+    return mode === "off" ? "끔" : mode === "balanced" ? "균형" : "엄격";
+  }
+
   // 권한 레벨 라벨
   function getPermissionLabel(level: PermissionLevel): string {
     switch (level) {
@@ -3119,6 +3158,14 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
       }
     });
     if (hits !== searchHits) setSearchHits(hits);
+    if (isO2) {
+      const counts: Partial<Record<SettingsTabId, number>> = {};
+      body.querySelectorAll<HTMLElement>("section[data-tab]:not([data-o2-hidden])").forEach((sec) => {
+        const t = sec.dataset.tab as SettingsTabId;
+        counts[t] = (counts[t] ?? 0) + 1;
+      });
+      if (SETTINGS_TABS.some((t) => counts[t.id] !== groupCounts[t.id])) setGroupCounts(counts);
+    }
   });
   useEffect(() => { if (!open) setSettingsQuery(""); }, [open]);
   // o2 전체 페이지: Esc 로 대화로 돌아간다 (검색 중이면 먼저 검색어만 지움). 다른 대화상자가 떠 있으면 양보
@@ -3149,6 +3196,43 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
   const searching = settingsQuery.trim().length > 0;
   const activeGroup = SETTINGS_TABS.find((t) => t.id === activeTab) ?? SETTINGS_TABS[1];
 
+  // v0.7.86 UI 8단계 — 설정 검색 (그룹을 가로질러 섹션 제목으로 찾기). o2 는 왼쪽 열 안, classic 은 예전 자리
+  const settingsSearchBox = (
+    <div className="settings-search">
+      {isO2 && <Icon name="search" size={14} className="settings-search-icon" />}
+      <input
+        type="search"
+        className="settings-search-input"
+        placeholder="설정 검색"
+        aria-label="설정 검색"
+        value={settingsQuery}
+        onChange={(e) => setSettingsQuery(e.target.value)}
+      />
+    </div>
+  );
+  // 9개 그룹 nav (두 배치 공통). o2 는 왼쪽 세로 목록(라인 아이콘 + 섹션 수), classic 은 예전 가로 탭(이모지)
+  const settingsGroupNav = (
+    <nav className="settings-tabs" role="tablist" aria-label="환경설정 탭">
+      {SETTINGS_TABS.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          aria-selected={!searching && activeTab === tab.id}
+          aria-controls={`settings-tabpanel-${tab.id}`}
+          className={`settings-tab ${!searching && activeTab === tab.id ? "active" : ""}`}
+          onClick={() => { setSettingsQuery(""); setActiveTab(tab.id); }}
+        >
+          <span className="settings-tab-icon" aria-hidden="true">
+            {isO2 ? <Icon name={SETTINGS_GROUP_ICONS[tab.id]} size={16} /> : tab.icon}
+          </span>
+          <span className="settings-tab-label">{tab.label}</span>
+          {isO2 && groupCounts[tab.id] != null && <span className="settings-tab-count">{groupCounts[tab.id]}</span>}
+        </button>
+      ))}
+    </nav>
+  );
+
   return (
     // v0.7.86 UI 8단계 — o2: 본문 영역 전체 페이지(← / Esc 로 대화로). classic: 예전 모달 오버레이
     <div className={`settings-overlay${isO2 ? " settings-overlay--page" : ""}`} onClick={isO2 ? undefined : onClose}>
@@ -3156,54 +3240,39 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
         {...(isO2 ? { role: "region", "aria-label": "설정" } : {})}>
         {!isO2 && <CornerBrackets corners={["tl", "tr", "bl", "br"]} size={12} />}
 
-        <div className="settings-header">
-          {isO2 && (
-            <button type="button" className="settings-back" onClick={onClose} aria-label="대화로 돌아가기" title="대화로 돌아가기 (Esc)">
-              ←
-            </button>
-          )}
-          <div>
-            <div className="eyebrow">설정</div>
-            <h2 className="display settings-title">{isO2 ? "설정" : "환경설정"}</h2>
-          </div>
-          {!isO2 && (
+        {!isO2 && (
+          <div className="settings-header">
+            <div>
+              <div className="eyebrow">설정</div>
+              <h2 className="display settings-title">환경설정</h2>
+            </div>
             <button className="settings-close" onClick={onClose} aria-label="닫기">
               ×
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* v0.7.86 UI 8단계 — 설정 검색 (그룹을 가로질러 섹션 제목으로 찾기) */}
-        <div className="settings-search">
-          <input
-            type="search"
-            className="settings-search-input"
-            placeholder="설정 검색"
-            aria-label="설정 검색"
-            value={settingsQuery}
-            onChange={(e) => setSettingsQuery(e.target.value)}
-          />
-        </div>
-
-        {/* 9개 그룹 nav (두 배치 공통). o2 는 왼쪽 세로 목록, classic 은 예전 가로 탭 */}
-        <nav className="settings-tabs" role="tablist" aria-label="환경설정 탭">
-          {SETTINGS_TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={!searching && activeTab === tab.id}
-              aria-controls={`settings-tabpanel-${tab.id}`}
-              className={`settings-tab ${!searching && activeTab === tab.id ? "active" : ""}`}
-              onClick={() => { setSettingsQuery(""); setActiveTab(tab.id); }}
-            >
-              <span className="settings-tab-icon" aria-hidden="true">
-                {tab.icon}
-              </span>
-              <span className="settings-tab-label">{tab.label}</span>
+        {isO2 ? (
+          // fidC — o2: 목업처럼 왼쪽 열 = [← 대화로 돌아가기 Esc] · 검색 · 9개 그룹(라인 아이콘 + 섹션 수) · 버전/단축키 안내
+          <div className="settings-nav-col">
+            <button type="button" className="settings-back" onClick={onClose} aria-label="대화로 돌아가기" title="대화로 돌아가기 (Esc)">
+              <Icon name="arrowLeft" size={16} />
+              <span className="settings-back-label">대화로 돌아가기</span>
+              <span className="settings-back-kbd">Esc</span>
             </button>
-          ))}
-        </nav>
+            {settingsSearchBox}
+            {settingsGroupNav}
+            <div className="settings-nav-foot">
+              K Desktop Agent{appVersion && appVersion !== "unknown" ? ` v${appVersion}` : ""}<br />
+              Ctrl+K로 설정 섹션 바로 이동
+            </div>
+          </div>
+        ) : (
+          <>
+            {settingsSearchBox}
+            {settingsGroupNav}
+          </>
+        )}
 
         <div
           ref={settingsBodyRef}
@@ -3218,11 +3287,25 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               {searchHits > 0 ? `'${settingsQuery.trim()}' 검색 결과 ${searchHits}개` : `'${settingsQuery.trim()}'에 맞는 설정이 없습니다`}
             </div>
           ) : (
-            // 그룹 요약 카드 (o2 에서만 보임 — classic 은 예전 모양 유지)
+            // 그룹 머리 (o2 에서만 보임 — classic 은 예전 모양 유지): 경로 · 큰 제목 · 한 줄 설명
             <div className="settings-group-intro" style={{ order: -1 }}>
-              <div className="settings-group-intro-title"><span aria-hidden="true">{activeGroup.icon}</span> {activeGroup.label}</div>
-              <div className="settings-group-intro-desc">{activeGroup.desc}</div>
+              <div className="settings-group-crumb">설정 / {activeGroup.label}</div>
+              <h1 className="settings-group-intro-title">{activeGroup.label}</h1>
+              <p className="settings-group-intro-desc">{activeGroup.desc}</p>
             </div>
+          )}
+          {/* fidC — o2 권한과 안전: 상태 칩 + 4단계 흐름 요약 카드 (실제 상태에서 센다) */}
+          {isO2 && !searching && activeTab === "safety" && (
+            <O2SafetySummary
+              autoApproval={autoApprovalOn}
+              counts={{
+                auto: permissions.filter((p) => p.level === "auto").length,
+                ask: permissions.filter((p) => p.level === "ask").length,
+                manual: permissions.filter((p) => p.level === "manual").length,
+              }}
+              locked={lockedTools.size}
+              safeModeLabel={safeModeShortLabel(safeMode)}
+            />
           )}
 
           {/* v0.7.86 UI 3b단계 — 화면 스타일: O2(새 배치) / 클래식(이전 배치). 즉시 적용 */}
@@ -3407,6 +3490,25 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* 에이전트 권한 섹션 */}
           <section id="settings-sec-approval" className="settings-section" data-tab="safety" style={{ order: 20 }}>
             <div className="eyebrow">실행 확인</div>
+            {isO2 ? (
+              <>
+                <O2SecHead title="2. 실행 확인" badge="Codex·MCP 경로" path="설정 / 권한과 안전 / 실행 확인"
+                  desc="실행 직전에 확인창으로 물어볼지 정합니다." />
+                <div className="o2s-rows">
+                  <O2Row icon="zap" title="확인 없이 실행"
+                    sub="Codex·MCP의 명령·파일·도구 확인창을 띄우지 않고 바로 진행합니다. 질문·로그인 입력, 개별 도구 잠금, SafeMode 차단은 그대로 적용됩니다.">
+                    <span className="o2s-kbd">Ctrl+Alt+A</span>
+                    <span className={`o2s-state${autoApprovalOn ? " is-on" : ""}`}>{autoApprovalOn ? "확인 없이 실행 중" : "확인 후 실행 (기본)"}</span>
+                    <O2Switch checked={autoApprovalOn} onChange={toggleAutoApproval} label="확인 없이 실행" tone="warn" />
+                  </O2Row>
+                  <O2Row icon="msg" title="모든 대화에 적용"
+                    sub="대화별로 따로 설정하지 않습니다. 헤더의 안전 칩, 대화 메뉴, 승인 창에서 같은 스위치를 씁니다. 선택은 이 PC에 저장됩니다.">
+                    <span className="o2s-state">항상</span>
+                  </O2Row>
+                </div>
+                {autoApprovalError && <p className="o2s-error" role="alert">{autoApprovalError}</p>}
+              </>
+            ) : (<>
             <div className="settings-row">
               <div className="settings-row-info">
                 <div className="settings-row-title">확인 없이 실행</div>
@@ -3419,9 +3521,44 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               </div>
               <ApprovalToggle />
             </div>
+            </>)}
           </section>
           <section id="settings-sec-categories" className="settings-section" data-tab="safety" style={{ order: 10 }}>
             <div className="eyebrow">기능별 허용 범위</div>
+            {isO2 ? (
+              <>
+                <O2SecHead title="1. 기능별 허용 범위" badge="묻기는 Claude 엔진만" path="설정 / 권한과 안전 / 기능별 허용 범위"
+                  desc="AI가 파일·시스템·입력·네트워크 도구를 쓸 수 있는지 정합니다. 확인 없이 실행과는 별개입니다." />
+                <div className="o2s-rows">
+                  {permissions.map((perm) => (
+                    <O2Row key={perm.id} icon={PERM_CATEGORY_ICONS[perm.category]} title={perm.name}
+                      sub={<>{perm.description}<span className="o2s-risk" title={riskOfCategory(perm.id).summary}> · 위험도 {RISK_BADGES[riskOfCategory(perm.id).level].label}</span></>}>
+                      <O2Seg label={`${perm.name} 허용 범위`} value={perm.level} onChange={(v) => updatePermission(perm.id, v)}
+                        options={[
+                          { value: "auto", label: "허용", tone: "a" },
+                          { value: "ask", label: "실행 전 묻기", tone: "q" },
+                          { value: "manual", label: "차단", tone: "x" },
+                        ]} />
+                    </O2Row>
+                  ))}
+                </div>
+                <div className="o2s-legend">
+                  <div className="o2s-legend--a"><b>허용</b>바로 사용</div>
+                  <div className="o2s-legend--q" title="AI가 실행 전에 채팅으로 동의를 구합니다(모델 협조 기반, Claude 엔진만)."><b>실행 전 묻기</b>실행 전에 채팅으로 동의를 구함 (모델 협조 기반)</div>
+                  <div className="o2s-legend--x" title="AI가 호출할 수 없습니다. 직접 하셔야 합니다."><b>차단</b>AI가 호출할 수 없음 · 직접 해야 함</div>
+                </div>
+                <details className="o2s-details">
+                  <summary>적용 범위 자세히</summary>
+                  <ul>
+                    <li><b>실행 전 묻기</b>는 AI에게 동의를 받도록 지시하는 안내라 모델 협조에 기대며, Claude 엔진에서만 적용됩니다.</li>
+                    <li><b>차단</b>은 해당 도구를 목록에서 빼고 호출을 거부합니다 (강제).</li>
+                    <li>모든 엔진(Claude·Codex·Gemini·REST)에서 k-personal 도구의 차단, 개별 도구 잠금, SafeMode가 강제 적용됩니다.</li>
+                    <li>Claude 엔진은 <code>Bash</code>를 파일 쓰기·삭제·앱 실행이 모두 허용일 때만 열고, <code>Task</code>·<code>Monitor</code>·<code>Skill</code>·<code>NotebookEdit</code> 같은 우회 통로는 항상 막습니다.</li>
+                    <li>Codex·Gemini 엔진 자체의 셸·파일 편집 도구는 이 설정으로 막히지 않습니다. 막아야 하면 그 작업은 Claude 엔진으로 하세요.</li>
+                  </ul>
+                </details>
+              </>
+            ) : (<>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">기능별 허용 범위</div>
@@ -3655,6 +3792,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                 ))}
               </div>
             </div>
+            </>)}
           </section>
 
           {/* ─── Phase 113.3 (v0.6.67) — 성능 모드 토글 ────────────────
@@ -3663,7 +3801,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               ON (빠른 모드):        cap 4000, slice 12, threshold 0.6 — 응답속도 우선
               localStorage key kda_fast_mode. App.tsx 가 listen 해서 즉시 적용. */}
           <section id="settings-sec-perf" className="settings-section" data-tab="ai" style={{ order: 20 }}>
-            <div className="eyebrow">⚡ 성능 모드</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">⚡ </span>성능 모드</div>
             <PerformanceModeToggle />
             {/* Phase 113.4 (v0.6.68) — 마지막 trim 통계 + 모델 한도 가시화.
                 K 가 답변 질 의심 시 "지금 trim 됐나" 즉시 확인 가능.
@@ -3677,7 +3815,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* v0.7.1 — 실험 기능 (에이전트) 토글. ~/.kda/agent-flags.json. 전부 기본 OFF.
               효과는 다음 turn 부터 (시스템 프롬프트/도구 게이트가 turn 시작 시 고정). */}
           <section id="settings-sec-experimental" className="settings-section" data-tab="agent" style={{ order: 10 }}>
-            <div className="eyebrow">🧪 실험 기능 (에이전트)</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🧪 </span>실험 기능 (에이전트)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">
@@ -3795,7 +3933,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               ON + 엔진 2개 이상이면 매 메시지가 fan-out (병렬 질의) → 메인 엔진(Claude 우선) 종합.
               비용/시간이 엔진 수만큼 늘어나므로 기본 OFF + 명시적 선택. */}
           <section id="settings-sec-orchestration" className="settings-section" data-tab="ai" style={{ order: 30 }}>
-            <div className="eyebrow">🤝 멀티 엔진 오케스트레이션 (실험)</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🤝 </span>멀티 엔진 오케스트레이션 (실험)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row" style={{ alignItems: "flex-start" }}>
                 <div className="settings-row-info">
@@ -3847,6 +3985,28 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* ─── 정밀 잠금 섹션 (개별 도구 단위 차단) ─────────────────── */}
           <section id="settings-sec-precise-lock" className="settings-section" data-tab="safety" style={{ order: 30 }}>
             <div className="eyebrow">정밀 잠금</div>
+            {isO2 && (
+              <>
+                <O2SecHead title="3. 개별 도구 잠금" path="설정 / 권한과 안전 / 개별 도구 잠금"
+                  desc="특정 도구를 이름으로 잠급니다. 잠긴 도구는 어떤 설정에서도 실행되지 않습니다 (Codex·Gemini 자체 셸·파일 편집은 제외)." />
+                <div className="o2s-rows">
+                  {lockedTools.size === 0 ? (
+                    <O2Row icon="lock" title="잠긴 도구 없음" sub="아래 도구 목록에서 체크하면 여기에 표시됩니다." />
+                  ) : (
+                    [...lockedTools].sort().map((name) => {
+                      const cat = TOOL_CATALOG.find((c) => c.tools.some((t) => t.name === name));
+                      const tool = cat?.tools.find((t) => t.name === name);
+                      return (
+                        <O2Row key={name} icon="lock" mono title={name} sub={[tool?.desc, cat?.title].filter(Boolean).join(" · ") || "개별 잠금"}>
+                          <button type="button" className="o2s-sm" onClick={() => toggleLockTool(name)}>잠금 해제</button>
+                        </O2Row>
+                      );
+                    })
+                  )}
+                </div>
+                <div className="o2s-subhead">도구 목록에서 잠그기</div>
+              </>
+            )}
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">개별 도구 잠금 ({lockedTools.size}개 잠김)</div>
@@ -3857,6 +4017,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               </div>
 
               <div
+                className="tool-lock-examples"
                 style={{
                   padding: "10px 12px",
                   background: "rgba(249, 115, 22, 0.06)",
@@ -3914,7 +4075,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         <span style={{ display: "inline-block", width: "16px" }}>
                           {isExpanded ? "▼" : "▶"}
                         </span>
-                        {" "}{category.icon} {category.title}
+                        {" "}<span className="eyebrow-emoji">{category.icon} </span>{category.title}
                         {someLocked && (
                           <span
                             style={{
@@ -4065,7 +4226,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               {currentProvider && (
                 <div className="api-key-form">
                   <div className="api-key-header">
-                    <span>{currentProvider.icon} {currentProvider.name}</span>
+                    <span><span className="eyebrow-emoji">{currentProvider.icon} </span>{currentProvider.name}</span>
                     <a
                       href={currentProvider.docsUrl}
                       target="_blank"
@@ -4569,7 +4730,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               <div className="settings-row" key={page.id}>
                 <div className="settings-row-info">
                   <div className="settings-row-title">
-                    {page.icon} {page.title}
+                    <span className="eyebrow-emoji">{page.icon} </span>{page.title}
                   </div>
                   <div className="settings-row-desc">{page.description}</div>
                   <div
@@ -4824,7 +4985,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             <div className="eyebrow">데이터 폴더</div>
             <div className="settings-row">
               <div className="settings-row-info">
-                <div className="settings-row-title">📂 현재 위치</div>
+                <div className="settings-row-title"><span className="eyebrow-emoji">📂 </span>현재 위치</div>
                 <div className="settings-row-desc" style={{ fontFamily: "monospace", wordBreak: "break-all" }}>
                   {dataDirInfo?.data_root ?? "로딩 중..."}
                 </div>
@@ -5279,7 +5440,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* Phase 90 (v0.6.32) — 안전장치 탭 최상단 요약 카드.
               SafeMode 현재값 + Memory Sync 상태 + Final-Review Gate + Lee Profile 한눈에. */}
           <section id="settings-sec-safety-summary" className="settings-section" data-tab="safety" style={{ order: 0 }}>
-            <div className="eyebrow">📊 안전 상태 요약</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">📊 </span>안전 상태 요약</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">한눈에 보는 안전 layer</div>
@@ -5630,7 +5791,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* Phase 87 (v0.6.30) — Git Memory Sync + Phase 88 가이드 + Phase 89 hybrid (team repo).
               Personal repo: lee-profile.md + memory/.  Team repo (선택): memory/ 만 (lee-profile 절대 X). */}
           <section id="settings-sec-memory-sync" className="settings-section" data-tab="data" style={{ order: 40 }}>
-            <div className="eyebrow">🔄 Memory Sync (Git)</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🔄 </span>Memory Sync (Git)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">개인 + 팀 메모리 클라우드 동기화</div>
@@ -6201,7 +6362,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* Phase 91 (v0.6.33) — SafeMode 자동 전환 스케줄. */}
           <section id="settings-sec-safemode-schedule" className="settings-section" data-tab="safety" style={{ order: 50 }}>
-            <div className="eyebrow">🕒 SafeMode 자동 전환 스케줄</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🕒 </span>SafeMode 자동 전환 스케줄</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">요일·시간대별 자동 모드 변경</div>
@@ -6412,7 +6573,23 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               balanced: 높음↑ 카테고리를 ask 로. strict: 보통↑ ask, 높음↑ manual + 일부 도구 자동 차단.
               실제 권한 게이트는 sidecar 가 강제 — 이 토글은 매 turn 시작 시 sidecar 로 전달. */}
           <section id="settings-sec-tool-safety" className="settings-section" data-tab="safety" style={{ order: 40 }}>
-            <div className="eyebrow">🛡️ Connector/Tool Safety Layer</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🛡️ </span>Connector/Tool Safety Layer</div>
+            {isO2 && (
+              <>
+                <O2SecHead title="4. SafeMode" badge="위험도 기반 안전 모드" path="설정 / 권한과 안전 / SafeMode"
+                  desc="위험도가 높은 도구 호출을 단계별로 막습니다. 자동 전환 스케줄과 결과물 검수는 이 아래에 이어집니다." />
+                <div className="o2s-rows">
+                  <O2Row icon="shield" title="안전 단계" sub={SAFE_MODE_POLICIES[safeMode].description}>
+                    <O2Seg label="SafeMode 안전 단계" value={safeMode} onChange={applySafeModeChoice}
+                      options={[
+                        { value: "off", label: "끔", tone: "q", title: SAFE_MODE_POLICIES.off.description },
+                        { value: "balanced", label: "균형", tone: "q", title: SAFE_MODE_POLICIES.balanced.description },
+                        { value: "strict", label: "엄격", tone: "q", title: SAFE_MODE_POLICIES.strict.description },
+                      ]} />
+                  </O2Row>
+                </div>
+              </>
+            )}
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">위험도 기반 안전 모드</div>
@@ -6425,30 +6602,14 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               </div>
 
               {/* 3-way SafeMode 토글 */}
-              <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+              <div className="safemode-picker" style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
                 {(["off", "balanced", "strict"] as SafeMode[]).map((mode) => {
                   const policy = SAFE_MODE_POLICIES[mode];
                   const isActive = safeMode === mode;
                   return (
                     <button
                       key={mode}
-                      onClick={() => {
-                        setSafeMode(mode);
-                        try {
-                          localStorage.setItem("kda_safe_mode", mode);
-                        } catch {
-                          /* ignore */
-                        }
-                        // Phase 92 (v0.6.34) — K manual override 5분 보호. 다음 schedule tick (1분
-                        // 단위) 이 K 의 선택을 즉시 덮어쓰지 않도록 윈도우 박음. K 가 "잠깐 풀었는데
-                        // 1분 안에 도로 strict 됐다" 답답함 회피.
-                        try {
-                          markManualOverride();
-                          setManualOverrideRemainingMs(MANUAL_OVERRIDE_WINDOW_MS);
-                        } catch {
-                          /* ignore */
-                        }
-                      }}
+                      onClick={() => applySafeModeChoice(mode)}
                       style={{
                         flex: 1,
                         minWidth: 140,
@@ -6652,7 +6813,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               ~/.kda/lee-profile.md 의 내용이 매 turn 시작 시 system prompt 첫머리에 prepend.
               K 본인이 직접 정의한 응답 스타일/규칙 (예: "한국어 우선", "증거 없는 완료 보고 금지" 등). */}
           <section id="settings-sec-profile" className="settings-section" data-tab="agent" style={{ order: 30 }}>
-            <div className="eyebrow">🪪 Lee Profile (개인 응답 규칙)</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🪪 </span>Lee Profile (개인 응답 규칙)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">~/.kda/lee-profile.md</div>
@@ -6722,7 +6883,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           {/* Phase 80 (v0.6.24) — Final-Review Gate toggle. SIGILFALL 등 대량 생성 raw 컷이
               사용자에게 노출되지 않도록 qa-report.json 의 FINAL_CANDIDATE 만 미리보기 허용. */}
           <section id="settings-sec-final-review" className="settings-section" data-tab="safety" style={{ order: 60 }}>
-            <div className="eyebrow">🛡️ Final-Review Gate</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🛡️ </span>Final-Review Gate</div>
             <div className="settings-row">
               <div className="settings-row-info">
                 <div className="settings-row-title">미리보기 전 QA 리포트 검사 (default ON)</div>
@@ -6803,7 +6964,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기) */}
           <section id="settings-sec-path-map" className="settings-section" data-tab="advanced" style={{ order: 50 }}>
-            <div className="eyebrow">🗂️ 경로 매핑 (WSL / VM)</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🗂️ </span>경로 매핑 (WSL / VM)</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">게스트 경로 → 호스트 경로 변환</div>
@@ -6910,7 +7071,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* Phase 75 (v0.6.18) — Codex 좀비 process detect + 안전 정리 */}
           <section id="settings-sec-zombie" className="settings-section" data-tab="advanced" style={{ order: 30 }}>
-            <div className="eyebrow">🧟 좀비 codex 프로세스</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🧟 </span>좀비 codex 프로세스</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">오래된 codex / node / powershell 프로세스</div>
@@ -7100,7 +7261,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* 67a — 현재 활성 도구 인스펙터 */}
           <section id="settings-sec-mcp-active" className="settings-section" data-tab="tools" style={{ order: 10 }}>
-            <div className="eyebrow">🔧 활성 MCP 도구</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🔧 </span>활성 MCP 도구</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">
@@ -7326,7 +7487,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* 67b — 외부 MCP 서버 카탈로그 (명령 안내 형) */}
           <section id="settings-sec-mcp-catalog" className="settings-section" data-tab="tools" style={{ order: 20 }}>
-            <div className="eyebrow">📦 추가 가능한 MCP 서버</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">📦 </span>추가 가능한 MCP 서버</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">표준 MCP 카탈로그 (참고)</div>
@@ -7424,7 +7585,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* 67c — 커스텀 plugin 빌더 */}
           <section id="settings-sec-mcp-builder" className="settings-section" data-tab="tools" style={{ order: 30 }}>
-            <div className="eyebrow">🧪 커스텀 도구 만들기</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🧪 </span>커스텀 도구 만들기</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">K-Personal-MCP plugin 빌더</div>
@@ -7656,7 +7817,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
           {/* ─── 안전장치 (백업/복구) ──────────────────────── */}
           <section id="settings-sec-app-backup" className="settings-section" data-tab="data" style={{ order: 20 }}>
-            <div className="eyebrow">🛡️ 안전장치</div>
+            <div className="eyebrow"><span className="eyebrow-emoji">🛡️ </span>안전장치</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">
                 <div className="settings-row-title">백업 / 복구</div>
@@ -7732,7 +7893,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
           </section>
 
           {/* v0.7.86 UI 8단계 — ③ 권한과 안전: 적용 순서 다이어그램 (안전 상태 요약 바로 아래) */}
-          <section id="settings-sec-safety-order" className="settings-section" data-tab="safety" style={{ order: 5 }} data-testid="safety-order-section">
+          <section id="settings-sec-safety-order" className="settings-section" data-tab="safety" style={{ order: 5 }} data-testid="safety-order-section" data-o2-hidden={isO2 ? "true" : undefined}>
             <div className="eyebrow">적용 순서</div>
             <div className="settings-row settings-row-vertical">
               <div className="settings-row-info">

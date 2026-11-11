@@ -290,6 +290,7 @@ const NODE_TEST_SUITES = [
   { file: "scripts/ui-final-review.test.ts", runner: "tsx" }, // v0.7.86 UI 최종 점검 (o2 ⋯ 확인 없이 실행·이 대화의 엔진·폴더 지침, 엔진 칩 고정 반영, 폴더 지침 이름, Ctrl+,, classic 헤더 유지)
   { file: "scripts/ui-fidelity-main.test.ts", runner: "tsx" }, // v0.7.86 UI 목업 충실도 fidA 메인 화면 (맞붙은 셸·사이드바·헤더·알림 띠·메시지·입력창, 개발용 픽스처는 배포 빌드에서 꺼짐, classic 유지)
   { file: "scripts/ui-fidelity-panel.test.ts", runner: "tsx" }, // v0.7.86 UI 목업 충실도 fidB 우측 슬라이드오버 (밑줄 탭·세션 카드·5칸·한도·작업 카드·아래 줄, ?panel= 은 배포 빌드에서 꺼짐, classic 유지)
+  { file: "scripts/ui-fidelity-settings.test.ts", runner: "tsx" }, // v0.7.86 UI 목업 충실도 fidC 설정 전체 페이지 (왼쪽 열·그룹 머리·권한과 안전 요약/번호 섹션·공통 행, ?settings= 는 배포 빌드에서 꺼짐, classic 모달 유지)
   { file: "scripts/companion-antenna.test.ts", runner: "tsx" }, // v0.7.84 antenna ball not cut flat on any pose/tone/tier // v0.7.84 Codex built-in computer_use disabled on every app-server spawn // v0.7.84 incomplete install detection, signed repair, updater fallback
   { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
 ];

@@ -70,7 +70,12 @@ test("섹션: 모두 9개 그룹 중 하나 + style order, 그룹마다 1개 이
   for (const g of GROUPS) assert.ok(sections.some(([, t]) => t === g), `${g} 그룹에 섹션 없음`);
   // 매핑 표본 (5장)
   const tabOf = (eyebrow: string) => {
-    const at = settings.indexOf(`<div className="eyebrow">${eyebrow}</div>`);
+    // fidC — 맨 앞 이모지는 o2 에서 숨기도록 span 으로 감쌌다 (classic 화면은 그대로)
+    const m = /^(\S+) (.+)$/u.exec(eyebrow);
+    const markup = m && /\p{Extended_Pictographic}/u.test(m[1])
+      ? `<div className="eyebrow"><span className="eyebrow-emoji">${m[1]} </span>${m[2]}</div>`
+      : `<div className="eyebrow">${eyebrow}</div>`;
+    const at = settings.indexOf(markup);
     assert.ok(at > 0, eyebrow);
     const sec = settings.lastIndexOf("<section", at);
     return settings.slice(sec, at).match(/data-tab="([a-z]+)" style=\{\{ order: (\d+) \}\}/)!.slice(1).join(":");
@@ -118,9 +123,9 @@ test("o2 는 전체 페이지(← / Esc), classic 은 예전 모달(× · L자 �
   assert.match(settings, /const isO2 = uiLayout === "o2";/);
   assert.match(settings, /<div className=\{`settings-overlay\$\{isO2 \? " settings-overlay--page" : ""\}`\} onClick=\{isO2 \? undefined : onClose\}>/);
   assert.match(settings, /\{!isO2 && <CornerBrackets corners=\{\["tl", "tr", "bl", "br"\]\} size=\{12\} \/>\}/);
-  assert.match(settings, /\{!isO2 && \(\n\s+<button className="settings-close" onClick=\{onClose\} aria-label="닫기">/);
-  assert.match(settings, /\{isO2 && \(\n\s+<button type="button" className="settings-back" onClick=\{onClose\} aria-label="대화로 돌아가기"/);
-  assert.match(settings, /\{isO2 \? "설정" : "환경설정"\}/);
+  // fidC — classic 머리줄(환경설정 ×)은 classic 에서만, o2 는 왼쪽 열 맨 위 [← 대화로 돌아가기 Esc]
+  assert.match(settings, /\{!isO2 && \(\n\s+<div className="settings-header">[\s\S]{0,200}<h2 className="display settings-title">환경설정<\/h2>[\s\S]{0,120}<button className="settings-close" onClick=\{onClose\} aria-label="닫기">/);
+  assert.match(settings, /\{isO2 \? \(\n[^\n]*\n\s+<div className="settings-nav-col">\n\s+<button type="button" className="settings-back" onClick=\{onClose\} aria-label="대화로 돌아가기"/);
   assert.match(settings, /if \(!open \|\| !isO2\) return;\n\s+const onKey = \(e: KeyboardEvent\) => \{\n\s+if \(e\.key !== "Escape"/);
 });
 

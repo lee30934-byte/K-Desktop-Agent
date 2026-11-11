@@ -1,0 +1,303 @@
+/* ════════════════════════════════════════════════════════════════
+   v0.7.86 fidC — o2 설정 전체 페이지를 승인 목업(evidence/ui-redesign-20261111/mockup.html '설정')에 맞춘다.
+   모든 규칙은 :root[data-layout="o2"] 아래에만 있다 — classic 모달은 이 파일에 해당하지 않는다.
+   값은 목업 CSS 에서 그대로 옮겼다 (.snav · .gitem · .spage · .summary · .ssec · .rows · .srow · .seg · .switch).
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 셸: [레일 56] [설정 nav 232] [내용] — 위쪽 머리줄 없음 ── */
+:root[data-layout="o2"] .settings-overlay--page .settings-panel {
+  grid-template-columns: var(--settings-nav-w, 232px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "nav body";
+  font-family: var(--font-ui);
+}
+:root[data-layout="o2"] .settings-nav-col {
+  grid-area: nav; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  padding: 12px 10px; background: var(--surface-app); border-right: 1px solid var(--line);
+}
+:root[data-layout="o2"] .settings-nav-col .settings-back {
+  width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 8px; margin-bottom: 8px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--fg-muted);
+  font: 400 var(--fs-sub)/1 var(--font-ui); text-align: left;
+}
+:root[data-layout="o2"] .settings-nav-col .settings-back:hover { background: var(--surface-hover); color: var(--fg); }
+:root[data-layout="o2"] .settings-back-label { flex: 1; }
+:root[data-layout="o2"] .settings-back-kbd { margin-left: auto; font: 10px var(--font-mono); color: var(--fg-subtle); }
+
+:root[data-layout="o2"] .settings-overlay--page .settings-search {
+  grid-area: auto; height: 34px; display: flex; align-items: center; gap: 8px; flex: none;
+  margin: 0 0 12px; padding: 0 10px; box-sizing: border-box;
+  border-radius: var(--radius-ctl); background: var(--surface-raised); border: 1px solid var(--line-strong); color: var(--fg-subtle);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-search:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+:root[data-layout="o2"] .settings-search-icon { flex: none; }
+:root[data-layout="o2"] .settings-overlay--page .settings-search-input {
+  flex: 1; min-width: 0; width: auto; height: 100%; padding: 0; margin: 0;
+  background: none; border: 0; outline: 0; box-shadow: none;
+  font: 400 var(--fs-sub) var(--font-ui); color: var(--fg);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-search-input::placeholder { color: var(--fg-subtle); }
+:root[data-layout="o2"] .settings-overlay--page .settings-search-input::-webkit-search-cancel-button { filter: grayscale(1); opacity: .6; }
+
+:root[data-layout="o2"] .settings-overlay--page .settings-tabs { grid-area: auto; flex: 0 1 auto; gap: 0; padding: 0; min-height: 0; }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab {
+  height: 34px; flex: none; gap: 10px; padding: 0 10px; border: 0; border-radius: 8px;
+  background: transparent; box-shadow: none; color: var(--fg-muted);
+  font: 400 var(--fs-ui)/1 var(--font-ui); letter-spacing: 0;
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-tab:hover { background: var(--surface-hover); color: var(--fg); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab.active { background: var(--surface-active); color: var(--fg); font-weight: 500; border-color: transparent; box-shadow: none; }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab-icon { display: inline-grid; place-items: center; font-size: 0; color: inherit; }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab.active .settings-tab-icon { color: var(--accent); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab-label { letter-spacing: 0; }
+:root[data-layout="o2"] .settings-tab-count { margin-left: auto; font: 11px var(--font-mono); color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+:root[data-layout="o2"] .settings-nav-foot { margin-top: auto; padding: 8px 10px; font-size: 11px; line-height: 1.5; color: var(--fg-subtle); }
+
+/* ── 내용 열: 목업 .spage (max 760, 패딩 22/32/60) ── */
+:root[data-layout="o2"] .settings-overlay--page .settings-body {
+  padding: 22px 32px 60px; gap: 24px; border-left: 0; background: var(--surface-app);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-body > * { max-width: 696px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-group-intro {
+  display: block; padding: 0; background: transparent; border: 0; border-radius: 0;
+}
+:root[data-layout="o2"] .settings-group-crumb { font-size: 12px; color: var(--fg-subtle); margin-bottom: 6px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-group-intro-title {
+  margin: 0; font: 600 var(--fs-page)/1.3 var(--font-ui); letter-spacing: -.01em; color: var(--fg);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-group-intro-desc { margin: 6px 0 0; font-size: var(--fs-sub); line-height: 1.6; color: var(--fg-muted); }
+:root[data-layout="o2"] .settings-overlay--page .settings-search-summary { font-size: var(--fs-sub); color: var(--fg-muted); }
+
+/* ── 권한과 안전: 요약 카드 (칩 + 4단계 흐름) ── */
+:root[data-layout="o2"] .o2s-summary {
+  margin-top: -10px; padding: 14px; border-radius: var(--radius-card);
+  background: var(--surface-raised); border: 1px solid var(--line);
+}
+:root[data-layout="o2"] .o2s-summary__pills { display: flex; gap: 8px; flex-wrap: wrap; }
+:root[data-layout="o2"] .o2s-pill {
+  height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; box-sizing: border-box;
+  border-radius: var(--radius-pill); background: rgba(255, 255, 255, .04); border: 1px solid var(--line);
+  font-size: var(--fs-sub); color: var(--fg-muted); white-space: nowrap;
+}
+:root[data-layout="o2"] .o2s-pill b { color: var(--fg); font-weight: 500; }
+:root[data-layout="o2"] .o2s-pill b.o2s-g { color: var(--ok); }
+:root[data-layout="o2"] .o2s-pill b.o2s-y { color: var(--info, #6aa1ff); }
+:root[data-layout="o2"] .o2s-pill b.o2s-r { color: #f58b8b; }
+:root[data-layout="o2"] .o2s-summary .o2s-warn,
+:root[data-layout="o2"] .o2s-pill b.o2s-warn { color: var(--warn); }
+:root[data-layout="o2"] .o2s-flow { display: flex; align-items: stretch; gap: 6px; margin-top: 14px; }
+:root[data-layout="o2"] .o2s-step { flex: 1; min-width: 0; padding: 8px 12px; border-radius: 10px; background: var(--surface-app); border: 1px solid var(--line); }
+:root[data-layout="o2"] .o2s-step small { display: block; font: 11px var(--font-mono); color: var(--fg-subtle); }
+:root[data-layout="o2"] .o2s-step b { display: block; margin-top: 2px; font-weight: 500; font-size: var(--fs-sub); color: var(--fg); }
+:root[data-layout="o2"] .o2s-step span { display: block; margin-top: 2px; font-size: 12px; color: var(--fg-muted); }
+:root[data-layout="o2"] .o2s-step--hl { border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+:root[data-layout="o2"] .o2s-flow__arrow { display: grid; place-items: center; color: var(--fg-subtle); }
+:root[data-layout="o2"] .o2s-flow-note { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--fg-subtle); }
+
+/* ── 번호 섹션 머리 + 테두리 목록 (목업 .ssec · .rows · .srow) ── */
+:root[data-layout="o2"] .settings-overlay--page .settings-section { gap: 0; }
+:root[data-layout="o2"] .settings-section:has(> .o2s-head) > .eyebrow { display: none; }
+:root[data-layout="o2"] .o2s-head__row { display: flex; align-items: center; gap: 8px; }
+:root[data-layout="o2"] .settings-section .o2s-head .o2s-head__title {
+  margin: 0; font: 600 var(--fs-title)/1.4 var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--fg);
+}
+:root[data-layout="o2"] .o2s-badge { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-pill); border: 1px solid var(--line-strong); color: var(--fg-muted); white-space: nowrap; }
+:root[data-layout="o2"] .o2s-copy {
+  margin-left: auto; width: 30px; height: 30px; display: grid; place-items: center; padding: 0;
+  border: 0; border-radius: 8px; background: transparent; color: var(--fg-muted); cursor: pointer;
+  opacity: 0; transition: opacity var(--dur-hover);
+}
+:root[data-layout="o2"] .settings-section:hover .o2s-copy,
+:root[data-layout="o2"] .o2s-copy:focus-visible { opacity: 1; }
+:root[data-layout="o2"] .o2s-copy:hover { background: var(--surface-hover); color: var(--fg); }
+:root[data-layout="o2"] .o2s-head__desc { margin: 6px 0 0; font-size: var(--fs-sub); line-height: 1.6; color: var(--fg-muted); }
+
+:root[data-layout="o2"] .o2s-rows { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); }
+:root[data-layout="o2"] .o2s-row { display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--line); }
+:root[data-layout="o2"] .o2s-row:first-child { border-top: 0; }
+:root[data-layout="o2"] .o2s-row__ico { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 8px; background: rgba(255, 255, 255, .04); color: var(--fg-muted); }
+:root[data-layout="o2"] .o2s-row__tx { flex: 1; min-width: 0; }
+:root[data-layout="o2"] .settings-overlay--page .o2s-row__tx .o2s-row__title { display: block; margin: 0; font: 500 var(--fs-ui)/1.5 var(--font-ui); color: var(--fg); }
+:root[data-layout="o2"] .settings-overlay--page .o2s-row__tx .o2s-mono { font: 500 13px/1.5 var(--font-mono); }
+:root[data-layout="o2"] .o2s-row__tx small { display: block; margin-top: 2px; font-size: 12px; line-height: 1.5; color: var(--fg-subtle); }
+
+:root[data-layout="o2"] .o2s-seg { display: inline-flex; flex: none; padding: 2px; border-radius: 9px; background: var(--surface-app); border: 1px solid var(--line); }
+:root[data-layout="o2"] .o2s-seg__opt {
+  height: 26px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; cursor: pointer;
+  font: 400 12px/1 var(--font-ui); color: var(--fg-subtle); white-space: nowrap; transition: all var(--dur-hover);
+}
+:root[data-layout="o2"] .o2s-seg__opt:hover { color: var(--fg); }
+:root[data-layout="o2"] .o2s-seg__opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+:root[data-layout="o2"] .o2s-seg__opt--a.is-on { background: rgba(74, 222, 128, .12); color: var(--ok); font-weight: 500; }
+:root[data-layout="o2"] .o2s-seg__opt--q.is-on { background: rgba(106, 161, 255, .14); color: #9cc0ff; font-weight: 500; }
+:root[data-layout="o2"] .o2s-seg__opt--x.is-on { background: var(--danger-soft); color: #f58b8b; font-weight: 500; }
+:root[data-layout="o2"] .o2s-legend { display: flex; gap: 18px; margin-top: 8px; padding: 0 4px; }
+:root[data-layout="o2"] .o2s-legend div { font-size: 12px; line-height: 1.45; color: var(--fg-subtle); }
+:root[data-layout="o2"] .o2s-legend b { font-weight: 500; margin-right: 6px; }
+:root[data-layout="o2"] .o2s-legend--a b { color: var(--ok); }
+:root[data-layout="o2"] .o2s-legend--q b { color: #9cc0ff; }
+:root[data-layout="o2"] .o2s-legend--x b { color: #f58b8b; }
+:root[data-layout="o2"] .o2s-kbd { flex: none; font: 11px var(--font-mono); color: var(--fg-subtle); border: 1px solid var(--line-strong); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+:root[data-layout="o2"] .o2s-state { flex: none; font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
+:root[data-layout="o2"] .o2s-state.is-on { color: var(--warn); }
+:root[data-layout="o2"] .o2s-switch {
+  position: relative; flex: none; width: 36px; height: 20px; padding: 0; border: 0; border-radius: 999px; cursor: pointer;
+  background: color-mix(in srgb, var(--fg) 14%, transparent); transition: background var(--dur-hover);
+}
+:root[data-layout="o2"] .o2s-switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #c9ced6; transition: transform var(--dur-panel) var(--ease);
+}
+:root[data-layout="o2"] .o2s-switch.is-on::after { transform: translateX(16px); }
+:root[data-layout="o2"] .o2s-switch--warn.is-on { background: var(--warn); }
+:root[data-layout="o2"] .o2s-switch--warn.is-on::after { background: #1b1306; }
+:root[data-layout="o2"] .o2s-switch--accent.is-on { background: var(--accent); }
+:root[data-layout="o2"] .o2s-switch--accent.is-on::after { background: var(--accent-fg); }
+:root[data-layout="o2"] .o2s-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:root[data-layout="o2"] .o2s-sm {
+  flex: none; height: 26px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--line-strong); background: transparent;
+  font: 400 12px/1 var(--font-ui); color: var(--fg-muted); cursor: pointer;
+}
+:root[data-layout="o2"] .o2s-sm:hover { background: var(--surface-hover); color: var(--fg); }
+:root[data-layout="o2"] .o2s-subhead { margin: 16px 0 8px; font-size: var(--fs-sub); font-weight: 500; color: var(--fg-muted); }
+:root[data-layout="o2"] .o2s-details { margin-top: 10px; font-size: 12px; line-height: 1.6; color: var(--fg-subtle); }
+:root[data-layout="o2"] .o2s-details summary { cursor: pointer; color: var(--fg-muted); width: max-content; }
+:root[data-layout="o2"] .o2s-details summary:hover { color: var(--fg); }
+:root[data-layout="o2"] .o2s-details ul { margin: 6px 0 0; padding-left: 18px; }
+:root[data-layout="o2"] .o2s-details b { font-weight: 500; color: var(--fg-muted); }
+:root[data-layout="o2"] .o2s-error { margin: 8px 0 0; font-size: 12px; color: #f58b8b; }
+
+/* 권한과 안전: o2 에선 요약 카드·번호 섹션이 대신하는 classic 조각을 숨긴다 (classic 은 그대로) */
+:root[data-layout="o2"] .settings-overlay--page [data-o2-hidden] { display: none !important; }
+:root[data-layout="o2"] .settings-overlay--page #settings-sec-safety-summary { order: 45 !important; }
+:root[data-layout="o2"] #settings-sec-precise-lock > .settings-row > .settings-row-info,
+:root[data-layout="o2"] #settings-sec-precise-lock .tool-lock-examples,
+:root[data-layout="o2"] #settings-sec-tool-safety > .settings-row > .settings-row-info:first-child,
+:root[data-layout="o2"] #settings-sec-tool-safety .safemode-picker { display: none !important; }
+/* 개별 도구 잠금: 분류 목록을 테두리 목록 한 장으로 */
+:root[data-layout="o2"] .settings-overlay--page #settings-sec-precise-lock > .settings-row { padding: 0; gap: 0; }
+:root[data-layout="o2"] #settings-sec-precise-lock > .settings-row > div:not(.permission-category):not(.settings-row-info):not(.tool-lock-examples) { margin: 0 !important; padding: 10px 14px; }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-category { margin: 0; padding: 0 14px; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+:root[data-layout="o2"] #settings-sec-precise-lock > .settings-row > .permission-category:nth-child(1 of .permission-category) { border-top: 0; }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-category-title {
+  min-height: 44px; margin: 0; padding: 0; border-bottom: 0; font: 500 var(--fs-ui)/1.4 var(--font-ui); color: var(--fg);
+}
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-category-title > span > span:first-child { color: var(--fg-subtle); font-size: 10px; }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-item { padding: 8px 0 8px 22px; border-bottom: 0; border-top: 1px solid var(--line); }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-name { font-size: 13px; color: var(--fg); }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-desc { font-size: 12px; color: var(--fg-subtle); }
+
+/* ── 모든 그룹 공통: 이모지 없는 제목 · 테두리 목록 · 무채색 카드 ── */
+:root[data-layout="o2"] .settings-overlay--page .eyebrow-emoji { display: none; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .eyebrow {
+  margin: 0 0 12px; font: 600 var(--fs-title)/1.4 var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--fg);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row {
+  margin-top: -1px; padding: 12px 14px; border-radius: 0;
+  background: var(--surface-raised); border: 1px solid var(--line);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .eyebrow + .settings-row,
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .o2s-subhead + .settings-row { margin-top: 0; border-top-left-radius: 12px; border-top-right-radius: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .o2s-rows + .settings-row { margin-top: 12px; border-radius: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row:last-child { border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-vertical { gap: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-title { margin-bottom: 2px; font: 500 var(--fs-ui)/1.5 var(--font-ui); letter-spacing: 0; color: var(--fg); }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-desc { font-size: 12px; line-height: 1.55; color: var(--fg-subtle); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > * .eyebrow:not(.o2s-head__title) {
+  font: 500 12px/1.5 var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--fg-subtle);
+}
+:root[data-layout="o2"] .settings-overlay--page .status-ok,
+:root[data-layout="o2"] .settings-overlay--page .status-warn { font: 500 12px var(--font-ui); letter-spacing: 0; }
+:root[data-layout="o2"] .settings-overlay--page .settings-meta { background: var(--surface-app); border-color: var(--line); border-radius: 10px; font-size: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-meta > div:first-child { color: var(--fg); }
+
+/* 버튼: src/ui Button 과 같은 모양 (대문자·자간·글로우 없음) */
+:root[data-layout="o2"] .settings-overlay--page .settings-btn,
+:root[data-layout="o2"] .settings-overlay--page .settings-btn-oauth {
+  height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px;
+  border-radius: 8px; border: 1px solid var(--line-strong); background: transparent; box-shadow: none;
+  font: 500 var(--fs-sub)/1 var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--fg);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-btn:hover:not(:disabled),
+:root[data-layout="o2"] .settings-overlay--page .settings-btn-oauth:hover { background: var(--surface-hover); border-color: var(--line-strong); box-shadow: none; color: var(--fg); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn-primary:hover:not(:disabled) { background: var(--accent-dim, var(--accent)); border-color: var(--accent-dim, var(--accent)); color: var(--accent-fg); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn-danger { background: var(--danger-soft); border-color: transparent; color: #f58b8b; }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn-danger:hover:not(:disabled) { background: var(--danger-soft); border-color: rgba(239, 68, 68, .35); color: #f58b8b; }
+
+/* 토글: 목업 .switch (36×20, 글로우 없음) */
+:root[data-layout="o2"] .settings-overlay--page .toggle { width: 36px; height: 20px; }
+:root[data-layout="o2"] .settings-overlay--page .toggle-slider { border: 0; border-radius: 999px; background: color-mix(in srgb, var(--fg) 14%, transparent); box-shadow: none; }
+:root[data-layout="o2"] .settings-overlay--page .toggle-slider:before { width: 16px; height: 16px; left: 2px; top: 2px; background: #c9ced6; }
+:root[data-layout="o2"] .settings-overlay--page .toggle input:checked + .toggle-slider { background: var(--accent); border: 0; box-shadow: none; }
+:root[data-layout="o2"] .settings-overlay--page .toggle input:checked + .toggle-slider:before { transform: translateX(16px); background: var(--accent-fg); }
+
+/* 입력칸·선택칸 */
+:root[data-layout="o2"] .settings-overlay--page .settings-section select,
+:root[data-layout="o2"] .settings-overlay--page .settings-section input[type="text"],
+:root[data-layout="o2"] .settings-overlay--page .settings-section input[type="password"],
+:root[data-layout="o2"] .settings-overlay--page .settings-section input[type="number"],
+:root[data-layout="o2"] .settings-overlay--page .settings-section input[type="url"],
+:root[data-layout="o2"] .settings-overlay--page .settings-section textarea {
+  background: var(--surface-app); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: none;
+  font-family: var(--font-ui); font-size: var(--fs-sub); letter-spacing: 0; color: var(--fg);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-section select:focus,
+:root[data-layout="o2"] .settings-overlay--page .settings-section input:focus,
+:root[data-layout="o2"] .settings-overlay--page .settings-section textarea:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 45%, transparent); box-shadow: none; }
+
+/* 기본 색 테마: 인라인 스타일로 박힌 시안 네온 판을 무채색 카드로 (개성 테마 3종은 자기 색 유지) */
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .settings-overlay--page .settings-body [style*="rgba(79, 232, 225"],
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .settings-overlay--page .settings-body [style*="rgba(79,232,225"] {
+  background: var(--surface-app) !important; border-color: var(--line) !important; box-shadow: none !important;
+}
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .settings-overlay--page .settings-body [style*="var(--bg-1)"] {
+  background: var(--surface-app) !important;
+}
+
+/* ── 그룹별 부품: 단축키 · AI 엔진 · 테마 (목업 칩/카드 언어로) ── */
+:root[data-layout="o2"] .settings-overlay--page .shortcuts-list { gap: 0; margin-top: 4px; padding: 0; background: transparent; border: 1px solid var(--line); border-radius: 10px; }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-item { padding: 8px 12px; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-item:first-child { border-top: 0; }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-item:hover { background: var(--surface-hover); }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-key {
+  padding: 1px 6px; background: transparent; border: 1px solid var(--line-strong); border-radius: 5px; box-shadow: none;
+  font: 11px/1.6 var(--font-mono); letter-spacing: 0; color: var(--fg-muted); text-shadow: none;
+}
+:root[data-layout="o2"] .settings-overlay--page .shortcut-desc { font-size: var(--fs-sub); color: var(--fg-muted); }
+
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tabs { gap: 6px; }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab {
+  height: 32px; padding: 0 12px; border-radius: 8px; background: transparent; border: 1px solid var(--line);
+  box-shadow: none; color: var(--fg-muted); font: 400 var(--fs-sub)/1 var(--font-ui);
+}
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab:hover { background: var(--surface-hover); border-color: var(--line-strong); color: var(--fg); }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab.active {
+  background: var(--surface-active); border-color: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--fg); box-shadow: none; font-weight: 500;
+}
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab.has-key::after { top: 4px; right: 4px; width: 6px; height: 6px; background: var(--ok); box-shadow: none; }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-name { font-family: var(--font-ui); letter-spacing: 0; }
+:root[data-layout="o2"] .settings-overlay--page .api-key-check { color: var(--ok); }
+:root[data-layout="o2"] .settings-overlay--page .api-key-form { background: var(--surface-app); border-color: var(--line); border-radius: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .api-key-docs { border-color: var(--line-strong); border-radius: 7px; color: var(--fg-muted); font-size: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .api-key-docs:hover { background: var(--surface-hover); color: var(--fg); box-shadow: none; }
+:root[data-layout="o2"] .settings-overlay--page .api-key-input { font-family: var(--font-mono); font-size: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .model-badge {
+  height: 26px; display: inline-flex; align-items: center; padding: 0 10px; border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, .04); border: 1px solid var(--line); box-shadow: none;
+  font: 500 12px/1 var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--fg-muted);
+}
+:root[data-layout="o2"] .settings-overlay--page .model-badge.active { background: rgba(74, 222, 128, .12); border-color: transparent; color: var(--ok); }
+
+:root[data-layout="o2"] .settings-overlay--page .theme-group-label {
+  font: 500 12px/1.5 var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--fg-subtle); border-bottom: 0;
+}
+:root[data-layout="o2"] .settings-overlay--page .theme-badge { font: 500 10px/1.4 var(--font-ui); letter-spacing: 0; }
+:root[data-layout="o2"] .settings-overlay--page .theme-card { background: var(--surface-app); border-color: var(--line); border-radius: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .theme-card:hover { background: var(--surface-hover); border-color: var(--line-strong); }
+:root[data-layout="o2"] .settings-overlay--page .theme-card.active { background: var(--surface-active); border-color: color-mix(in srgb, var(--accent) 45%, transparent); box-shadow: none; }
+:root[data-layout="o2"] .settings-overlay--page .theme-card.active .theme-name { color: var(--fg); }
+:root[data-layout="o2"] .settings-overlay--page .theme-name { font-family: var(--font-ui); font-size: var(--fs-sub); }
+
+/* 레일: 설정 페이지가 열려 있으면 톱니 버튼을 켜진 상태로 (목업 .ib.on) */
+:root[data-layout="o2"] body:has(.settings-overlay--page) .sb-rail-btn[aria-label="설정"] { background: var(--surface-active); color: var(--accent); }
