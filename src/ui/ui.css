@@ -1,0 +1,79 @@
+/* v0.7.86 UI 개편 — 공통 프리미티브 스타일. 의미 토큰(index.css 하단)만 사용. */
+
+.ui-btn { display: inline-flex; align-items: center; gap: var(--space-2); border-radius: var(--radius-ctl);
+  border: 1px solid var(--line-strong); background: var(--surface-raised); color: var(--fg);
+  font: 500 var(--fs-ui)/1 var(--font-ui); cursor: pointer;
+  transition: background var(--dur-hover) var(--ease), border-color var(--dur-hover) var(--ease); }
+.ui-btn--md { height: 34px; padding: 0 var(--space-4); }
+.ui-btn--sm { height: 28px; padding: 0 var(--space-3); font-size: var(--fs-sub); }
+.ui-btn:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--line-strong); }
+.ui-btn:disabled { opacity: .5; cursor: default; }
+.ui-btn--primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.ui-btn--primary:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent-dim); }
+.ui-btn--ghost { background: transparent; border-color: transparent; color: var(--fg-muted); }
+.ui-btn--ghost:hover:not(:disabled) { color: var(--fg); }
+.ui-btn--danger { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+.ui-btn:focus-visible, .ui-iconbtn:focus-visible, .ui-chip--clickable:focus-visible,
+.ui-switch:focus-visible, .ui-seg__opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.ui-iconbtn { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: var(--radius-ctl);
+  border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 16px; line-height: 1;
+  transition: background var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease); }
+.ui-iconbtn:hover { background: var(--surface-hover); color: var(--fg); }
+
+.ui-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+  border-radius: var(--radius-pill); border: 1px solid var(--line); background: transparent;
+  color: var(--fg-muted); font: 500 var(--fs-sub)/1 var(--font-ui); white-space: nowrap; }
+.ui-chip--clickable { cursor: pointer; }
+.ui-chip--clickable:hover { background: var(--surface-hover); color: var(--fg); }
+.ui-chip--accent { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
+.ui-chip--warn { color: var(--warn); border-color: var(--warn-soft); background: var(--warn-soft); }
+.ui-chip--danger { color: var(--danger); border-color: var(--danger-soft); background: var(--danger-soft); }
+.ui-chip--ok { color: var(--ok); }
+.ui-chip__icon { display: inline-flex; font-size: 14px; }
+
+.ui-switch { position: relative; width: 36px; height: 20px; border-radius: var(--radius-pill); border: 0;
+  background: var(--line-strong); cursor: pointer; transition: background var(--dur-hover) var(--ease); flex: none; }
+.ui-switch--on { background: var(--accent); }
+.ui-switch__thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--fg); transition: transform var(--dur-hover) var(--ease); }
+.ui-switch--on .ui-switch__thumb { transform: translateX(16px); background: var(--accent-fg); }
+.ui-switch:disabled { opacity: .5; cursor: default; }
+
+.ui-seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--radius-ctl); background: var(--surface-app); border: 1px solid var(--line); }
+.ui-seg__opt { height: 28px; padding: 0 var(--space-3); border: 0; border-radius: 8px; background: transparent;
+  color: var(--fg-muted); font: 500 var(--fs-sub)/1 var(--font-ui); cursor: pointer; }
+.ui-seg__opt--on { background: var(--surface-overlay); color: var(--fg); }
+
+.ui-notice-stack { display: flex; flex-direction: column; gap: var(--space-2); }
+.ui-notice { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-ctl); border: 1px solid var(--line); background: var(--surface-raised);
+  color: var(--fg); font: 400 var(--fs-sub)/1.5 var(--font-ui); }
+.ui-notice--info { border-left: 3px solid var(--info); }
+.ui-notice--ok { border-left: 3px solid var(--ok); }
+.ui-notice--warn { border-left: 3px solid var(--warn); background: var(--warn-soft); }
+.ui-notice--danger { border-left: 3px solid var(--danger); background: var(--danger-soft); }
+.ui-notice__body { flex: 1; min-width: 0; }
+.ui-notice__actions { display: flex; gap: var(--space-2); flex: none; }
+.ui-notice__close { border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 16px; padding: 0 4px; }
+.ui-notice__close:hover { color: var(--fg); }
+
+.ui-slideover { position: fixed; top: 0; right: 0; bottom: 0; width: var(--slideover-w); max-width: 92vw; z-index: 60;
+  display: flex; flex-direction: column; background: var(--surface-overlay); box-shadow: var(--shadow-overlay);
+  transform: translateX(100%); transition: transform var(--dur-panel) var(--ease); visibility: hidden; }
+.ui-slideover--open { transform: none; visibility: visible; }
+.ui-slideover__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  height: var(--header-h); padding: 0 var(--space-3) 0 var(--space-4); border-bottom: 1px solid var(--line); }
+.ui-slideover__title { font: 600 var(--fs-ui)/1 var(--font-ui); color: var(--fg); }
+.ui-slideover__body { flex: 1; overflow: auto; padding: var(--space-4); }
+
+.ui-ring__track { stroke: var(--line-strong); }
+.ui-ring__bar { transition: stroke-dashoffset var(--dur-panel) var(--ease); }
+.ui-ring--ok .ui-ring__bar { stroke: var(--accent); }
+.ui-ring--warn .ui-ring__bar { stroke: var(--warn); }
+.ui-ring--danger .ui-ring__bar { stroke: var(--danger); }
+
+.ui-popover { position: absolute; top: calc(100% + 6px); z-index: 70; min-width: 220px; padding: var(--space-2);
+  border-radius: var(--radius-card); background: var(--surface-overlay); box-shadow: var(--shadow-overlay); color: var(--fg); }
+.ui-popover--end { right: 0; }
+.ui-popover--start { left: 0; }

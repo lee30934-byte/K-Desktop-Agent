@@ -425,3 +425,40 @@ input:focus-visible {
 :root[data-theme="brutalist-bauhaus"] .brand-logo {
   filter: none;
 }
+
+/* ═══ v0.7.86 UI 개편 1단계 — 의미 토큰 레이어 (evidence/ui-redesign-20261111/design-spec.md 7장) ═══
+   기존 토큰의 별칭이라 4개 테마(data-theme)가 기존 토큰을 덮어쓰면 그대로 따라간다.
+   새 컴포넌트(src/ui/*)는 이 토큰만 쓴다. 기존 화면은 단계별로 옮긴다. */
+:root {
+  --surface-app: var(--bg-1);
+  --surface-raised: var(--bg-2);
+  --surface-overlay: var(--bg-3);
+  --surface-hover: rgba(255, 255, 255, 0.045);
+  --surface-active: var(--accent-glow);
+  --line: var(--border-subtle);
+  --line-strong: var(--border-default);
+  --fg: var(--text-primary);
+  --fg-muted: var(--text-secondary);
+  --fg-subtle: var(--text-tertiary);
+  --accent-fg: #04201f;
+  --accent-soft: var(--accent-glow);
+  --warn-soft: var(--warn-glow);
+  --danger: var(--error);
+  --danger-soft: rgba(239, 68, 68, 0.14);
+  --ok: var(--success);
+  --font-ui: "Pretendard Variable", "Pretendard", var(--font-body), "Malgun Gothic", system-ui, sans-serif;
+  --fs-caption: 12px; --fs-sub: 13px; --fs-ui: 14px; --fs-body: 15px;
+  --fs-title: 17px; --fs-page: 22px; --fs-hero: 28px;
+  --lh-body: 1.65;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --radius-chip: 6px; --radius-ctl: 10px; --radius-card: 16px;
+  --radius-bubble: 18px; --radius-pill: 999px;
+  --header-h: 48px; --row-h: 32px; --rail-w: 56px;
+  --sidebar-w: 264px; --slideover-w: 380px; --settings-nav-w: 232px;
+  --chat-max-width: 760px;
+  --dur-hover: 120ms; --dur-panel: 200ms; --ease: cubic-bezier(.2, .7, .2, 1);
+  --shadow-overlay: 0 12px 40px rgba(0, 0, 0, .45), 0 0 0 1px var(--line);
+}
+:root[data-density="compact"] { --row-h: 28px; --fs-body: 14px; }
+@media (prefers-reduced-motion: reduce) { :root { --dur-hover: 0ms; --dur-panel: 0ms; } }
