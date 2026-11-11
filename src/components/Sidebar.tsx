@@ -1,3 +1,4 @@
+import o2Mark from "../assets/o2-mark.png";
 import { memo, useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
@@ -1466,11 +1467,8 @@ function Sidebar({
       {/* 브랜드 헤더 */}
       <div className="sidebar-brand">
         <div className="brand-logo" aria-hidden="true">
-          {/* v0.7.86 — O2 로고: 동원의 'ㅇ' 두 개 / 산소 분자 O₂ 를 겹친 두 원으로 */}
-          <svg width="28" height="28" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="12" cy="16" r="8.5" stroke="var(--accent)" strokeWidth="2" fill="rgba(79, 232, 225, 0.08)" />
-            <circle cx="21" cy="16" r="8.5" stroke="var(--accent)" strokeWidth="2" fill="none" opacity="0.75" />
-          </svg>
+          {/* v0.7.86 — O2 심볼 (GPT 이미지 생성, evidence/o2-symbol-20261111/b). 앱 아이콘과 같은 원본 */}
+          <img src={o2Mark} width={30} height={30} alt="" draggable={false} />
         </div>
         <div className="brand-text">
           <div className="brand-name brand-name-o2" title="O2 — 동원의 에이전트" aria-label="O2">O<sub>2</sub></div>
