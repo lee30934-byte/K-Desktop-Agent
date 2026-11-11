@@ -504,9 +504,12 @@ export default function App() {
   // classic 은 SidePanel 이 직접 --side-panel-width 를 관리한다.
   useEffect(() => {
     const root = document.documentElement;
-    if (!isO2) { root.style.setProperty("--slideover-offset", "0px"); return; }
+    if (!isO2) { root.style.setProperty("--slideover-offset", "0px"); root.removeAttribute("data-slideover"); return; }
     const open = rightPanel !== null;
     const pinned = open && slideOverPinned && wideWindow;
+    // fidR — 패널이 열려 있는 동안 기본 위치 아바타를 숨겨 본문 열·입력창을 가리지 않게 한다 (o2-fidelity.css §8).
+    if (open) root.setAttribute("data-slideover", pinned ? "pinned" : "overlay");
+    else root.removeAttribute("data-slideover");
     root.style.setProperty("--side-panel-width", pinned ? `${slideOverWidth}px` : "0px");
     root.style.setProperty("--slideover-offset", open ? `${slideOverWidth}px` : "0px");
   }, [isO2, rightPanel, slideOverPinned, slideOverWidth, wideWindow]);

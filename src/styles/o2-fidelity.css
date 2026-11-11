@@ -327,3 +327,6 @@
   max-height: calc(100dvh - var(--o2-chrome-bottom, 100px) - 28px);
   right: calc(16px + var(--slideover-offset, 0px));
 }
+/* fidR — 우측 패널이 열리면 남는 본문 폭에 아바타 자리가 없다. 기본 위치 아바타는 패널이 닫힐 때까지 숨긴다
+   (언마운트 아님 — 통화·상태 유지, 비서 탭에서 같은 기능 사용). 끌어 옮긴 위치는 사용자 선택이라 그대로 둔다. */
+:root[data-layout="o2"][data-slideover] .companion-widget:not([style*="left"]) { display: none; }

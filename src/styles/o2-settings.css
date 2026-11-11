@@ -117,7 +117,7 @@
 :root[data-layout="o2"] .o2s-row:first-child { border-top: 0; }
 :root[data-layout="o2"] .o2s-row__ico { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 8px; background: rgba(255, 255, 255, .04); color: var(--fg-muted); }
 :root[data-layout="o2"] .o2s-row__tx { flex: 1; min-width: 0; }
-:root[data-layout="o2"] .settings-overlay--page .o2s-row__tx .o2s-row__title { display: block; margin: 0; font: 500 var(--fs-ui)/1.5 var(--font-ui); color: var(--fg); }
+:root[data-layout="o2"] .settings-overlay--page .o2s-row__tx .o2s-row__title { display: block; margin: 0; font: 500 var(--fs-ui)/1.3 var(--font-ui); color: var(--fg); }
 :root[data-layout="o2"] .settings-overlay--page .o2s-row__tx .o2s-mono { font: 500 13px/1.5 var(--font-mono); }
 :root[data-layout="o2"] .o2s-row__tx small { display: block; margin-top: 2px; font-size: 12px; line-height: 1.5; color: var(--fg-subtle); }
 

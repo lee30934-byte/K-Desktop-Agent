@@ -43,7 +43,7 @@ test("App: classic 배치는 예전 구조 그대로 (SidePanel 직접·작업 �
   // 슬라이드오버는 o2 에서만. classic 은 embedded 아닌 SidePanel(가장자리 ⟨, --side-panel-width 자체 관리)
   assert.match(app, /\{isO2 \? \(\n[\s\S]*?<SlideOver\n[\s\S]*?<\/SlideOver>\n      \) : \(\n        <SidePanel\n          open=\{sidePanelOpen\}/);
   assert.match(app, /: <TaskActivityPanel \{\.\.\.taskPanelProps\} mode="popover" \/>/);
-  assert.match(app, /if \(!isO2\) \{ root\.style\.setProperty\("--slideover-offset", "0px"\); return; \}/);
+  assert.match(app, /if \(!isO2\) \{ root\.style\.setProperty\("--slideover-offset", "0px"\); root\.removeAttribute\("data-slideover"\); return; \}/); // fidR: classic 은 data-slideover 도 지움
   assert.match(app, /alert\(`복구 가능한 작업 목록/);
   assert.match(app, /previewReady=\{isO2 && /);
 });
