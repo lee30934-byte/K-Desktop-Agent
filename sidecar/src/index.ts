@@ -4776,6 +4776,11 @@ function turnToolBridge(msg: UserMessage) {
     [...policy.disallowed, ...flagGatedDisallowed(flags)]);
 }
 
+// v0.7.86 — 채팅에 표시하지 않는 Codex 승인 요청 종료 사유 (정상 처리). 실패 사유는 계속 표시.
+const QUIET_ELICITATION_REASONS: ReadonlySet<string> = new Set([
+  "accept_forwarded", "decline_forwarded", "cancel_forwarded", "turn_finished",
+]);
+
 async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   // 첨부 파일은 Claude 와 같은 방식으로 임시 폴더 + 안내 텍스트
   const { dir: attachmentsDir, guidance: attachmentsGuidance } =
@@ -5182,7 +5187,10 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
             const reason = Object.hasOwn(labels, event.reason) || ["received", "awaiting_response", "response_received", "response_binding_mismatch", "invalid_action", "duplicate_request", "unknown_or_resolved_response"].includes(event.reason) ? event.reason : "unknown";
             const elapsedMs = Number.isFinite(event.elapsedMs) ? event.elapsedMs : null;
             logToFile("info", `Codex elicitation diagnostic ${JSON.stringify({ traceId, reason, elapsedMs })}`);
-            if (event.terminal && labels[reason]) emit({ type: "provider_notice", id: msg.id,
+            // v0.7.86 — 정상 처리(승인·거절·취소를 그대로 전달)는 채팅에 띄우지 않는다. 자동 승인 ON 이면
+            // 요청마다 "승인 응답을 전달했습니다" 가 줄줄이 쌓여 K 가 불편 (2026-11-11). 로그에는 위에서 이미 남김.
+            // 실패·만료·불일치처럼 사용자가 알아야 하는 종료만 표시한다.
+            if (event.terminal && labels[reason] && !QUIET_ELICITATION_REASONS.has(reason)) emit({ type: "provider_notice", id: msg.id,
               provider: "codex", message: `승인 요청 ${traceId}: ${labels[reason]} [${reason}]` });
             break;
           }
