@@ -27,21 +27,33 @@ pub fn is_packaged(install_dir: &Path) -> bool {
     install_dir.join("uninstall.exe").exists()
 }
 
-/// 순수 판정. marker = 설치 완료 표시 파일 내용 (없으면 None).
-pub fn evaluate(app_version: &str, marker: Option<&str>, packaged: bool) -> Value {
+/// 순수 판정. marker = 설치 완료 표시 파일 내용 (없으면 None),
+/// registry = Windows 설치 목록(HKCU Uninstall)의 DisplayVersion (없으면 None).
+///
+/// NSIS 는 파일을 모두 복사한 뒤 레지스트리를 쓰고, 맨 마지막에 완료 표시를 쓴다.
+/// - 표시 == 앱 버전 → complete
+/// - 표시가 없거나 다르지만 레지스트리 == 앱 버전 → complete (파일 복사·등록은 끝남. 예: 시작 직후
+///   "앱 실행 중" 질문에서 취소해 표시만 지워지고 아무 파일도 안 바뀐 경우)
+/// - 둘 다 앱 버전과 다름 → incomplete (2026-11-09 실측: 복사 도중 취소 = 실행 파일만 새 버전, 레지스트리 옛 버전)
+pub fn evaluate(app_version: &str, marker: Option<&str>, packaged: bool, registry: Option<&str>) -> Value {
     if !packaged {
         return json!({ "state": "dev", "appVersion": app_version });
     }
-    let marker_version = marker.map(|m| m.trim_start_matches('\u{feff}').trim().to_string());
+    let clean = |s: &str| s.trim_start_matches('\u{feff}').trim().to_string();
+    let marker_version = marker.map(clean);
+    let registry_version = registry.map(clean);
+    let registry_ok = registry_version.as_deref() == Some(app_version);
     let (state, reason) = match marker_version.as_deref() {
-        None => ("incomplete", "설치 완료 표시가 없습니다 (설치가 중간에 취소됐거나 실패)"),
         Some(v) if v == app_version => ("complete", ""),
-        Some(_) => ("incomplete", "설치 완료 표시의 버전이 실행 파일 버전과 다릅니다"),
+        _ if registry_ok => ("complete", ""),
+        None => ("incomplete", "설치 완료 표시가 없고 Windows 설치 목록의 버전도 다릅니다 (설치가 중간에 취소됐거나 실패)"),
+        Some(_) => ("incomplete", "설치 완료 표시와 Windows 설치 목록의 버전이 실행 파일 버전과 다릅니다"),
     };
     let mut out = json!({
         "state": state,
         "appVersion": app_version,
         "markerVersion": marker_version,
+        "registryVersion": registry_version,
     });
     if !reason.is_empty() {
         out["reason"] = json!(reason);
@@ -49,9 +61,39 @@ pub fn evaluate(app_version: &str, marker: Option<&str>, packaged: bool) -> Valu
     out
 }
 
-pub fn check(app_version: &str, install_dir: &Path) -> Value {
+pub fn check(app_version: &str, install_dir: &Path, product_name: &str) -> Value {
     let marker = std::fs::read_to_string(install_dir.join(MARKER_FILE)).ok();
-    evaluate(app_version, marker.as_deref(), is_packaged(install_dir))
+    let registry = registry_display_version(product_name);
+    evaluate(app_version, marker.as_deref(), is_packaged(install_dir), registry.as_deref())
+}
+
+/// HKCU\...\Uninstall\<product>\DisplayVersion (Tauri NSIS currentUser 설치). 실패하면 None.
+#[cfg(windows)]
+pub fn registry_display_version(product_name: &str) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    let key = format!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", product_name);
+    let out = std::process::Command::new("reg")
+        .args(["query", &key, "/v", "DisplayVersion"])
+        .creation_flags(0x0800_0000)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_reg_query(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[cfg(not(windows))]
+pub fn registry_display_version(_product_name: &str) -> Option<String> {
+    None
+}
+
+pub fn parse_reg_query(text: &str) -> Option<String> {
+    text.lines()
+        .find(|l| l.trim_start().starts_with("DisplayVersion"))
+        .and_then(|l| l.split("REG_SZ").nth(1))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 pub fn read_json(path: &Path) -> Value {
@@ -169,26 +211,41 @@ mod tests {
 
     #[test]
     fn dev_build_is_not_flagged() {
-        assert_eq!(evaluate("0.7.84", None, false)["state"], "dev");
+        assert_eq!(evaluate("0.7.84", None, false, None)["state"], "dev");
     }
 
     #[test]
-    fn missing_marker_is_incomplete() {
-        let v = evaluate("0.7.84", None, true);
+    fn mid_copy_cancel_is_incomplete() {
+        // 2026-11-09 실측 형태: 새 실행 파일, 표시 없음, 레지스트리는 옛 버전
+        let v = evaluate("0.7.84", None, true, Some("0.7.83"));
         assert_eq!(v["state"], "incomplete");
         assert!(v["reason"].as_str().unwrap().contains("취소"));
+        assert_eq!(evaluate("0.7.84", None, true, None)["state"], "incomplete");
     }
 
     #[test]
     fn matching_marker_is_complete_even_with_bom_and_newline() {
-        assert_eq!(evaluate("0.7.84", Some("\u{feff}0.7.84\r\n"), true)["state"], "complete");
+        assert_eq!(evaluate("0.7.84", Some("\u{feff}0.7.84\r\n"), true, Some("0.7.83"))["state"], "complete");
     }
 
     #[test]
-    fn stale_marker_from_older_install_is_incomplete() {
-        let v = evaluate("0.7.84", Some("0.7.83"), true);
+    fn stale_marker_and_stale_registry_is_incomplete() {
+        let v = evaluate("0.7.84", Some("0.7.83"), true, Some("0.7.83"));
         assert_eq!(v["state"], "incomplete");
         assert_eq!(v["markerVersion"], "0.7.83");
+    }
+
+    #[test]
+    fn cancel_before_copy_is_not_flagged() {
+        // "앱 실행 중" 질문에서 취소: 표시만 지워지고 파일·레지스트리는 현재 버전 그대로
+        assert_eq!(evaluate("0.7.84", None, true, Some("0.7.84"))["state"], "complete");
+    }
+
+    #[test]
+    fn reg_query_output_is_parsed() {
+        let out = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\K Desktop Agent\r\n    DisplayVersion    REG_SZ    0.7.83\r\n\r\n";
+        assert_eq!(parse_reg_query(out).as_deref(), Some("0.7.83"));
+        assert_eq!(parse_reg_query("ERROR: not found"), None);
     }
 
     #[test]

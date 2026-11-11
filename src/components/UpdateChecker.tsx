@@ -82,8 +82,10 @@ export function UpdateChecker() {
       // 설치 완료 후 재시작
       await relaunch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : '업데이트 실패');
+      // v0.7.84 — 이미 업데이트를 누른 상태이므로 대체 경로를 자동으로 시도한다 (클릭 한 번 줄이기).
+      setError(`${e instanceof Error ? e.message : '업데이트 실패'} — 다른 경로로 설치를 시도합니다…`);
       setDownloading(false);
+      await installViaFallback();
     }
   }
 
@@ -94,7 +96,7 @@ export function UpdateChecker() {
       await invoke('repair_install', { version: updateInfo.version, reason: 'manual-update-fallback', auto: false });
       // 성공하면 설치 프로그램이 실행되고 앱이 곧 종료된다.
     } catch (e) {
-      setError(`대체 경로도 실패: ${e instanceof Error ? e.message : String(e)}`);
+      setError(`업데이터와 대체 경로 모두 실패: ${e instanceof Error ? e.message : String(e)} — [다른 경로로 설치]로 다시 시도할 수 있습니다`);
       setFallbackBusy(false);
     }
   }

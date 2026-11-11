@@ -254,7 +254,9 @@ async function start(input) {
   // KDA 의 입력 잠금·대상 창 확인·실패 신호·멈춤 감시를 모두 우회하고, PC 마다 사용 가능 여부가 달라
   // (2026-11-10 다른 PC 에서 사용 확인, 이 PC 는 computerUseLocal unavailable) 동작이 갈렸다.
   // 화면 조작은 k-personal(ui_/cc_/web_) 한 경로로만 한다. browser_use 등 다른 기능은 그대로.
-  server = spawn(codex, ["app-server", "--stdio", "--disable", "computer_use"], {
+  // `--disable computer_use` 는 그 기능을 모르는 구버전 CLI 에서 "Unknown feature flag" 로 시작 자체가
+  // 실패한다(2026-11-11 실측). `-c features.computer_use=false` 는 아는 버전에선 끄고 모르는 버전에선 무시된다.
+  server = spawn(codex, ["app-server", "--stdio", "-c", "features.computer_use=false"], {
     stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32", windowsHide: true,
     env: process.env,
   });

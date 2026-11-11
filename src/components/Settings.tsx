@@ -2424,6 +2424,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
 
     let totalSize = 0;
     let downloaded = 0;
+    let targetVersion: string | null = null;
 
     try {
       const update = await check();
@@ -2431,6 +2432,7 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
         setUpdateStatus("latest");
         return;
       }
+      targetVersion = update.version;
 
       await update.downloadAndInstall((event) => {
         if (event.event === "Started") {
@@ -2451,8 +2453,21 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
       // 설치 완료 후 재시작
       await relaunch();
     } catch (e) {
+      const first = e instanceof Error ? e.message : "업데이트 설치 실패";
+      // v0.7.84 — 업데이터 다운로드 실패(예: GitHub 다운로드 서버 504) 시 같은 버전을 대체 경로로:
+      // 직접 주소 → GitHub API 경로, 업데이터와 같은 공개키로 서명 검증 후 passive 설치(앱 자동 재시작).
+      if (targetVersion) {
+        try {
+          await invoke("repair_install", { version: targetVersion, reason: "settings-update-fallback", auto: false });
+          return; // 설치 프로그램이 실행되고 앱이 곧 종료된다
+        } catch (e2) {
+          setUpdateStatus("error");
+          setUpdateError(`${first} / 대체 경로도 실패: ${e2 instanceof Error ? e2.message : String(e2)}`);
+          return;
+        }
+      }
       setUpdateStatus("error");
-      setUpdateError(e instanceof Error ? e.message : "업데이트 설치 실패");
+      setUpdateError(first);
     }
   }
 

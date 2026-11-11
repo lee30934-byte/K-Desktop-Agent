@@ -9,13 +9,20 @@ const read = (rel: string) => fs.readFileSync(new URL(rel, import.meta.url), "ut
 
 test("대화 턴용 Codex app-server 는 computer_use 를 끄고 시작", () => {
   const src = read("../sidecar/src/codex-app-server-bridge.mjs");
-  assert.match(src, /spawn\(codex, \["app-server", "--stdio", "--disable", "computer_use"\]/);
+  assert.match(src, /spawn\(codex, \["app-server", "--stdio", "-c", "features\.computer_use=false"\]/);
   assert.doesNotMatch(src, /spawn\(codex, \["app-server", "--stdio"\]/);
 });
 
 test("음성 세션용 Codex app-server 도 computer_use 를 끄고 시작", () => {
   const src = read("../sidecar/src/codex-voice.mjs");
-  assert.match(src, /spawnProcess\(codex, \['app-server', '--stdio', '--disable', 'computer_use'\]/);
+  assert.match(src, /spawnProcess\(codex, \['app-server', '--stdio', '-c', 'features\.computer_use=false'\]/);
+});
+
+test("--disable 형식은 쓰지 않는다 (기능 이름을 모르는 구버전 Codex 가 시작 실패, 2026-11-11 실측)", () => {
+  for (const f of ["../sidecar/src/codex-app-server-bridge.mjs", "../sidecar/src/codex-voice.mjs"]) {
+    const code = read(f).split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+    assert.doesNotMatch(code, /["']--disable["']/, f);
+  }
 });
 
 test("sidecar 의 다른 곳에서 Codex app-server 를 따로 띄우지 않는다 (우회 경로 없음)", () => {

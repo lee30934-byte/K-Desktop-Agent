@@ -992,8 +992,9 @@ fn get_kpersonal_update_status() -> serde_json::Value {
 
 fn install_integrity_now(app: &AppHandle) -> serde_json::Value {
     let version = app.package_info().version.to_string();
+    let product = app.package_info().name.clone();
     let mut v = match install_dir() {
-        Some(dir) => install_integrity::check(&version, &dir),
+        Some(dir) => install_integrity::check(&version, &dir, &product),
         None => serde_json::json!({ "state": "dev", "appVersion": version }),
     };
     let repair = install_integrity::read_json(&data_root().join(install_integrity::REPAIR_FILE));
@@ -1020,8 +1021,22 @@ fn get_install_integrity(app: AppHandle) -> serde_json::Value {
 /// 서명 검증된 설치 파일을 받아 passive 모드(/P /R: 진행창만, 끝나면 앱 재실행)로 실행하고 앱을 종료한다.
 /// version 생략 = 현재 버전 재설치. auto=true 면 버전별 자동 시도 횟수 제한을 적용한다.
 /// 업데이터 다운로드가 실패했을 때의 대체 경로로도 쓴다 (version = 새 버전).
+static REPAIR_IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct RepairGuard;
+impl Drop for RepairGuard {
+    fn drop(&mut self) {
+        REPAIR_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[tauri::command]
 async fn repair_install(app: AppHandle, version: Option<String>, reason: String, auto: Option<bool>) -> Result<serde_json::Value, String> {
+    // 자동(업데이트 흐름)과 수동([다시 설치]) 이 동시에 눌려도 설치기는 하나만 띄운다.
+    if REPAIR_IN_PROGRESS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("이미 재설치를 준비하고 있습니다".into());
+    }
+    let _guard = RepairGuard;
     let current = app.package_info().version.to_string();
     let version = version.map(|v| v.trim().trim_start_matches('v').to_string()).unwrap_or_else(|| current.clone());
     if !install_integrity::valid_version(&version) {
@@ -1070,14 +1085,28 @@ async fn repair_install(app: AppHandle, version: Option<String>, reason: String,
         record("save-failed", Some(&msg));
         return Err(msg);
     }
+    // KDA 가 받아 둔 다른 버전 설치 파일(약 49MB씩)은 남기지 않는다. 이 폴더는 repair 전용.
+    if let Some(dir) = path.parent() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if p != path && name.starts_with("K.Desktop.Agent_") && (name.ends_with("-setup.exe") || name.ends_with(".exe.part")) {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+    }
     let args = vec!["/P".to_string(), "/R".to_string(), "/UPDATE".to_string()];
     match spawn_detached(&path.to_string_lossy(), &args, None, &[], None) {
         Ok((pid, _)) => {
             record("launched", None);
             log_lifecycle("runtime.log", &format!("install repair: launched v{} via={} pid={} reason={}", version, via, pid, reason));
+            // 설치기의 CheckIfAppIsRunning 보다 먼저 빠진다. passive 모드는 실행 중이면 강제 종료를 시도하지만
+            // 실패하면 설치를 중단하고 앱도 다시 켜지 않는다(/R 은 성공 시에만) → 앱이 스스로 먼저 종료.
             let app2 = app.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(1500));
+                std::thread::sleep(std::time::Duration::from_millis(400));
                 app2.exit(0);
             });
             Ok(serde_json::json!({ "launched": true, "version": version, "via": via, "pid": pid }))

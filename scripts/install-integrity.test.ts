@@ -85,3 +85,25 @@ test("App: installed 판정 전 무결성 확인, 업데이터 실패 시 대체
   assert.match(uc, /reason: 'manual-update-fallback'/);
   assert.match(uc, /다른 경로로 설치/);
 });
+
+test("검토 보강: 업데이트 실패 시 대체 경로 자동 시도 (배너·설정 화면 모두)", () => {
+  const uc = read("../src/components/UpdateChecker.tsx");
+  const ucCatch = uc.slice(uc.indexOf("async function downloadAndInstall()"), uc.indexOf("async function installViaFallback()"));
+  assert.match(ucCatch, /await installViaFallback\(\);/);
+  const st = read("../src/components/Settings.tsx");
+  const fn = st.slice(st.indexOf("async function downloadAndInstallUpdate()"), st.indexOf("// API 키 저장"));
+  assert.match(fn, /targetVersion = update\.version;/);
+  assert.match(fn, /repair_install", \{ version: targetVersion, reason: "settings-update-fallback", auto: false \}/);
+});
+
+test("검토 보강: 재설치 동시 실행 방지·옛 설치 파일 정리·빠른 종료·레지스트리 이중 판정", () => {
+  const rs = read("../src-tauri/src/lib.rs");
+  const start = rs.indexOf("async fn repair_install(");
+  const body = rs.slice(start, rs.indexOf("\n}\n", start));
+  assert.match(body, /REPAIR_IN_PROGRESS\.swap\(true/);
+  assert.match(body, /name\.starts_with\("K\.Desktop\.Agent_"\)/);
+  assert.match(body, /from_millis\(400\)/);
+  const mod = read("../src-tauri/src/install_integrity.rs");
+  assert.match(mod, /pub fn evaluate\(app_version: &str, marker: Option<&str>, packaged: bool, registry: Option<&str>\)/);
+  assert.match(mod, /Uninstall\\\{\}/);
+});
