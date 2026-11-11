@@ -28,7 +28,8 @@ test("세션 버튼: 이름만 바꾸고 같은 핸들러 유지", () => {
   const m = read("../src/components/MetricsPanel.tsx");
   assert.match(m, /↻ 새 세션으로 이어가기/);
   assert.match(m, /📦 요약해서 새 대화로 이어가기/);
-  assert.doesNotMatch(m, /세션 초기화|대화 초기화|대화 압축 &/);
+  const ui = m.split(/\r?\n/).filter((l) => !l.trim().startsWith("//")).join("\n"); // 주석 제외, 화면 문구만
+  assert.doesNotMatch(ui, /세션 초기화|대화 초기화|대화 압축 &/);
   assert.match(m, /onManualRefresh\(\);/);
   assert.match(m, /onCompressContext\(\);/);
   const app = read("../src/App.tsx");
