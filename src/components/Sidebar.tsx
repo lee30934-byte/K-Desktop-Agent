@@ -12,6 +12,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import CornerBrackets from "./CornerBrackets";
+import { Icon } from "../ui/icons";
 import type { Conversation, Folder } from "../types";
 // v0.7.86 UI 6단계 — 내보내기/백업/가져오기는 공용 유틸 (헤더 ⋯ '이 대화 내보내기'와 공유)
 import {
@@ -934,7 +935,7 @@ function Sidebar({
         setContextMenu({ type, id, x: r.left, y: r.bottom + 2 });
       }}
     >
-      ⋯
+      <Icon name="more" size={14} />
     </button>
   );
 
@@ -1456,7 +1457,7 @@ function Sidebar({
           onClick={handleNewConversationHere}
           title={currentFolderName ? "현재 폴더 안에 새 대화 (폴더 지침 자동 적용)" : "새 대화"}
         >
-          <span className="plus">+</span>
+          <span className="plus"><Icon name="plus" /></span>
           <span className="new-chat-label">새 대화{currentFolderName ? ` (📁 ${currentFolderName})` : ""}</span>
         </button>
       </div>
@@ -1484,17 +1485,17 @@ function Sidebar({
           </div>
         ) : (
           <button type="button" className="sb-nav-item" onClick={() => setSearchOpen(true)}>
-            <span className="sb-nav-icon" aria-hidden="true">🔍</span><span>검색</span>
+            <span className="sb-nav-icon" aria-hidden="true"><Icon name="search" /></span><span>검색</span>
           </button>
         ))}
         {onOpenLibrary && (
           <button type="button" className="sb-nav-item" onClick={onOpenLibrary} title="대화 라이브러리 — 모든 대화를 카드로 크게 보기">
-            <span className="sb-nav-icon" aria-hidden="true">📚</span><span>라이브러리</span><span className="sb-kbd">Ctrl+L</span>
+            <span className="sb-nav-icon" aria-hidden="true"><Icon name="library" /></span><span>라이브러리</span><span className="sb-kbd">Ctrl+L</span>
           </button>
         )}
         {onOpenTasks && (
           <button type="button" className="sb-nav-item" onClick={onOpenTasks} title="작업 패널 열기">
-            <span className="sb-nav-icon" aria-hidden="true">⚡</span><span>작업</span>
+            <span className="sb-nav-icon" aria-hidden="true"><Icon name="zap" /></span><span>작업</span>
             {taskCount > 0 && <span className="sb-badge" aria-label={`실행 중 ${taskCount}개`}>{taskCount}</span>}
           </button>
         )}
@@ -1508,10 +1509,10 @@ function Sidebar({
       <span className="sb-sec-tools">
         {onCreateFolder && (
           <button type="button" onClick={() => handleNewSubfolder(null)} aria-label="새 폴더"
-            title={currentFolderName ? "현재 폴더 안에 새 폴더" : "새 폴더"}>📁+</button>
+            title={currentFolderName ? "현재 폴더 안에 새 폴더" : "새 폴더"}><Icon name="folderPlus" size={15} /></button>
         )}
         <button type="button" onClick={toggleBulkMode} aria-pressed={bulkSelectMode} aria-label="여러 대화 선택"
-          title={bulkSelectMode ? "정리 종료" : "여러 대화 선택해서 폴더로 이동"}>☑</button>
+          title={bulkSelectMode ? "정리 종료" : "여러 대화 선택해서 폴더로 이동"}><Icon name="checkSquare" size={15} /></button>
       </span>
     </div>
   );
@@ -1527,12 +1528,12 @@ function Sidebar({
         )}
       </span>
       <button type="button" className="sb-settings" onClick={onOpenSettings} title="설정">
-        <span aria-hidden="true">⚙</span><span>설정</span>
+        <Icon name="settings" /><span>설정</span>
       </button>
     </div>
   );
 
-  // 레일(56px): 심볼 · ＋ · 🔍 · 📚 · ⚡ · (빈 공간) · ● · ⚙
+  // 레일(56px): 심볼 · 새 대화 · 검색 · 라이브러리 · 작업 · (빈 공간) · ● · 설정 (10단계: 라인 아이콘)
   const renderRail = () => (
     <nav className="sb-rail" aria-label="사이드바 (접힘)">
       <button type="button" className="brand-logo brand-logo-btn" onClick={onToggleRail}
@@ -1540,17 +1541,17 @@ function Sidebar({
         <img src={o2Mark} width={28} height={28} alt="" draggable={false} />
       </button>
       <button type="button" className="sb-rail-btn" onClick={handleNewConversationHere} aria-label="새 대화"
-        title={currentFolderName ? `새 대화 (📁 ${currentFolderName})` : "새 대화"}>+</button>
+        title={currentFolderName ? `새 대화 (📁 ${currentFolderName})` : "새 대화"}><Icon name="plus" size={18} /></button>
       {onSearchConversations && (
         <button type="button" className="sb-rail-btn" aria-label="검색" title="검색 (사이드바를 펼칩니다)"
-          onClick={() => { setSearchOpen(true); onToggleRail?.(); }}>🔍</button>
+          onClick={() => { setSearchOpen(true); onToggleRail?.(); }}><Icon name="search" size={18} /></button>
       )}
       {onOpenLibrary && (
-        <button type="button" className="sb-rail-btn" onClick={onOpenLibrary} aria-label="라이브러리" title="라이브러리 (Ctrl+L)">📚</button>
+        <button type="button" className="sb-rail-btn" onClick={onOpenLibrary} aria-label="라이브러리" title="라이브러리 (Ctrl+L)"><Icon name="library" size={18} /></button>
       )}
       {onOpenTasks && (
         <button type="button" className="sb-rail-btn" onClick={onOpenTasks} aria-label="작업" title={taskCount > 0 ? `작업 ${taskCount}개 실행 중` : "작업"}>
-          ⚡{taskCount > 0 && <span className="sb-rail-badge">{taskCount}</span>}
+          <Icon name="zap" size={18} />{taskCount > 0 && <span className="sb-rail-badge">{taskCount}</span>}
         </button>
       )}
       <span className="sb-rail-grow" />
@@ -1561,7 +1562,7 @@ function Sidebar({
           <span className="status-dot status-dot-off" aria-hidden="true" />
         </button>
       )}
-      <button type="button" className="sb-rail-btn" onClick={onOpenSettings} aria-label="설정" title="설정">⚙</button>
+      <button type="button" className="sb-rail-btn" onClick={onOpenSettings} aria-label="설정" title="설정"><Icon name="settings" size={18} /></button>
     </nav>
   );
 

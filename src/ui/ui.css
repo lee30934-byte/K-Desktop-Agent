@@ -89,3 +89,6 @@
 .ui-notice__meta { color: var(--fg-muted); }
 .ui-notice__row { margin-top: 4px; color: var(--fg-muted); }
 .ui-notice__error { margin-top: 4px; color: var(--danger); }
+
+/* 10단계 — 라인 아이콘 (icons.tsx). 글자색을 따르고 글줄 기준선에 맞춘다. */
+.ui-icon { flex: none; display: inline-block; vertical-align: -0.125em; }

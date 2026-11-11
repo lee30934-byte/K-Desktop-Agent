@@ -2,6 +2,7 @@
 // 업무 로직 없음. 모양·접근성만 담당한다. 의미 토큰(index.css 하단)만 사용.
 import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import "./ui.css";
+import { Icon } from "./icons";
 
 const cx = (...c: Array<string | false | null | undefined>) => c.filter(Boolean).join(" ");
 
@@ -114,7 +115,7 @@ export function SlideOver({ open, title, onClose, children, tabs, width, keepMou
         {tabs ?? <div className="ui-slideover__title">{title}</div>}
         <div className="ui-slideover__actions">
           {headerActions}
-          <button type="button" className="ui-iconbtn" aria-label="패널 닫기" title="패널 닫기 (Esc)" onClick={onClose}>×</button>
+          <button type="button" className="ui-iconbtn" aria-label="패널 닫기" title="패널 닫기 (Esc)" onClick={onClose}><Icon name="x" /></button>
         </div>
       </header>
       <div className="ui-slideover__body">{open || keepMounted ? children : null}</div>

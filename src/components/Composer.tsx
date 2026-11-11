@@ -3,6 +3,7 @@ import type { FileAttachment, PromptTemplate } from "../types";
 import PromptPicker from "./PromptPicker";
 import type { SendMode } from "../conversationControl";
 import { useUiLayout } from "../utils/useUiLayout";
+import { Icon } from "../ui/icons";
 const attachmentDrafts = new Map<string, FileAttachment[]>();
 
 interface ComposerProps {
@@ -586,8 +587,9 @@ function Composer({
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled || submitting || isStopping}
           title="파일 첨부 (이미지, 비디오, 오디오, 문서, 압축파일 등)"
+          aria-label="파일 첨부"
         >
-          📎
+          {isO2 ? <Icon name="paperclip" size={18} /> : "📎"}
         </button>
         <input
           ref={fileInputRef}
@@ -650,7 +652,7 @@ function Composer({
                     title="정지 옵션"
                     onClick={() => setStopMenuOpen((v) => !v)}
                   >
-                    ▾
+                    <Icon name="chevronDown" size={14} />
                   </button>
                 )}
                 {onHardStop && stopMenuOpen && (
@@ -675,7 +677,7 @@ function Composer({
                 disabled={disabled || submitting || isStopping || (!input.trim() && !files.length)}
                 title={sendMode === "steer" ? "추가 지시를 지금 반영합니다" : "완료 후 순서대로 보냅니다"}
               >
-                <span aria-hidden>↑</span> {sendMode === "steer" ? "지금 반영" : "예약"}
+                <Icon name="arrowUp" size={14} /> {sendMode === "steer" ? "지금 반영" : "예약"}
               </button>
             ) : (
               <button
@@ -685,7 +687,7 @@ function Composer({
                 aria-label="보내기"
                 title="보내기 (Enter)"
               >
-                <span aria-hidden>↑</span>
+                <Icon name="arrowUp" />
               </button>
             )}
           </div>

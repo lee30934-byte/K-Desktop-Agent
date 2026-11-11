@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 import { Notice, NoticeStack, Button, SlideOver } from "./ui";
+import { Icon } from "./ui/icons";
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
@@ -6136,7 +6137,7 @@ export default function App() {
             <button type="button" className="ui-iconbtn" aria-pressed={slideOverPinned}
               aria-label={slideOverPinned ? "패널 고정 해제" : "패널 고정"}
               title={slideOverPinned ? "고정 해제 (본문 위에 띄우기)" : "고정 (본문 옆에 붙이기)"}
-              onClick={() => setSlideOverPinned((p) => !p)}>📌</button>
+              onClick={() => setSlideOverPinned((p) => !p)}><Icon name="pin" /></button>
           ) : null}
         >
           <div id="right-pane-preview" role="tabpanel" className="right-pane right-pane--preview" hidden={rightPanel !== "preview"}>

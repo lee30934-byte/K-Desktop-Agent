@@ -462,3 +462,55 @@ input:focus-visible {
 }
 :root[data-density="compact"] { --row-h: 28px; --fs-body: 14px; }
 @media (prefers-reduced-motion: reduce) { :root { --dur-hover: 0ms; --dur-panel: 0ms; } }
+
+/* ═══ v0.7.86 UI 10단계 — 비주얼 마감 (design-spec.md 7장 · 8장 10단계) ═══
+   새 배치(o2) + 기본 색 테마에만 적용한다. 개성 테마 3종(terminal-phosphor · glass-acrylic · brutalist-bauhaus)과
+   classic 배치는 이 블록을 건너뛰어 예전 모양 그대로다.
+   - 서피스 3단을 푸른기 없는 무채색으로, 선은 흰색 7%/12%.
+   - 글로우 없음: --accent-glow 계열을 투명으로 (색 테마가 :root 인라인으로 덮어써도 이기도록 !important).
+     배경으로 쓰던 강조색 옅은 판은 --accent-soft(color-mix)로 따로 뽑는다.
+   - 모서리 L자 장식 숨김 (스펙: terminal-phosphor 만 표시).
+   - 글자: UI 는 Pretendard 계열 하나. Space Grotesk 는 로고에만.
+   - 대비: --text-tertiary(#858d9b)는 가장 밝은 판(--bg-4)에서도 4.5:1 이상 (scripts/ui-visual-finish.test.ts 가 확인). */
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) {
+  --bg-1: #0b0d12;
+  --bg-2: #12151c;
+  --bg-3: #181c25;
+  --bg-4: #1e232e;
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.2);
+  --text-primary: #e6e8ec;
+  --text-secondary: #a3aab6;
+  --text-tertiary: #858d9b;
+  --text-muted: #5f6674;
+  --surface-app: #0b0d12;
+  --surface-raised: #12151c;
+  --surface-overlay: #181c25;
+  --surface-card: #12151c;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.12);
+  --accent-glow: transparent !important;
+  --accent-strong-glow: transparent !important;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --surface-active: color-mix(in srgb, var(--accent) 10%, transparent);
+  --font-body: "Pretendard Variable", "Pretendard", "Inter", "Malgun Gothic", system-ui, sans-serif;
+  --font-display: var(--font-body);
+  --show-corner-brackets: 0;
+}
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) body {
+  background: var(--surface-app);
+  background-image: none;
+}
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) ::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+/* 대문자 eyebrow 없음 — 작은 회색 소제목으로 */
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .eyebrow {
+  font-family: var(--font-ui);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--fg-subtle);
+}

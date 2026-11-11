@@ -4,6 +4,7 @@
 import { useCallback, useState } from "react";
 import { useApprovalMode } from "../utils/useApprovalMode";
 import { Chip, Popover, Switch, Button } from "../ui";
+import { Icon } from "../ui/icons";
 
 export default function SafetyChip({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const { enabled, toggle, error } = useApprovalMode();
@@ -11,7 +12,7 @@ export default function SafetyChip({ onOpenSettings }: { onOpenSettings?: () => 
   const close = useCallback(() => setOpen(false), []);
   return (
     <span className="safety-chip-wrap" style={{ position: "relative" }}>
-      <Chip tone={enabled ? "warn" : "neutral"} icon={enabled ? "⚡" : "🛡"} onClick={() => setOpen(o => !o)}
+      <Chip tone={enabled ? "warn" : "neutral"} icon={<Icon name={enabled ? "zap" : "shield"} size={14} />} onClick={() => setOpen(o => !o)}
         pressed={open} title="실행 확인 방식 (Ctrl+Alt+A)">
         {enabled ? "확인 없이 실행 중" : "확인 후 실행"}
       </Chip>

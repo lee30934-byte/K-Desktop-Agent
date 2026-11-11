@@ -5745,3 +5745,52 @@
 :root[data-layout="o2"] .command-palette-item.selected { border-left: 0; padding-left: var(--space-md); background: var(--accent-soft, rgba(79, 232, 225, 0.1)); }
 :root[data-layout="o2"] .command-item-icon { font-size: 15px; width: 22px; }
 :root[data-layout="o2"] .command-palette-footer { background: transparent; justify-content: flex-start; }
+
+/* ════════════════════════════════════════════════════════════════
+   v0.7.86 UI 10단계 — 비주얼 마감 (o2 전용)
+   토큰(무채색 서피스·글로우 없음·L자 장식 숨김)은 index.css 하단. 여기서는 토큰으로 못 끄는
+   하드코딩 글로우와 그라데이션만 정리한다. 개성 테마 3종은 자기 규칙을 유지하도록 기본 색 테마로 한정.
+   classic 은 이 블록에 해당하지 않는다.
+   ════════════════════════════════════════════════════════════════ */
+/* 라인 아이콘 정렬 (모든 테마의 o2) */
+:root[data-layout="o2"] .sb-nav-icon { display: inline-grid; place-items: center; color: var(--fg-subtle); }
+:root[data-layout="o2"] .sb-nav-item:hover .sb-nav-icon { color: var(--fg); }
+:root[data-layout="o2"] .sb-settings .ui-icon,
+:root[data-layout="o2"] .empty-suggestion-icon .ui-icon { color: var(--fg-subtle); }
+:root[data-layout="o2"] .empty-suggestion:hover .empty-suggestion-icon .ui-icon { color: var(--accent); }
+:root[data-layout="o2"] .empty-suggestion-icon { display: inline-grid; place-items: center; }
+:root[data-layout="o2"] .new-chat-btn .plus { display: inline-grid; place-items: center; }
+:root[data-layout="o2"] .chat-options > summary { font-size: 0; color: var(--fg-muted); }
+:root[data-layout="o2"] .chat-options > summary:hover { background: var(--surface-hover); color: var(--fg); }
+:root[data-layout="o2"] .composer-attach-btn { display: inline-grid; place-items: center; }
+:root[data-layout="o2"] .composer-btn-send--steer { gap: 4px; }
+/* 작업 칩: 예전 팝오버 버튼의 어두운 고정 배경(#15202d) 대신 다른 칩과 같은 모양 — brutalist(밝은 테마)에서 글자가 묻히던 문제 */
+:root[data-layout="o2"] .main-header-right .task-activity-toggle { height: 26px; padding: 0 10px; border-radius: var(--radius-pill);
+  border-color: var(--line); background: transparent; box-shadow: none; color: var(--fg-muted); font: 500 var(--fs-sub)/1 var(--font-ui); }
+:root[data-layout="o2"] .main-header-right .task-activity-toggle:hover { background: var(--surface-hover); color: var(--fg); }
+
+/* 기본 색 테마: 글로우·그라데이션 제거, 강조색은 선택·포커스·전송에만 */
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .new-chat-btn {
+  background: var(--surface-raised); border: 1px solid var(--line-strong); color: var(--fg);
+  font-family: var(--font-ui); font-weight: 500; letter-spacing: 0;
+}
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .new-chat-btn:hover { background: var(--surface-overlay); border-color: var(--line-strong); box-shadow: none; }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .status-dot-live,
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .status-badge-connected .status-dot,
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .conv-item.active .conv-dot { box-shadow: none; }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .conv-title-edit:focus { box-shadow: 0 0 0 2px var(--accent-soft); }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .scroll-to-bottom-btn { border-color: var(--line-strong); color: var(--fg); background: var(--surface-overlay);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .scroll-to-bottom-btn:hover { background: var(--surface-overlay); border-color: var(--accent); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .settings-tab.active,
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .theme-card.is-personality .theme-badge { background: var(--accent-soft); }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .brand-logo { filter: none; }
+/* 낮은 창(높이 650 이하)에서도 비서 아바타가 헤더(안전 칩·⋯)를 덮지 않게, 끌어서 옮기지 않은 경우에만 헤더 아래에 둔다 */
+@media (max-height: 650px) {
+  :root[data-layout="o2"] .companion-widget:not([style*="left"]) { top: 100px; max-height: calc(100dvh - 116px); }
+}
+/* 960x640: 좁은 창에서 헤더 칩이 줄어들 수 있게 (제목이 먼저 말줄임) */
+@media (max-width: 1100px) {
+  :root[data-layout="o2"] .main-header .main-title { max-width: 32vw; }
+  :root[data-layout="o2"] .main-header-right { gap: var(--space-1); }
+}

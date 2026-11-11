@@ -17,6 +17,7 @@ import Composer from "./Composer";
 import ApprovalToggle from "./ApprovalToggle";
 import SafetyChip from "./SafetyChip";
 import { Chip } from "../ui";
+import { Icon, type IconName } from "../ui/icons";
 import type { SendMode } from "../conversationControl";
 import type { ChatMessage, ConnectionStatus, FileAttachment } from "../types";
 import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFilters";
@@ -276,27 +277,27 @@ function MainChat({
         </div>
         )}
         <div className="main-header-right">
-          {isO2 && (warnings ?? []).map((w) => <Chip key={w} tone="warn" icon="⚠" onClick={onOpenSession}
+          {isO2 && (warnings ?? []).map((w) => <Chip key={w} tone="warn" icon={<Icon name="alert" size={14} />} onClick={onOpenSession}
             title={onOpenSession ? "세션·사용량 보기" : undefined}>{w}</Chip>)}
           {!isO2 && <ApprovalToggle />}
           {previewReady && onOpenPreview && (
-            <Chip tone="accent" icon="📄" className="preview-ready-chip" onClick={onOpenPreview} title="미리보기 패널 열기">미리보기 준비됨</Chip>
+            <Chip tone="accent" icon={isO2 ? <Icon name="file" size={14} /> : "📄"} className="preview-ready-chip" onClick={onOpenPreview} title="미리보기 패널 열기">미리보기 준비됨</Chip>
           )}
           {activityPanel}
           {isO2 && <SafetyChip onOpenSettings={onOpenSafetySettings} />}
           {onOpenAssistant && (
             <button type="button" className="ui-iconbtn header-assistant-btn" aria-label="비서 패널" title="비서 패널 열기"
-              aria-pressed={assistantOpen} onClick={onOpenAssistant}>◐</button>
+              aria-pressed={assistantOpen} onClick={onOpenAssistant}>{isO2 ? <Icon name="assistant" /> : "◐"}</button>
           )}
           <details className="chat-options">
-            <summary aria-label="대화 옵션" title="대화 옵션">⋯</summary>
+            <summary aria-label="대화 옵션" title="대화 옵션">{isO2 ? <Icon name="more" /> : "⋯"}</summary>
             <div className="chat-options-body">
           <button
             className={`copy-chat-btn ${copyStatus === "copied" ? "copied" : ""}`}
             onClick={handleCopyChat}
             title="대화 내용 복사"
           >
-            {copyStatus === "copied" ? "✓ 복사됨" : "📋 복사"}
+            {copyStatus === "copied" ? "✓ 복사됨" : isO2 ? "복사" : "📋 복사"}
           </button>
               <button type="button" onClick={() => setShowToolCardsPersist(!showToolCards)} aria-pressed={showToolCards}>
                 {showToolCards ? "도구 호출 숨기기" : "도구 호출 보기"}
@@ -312,7 +313,7 @@ function MainChat({
                 onExportConversation && ["📤 이 대화 내보내기", onExportConversation],
               ].filter((x): x is [string, () => void] => !!x).map(([label, run]) => (
                 <button key={label} type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); run(); }}>
-                  {label}
+                  {isO2 ? menuText(label) : label}
                 </button>
               ))}
             </div>
@@ -660,6 +661,12 @@ function fillComposer(prompt: string) {
   window.dispatchEvent(new CustomEvent("kda-builder-prompt", { detail: { prompt } }));
 }
 
+// v0.7.86 UI 10단계 (o2) — 크롬의 이모지 대신 라인 아이콘. 메뉴 문구 앞 기호(↻ 📦 📤)는 o2 에서만 떼고 보여 준다.
+const menuText = (label: string) => (/^[↻📦📤]/u.test(label) ? label.slice(label.indexOf(" ") + 1) : label);
+const SUGGESTION_ICONS: Record<string, IconName> = {
+  screenshot: "camera", "todo-list": "listChecks", "disk-usage": "hardDrive", "recent-files": "folder",
+};
+
 function EmptyState() {
   const { isO2 } = useUiLayout();
   if (isO2) {
@@ -671,13 +678,13 @@ function EmptyState() {
             {suggestionPrompts().map((p) => (
               <button key={p.id} type="button" role="listitem" className="empty-suggestion"
                 onClick={() => fillComposer(p.prompt)} title="입력창에 채우기">
-                <span className="empty-suggestion-icon" aria-hidden>{p.icon}</span>
+                <span className="empty-suggestion-icon" aria-hidden>{SUGGESTION_ICONS[p.id] ? <Icon name={SUGGESTION_ICONS[p.id]} size={18} /> : p.icon}</span>
                 <span className="empty-suggestion-label">{p.label}</span>
                 <span className="empty-suggestion-prompt">{p.prompt}</span>
               </button>
             ))}
           </div>
-          <div className="empty-hint-o2">파일은 끌어다 놓거나 📎로 첨부할 수 있어요</div>
+          <div className="empty-hint-o2">파일은 끌어다 놓거나 클립 버튼으로 첨부할 수 있어요</div>
         </div>
       </div>
     );
