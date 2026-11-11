@@ -11,6 +11,8 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import CornerBrackets from "./CornerBrackets";
 import ApprovalToggle from "./ApprovalToggle";
+import { Segmented } from "../ui";
+import { useUiLayout, type UiLayout } from "../utils/useUiLayout";
 import type { WatchedFolder } from "../types";
 // Phase 127 (v0.6.85) — WSL/VM 게스트 경로 매핑 (미리보기/외부열기용)
 import { getPathMappings, type PathMapping } from "./SidePanel";
@@ -1241,6 +1243,8 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
   const [autoStart, setAutoStart] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [loading, setLoading] = useState(true);
+  // v0.7.86 UI 3b단계 — 화면 스타일 (O2 새 배치 / 클래식 이전 배치)
+  const { layout: uiLayout, setLayout: setUiLayout } = useUiLayout();
 
   // Phase 16: 활성 탭 (localStorage 영속) — 마지막에 K가 본 탭으로 복귀
   const [activeTab, setActiveTab] = useState<SettingsTabId>(() => {
@@ -3127,6 +3131,28 @@ export default function Settings({ open, onClose, mcpConnected }: SettingsProps)
           role="tabpanel"
           id={`settings-tabpanel-${activeTab}`}
         >
+          {/* v0.7.86 UI 3b단계 — 화면 스타일: O2(새 배치) / 클래식(이전 배치). 즉시 적용 */}
+          <section className="settings-section" data-tab="appearance" data-testid="ui-layout-section">
+            <div className="eyebrow">화면 스타일</div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <div className="settings-row-title">화면 스타일</div>
+                <div className="settings-row-desc">
+                  O2는 새 배치, 클래식은 이전 배치입니다. 바로 적용됩니다.
+                </div>
+              </div>
+              <Segmented<UiLayout>
+                label="화면 스타일"
+                value={uiLayout}
+                options={[
+                  { value: "o2", label: "O2" },
+                  { value: "classic", label: "클래식" },
+                ]}
+                onChange={setUiLayout}
+              />
+            </div>
+          </section>
+
           {/* UI 테마 섹션 */}
           <section className="settings-section" data-tab="appearance">
             <div className="eyebrow">테마</div>

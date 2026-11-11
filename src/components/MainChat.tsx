@@ -13,11 +13,13 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import CornerBrackets from "./CornerBrackets";
 import Message from "./Message";
 import Composer from "./Composer";
+import ApprovalToggle from "./ApprovalToggle";
 import SafetyChip from "./SafetyChip";
 import { Chip } from "../ui";
 import type { SendMode } from "../conversationControl";
 import type { ChatMessage, ConnectionStatus, FileAttachment } from "../types";
 import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFilters";
+import { useUiLayout } from "../utils/useUiLayout";
 
 interface MainChatProps {
   activityPanel?: ReactNode;
@@ -199,11 +201,15 @@ function MainChat({
     setShowScrollToBottom(false);
   }, []);
 
+  // v0.7.86 UI 3b단계 — "classic" 배치에선 이전 헤더(제목 블록 + 확인 없이 실행 버튼 + 영문 상태 배지)
+  const { isO2 } = useUiLayout();
+
   return (
     <section className="main-chat">
       {/* 탑 헤더 */}
       <div className="main-header">
         <CornerBrackets corners={["tl", "tr"]} size={14} />
+        {isO2 ? (
         <div className="main-title-block">
           <div className="main-title" title={title || "새 대화"}>{title || "새 대화"}</div>
           <div className="main-subline">
@@ -215,10 +221,17 @@ function MainChat({
             {folderLabel && <span className="main-folder" title="폴더">📁 {folderLabel}</span>}
           </div>
         </div>
+        ) : (
+        <div className="main-title-classic">
+          <div className="eyebrow">K DESKTOP AGENT</div>
+          <div className="main-title display">대화</div>
+        </div>
+        )}
         <div className="main-header-right">
-          {(warnings ?? []).map((w) => <Chip key={w} tone="warn" icon="⚠">{w}</Chip>)}
+          {isO2 && (warnings ?? []).map((w) => <Chip key={w} tone="warn" icon="⚠">{w}</Chip>)}
+          {!isO2 && <ApprovalToggle />}
           {activityPanel}
-          <SafetyChip onOpenSettings={onOpenSafetySettings} />
+          {isO2 && <SafetyChip onOpenSettings={onOpenSafetySettings} />}
           <details className="chat-options">
             <summary aria-label="대화 옵션" title="대화 옵션">⋯</summary>
             <div className="chat-options-body">
@@ -234,7 +247,7 @@ function MainChat({
               </button>
             </div>
           </details>
-          <StatusBadge status={status} />
+          {isO2 ? <StatusBadge status={status} /> : <ClassicStatusBadge status={status} />}
         </div>
       </div>
 
@@ -534,6 +547,23 @@ const MessageList = memo(function MessageList({
 // memo — 핸들러 ref 안정화로 props 변동은 사실상 messages/status/isStreaming 뿐.
 // 다른 state 변화 (settingsOpen 등) 로 인한 부모 리렌더에선 스킵됨.
 export default memo(MainChat);
+
+// v0.7.86 UI 3b단계 — "classic" 배치용 이전 상태 배지 (영문 대문자 + mono)
+function ClassicStatusBadge({ status }: { status: ConnectionStatus }) {
+  const label: Record<ConnectionStatus, string> = {
+    connecting: "CONNECTING",
+    connected: "LIVE",
+    disconnected: "OFFLINE",
+    error: "ERROR",
+  };
+
+  return (
+    <div className={`status-badge status-badge-${status}`}>
+      <div className="status-dot" />
+      <span className="mono">{label[status]}</span>
+    </div>
+  );
+}
 
 // v0.7.86 UI 3단계 — 상태 배지를 점 하나로 축소. 정상일 땐 점만, 문제일 땐 한국어 문구도 표시.
 function StatusBadge({ status }: { status: ConnectionStatus }) {
