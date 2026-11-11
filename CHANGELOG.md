@@ -1,6 +1,16 @@
 ## [0.7.86] - 2026-11-11
 
+### Added
+- New look, **O₂ AGENT**. The assistant is now called O₂ (sidebar logo, app/tray/installer icon from a new O₂ symbol, avatar label). Product name, identifier, install folder, updater endpoint and autostart entry are unchanged, so updates keep working.
+- Screen style switch in Settings: **O₂** (new, default) or **Classic** (the previous layout: top bar with the approval toggle, bottom metrics strip, old sidebar, composer and modal settings). Stored in `kda_ui_layout`.
+- O₂ layout: quiet header with engine/folder/safety chips and a ⋯ menu (run-without-confirmation switch, per-conversation engine, folder instructions), right slide-over for preview / tasks / session / assistant, context ring in the composer, simplified sidebar with a collapsed rail, centered message column with a card composer, line icons and neutral surfaces.
+- Command palette (`Ctrl+K`) with grouped actions and settings anchors; old names still match. `Ctrl+,` opens Settings.
+- Settings regrouped into 9 groups with search (full page in O₂, modal in Classic). All 40 existing sections are kept.
+
 ### Changed
+- Clearer names: "auto approve" → "Run without confirmation"; permission levels → Allow / Ask before running / Block; "session reset" → "Continue in a new session"; "project instructions" → "Folder instructions".
+- Banners (recovery, stall, notices) use one notice strip at the top of the chat instead of floating overlays. The 90-second stall notice has a ■ Stop button.
+- Codex approval notices that were handled normally (`accept_forwarded`, `decline_forwarded`, `cancel_forwarded`, `turn_finished`) no longer appear in chat; they are still logged.
 - KDA no longer lets Codex use its built-in screen and browser control. Every Codex app-server KDA starts (chat turns and voice) now turns off `computer_use`, `browser_use`, `browser_use_external` and `in_app_browser` with `-c features.<name>=false`; the list lives in one place, `sidecar/src/codex-features.mjs`. These features need the Codex desktop app's native helper or built-in browser, which the npm Codex CLI that KDA runs does not ship. The model could still pick them, so turns spun with nothing happening (seen on another PC running v0.7.83, even after being told not to use them). With the tools removed from Codex's tool list, screen and web work goes to KDA's own k-personal tools (`web_` / `ui_` / `cc_`), which carry the input lock, window checks, honest failure results and stall watch. Shell and file editing, image generation, plugins/apps, voice and skills are unchanged.
 
 ## [0.7.85] - 2026-11-11
