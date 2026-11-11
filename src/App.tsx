@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { Notice, NoticeStack, Button } from "./ui";
+import { Notice, NoticeStack, Button, SlideOver } from "./ui";
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
@@ -130,6 +130,7 @@ import { formatRemoteQuestions } from "./telegramAbsence";
 import { seedRouteTargets, sanitizeTargets, type RouteTarget } from "./telegramRouter";
 import { processTelegramUpdate, TelegramUpdateLedger } from "./telegramUpdateLedger";
 import { useStableCallback } from "./utils/useStableCallback";
+import { useUiLayout } from "./utils/useUiLayout";
 import { classifyTurnEnding, buildAutoContinuePrompt, AutoContinueChain, isAutoContinueMessage } from "./autoContinue";
 import { isCommandCenterDispatch } from "./telegramLedger";
 import { decideAutoUpdate, updaterVersionMatches, AUTO_UPDATE_POLL_MS } from "./autoUpdate";
@@ -144,6 +145,9 @@ import {
   isWithinManualOverride,
   getManualOverrideInfo,
 } from "./utils/safeModeSchedule";
+
+/** v0.7.86 UI 4단계 — 우측 슬라이드오버 탭 (null = 닫힘). */
+type RightPanel = "preview" | "tasks" | "session" | "assistant" | null;
 
 type SystemMemoryStatus = {
   total_physical_bytes: number;
@@ -430,21 +434,67 @@ export default function App() {
     return 260;
   });
   // Phase 44 (v0.5.32) — 우측 SidePanel: 대화 안 link/file 클릭 → 미리보기
-  const [sidePanelOpen, setSidePanelOpen] = useState<boolean>(() => {
+  // v0.7.86 UI 4단계 — 우측 슬라이드오버: 한 번에 한 탭. SidePanel 은 'preview' 탭(sidePanelOpen 과 동기화).
+  // classic 배치는 슬라이드오버 없이 예전 SidePanel(가장자리 ⟨)·작업 팝오버·비서 팝오버를 그대로 쓴다.
+  const { isO2 } = useUiLayout();
+  const [rightPanel, setRightPanel] = useState<RightPanel>(() => {
     try {
-      return localStorage.getItem("kda_side_panel_open") === "1";
+      return localStorage.getItem("kda_side_panel_open") === "1" ? "preview" : null;
     } catch {
-      return false;
+      return null;
     }
   });
+  const sidePanelOpen = rightPanel === "preview";
+  const setSidePanelOpen = useStableCallback((open: boolean) => {
+    setRightPanel((p) => (open ? "preview" : p === "preview" ? null : p));
+  });
+  const toggleRightPanel = useStableCallback((tab: Exclude<RightPanel, null>) => {
+    setRightPanel((p) => (p === tab ? null : tab));
+  });
+  const closeRightPanel = useStableCallback(() => setRightPanel(null));
+  const [slideOverWidth, setSlideOverWidth] = useState<number>(() => {
+    try {
+      const saved = parseInt(localStorage.getItem("kda_side_panel_width") || "", 10);
+      if (!Number.isNaN(saved)) return Math.max(360, Math.min(640, saved));
+    } catch {}
+    return 380;
+  });
+  const [slideOverPinned, setSlideOverPinned] = useState<boolean>(() => {
+    try { return localStorage.getItem("kda_slideover_pinned") === "1"; } catch { return false; }
+  });
+  const [wideWindow, setWideWindow] = useState(() => window.innerWidth >= 1280);
+  useEffect(() => {
+    const onResize = () => setWideWindow(window.innerWidth >= 1280);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  // 비서 패널(AssistantWidget)이 포털로 그려질 슬라이드오버 '비서' 탭 요소. 항상 마운트(통화 유지).
+  const [assistantPanelHost, setAssistantPanelHost] = useState<HTMLDivElement | null>(null);
   const [sidePanelItem, setSidePanelItem] = useState<SidePanelItem | null>(null);
   useEffect(() => {
     try {
       localStorage.setItem("kda_side_panel_open", sidePanelOpen ? "1" : "0");
     } catch {}
   }, [sidePanelOpen]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("kda_side_panel_width", String(slideOverWidth));
+      localStorage.setItem("kda_slideover_pinned", slideOverPinned ? "1" : "0");
+    } catch {}
+  }, [slideOverWidth, slideOverPinned]);
+  // 고정(📌, 1280px 이상)일 때만 그리드 3번째 열을 차지한다. 오버레이일 때는 본문 폭 그대로.
+  // classic 은 SidePanel 이 직접 --side-panel-width 를 관리한다.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!isO2) { root.style.setProperty("--slideover-offset", "0px"); return; }
+    const open = rightPanel !== null;
+    const pinned = open && slideOverPinned && wideWindow;
+    root.style.setProperty("--side-panel-width", pinned ? `${slideOverWidth}px` : "0px");
+    root.style.setProperty("--slideover-offset", open ? `${slideOverWidth}px` : "0px");
+  }, [isO2, rightPanel, slideOverPinned, slideOverWidth, wideWindow]);
   const handlePreviewRequest = useStableCallback((pathOrUrl: string, label?: string) => {
     setSidePanelItem({ pathOrUrl, label });
+    // 사용자가 링크·파일을 직접 눌렀으므로 미리보기 탭으로 전환한다 (R13: 자동 전환 정책은 K 확인 대기).
     setSidePanelOpen(true);
   });
   const handleSidePanelClose = useStableCallback(() => {
@@ -5714,6 +5764,46 @@ export default function App() {
     },
   };
 
+  // v0.7.86 UI 4단계 — 헤더 작업 칩과 슬라이드오버 '작업' 탭이 같은 props 를 쓴다.
+  const taskPanelProps = {
+    tracked: [...conversationTurnGateRef.current.tracked],
+    runs: [...conversationTurnGateRef.current.runs.values()],
+    queues: conversationTurnGateRef.current.queues,
+    paused: conversationTurnGateRef.current.paused,
+    allPaused: conversationTurnGateRef.current.allPaused,
+    conversations,
+    onSelect: handleSelectConversation,
+    onStop: stopConversation,
+    onStopAll: handleHardStop,
+    onNew: () => { void handleNewConversation(); },
+    onAdd: (id: string) => { conversationTurnGateRef.current.tracked.add(id); syncControl(); },
+    onClose: (id: string) => { if (conversationTurnGateRef.current.forget(id)) syncControl(); },
+    onRecover: () => setControlConfirmation({ kind: "recover" }),
+    recovering: recoveringExecution,
+    onResume: resumeConversationQueue,
+    onResumeAutomation: () => { conversationTurnGateRef.current.allPaused = false; autoResumeManualStoppedRef.current = false; localStorage.removeItem(LS_AUTO_RESUME_MANUAL_STOPPED); syncControl(); },
+  };
+  const showRecoverableTasksAlert = () => {
+    const summary = recoverableTasks
+      .map((t) => {
+        const age = Math.round((Date.now() - t.updated_at) / 60000);
+        return `• [${t.kind}] ${t.title ?? "(제목 없음)"}  — ${age}분 전 마지막 evidence (conv=${t.conversation_id ?? "없음"})`;
+      })
+      .join("\n");
+    alert(`복구 가능한 작업 목록:\n\n${summary}\n\n각 작업의 대화를 선택해서 직접 이어가세요. 자동 resume 은 다음 phase 에서 지원 예정.`);
+  };
+  const discardRecoverableTasks = async () => {
+    if (!confirm(`${recoverableTasks.length}개 작업을 모두 "버림" 으로 mark 합니다 (DB 에서 status='abandoned'). 진행할까요?`)) return;
+    for (const t of recoverableTasks) {
+      try {
+        await discardLongTask(t.id);
+      } catch (e) {
+        logger.warn(`[RecoveryBanner] discard 실패 id=${t.id}: ${e}`);
+      }
+    }
+    setRecoverableTasks([]);
+  };
+
   return (
     <div className="app">
       <UpdateChecker />
@@ -5782,26 +5872,9 @@ export default function App() {
           <Notice tone="warn" className="recovery-notice" role="status"
             onClose={() => setRecoverableTasks([])} closeLabel="배너만 숨김 — DB 의 row 는 그대로 유지"
             actions={<Fragment>
-              <Button size="sm" onClick={() => {
-                const summary = recoverableTasks
-                  .map((t) => {
-                    const age = Math.round((Date.now() - t.updated_at) / 60000);
-                    return `• [${t.kind}] ${t.title ?? "(제목 없음)"}  — ${age}분 전 마지막 evidence (conv=${t.conversation_id ?? "없음"})`;
-                  })
-                  .join("\n");
-                alert(`복구 가능한 작업 목록:\n\n${summary}\n\n각 작업의 대화를 선택해서 직접 이어가세요. 자동 resume 은 다음 phase 에서 지원 예정.`);
-              }}>상세</Button>
-              <Button size="sm" variant="ghost" onClick={async () => {
-                if (!confirm(`${recoverableTasks.length}개 작업을 모두 "버림" 으로 mark 합니다 (DB 에서 status='abandoned'). 진행할까요?`)) return;
-                for (const t of recoverableTasks) {
-                  try {
-                    await discardLongTask(t.id);
-                  } catch (e) {
-                    logger.warn(`[RecoveryBanner] discard 실패 id=${t.id}: ${e}`);
-                  }
-                }
-                setRecoverableTasks([]);
-              }}>모두 버림</Button>
+              {/* v0.7.86 UI 4단계 — o2: [상세] 는 슬라이드오버 '작업' 탭의 '복구 가능한 작업' 목록을 연다. classic: 예전 alert */}
+              <Button size="sm" className="recovery-detail" onClick={() => { if (isO2) setRightPanel("tasks"); else showRecoverableTasksAlert(); }}>상세</Button>
+              <Button size="sm" variant="ghost" onClick={() => { void discardRecoverableTasks(); }}>모두 버림</Button>
             </Fragment>}>
             <strong>복구 가능한 작업 {recoverableTasks.length}개</strong>
             <span className="ui-notice__meta"> · 이전 세션에서 끊긴 긴 작업 (정상 종료 신호 없음)</span>
@@ -5842,24 +5915,18 @@ export default function App() {
         activityPanel={<><MobileDesktopBridge handlers={assistantHandlers} conversations={conversations} /><AssistantWidget conversationId={activeConversationId}
           conversations={conversations} messages={messages} runningIds={streamingConvIds}
           computerConnected={mcpState.connected} onSelect={id => { void handleSelectConversation(id); }} onSettings={openSettings}
-          handlers={assistantHandlers} /><TaskActivityPanel
-        tracked={[...conversationTurnGateRef.current.tracked]}
-        runs={[...conversationTurnGateRef.current.runs.values()]}
-        queues={conversationTurnGateRef.current.queues}
-        paused={conversationTurnGateRef.current.paused}
-        allPaused={conversationTurnGateRef.current.allPaused}
-        conversations={conversations}
-        onSelect={handleSelectConversation}
-        onStop={stopConversation}
-        onStopAll={handleHardStop}
-        onNew={() => { void handleNewConversation(); }}
-        onAdd={id => { conversationTurnGateRef.current.tracked.add(id); syncControl(); }}
-        onClose={id => { if (conversationTurnGateRef.current.forget(id)) syncControl(); }}
-        onRecover={() => setControlConfirmation({ kind: "recover" })}
-        recovering={recoveringExecution}
-        onResume={resumeConversationQueue}
-        onResumeAutomation={() => { conversationTurnGateRef.current.allPaused = false; autoResumeManualStoppedRef.current = false; localStorage.removeItem(LS_AUTO_RESUME_MANUAL_STOPPED); syncControl(); }}
-        /></>}
+          handlers={assistantHandlers}
+          // v0.7.86 UI 4단계 — 비서 패널은 슬라이드오버 '비서' 탭에 포털(아바타 포털은 그대로)
+          // classic 은 panelHost 없이 예전 포털 팝오버(내부 open state)를 그대로 쓴다.
+          {...(isO2 ? { panelHost: assistantPanelHost, panelOpen: rightPanel === "assistant",
+            onPanelOpenChange: (open: boolean) => setRightPanel(p => (open ? "assistant" : p === "assistant" ? null : p)) } : {})} />
+        {isO2
+          ? <TaskActivityPanel {...taskPanelProps} mode="chip" panelOpen={rightPanel === "tasks"} onOpenPanel={() => toggleRightPanel("tasks")} />
+          : <TaskActivityPanel {...taskPanelProps} mode="popover" />}</>}
+        assistantOpen={rightPanel === "assistant"}
+        onOpenAssistant={isO2 ? () => toggleRightPanel("assistant") : undefined}
+        previewReady={isO2 && !!sidePanelItem && rightPanel !== "preview"}
+        onOpenPreview={isO2 ? () => setSidePanelOpen(true) : undefined}
         conversationId={activeConversationId ?? "new"}
         isStopping={!!activeConversationId && conversationTurnGateRef.current.runs.get(activeConversationId)?.state === "stopping"}
         queuedCount={activeConversationId ? conversationTurnGateRef.current.queues.get(activeConversationId)?.length ?? 0 : 0}
@@ -5915,13 +5982,79 @@ export default function App() {
         onRetryCodexUsage={pollCodexUsage}
       />
 
-      {/* Phase 44 (v0.5.32) — 우측 SidePanel (대화 안 link/file → 미리보기) */}
-      <SidePanel
-        open={sidePanelOpen}
-        onOpenChange={setSidePanelOpen}
-        item={sidePanelItem}
-        onClose={handleSidePanelClose}
-      />
+      {/* v0.7.86 UI 4단계 — o2 는 우측 슬라이드오버, classic 은 예전 SidePanel(가장자리 ⟨ 버튼, 그리드 3번째 열) */}
+      {isO2 ? (
+        // 우측 슬라이드오버 (미리보기 | 작업 | 비서). 한 번에 한 탭, Esc 로 닫힘.
+        // 본문은 항상 마운트(keepMounted)하고 탭만 hidden — 비서 통화·미리보기 상태를 잃지 않는다.
+        <SlideOver
+          open={rightPanel !== null}
+          onClose={closeRightPanel}
+          keepMounted
+          label="우측 패널"
+          className={`right-slideover${slideOverPinned && wideWindow ? " is-pinned" : ""}`}
+          width={slideOverWidth}
+          onResize={setSlideOverWidth}
+          tabs={<div className="ui-tabs" role="tablist" aria-label="우측 패널 탭">
+            {([["preview", "미리보기"], ["tasks", "작업"], ["assistant", "비서"]] as const).map(([id, label]) => (
+              <button key={id} type="button" role="tab" className="ui-tab" aria-selected={rightPanel === id}
+                aria-controls={`right-pane-${id}`} onClick={() => setRightPanel(id)}>{label}</button>
+            ))}
+          </div>}
+          headerActions={wideWindow ? (
+            <button type="button" className="ui-iconbtn" aria-pressed={slideOverPinned}
+              aria-label={slideOverPinned ? "패널 고정 해제" : "패널 고정"}
+              title={slideOverPinned ? "고정 해제 (본문 위에 띄우기)" : "고정 (본문 옆에 붙이기)"}
+              onClick={() => setSlideOverPinned((p) => !p)}>📌</button>
+          ) : null}
+        >
+          <div id="right-pane-preview" role="tabpanel" className="right-pane right-pane--preview" hidden={rightPanel !== "preview"}>
+            {/* Phase 44 (v0.5.32) — SidePanel (대화 안 link/file → 미리보기) */}
+            <SidePanel
+              embedded
+              open={sidePanelOpen}
+              onOpenChange={setSidePanelOpen}
+              item={sidePanelItem}
+              onClose={handleSidePanelClose}
+            />
+          </div>
+          <div id="right-pane-tasks" role="tabpanel" className="right-pane right-pane--tasks" hidden={rightPanel !== "tasks"}>
+            {recoverableTasks.length > 0 && (
+              <section className="recovery-panel" aria-label="복구 가능한 작업">
+                <div className="recovery-panel-heading">
+                  <strong>복구 가능한 작업 {recoverableTasks.length}개</strong>
+                  <div className="recovery-panel-actions">
+                    <Button size="sm" variant="ghost" onClick={() => { void discardRecoverableTasks(); }}>모두 버림</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setRecoverableTasks([])} title="목록만 숨김 — DB 의 row 는 그대로 유지">숨김</Button>
+                  </div>
+                </div>
+                <p className="recovery-panel-note">이전 세션에서 정상 종료 신호 없이 끊긴 긴 작업입니다. 대화를 열어 직접 이어가세요.</p>
+                <ul className="recovery-panel-list">
+                  {recoverableTasks.map((t) => (
+                    <li key={t.id}>
+                      <span className="recovery-panel-kind">{t.kind}</span>
+                      <span className="recovery-panel-title">{t.title ?? "(제목 없음)"}</span>
+                      <span className="recovery-panel-age">{Math.round((Date.now() - t.updated_at) / 60000)}분 전</span>
+                      {t.conversation_id
+                        ? <Button size="sm" onClick={() => { void handleSelectConversation(t.conversation_id!); }}>대화 열기</Button>
+                        : <span className="recovery-panel-age">대화 없음</span>}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            <TaskActivityPanel {...taskPanelProps} mode="inline" />
+          </div>
+          <div id="right-pane-assistant" role="tabpanel" className="right-pane right-pane--assistant companion-host" hidden={rightPanel !== "assistant"}
+            ref={setAssistantPanelHost} />
+        </SlideOver>
+      ) : (
+        <SidePanel
+          open={sidePanelOpen}
+          onOpenChange={setSidePanelOpen}
+          item={sidePanelItem}
+          onClose={handleSidePanelClose}
+        />
+      )}
 
       <Settings
         open={settingsOpen}

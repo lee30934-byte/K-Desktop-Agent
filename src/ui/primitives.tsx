@@ -1,6 +1,6 @@
 // v0.7.86 UI 개편 1단계 — 공통 프리미티브 (design-spec.md 7장).
 // 업무 로직 없음. 모양·접근성만 담당한다. 의미 토큰(index.css 하단)만 사용.
-import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import "./ui.css";
 
 const cx = (...c: Array<string | false | null | undefined>) => c.filter(Boolean).join(" ");
@@ -67,24 +67,57 @@ export function NoticeStack({ children }: { children: ReactNode }) {
   return <div className="ui-notice-stack">{children}</div>;
 }
 
-/** 우측 슬라이드오버. 오버레이(그리드 열 아님) — 본문 폭을 줄이지 않는다. Esc 로 닫힘. */
-export function SlideOver({ open, title, onClose, children, tabs, width }:
-  { open: boolean; title?: ReactNode; onClose: () => void; children: ReactNode; tabs?: ReactNode; width?: number }) {
+/** 우측 슬라이드오버. 오버레이(그리드 열 아님) — 본문 폭을 줄이지 않는다. Esc 로 닫힘.
+ *  keepMounted: 닫혀도 본문을 unmount 하지 않고 숨긴다(통화·작업 상태 유지).
+ *  onResize: 왼쪽 가장자리 grip 으로 폭 조절(minWidth~maxWidth, 더블클릭 = defaultWidth). */
+export function SlideOver({ open, title, onClose, children, tabs, width, keepMounted, className, label, headerActions,
+  onResize, minWidth = 360, maxWidth = 640, defaultWidth = 380 }:
+  { open: boolean; title?: ReactNode; onClose: () => void; children: ReactNode; tabs?: ReactNode; width?: number;
+    keepMounted?: boolean; className?: string; label?: string; headerActions?: ReactNode;
+    onResize?: (width: number) => void; minWidth?: number; maxWidth?: number; defaultWidth?: number }) {
   const ref = useRef<HTMLElement>(null);
+  const [resizing, setResizing] = useState(false);
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      // 다른 모달(설정·승인·팔레트) 안에서 누른 Esc 는 그쪽 몫이다.
+      const t = e.target as HTMLElement | null;
+      if (t && !ref.current?.contains(t) && t.closest?.('[role="dialog"], .settings-overlay, .elicitation-overlay, .command-palette-overlay')) return;
+      onClose();
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+  useEffect(() => {
+    if (!resizing || !onResize) return;
+    const onMove = (e: MouseEvent) => onResize(Math.max(minWidth, Math.min(maxWidth, window.innerWidth - e.clientX)));
+    const onUp = () => setResizing(false);
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [resizing, onResize, minWidth, maxWidth]);
   return (
-    <aside ref={ref} className={cx("ui-slideover", open && "ui-slideover--open")} aria-hidden={!open}
-      style={width ? { width } : undefined} role="complementary">
+    <aside ref={ref} className={cx("ui-slideover", open && "ui-slideover--open", className)} aria-hidden={!open}
+      style={width ? { width } : undefined} role="complementary" aria-label={label}>
+      {onResize && <div className={cx("ui-slideover__grip", resizing && "is-dragging")} aria-hidden
+        onMouseDown={(e) => { e.preventDefault(); setResizing(true); }} onDoubleClick={() => onResize(defaultWidth)}
+        title={`좌우로 끌어 폭 조절 · 더블클릭 = 기본 폭(${defaultWidth}px)`} />}
       <header className="ui-slideover__head">
         {tabs ?? <div className="ui-slideover__title">{title}</div>}
-        <button type="button" className="ui-iconbtn" aria-label="패널 닫기" onClick={onClose}>×</button>
+        <div className="ui-slideover__actions">
+          {headerActions}
+          <button type="button" className="ui-iconbtn" aria-label="패널 닫기" title="패널 닫기 (Esc)" onClick={onClose}>×</button>
+        </div>
       </header>
-      <div className="ui-slideover__body">{open ? children : null}</div>
+      <div className="ui-slideover__body">{open || keepMounted ? children : null}</div>
     </aside>
   );
 }

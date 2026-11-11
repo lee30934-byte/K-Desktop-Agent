@@ -8,9 +8,18 @@
   font:12px/1.55 var(--font-body); color:var(--cp-ink); pointer-events:none;
 }
 .companion-widget.is-open { width:368px; }
-.companion-widget button { font:inherit; color:inherit; cursor:pointer; transition:background-color .16s,border-color .16s,color .16s,box-shadow .16s; }
-.companion-widget button:disabled { opacity:.45; cursor:default; }
-.companion-widget :is(button,select,input):focus-visible,.companion-stage:focus-visible { outline:2px solid var(--cp-mint); outline-offset:3px; }
+/* v0.7.86 UI 4단계 — 비서 패널이 슬라이드오버 '비서' 탭(.companion-host)에 그려질 때도 같은 변수·버튼 규칙 */
+.companion-host {
+  --cp-bg: #171e28; --cp-card: #1e2732; --cp-line: #ffffff12;
+  --cp-ink: #edf3f3; --cp-muted: #9caeb7; --cp-mint: #a9e3cf;
+  font:12px/1.55 var(--font-body); color:var(--cp-ink);
+}
+.companion-popover.is-hosted { margin:0; padding:var(--space-4, 16px); border:0; border-radius:0; box-shadow:none; background:transparent; overflow:visible; }
+:is(.companion-widget,.companion-host) button { font:inherit; color:inherit; cursor:pointer; transition:background-color .16s,border-color .16s,color .16s,box-shadow .16s; }
+:is(.companion-widget,.companion-host) button:disabled { opacity:.45; cursor:default; }
+:is(.companion-widget,.companion-host) :is(button,select,input):focus-visible,.companion-stage:focus-visible { outline:2px solid var(--cp-mint); outline-offset:3px; }
+/* 슬라이드오버가 열려 있으면 기본 위치(끌어 옮기지 않은) 아바타를 패널 밖으로 비킨다 */
+.companion-widget:not([style*="left"]) { right:calc(26px + var(--slideover-offset, 0px)); transition:right .2s ease; }
 .companion-icon { display:block; width:17px; height:17px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
 .companion-stage { width:244px; max-width:100%; height:294px; flex-shrink:0; display:flex; flex-direction:column; align-items:center; position:relative; user-select:none; touch-action:none; }
 .companion-figure { position:relative; width:216px; height:216px; flex-shrink:0; margin-top:60px; }

@@ -31,6 +31,8 @@ interface SidePanelProps {
   onOpenChange: (open: boolean) => void;
   item: SidePanelItem | null;
   onClose: () => void;
+  /** v0.7.86 UI 4단계 — 우측 슬라이드오버 '미리보기' 탭 안에 그린다. 폭·숨기기는 슬라이드오버가 맡는다. */
+  embedded?: boolean;
 }
 
 // Phase 65 (v0.5.53 후보): Message.tsx 의 inline 이미지 미리보기에서 재사용.
@@ -410,7 +412,7 @@ export async function loadPreview(
   }
 }
 
-export default function SidePanel({ open, onOpenChange, item, onClose }: SidePanelProps) {
+export default function SidePanel({ open, onOpenChange, item, onClose, embedded = false }: SidePanelProps) {
   const [loading, setLoading] = useState(false);
   // Phase 80 (v0.6.24): preview state 에 gate 차단 분기 추가
   const [preview, setPreview] = useState<PreviewResult & { blockedByGate?: GateResult }>({});
@@ -429,11 +431,12 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
 
   // 폭 영구 저장 + CSS variable 갱신
   useEffect(() => {
+    if (embedded) return; // 슬라이드오버가 --side-panel-width 를 관리한다
     document.documentElement.style.setProperty("--side-panel-width", open ? `${width}px` : "0px");
     try {
       localStorage.setItem("kda_side_panel_width", String(width));
     } catch {}
-  }, [width, open]);
+  }, [width, open, embedded]);
 
   // 새 item 로드
   useEffect(() => {
@@ -578,6 +581,7 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
     }
   };
 
+  if (!open && embedded) return null;
   if (!open) {
     return (
       <button
@@ -595,9 +599,9 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
   const category = item ? getCategory(item.pathOrUrl) : null;
 
   return (
-    <aside className="side-panel" style={{ width }}>
-      {/* 폭 조절 grip (좌측 가장자리) */}
-      <div
+    <aside className={embedded ? "side-panel side-panel--embedded" : "side-panel"} style={embedded ? undefined : { width }}>
+      {/* 폭 조절 grip (좌측 가장자리) — embedded 는 슬라이드오버 grip 사용 */}
+      {!embedded && <div
         className={`side-panel-resizer ${resizing ? "dragging" : ""}`}
         onMouseDown={(e) => {
           e.preventDefault();
@@ -605,9 +609,9 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
         }}
         onDoubleClick={() => setWidth(360)}
         title="좌우 드래그로 패널 폭 조절 · 더블클릭 = 기본 (360px)"
-      />
+      />}
 
-      <div className="side-panel-header">
+      {!embedded && <div className="side-panel-header">
         <span className="eyebrow">PREVIEW</span>
         <div className="side-panel-header-actions">
           <button
@@ -620,7 +624,7 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
             ⟩
           </button>
         </div>
-      </div>
+      </div>}
 
       <div className="side-panel-content">
         {!item ? (
@@ -649,7 +653,8 @@ export default function SidePanel({ open, onOpenChange, item, onClose }: SidePan
                   type="button"
                   className="side-panel-action-btn close"
                   onClick={onClose}
-                  title="미리보기 닫기"
+                  title={embedded ? "항목 지우기" : "미리보기 닫기"}
+                  aria-label={embedded ? "항목 지우기" : "미리보기 닫기"}
                 >
                   ✕
                 </button>

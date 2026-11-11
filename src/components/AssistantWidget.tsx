@@ -33,6 +33,11 @@ interface Props {
   computerConnected: boolean;
   onSelect: (id: string) => void;
   onSettings: () => void;
+  /** v0.7.86 UI 4단계 — 비서 패널(대화·작업/꾸미기/연결)을 슬라이드오버 '비서' 탭에 그린다.
+   *  아바타 포털은 그대로, 패널만 이 요소로 포털. 닫혀도 unmount 하지 않고 hidden(통화 유지). */
+  panelHost?: HTMLElement | null;
+  panelOpen?: boolean;
+  onPanelOpenChange?: (open: boolean) => void;
 }
 
 /** View-only layout state; minimizing never unmounts the DOT dispatcher. */
@@ -40,7 +45,16 @@ export default function AssistantWidget(props: Props) {
   const [layout, setLayout] = useState<Layout>(readLayout);
   const [avatar, setAvatar] = useState(readCompanionPreference);
   const [motionState, setMotionState] = useState<CompanionMotionState>('playing');
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const controlled = props.panelOpen !== undefined;
+  const open = controlled ? !!props.panelOpen : localOpen;
+  const setOpen = (next: boolean | ((previous: boolean) => boolean)) => {
+    const value = typeof next === 'function' ? next(open) : next;
+    if (controlled) props.onPanelOpenChange?.(value); else setLocalOpen(value);
+  };
+  const hosted = !!props.panelHost;
+  // 패널이 슬라이드오버에 있으면 떠 있는 아바타는 펼친 모양으로 바꾸지 않는다.
+  const inlineOpen = open && !hosted;
   const [tab, setTab] = useState<'home' | 'appearance' | 'connections'>('home');
   const [reactionRequest, setReactionRequest] = useState<{ frame: number; key: number }>();
   const suppressClick = useRef(false);
@@ -110,7 +124,7 @@ export default function AssistantWidget(props: Props) {
     if (main) observer.observe(main);
     window.addEventListener('resize', update);
     return () => { observer.disconnect(); window.removeEventListener('resize', update); clear(); };
-  }, [layout.position, layout.minimized, open]);
+  }, [layout.position, layout.minimized, inlineOpen]);
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || ((event.target as HTMLElement).closest("button") && !(event.target as HTMLElement).closest(".companion-avatar"))) return;
     suppressClick.current = false;
@@ -155,29 +169,7 @@ export default function AssistantWidget(props: Props) {
   const bubble = voiceTarget && voiceView
     ? voiceView.phase === 'error' ? voiceView.message : voiceView.speaking ? voiceView.lines.filter(l => l.role === 'assistant').slice(-1)[0]?.text || AVATAR_MOODS[mood] : AVATAR_MOODS[mood]
     : running ? `${running}개 작업을 진행하고 있어요.` : answer?.content.replace(/[#*`]/g, '').slice(0, 70) || '무엇을 도와드릴까요?';
-  return createPortal(<aside ref={panel} aria-label="O2 비서" className={`assistant-widget companion-widget${layout.minimized ? ' is-minimized' : ''}${open ? ' is-open' : ''}`} style={positionStyle}>
-    <div className="companion-stage" tabIndex={0} role="group" aria-label="비서 창 이동 · 방향키 이동 · Home 기본 위치"
-      onPointerDown={startDrag} onPointerMove={moveDrag}
-      onPointerUp={() => { drag.current = null; setTimeout(() => { suppressClick.current = false; }, 0); }}
-      onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }} onKeyDown={keyMove}>
-      {!layout.minimized && !open && <div className="companion-bubble" role="status"><small><i data-state={mood} />O2<span>{callStatus}</span></small><p title={bubble}>{bubble}</p></div>}
-      <div className="companion-figure">
-        <CompanionAvatar mood={mood} motion={avatar.motion} style={avatar.style} compact={layout.minimized} expanded={open} request={reactionRequest} onMotionState={setMotionState}
-        onActivate={() => { if (!suppressClick.current) setOpen(p => !p); }} />
-      </div>
-      <div className="companion-footer">
-        <span className="companion-name">{AVATAR_MOODS[mood]}</span>
-        <div className="companion-controls" role="group" aria-label="아바타 빠른 조작">
-          <button type="button" className={voiceTarget ? 'is-in-call' : undefined} title={voiceTarget ? '통화 조작 열기' : '통화하기'} aria-label={voiceTarget ? '통화 조작 열기' : '통화하기'} disabled={!props.conversationId && !voiceTarget} onClick={call}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H5a1 1 0 0 0-1 1c0 8 7 15 15 15a1 1 0 0 0 1-1v-3l-5-2-2 2c-3-1-5-3-6-6l2-2-1-4Z" /></svg></button>
-          <button type="button" title="비서 메뉴" aria-label="비서 메뉴" aria-expanded={open} onClick={() => setOpen(p => !p)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" /></svg></button>
-          <button type="button" title={layout.minimized ? '비서 창 펼치기' : '비서 창 최소화'} aria-label={layout.minimized ? '비서 창 펼치기' : '비서 창 최소화'} onClick={() => { setOpen(false); setLayout(p => ({ ...p, minimized: !p.minimized })); }}>
-            <svg viewBox="0 0 24 24" aria-hidden="true">{layout.minimized ? <path d="M7 17 17 7M7 7h10v10" /> : <path d="M6 12h12" />}</svg></button>
-        </div>
-      </div>
-    </div>
-    <div className="companion-popover" hidden={!open}>
+  const popover = <div className={`companion-popover${hosted ? ' is-hosted' : ''}`} hidden={!open}>
       <header className="companion-menu-header"><span className="companion-brand-mark" aria-hidden="true"><CompanionIcon name="style" /></span><div><strong>O2 <span>동원의 에이전트</span></strong><small>{voiceTitle ?? selectedTitle}</small></div><button type="button" aria-label="비서 기능 접기" onClick={() => setOpen(false)}><CompanionIcon name="close" /></button></header>
       <nav aria-label="비서 기능" className="companion-tabs">
         <button type="button" aria-pressed={tab === 'home'} onClick={() => setTab('home')}><CompanionIcon name="chat" />대화·작업</button>
@@ -207,6 +199,29 @@ export default function AssistantWidget(props: Props) {
         <button type="button" className="companion-link" onClick={telegram}>Telegram 대화 열기 →</button>
         <DotBridgePanel conversationId={props.conversationId} handlers={props.handlers} />
       </section>
+    </div>;
+  return <>{createPortal(<aside ref={panel} aria-label="O2 비서" className={`assistant-widget companion-widget${layout.minimized ? ' is-minimized' : ''}${inlineOpen ? ' is-open' : ''}`} style={positionStyle}>
+    <div className="companion-stage" tabIndex={0} role="group" aria-label="비서 창 이동 · 방향키 이동 · Home 기본 위치"
+      onPointerDown={startDrag} onPointerMove={moveDrag}
+      onPointerUp={() => { drag.current = null; setTimeout(() => { suppressClick.current = false; }, 0); }}
+      onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }} onKeyDown={keyMove}>
+      {!layout.minimized && !inlineOpen && <div className="companion-bubble" role="status"><small><i data-state={mood} />O2<span>{callStatus}</span></small><p title={bubble}>{bubble}</p></div>}
+      <div className="companion-figure">
+        <CompanionAvatar mood={mood} motion={avatar.motion} style={avatar.style} compact={layout.minimized} expanded={inlineOpen} request={reactionRequest} onMotionState={setMotionState}
+        onActivate={() => { if (!suppressClick.current) setOpen(p => !p); }} />
+      </div>
+      <div className="companion-footer">
+        <span className="companion-name">{AVATAR_MOODS[mood]}</span>
+        <div className="companion-controls" role="group" aria-label="아바타 빠른 조작">
+          <button type="button" className={voiceTarget ? 'is-in-call' : undefined} title={voiceTarget ? '통화 조작 열기' : '통화하기'} aria-label={voiceTarget ? '통화 조작 열기' : '통화하기'} disabled={!props.conversationId && !voiceTarget} onClick={call}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H5a1 1 0 0 0-1 1c0 8 7 15 15 15a1 1 0 0 0 1-1v-3l-5-2-2 2c-3-1-5-3-6-6l2-2-1-4Z" /></svg></button>
+          <button type="button" title="비서 메뉴" aria-label="비서 메뉴" aria-expanded={open} onClick={() => setOpen(p => !p)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" /></svg></button>
+          <button type="button" title={layout.minimized ? '비서 창 펼치기' : '비서 창 최소화'} aria-label={layout.minimized ? '비서 창 펼치기' : '비서 창 최소화'} onClick={() => { setOpen(false); setLayout(p => ({ ...p, minimized: !p.minimized })); }}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">{layout.minimized ? <path d="M7 17 17 7M7 7h10v10" /> : <path d="M6 12h12" />}</svg></button>
+        </div>
+      </div>
     </div>
-  </aside>, document.body);
+    {hosted ? null : popover}
+  </aside>, document.body)}{hosted ? createPortal(popover, props.panelHost!) : null}</>;
 }

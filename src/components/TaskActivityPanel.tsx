@@ -19,31 +19,39 @@ interface Props {
   onClose?: (id: string) => void;
   onRecover?: () => void;
   recovering?: boolean;
+  /** v0.7.86 UI 4단계 — popover: 예전 칩+팝오버 / chip: 칩만(누르면 onOpenPanel) / inline: 슬라이드오버 '작업' 탭 본문 */
+  mode?: "popover" | "chip" | "inline";
+  panelOpen?: boolean;
+  onOpenPanel?: () => void;
 }
 export default function TaskActivityPanel(props: Props) {
+  const mode = props.mode ?? "popover";
   const [open, setOpen] = useState(() => { try { return localStorage.getItem(TASK_PANEL_OPEN_KEY) === "1"; } catch { return false; } });
   const [adding, setAdding] = useState(false);
-  useEffect(() => { try { localStorage.setItem(TASK_PANEL_OPEN_KEY, open ? "1" : "0"); } catch {} }, [open]);
+  useEffect(() => { if (mode === "popover") try { localStorage.setItem(TASK_PANEL_OPEN_KEY, open ? "1" : "0"); } catch {} }, [open, mode]);
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (!open) return;
+    if (!open || mode !== "popover") return;
     const outside = (event: PointerEvent) => { if (!panelRef.current?.contains(event.target as Node)) setOpen(false); };
     const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
-  }, [open]);
+  }, [open, mode]);
   const active = props.runs.filter((r) => r.state === "running" || r.state === "stopping");
   const queueCount = [...props.queues.values()].reduce((n, q) => n + q.length, 0);
   const ids = [...new Set([...(props.tracked ?? []), ...props.runs.map((r) => r.conversationId), ...props.queues.keys()])];
-  return <aside ref={panelRef} className="task-activity" aria-label="대화별 작업 현황">
-    <button className="task-activity-toggle" type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
-      <span className={active.length ? "task-live-dot" : "task-idle-dot"} />
-      작업 현황 <strong>{active.length} 실행</strong>{queueCount > 0 && <span>· {queueCount} 예약</span>}
-      {props.allPaused && <span>· 자동 실행 보류</span>}
-      <span aria-hidden="true">{open ? "▴" : "▾"}</span>
-    </button>
-    {open && <div className="task-activity-popover">
+  const expanded = mode === "chip" ? !!props.panelOpen : open;
+  const toggle = <button className="task-activity-toggle" type="button" aria-expanded={expanded}
+    onClick={() => { if (mode === "chip") props.onOpenPanel?.(); else setOpen(!open); }}
+    title={mode === "chip" ? "작업 패널 열기" : undefined}>
+    <span className={active.length ? "task-live-dot" : "task-idle-dot"} />
+    작업 현황 <strong>{active.length} 실행</strong>{queueCount > 0 && <span>· {queueCount} 예약</span>}
+    {props.allPaused && <span>· 자동 실행 보류</span>}
+    {mode === "popover" && <span aria-hidden="true">{open ? "▴" : "▾"}</span>}
+  </button>;
+  if (mode === "chip") return <aside className="task-activity" aria-label="대화별 작업 현황">{toggle}</aside>;
+  const body = <div className={mode === "inline" ? "task-activity-inline" : "task-activity-popover"}>
       <div className="task-activity-heading"><strong>대화별 작업</strong>
         <button type="button" onClick={props.onStopAll} disabled={!active.length && !queueCount}>전체 작업 정지</button>
       </div>
@@ -82,6 +90,10 @@ export default function TaskActivityPanel(props: Props) {
         </div>;
       })}</div>
       <p className="task-activity-footnote">정지는 KDA가 관리하는 실행에 적용됩니다. 분리된 외부 작업은 별도 확인이 필요합니다.</p>
-    </div>}
+    </div>;
+  if (mode === "inline") return <section className="task-activity task-activity--inline" aria-label="대화별 작업 현황">{body}</section>;
+  return <aside ref={panelRef} className="task-activity" aria-label="대화별 작업 현황">
+    {toggle}
+    {open && body}
   </aside>;
 }

@@ -30,6 +30,11 @@ interface MainChatProps {
   warnings?: string[];
   onOpenEngineSettings?: () => void;
   onOpenSafetySettings?: () => void;
+  // v0.7.86 UI 4단계 — 우측 슬라이드오버: 비서 탭 / 미리보기 탭
+  assistantOpen?: boolean;
+  onOpenAssistant?: () => void;
+  previewReady?: boolean;
+  onOpenPreview?: () => void;
   // v0.7.49 — 채팅창 안(입력창 위)에 표시할 알림 배너 (작업 결과 확인 대기 / 응답 정체 등).
   notices?: ReactNode;
   conversationId: string;
@@ -107,6 +112,10 @@ function MainChat({
   warnings,
   onOpenEngineSettings,
   onOpenSafetySettings,
+  assistantOpen = false,
+  onOpenAssistant,
+  previewReady = false,
+  onOpenPreview,
   notices,
   conversationId,
   isStopping,
@@ -230,8 +239,15 @@ function MainChat({
         <div className="main-header-right">
           {isO2 && (warnings ?? []).map((w) => <Chip key={w} tone="warn" icon="⚠">{w}</Chip>)}
           {!isO2 && <ApprovalToggle />}
+          {previewReady && onOpenPreview && (
+            <Chip tone="accent" icon="📄" className="preview-ready-chip" onClick={onOpenPreview} title="미리보기 패널 열기">미리보기 준비됨</Chip>
+          )}
           {activityPanel}
           {isO2 && <SafetyChip onOpenSettings={onOpenSafetySettings} />}
+          {onOpenAssistant && (
+            <button type="button" className="ui-iconbtn header-assistant-btn" aria-label="비서 패널" title="비서 패널 열기"
+              aria-pressed={assistantOpen} onClick={onOpenAssistant}>◐</button>
+          )}
           <details className="chat-options">
             <summary aria-label="대화 옵션" title="대화 옵션">⋯</summary>
             <div className="chat-options-body">
@@ -245,6 +261,10 @@ function MainChat({
               <button type="button" onClick={() => setShowToolCardsPersist(!showToolCards)} aria-pressed={showToolCards}>
                 {showToolCards ? "도구 호출 숨기기" : "도구 호출 보기"}
               </button>
+              {onOpenPreview && (
+                <button type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); onOpenPreview(); }}
+                  aria-label="미리보기 패널 열기">미리보기 패널 열기</button>
+              )}
             </div>
           </details>
           {isO2 ? <StatusBadge status={status} /> : <ClassicStatusBadge status={status} />}

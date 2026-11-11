@@ -15,7 +15,7 @@ const root = path.join(here, "..");
 const read = (rel) => readFileSync(path.join(root, rel), "utf-8").replace(/\r\n/g, "\n");
 const app = read("src/App.tsx");
 const chat = read("src/components/MainChat.tsx");
-const css = read("src/App.css") + "\n" + read("src/index.css");
+const css = read("src/App.css") + "\n" + read("src/index.css") + "\n" + read("src/ui/ui.css");
 
 let pass = 0;
 let fail = 0;
@@ -40,7 +40,8 @@ const body = app.slice(start, end).split("\n").slice(2);
 // 6칸 들여쓰기에서 시작하는 직계 자식 블록으로 자른다 (주석 제외).
 const chunks = [];
 for (const line of body) {
-  if (/^      [<{]/.test(line) && !/^      \{\/\*/.test(line)) chunks.push([line]);
+  // 닫는 태그(</SlideOver> 등)는 앞 블록의 끝이지 새 자식이 아니다.
+  if (/^      [<{]/.test(line) && !/^      \{\/\*/.test(line) && !/^      <\//.test(line)) chunks.push([line]);
   else if (chunks.length) chunks[chunks.length - 1].push(line);
 }
 // 컴포넌트 → 근거(루트가 grid-area 또는 fixed 인 것을 확인한 클래스).
@@ -52,6 +53,8 @@ const COMPONENT_ROOT = {
   MainChat: { cls: "main-chat", kind: "area" },
   MetricsPanel: { cls: "metrics", kind: "area" },
   SidePanel: { cls: "side-panel", kind: "area" },
+  // v0.7.86 UI 4단계 — 우측 슬라이드오버(SidePanel 은 그 안의 미리보기 탭). 루트 .ui-slideover 는 fixed 오버레이.
+  SlideOver: { cls: "ui-slideover", kind: "fixed" },
   Settings: { cls: "settings-overlay", kind: "fixed" },
   ElicitationDialog: { cls: "elicitation-overlay", kind: "fixed" },
   CodexElicitationDialog: { cls: "elicitation-overlay", kind: "fixed" },
