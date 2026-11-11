@@ -102,7 +102,10 @@ for (const [label, p] of [
 
   // Approval-bearing turns use app-server; the old bypass flag must not launch.
   const bridge = readFileSync(path.join(sidecarRoot, "src", "codex-app-server-bridge.mjs"), "utf-8");
-  if (text.includes("codex-app-server-bridge.mjs") && bridge.includes('"app-server"') &&
+  // v0.7.86 — app-server 인자는 codex-features.mjs 의 codexAppServerArgs() 로 일원화됐다.
+  const features = readFileSync(path.join(sidecarRoot, "src", "codex-features.mjs"), "utf-8");
+  if (text.includes("codex-app-server-bridge.mjs") && bridge.includes("spawn(codex, codexAppServerArgs()") &&
+      features.includes('"app-server"') &&
       bridge.includes('"on-request"') && !text.includes('"--dangerously-bypass-approvals-and-sandbox"')) {
     ok("Codex app-server approval bridge wired without bypass flag");
   } else {

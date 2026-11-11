@@ -1,3 +1,8 @@
+## [0.7.86] - 2026-11-11
+
+### Changed
+- KDA no longer lets Codex use its built-in screen and browser control. Every Codex app-server KDA starts (chat turns and voice) now turns off `computer_use`, `browser_use`, `browser_use_external` and `in_app_browser` with `-c features.<name>=false`; the list lives in one place, `sidecar/src/codex-features.mjs`. These features need the Codex desktop app's native helper or built-in browser, which the npm Codex CLI that KDA runs does not ship. The model could still pick them, so turns spun with nothing happening (seen on another PC running v0.7.83, even after being told not to use them). With the tools removed from Codex's tool list, screen and web work goes to KDA's own k-personal tools (`web_` / `ui_` / `cc_`), which carry the input lock, window checks, honest failure results and stall watch. Shell and file editing, image generation, plugins/apps, voice and skills are unchanged.
+
 ## [0.7.85] - 2026-11-11
 
 First published build of the v0.7.84 changes below (the v0.7.84 tag's CI stopped before building, so no v0.7.84 release exists).

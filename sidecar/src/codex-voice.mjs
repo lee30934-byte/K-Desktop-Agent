@@ -1,3 +1,4 @@
+import { codexAppServerArgs } from './codex-features.mjs';
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,9 +28,8 @@ export class CodexVoiceSession {
   constructor(codex, emit, spawnProcess = spawn) {
     this.emit = emit;
     this.cwd = mkdtempSync(join(tmpdir(), 'kda-voice-'));
-    // v0.7.84 — 음성 세션도 Codex 내장 computer_use 를 끈다 (화면 조작은 k-personal 경로만).
-    // -c 형식: 구버전 CLI 가 기능 이름을 몰라도 시작 실패하지 않는다 (--disable 은 실패).
-    this.process = spawnProcess(codex, ['app-server', '--stdio', '-c', 'features.computer_use=false'], {
+    // v0.7.86 — 음성 세션도 KDA 도구와 겹치는 Codex 내장 기능을 끄고 시작 (codex-features.mjs).
+    this.process = spawnProcess(codex, codexAppServerArgs(), {
       cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32', windowsHide: true,
     });

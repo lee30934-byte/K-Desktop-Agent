@@ -2,6 +2,7 @@
 // exec JSONL event format plus approval.requested; stdin accepts start/approval.
 // No approval is inherited from a previous turn. KDA can suppress an exact,
 // redundant confirm_read form for an already-confirmed active read call.
+import { codexAppServerArgs } from "./codex-features.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import readline from "node:readline";
@@ -250,13 +251,9 @@ async function start(input) {
   if (server) throw new Error("bridge already started");
   const codex = input.codex;
   if (typeof codex !== "string" || !codex || typeof input.prompt !== "string") throw new Error("invalid bridge start");
-  // v0.7.84 — Codex 내장 computer_use(스크린샷+마우스·키보드 직접 조작)는 끈다.
-  // KDA 의 입력 잠금·대상 창 확인·실패 신호·멈춤 감시를 모두 우회하고, PC 마다 사용 가능 여부가 달라
-  // (2026-11-10 다른 PC 에서 사용 확인, 이 PC 는 computerUseLocal unavailable) 동작이 갈렸다.
-  // 화면 조작은 k-personal(ui_/cc_/web_) 한 경로로만 한다. browser_use 등 다른 기능은 그대로.
-  // `--disable computer_use` 는 그 기능을 모르는 구버전 CLI 에서 "Unknown feature flag" 로 시작 자체가
-  // 실패한다(2026-11-11 실측). `-c features.computer_use=false` 는 아는 버전에선 끄고 모르는 버전에선 무시된다.
-  server = spawn(codex, ["app-server", "--stdio", "-c", "features.computer_use=false"], {
+  // v0.7.84/v0.7.86 — Codex 내장 computer_use·browser_use 등 KDA 도구와 겹치는 기능은 끄고 시작한다.
+  // 목록·이유·플래그 형식(-c, --disable 금지)은 codex-features.mjs 참고. 화면/웹 조작은 k-personal 경로만.
+  server = spawn(codex, codexAppServerArgs(), {
     stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32", windowsHide: true,
     env: process.env,
   });
