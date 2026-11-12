@@ -133,7 +133,8 @@ test("알림 띠 o2 — 헤더 아래 한 줄(확인 완료 · 외 N건 ⌄), cl
 
 test("메시지 o2 — 파일 링크는 파일 칩, 답변 아래 복사, 기본 문서형 (classic 은 렌더 그대로)", () => {
   assert.match(message, /if \(isO2 && href && !isUrl\(href\) && mediaKind !== "video" && mediaKind !== "audio"/);
-  assert.match(message, /<span className="md-file-chip__hint">· 클릭하면 미리보기<\/span>/);
+  // dzB — 파일 칩 둘째 줄은 종류 이름 + 안내 (목업 v2.1 .filechip)
+  assert.match(message, /<span className="md-file-chip__hint">\{fileKindLabel\(href\)\} · 클릭하면 미리보기<\/span>/);
   assert.match(message, /\{isO2 && isAssistant && !isStreaming && \(\n\s+<div className="msg-actbar"/);
   assert.match(fid, /\.chat-col \.markdown-content th \{ padding: 6px 10px; font-weight: 500; color: var\(--fg-subtle\);/);
 });

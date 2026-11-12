@@ -38,7 +38,18 @@ export function devPanelOverride(env: ViteEnv = viteEnv(), search: string = curr
   } catch { return null; }
 }
 
-const DEV_SETTINGS_GROUPS = ["general", "ai", "safety", "agent", "tools", "connect", "display", "data", "advanced"] as const;
+export type DevContent = "rich" | "empty";
+
+/** dzB — 개발 빌드에서만 ?content=rich|empty 로 메시지 열 예시를 바꾼다 (코드·도구 카드·오류 카드 / 빈 화면 캡처용, 저장 안 함). */
+export function devContentOverride(env: ViteEnv = viteEnv(), search: string = currentSearch()): DevContent | null {
+  if (!mockupFixtureEnabled(env, search)) return null;
+  try {
+    const v = new URLSearchParams(search).get("content");
+    return v === "rich" || v === "empty" ? v : null;
+  } catch { return null; }
+}
+
+const DEV_SETTINGS_GROUPS =["general", "ai", "safety", "agent", "tools", "connect", "display", "data", "advanced"] as const;
 export type DevSettingsGroup = (typeof DEV_SETTINGS_GROUPS)[number];
 
 /** fidC — 개발 빌드에서만 ?settings=<그룹> 으로 설정 페이지를 그 그룹으로 열어 둔다 (캡처용, 저장 안 함). ?q= 는 검색어. */
@@ -183,7 +194,60 @@ function buildPanelFixture(): MockupPanelFixture {
   };
 }
 
+/** dzB — 목업 v2.1 '메시지 콘텐츠' 화면과 같은 예시: 제목·목록·인라인 코드·숫자 표·파일 칩·코드 블록·도구 카드(완료/실패/실행 중)·오류 카드·작성 중 답변. */
+function buildRichMessages(): ChatMessage[] {
+  const t = (s: number) => T0 + s * 1000;
+  const tool = (id: string, toolName: string, toolInput: unknown, status: "pending" | "success" | "error", toolOutput?: string): ChatMessage =>
+    ({ id, role: "tool", timestamp: t(10), content: "", toolId: id, toolName, toolInput, toolOutput, status });
+  return [
+    { id: "fx-r1", role: "user", timestamp: t(0), content: "다운로드 폴더 정리 스크립트 만들어 줘. 확장자별로 나누고, 30일 지난 건 보관함으로." },
+    { id: "fx-r2", role: "assistant", timestamp: t(1), content: [
+      "### 정리 규칙",
+      "다음 순서로 처리합니다. 이미 같은 이름이 있으면 `_1` 을 붙여 덮어쓰기를 피합니다.",
+      "",
+      "1. 확장자별 폴더로 이동 — 문서·이미지·압축·설치 파일",
+      "2. 30일 지난 파일은 `Archive/2026-11` 로",
+      "3. 빈 폴더 정리 후 결과 요약",
+      "",
+      "- 숨김 파일과 `.crdownload` 는 건드리지 않아요",
+      "- 실행 전 이동 목록을 먼저 보여 드려요",
+      "",
+      "| 분류 | 확장자 | 파일 |",
+      "| --- | --- | ---: |",
+      "| **문서** | pdf, docx, xlsx, hwp | 128 |",
+      "| **이미지** | png, jpg, webp | 342 |",
+      "| **압축·설치** | zip, 7z, exe, msi | 57 |",
+      "",
+      "[organize-downloads.ps1](C:/Users/K/Downloads/organize-downloads.ps1)",
+      "",
+      "```powershell",
+      "# 확장자별 이동 + 30일 지난 파일 보관",
+      "$src = \"$env:USERPROFILE\\Downloads\"",
+      "$cut = (Get-Date).AddDays(-30)",
+      "Get-ChildItem $src -File | ForEach-Object {",
+      "  $dst = if ($_.LastWriteTime -lt $cut) { \"Archive\" } else { $_.Extension }",
+      "  Move-Item $_ (Join-Path $src $dst) -WhatIf",
+      "}",
+      "```",
+      "자세한 기준은 [PowerShell 문서](https://learn.microsoft.com/powershell/) 를 참고했어요.",
+    ].join("\n") },
+    tool("fx-t1", "mcp__k-personal__fm_list_directory", { path: "C:\\Users\\K\\Downloads" }, "success", "527 files · 3.8GB"),
+    tool("fx-t2", "mcp__k-personal__fm_file_info", { path: "Downloads", recursive: false }, "success", "527 files · 3.8GB · 오래된 파일 211개"),
+    tool("fx-t3", "Write", { file_path: "organize-downloads.ps1" }, "success", "파일을 저장했습니다"),
+    tool("fx-t4", "mcp__k-personal__web_open", { url: "https://intranet.example.kr/report" }, "error", "Error: 시간 초과 — 페이지가 30초 안에 응답하지 않았어요"),
+    tool("fx-t5", "PowerShell", { command: "-File organize-downloads.ps1 -WhatIf" }, "pending"),
+    { id: "fx-r3", role: "system", level: "error", timestamp: t(20), content: "Error: Codex 연결이 중간에 끊어졌어요 (exit 1). 대화 내용은 그대로 남아 있습니다." },
+    { id: "fx-r4", role: "system", level: "warn", timestamp: t(21), content: "⚠️ 시스템 메모리 사용률이 86.0%입니다. 새 장기 작업 시작은 피하는 것이 좋습니다." },
+    { id: "fx-r5", role: "assistant", timestamp: t(22), streaming: true, content: "이동 목록을 확인했어요. 문서 128개, 이미지 342개를 각각 분류하고 있고" },
+  ];
+}
+
 /** 픽스처가 켜져 있으면 예시 데이터, 아니면 null. 배포 빌드에서는 항상 null. */
 export function readMockupFixture(env: ViteEnv = viteEnv(), search: string = currentSearch()): MockupFixture | null {
-  return mockupFixtureEnabled(env, search) ? buildFixture() : null;
+  if (!mockupFixtureEnabled(env, search)) return null;
+  const fx = buildFixture();
+  const content = devContentOverride(env, search);
+  if (content === "rich") return { ...fx, messages: buildRichMessages() };
+  if (content === "empty") return { ...fx, messages: [], waiting: [], streamingIds: [] };
+  return fx;
 }

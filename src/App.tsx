@@ -124,7 +124,8 @@ import "./styles/o2-slideover.css";
 import "./styles/o2-settings.css";
 import "./styles/o2-spacing.css"; // spA 여백·글자 다듬기 (o2 전용, 마지막에 불러와 이김)
 import "./styles/o2-spacing-settings.css"; // spB 설정 페이지·명령 팔레트·⋯ 메뉴 여백·글자 (o2 전용)
-import "./styles/o2-design.css"; // dzA 디자인 토큰·상태·메인 셸 고도화 (o2 전용, 마지막에 불러와 이김)
+import "./styles/o2-design.css"; // dzA 디자인 토큰·상태·메인 셸 고도화 (o2 전용)
+import "./styles/o2-content.css"; // dzB 메시지 콘텐츠 부품 (o2 전용, 마지막에 불러와 이김)
 import logger from "./utils/logger";
 import {
   TelegramTurnTracker,

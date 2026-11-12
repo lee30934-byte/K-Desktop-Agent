@@ -1,0 +1,331 @@
+/* ════════════════════════════════════════════════════════════════
+   dzB — 디자인 고도화 2단계: 메시지 콘텐츠 부품 (o2 전용)
+   기준: evidence/ui-redesign-20261111/mockup-v2/mockup-v2.1.html ?screen=content · empty (K 승인 2026-11-12) + 추천 C(읽기 폭).
+   사용자 말풍선 · 답변 글 리듬(제목·목록) · 인라인 코드 · 링크 · 파일 칩 · 표(머리 옅은 판 · 줄 구분선 · 숫자 고정폭) ·
+   코드 블록(머리 줄 언어+복사 · 줄 번호) · 도구 카드(상태 원 · 인자 · 접기/펼치기 · 실패 이유 · 실행 중 선) ·
+   시스템 카드(오류/주의/안내) · 작성 중 표시 · 빈 화면 제안 카드 · 첨부 · 승인 창.
+   토큰은 dzA(src/index.css · o2-design.css) 그대로: --o2-bg/panel/raised/overlay · --o2-line-1~3 · --o2-fg-1~4 · --r-* · --dur-*.
+   모든 선택자가 :root[data-layout="o2"] 로 시작한다 — classic 은 이 파일을 받지 않는다 (scripts/ui-design-content.test.ts).
+   읽는 글자는 fg-3 이상(4.5:1↑), fg-4 는 비활성에만. 그림자는 떠 있는 승인 창에만.
+   o2-design.css 다음(맨 마지막)에 불러와 같은 특이도면 이 파일이 이긴다.
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 0. 콘텐츠 전용 색 (기본 색 테마 = 목업 값, 개성 테마 3종은 자기 색에서) ── */
+:root[data-layout="o2"] {
+  --o2-code-bg: var(--o2-bg); --o2-code-fg: var(--o2-fg-1); --o2-code-inline-fg: var(--o2-fg-1);
+}
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) {
+  --o2-code-bg: #0e1015; --o2-code-fg: #cdd3dc; --o2-code-inline-fg: #d4ebea;
+}
+
+/* ── 1. 사용자 말풍선 (목업 .bubble: r 14 14 6 14 · 옅은 선) ── */
+:root[data-layout="o2"] .chat-col > .msg-user {
+  border-radius: var(--r-lg) var(--r-lg) var(--r-sm) var(--r-lg);
+  box-shadow: inset 0 0 0 1px var(--o2-line-1); color: var(--o2-fg-1);
+}
+
+/* ── 2. 답변 글 리듬 (본문 16/1.75 · 제목 18/650 · 목록 기호 fg-3) ── */
+:root[data-layout="o2"] .chat-col > .msg-assistant .markdown-content { color: var(--o2-assistant-fg, var(--o2-fg-body)); }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content strong { font-weight: 650; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content :is(h1, h2, h3, h4) { color: var(--o2-fg-1); font-weight: 650; letter-spacing: -0.015em; line-height: 1.4; margin: 22px 0 8px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content h1 { font-size: 22px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content h2 { font-size: 20px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content h3 { font-size: 18px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content h4 { font-size: 16px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content > :is(h1, h2, h3, h4):first-child { margin-top: 0; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content :is(ul, ol) { margin: 0 0 14px; padding-left: 22px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content li { margin: 4px 0; padding-left: 4px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content li::marker { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content ol > li::marker { font-size: 14px; font-variant-numeric: tabular-nums; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content blockquote {
+  margin: 4px 0 14px; padding: 2px 0 2px 14px; border: 0; border-left: 2px solid var(--o2-line-3); background: transparent; color: var(--o2-fg-2);
+}
+:root[data-layout="o2"] .chat-col > .msg .markdown-content hr { border: 0; border-top: 1px solid var(--o2-line-1); margin: 20px 0; }
+
+/* 인라인 코드 (목업 code.ic: .84em · r6 · 옅은 판 + 선) */
+:root[data-layout="o2"] .chat-col > .msg .markdown-content :not(pre) > code,
+:root[data-layout="o2"] .chat-col .md-inline-code {
+  font: 400 0.84em/1.4 var(--font-mono); letter-spacing: 0; padding: 2px 6px; border: 0; border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--o2-fg-1) 5.5%, transparent); box-shadow: inset 0 0 0 1px var(--o2-line-1); color: var(--o2-code-inline-fg);
+}
+
+/* 링크: 강조 글자, 밑줄은 올렸을 때만 */
+:root[data-layout="o2"] .chat-col .md-link:not(.md-file-chip) {
+  color: var(--o2-accent-text); border-bottom: 0; text-decoration: none; text-underline-offset: 3px;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .chat-col .md-link:not(.md-file-chip):hover { text-decoration: underline; text-decoration-color: var(--o2-accent-line); }
+
+/* 작성 중 커서: 강조색 막대, 마지막 문단 끝에 붙음 */
+:root[data-layout="o2"] .chat-col .msg-body > p:nth-last-child(2):has(+ .msg-cursor) { display: inline; }
+:root[data-layout="o2"] .chat-col .msg-cursor {
+  display: inline-block; width: 8px; height: 18px; margin-left: 3px; vertical-align: -3px; overflow: hidden; border-radius: 2px;
+  background: var(--accent); color: transparent; font-size: 0; opacity: 0.85; animation: o2-caret 1.1s steps(1) infinite;
+}
+@keyframes o2-caret { 50% { opacity: 0.2; } }
+
+/* ── 3. 파일 칩 (목업 .filechip: 타일 36 + 이름 / 종류 · 안내 + 눈 아이콘) ── */
+:root[data-layout="o2"] .chat-col .md-link.md-file-chip {
+  display: inline-flex; align-items: center; gap: 12px; max-width: 100%; box-sizing: border-box; margin: 2px 0 6px; padding: 8px 14px 8px 8px;
+  border: 0; border-radius: var(--r-md); background: var(--o2-panel); box-shadow: inset 0 0 0 1px var(--o2-line-2);
+  color: var(--o2-fg-1); font-size: var(--fs-ui); line-height: 1.3; text-decoration: none; vertical-align: top;
+  transition: background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .chat-col .md-link.md-file-chip:hover { background: var(--o2-raised); box-shadow: inset 0 0 0 1px var(--o2-line-3); text-decoration: none; }
+:root[data-layout="o2"] .chat-col .md-link.md-file-chip:active { background: var(--o2-press); }
+:root[data-layout="o2"] .chat-col .md-file-chip__tile {
+  width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: 8px;
+  background: var(--o2-raised); box-shadow: inset 0 0 0 1px var(--o2-line-1); color: var(--o2-fg-2);
+}
+:root[data-layout="o2"] .chat-col .md-file-chip__text { display: flex; flex-direction: column; min-width: 0; }
+:root[data-layout="o2"] .chat-col .md-file-chip__name { font-weight: 600; color: var(--o2-fg-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-layout="o2"] .chat-col .md-file-chip__hint { font-size: var(--fs-caption); line-height: 1.4; color: var(--o2-fg-3); white-space: nowrap; }
+:root[data-layout="o2"] .chat-col .md-file-chip__go { flex: none; margin-left: 10px; color: var(--o2-fg-3); transition: color var(--dur-fast) var(--ease-out); }
+:root[data-layout="o2"] .chat-col .md-link.md-file-chip:hover .md-file-chip__go { color: var(--o2-fg-1); }
+
+/* ── 4. 표 (목업 .tbl: r10 틀 · 머리 옅은 판 12/550 fg-3 · 줄 구분선 · 숫자 고정폭) ── */
+:root[data-layout="o2"] .chat-col .md-table-wrap {
+  margin: 4px 0 16px; overflow-x: auto; border: 1px solid var(--o2-line-1); border-radius: var(--r-md);
+}
+:root[data-layout="o2"] .chat-col .md-table-wrap table { width: 100%; margin: 0; border: 0; border-collapse: collapse; font-size: var(--fs-ui); line-height: 1.5; }
+:root[data-layout="o2"] .chat-col .md-table-wrap th {
+  padding: 10px 16px; border: 0; border-bottom: 1px solid var(--o2-line-1);
+  background: color-mix(in srgb, var(--o2-fg-1) 2.5%, transparent); color: var(--o2-fg-3); font-size: var(--fs-caption); font-weight: 550; white-space: nowrap;
+}
+:root[data-layout="o2"] .chat-col .md-table-wrap td { padding: 11px 16px; border: 0; border-top: 1px solid var(--o2-line-1); color: var(--o2-fg-2); }
+:root[data-layout="o2"] .chat-col .md-table-wrap tr:first-child td { border-top: 0; }
+:root[data-layout="o2"] .chat-col .md-table-wrap tbody tr { transition: background var(--dur-fast) var(--ease-out); }
+:root[data-layout="o2"] .chat-col .md-table-wrap tbody tr:hover,
+:root[data-layout="o2"] .chat-col .md-table-wrap tbody tr:hover td { background: var(--o2-hover); }
+:root[data-layout="o2"] .chat-col .md-table-wrap td strong { color: var(--o2-fg-1); font-weight: 600; }
+:root[data-layout="o2"] .chat-col .md-table-wrap td del { color: var(--o2-fg-3); text-decoration-color: color-mix(in srgb, var(--o2-fg-1) 22%, transparent); }
+:root[data-layout="o2"] .chat-col .md-table-wrap td.is-num { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; letter-spacing: 0; color: var(--o2-fg-body); }
+
+/* ── 5. 코드 블록 (목업 .code: 머리 38 · 언어 mono fg-2 · 복사 고스트 · 줄 번호 fg-3 · 13/1.75) ── */
+:root[data-layout="o2"] .chat-col .md-code-block-wrapper--o2 {
+  position: relative; margin: 6px 0 16px; overflow: hidden; border: 1px solid var(--o2-line-2); border-radius: var(--r-md); background: var(--o2-code-bg);
+}
+:root[data-layout="o2"] .md-code-head {
+  height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--o2-line-1);
+  font: 400 var(--fs-caption)/1 var(--font-ui); color: var(--o2-fg-3);
+}
+:root[data-layout="o2"] .md-code-lang { font-family: var(--font-mono); letter-spacing: 0; color: var(--o2-fg-2); }
+:root[data-layout="o2"] .md-code-head__grow { flex: 1; }
+:root[data-layout="o2"] .md-code-block-wrapper--o2 .md-code-copy-btn {
+  position: static; opacity: 1; height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--o2-fg-2); font: 500 var(--fs-caption)/1 var(--font-ui); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .md-code-block-wrapper--o2 .md-code-copy-btn:hover { background: var(--o2-hover); color: var(--o2-fg-1); border-color: transparent; }
+:root[data-layout="o2"] .md-code-block-wrapper--o2 .md-code-copy-btn:active { background: var(--o2-press); }
+:root[data-layout="o2"] .md-code-block-wrapper--o2 .md-code-copy-btn.copied { background: transparent; color: var(--success); border-color: transparent; }
+:root[data-layout="o2"] .md-code-body { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+:root[data-layout="o2"] .md-code-lines {
+  padding: 14px 0 16px 16px; min-width: 18px; white-space: pre; text-align: right; user-select: none;
+  font: 400 13px/1.75 var(--font-mono); letter-spacing: 0; color: var(--o2-fg-3); font-variant-numeric: tabular-nums;
+}
+:root[data-layout="o2"] .chat-col .md-code-block-wrapper--o2 .md-code-block {
+  margin: 0; padding: 14px 16px 16px 14px; overflow-x: auto; border: 0; border-radius: 0; background: transparent;
+  font: 400 13px/1.75 var(--font-mono); letter-spacing: 0; color: var(--o2-code-fg); white-space: pre;
+}
+:root[data-layout="o2"] .md-code-block-wrapper--o2 .md-code-block code { font: inherit; color: inherit; background: transparent; padding: 0; border: 0; box-shadow: none; }
+/* 구문 색 — 목업 팔레트 (기본 색 테마). 주석은 읽히도록 fg-3 */
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .md-code-block .hljs-keyword,
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .md-code-block .hljs-variable,
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .md-code-block .hljs-selector-tag { color: #a9b8ff; }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .md-code-block :is(.hljs-string, .hljs-attr) { color: #a6d9a0; }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .md-code-block :is(.hljs-number, .hljs-literal) { color: #f0c27e; }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .md-code-block :is(.hljs-built_in, .hljs-title, .hljs-type) { color: #7cece7; }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .md-code-block .hljs-comment { color: var(--o2-fg-3); font-style: normal; }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .md-code-block :is(.hljs-meta, .hljs-punctuation) { color: var(--o2-fg-2); }
+
+/* ── 6. 도구 카드 (목업 .tc: panel 판 · r10 · 줄 44 · 상태 원 20) ── */
+:root[data-layout="o2"] .chat-col > .msg-tool-o2 {
+  align-self: stretch; margin: 4px 0 16px; overflow: hidden; border: 1px solid var(--o2-line-1); border-radius: var(--r-md); background: var(--o2-panel);
+}
+/* 이어진 도구 카드는 한 묶음으로 (목업 .tgroup): 사이 구분선만 남기고 모서리·간격을 붙인다 */
+:root[data-layout="o2"] [data-item-index]:has(> .chat-col > .msg-tool-o2):has(+ [data-item-index] > .chat-col > .msg-tool-o2) .msg-tool-o2 {
+  margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+}
+:root[data-layout="o2"] [data-item-index]:has(> .chat-col > .msg-tool-o2) + [data-item-index] > .chat-col > .msg-tool-o2 {
+  margin-top: 0; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; box-shadow: inset 0 1px 0 var(--o2-line-1);
+}
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-compact { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-summary {
+  height: 44px; display: flex; align-items: center; gap: 11px; padding: 0 10px 0 14px; cursor: pointer; list-style: none;
+  font: 400 var(--fs-ui)/1 var(--font-ui); color: var(--o2-fg-1); transition: background var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-summary::before { content: none; }
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-summary:hover { background: var(--o2-hover); }
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-summary:active { background: var(--o2-press); }
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-summary:focus-visible { outline: 2px solid var(--ring-color); outline-offset: -2px; }
+:root[data-layout="o2"] .msg-tool-st { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: 50%; }
+:root[data-layout="o2"] .msg-tool-st--success { background: var(--ok-soft); color: var(--success); }
+:root[data-layout="o2"] .msg-tool-st--error { background: var(--danger-soft); color: var(--error); }
+:root[data-layout="o2"] .msg-tool-st--pending { color: var(--accent); }
+:root[data-layout="o2"] .msg-tool-st--pending .ui-icon { animation: o2-spin 1s linear infinite; }
+@keyframes o2-spin { to { transform: rotate(360deg); } }
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-name { flex: none; font-size: var(--fs-ui); font-weight: 550; color: var(--o2-fg-1); white-space: nowrap; }
+:root[data-layout="o2"] .msg-tool-arg {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 var(--fs-caption)/1.2 var(--font-mono); letter-spacing: 0; color: var(--o2-fg-3);
+}
+:root[data-layout="o2"] .msg-tool-o2 .msg-time { flex: none; align-self: center; margin: 0; padding: 0; opacity: 1; font: 400 var(--fs-caption)/1 var(--font-mono); letter-spacing: 0; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .msg-tool-o2--pending .msg-time { color: var(--o2-accent-text); }
+:root[data-layout="o2"] .msg-tool-chev { flex: none; color: var(--o2-fg-3); transition: transform var(--dur-fast) var(--ease-out); }
+:root[data-layout="o2"] .msg-tool-compact[open] .msg-tool-chev { transform: rotate(90deg); }
+:root[data-layout="o2"] .msg-tool-flag { flex: none; font-size: var(--fs-caption); color: var(--o2-warn-text); }
+:root[data-layout="o2"] :is(.msg-tool-risk, .msg-tool-cat) {
+  flex: none; height: 20px; display: inline-flex; align-items: center; padding: 0 8px; border-radius: var(--r-pill);
+  font: 600 11.5px/1 var(--font-ui); white-space: nowrap; color: var(--o2-fg-3); box-shadow: inset 0 0 0 1px var(--o2-line-2); cursor: pointer;
+}
+:root[data-layout="o2"] .msg-tool-cat { font-weight: 500; box-shadow: inset 0 0 0 1px var(--o2-line-1); }
+:root[data-layout="o2"] :is(.msg-tool-risk, .msg-tool-cat):hover { background: var(--o2-hover); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .msg-tool-risk--medium { color: var(--o2-fg-2); }
+:root[data-layout="o2"] .msg-tool-risk--high { color: var(--o2-warn-text); background: var(--warn-soft); box-shadow: inset 0 0 0 1px var(--o2-warn-line); }
+:root[data-layout="o2"] .msg-tool-risk--critical { color: var(--o2-danger-text); background: var(--danger-soft); box-shadow: inset 0 0 0 1px var(--o2-danger-line); }
+/* 펼침: 입력 / 결과 2단 (목업 .tc-b) */
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-expanded { display: grid; gap: 6px; padding: 2px 14px 14px 45px; border-top: 0; }
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-section { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 12px; align-items: start; margin: 0; }
+:root[data-layout="o2"] .msg-tool-label { padding-top: 7px; font-size: var(--fs-caption); color: var(--o2-fg-3); }
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-json {
+  margin: 0; max-height: 240px; overflow: auto; padding: 6px 10px; border: 0; border-radius: var(--r-sm);
+  background: var(--o2-bg); box-shadow: inset 0 0 0 1px var(--o2-line-1);
+  font: 400 12.5px/1.6 var(--font-mono); letter-spacing: 0; color: var(--o2-fg-2); white-space: pre-wrap; word-break: break-word;
+}
+:root[data-layout="o2"] .msg-tool-risknote { padding-top: 5px; font-size: var(--fs-sub); line-height: 1.5; color: var(--o2-fg-2); }
+:root[data-layout="o2"] .msg-tool-o2 .msg-tool-truncated > div { padding-top: 4px; font-size: var(--fs-caption); color: var(--o2-fg-3); }
+:root[data-layout="o2"] .msg-tool-load-full {
+  margin-left: 4px; padding: 3px 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--o2-accent-text); font: 500 var(--fs-caption)/1 var(--font-ui); cursor: pointer;
+}
+:root[data-layout="o2"] .msg-tool-load-full:hover:not(:disabled) { background: var(--o2-hover); }
+:root[data-layout="o2"] .msg-tool-load-full:disabled { color: var(--o2-fg-4); cursor: default; }
+/* 실패 이유 한 줄 (접혀 있어도 보임) · 실행 중 진행 선 */
+:root[data-layout="o2"] .msg-tool-why {
+  display: flex; align-items: center; gap: 10px; padding: 0 14px 12px 45px; margin-top: -2px;
+  font: 400 var(--fs-sub)/1.5 var(--font-ui); color: var(--o2-danger-text);
+}
+:root[data-layout="o2"] .msg-tool-why .ui-icon { flex: none; }
+:root[data-layout="o2"] .msg-tool-runbar { position: relative; height: 2px; overflow: hidden; background: var(--o2-line-1); }
+:root[data-layout="o2"] .msg-tool-runbar::after {
+  content: ""; position: absolute; inset: 0 60% 0 0; background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: o2-runbar 1.4s var(--ease-out) infinite;
+}
+@keyframes o2-runbar { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+/* 이미지 도구 줄(접힌 각주): 흐린 투명도 대신 fg-3 글자 */
+:root[data-layout="o2"] .chat-col .msg-tool-image-footnote { opacity: 1 !important; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .chat-col .msg-tool-image-footnote > summary { display: inline-flex; align-items: center; gap: 2px; padding: 4px 6px; border-radius: var(--r-sm); }
+:root[data-layout="o2"] .chat-col .msg-tool-image-footnote > summary:hover { background: var(--o2-hover); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .chat-col .msg-tool-image-footnote .ui-icon { vertical-align: -2px; }
+
+/* ── 7. 시스템 카드 (오류 = 목업 .card.err · 주의 = 주황 아이콘만 · 안내 = 무채색) ── */
+:root[data-layout="o2"] .chat-col > .msg-system {
+  align-self: stretch; max-width: 100%; display: flex; align-items: flex-start; gap: 10px; margin: 4px 0 16px; padding: 11px 14px;
+  border: 0; border-radius: var(--r-md); background: var(--o2-panel); box-shadow: inset 0 0 0 1px var(--o2-line-1);
+  color: var(--o2-fg-2); font: 400 var(--fs-sub)/1.55 var(--font-ui); text-align: left; letter-spacing: 0;
+}
+:root[data-layout="o2"] .msg-system__icon { flex: none; margin-top: 2px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .msg-system__text { min-width: 0; overflow-wrap: anywhere; }
+:root[data-layout="o2"] .chat-col > .msg-system--warn { box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-body); }
+:root[data-layout="o2"] .msg-system--warn .msg-system__icon { color: var(--warn); }
+:root[data-layout="o2"] .chat-col > .msg-system--error {
+  gap: 10px; padding: 16px 18px; border-radius: var(--r-lg);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--o2-panel); box-shadow: inset 0 0 0 1px var(--o2-danger-line);
+}
+:root[data-layout="o2"] .msg-system--error .msg-system__icon { margin-top: 0; color: var(--error); }
+:root[data-layout="o2"] .msg-system__title { font: 650 15px/1.35 var(--font-ui); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .msg-system--error .msg-system__body { margin-top: 6px; font-size: var(--fs-ui); line-height: 1.6; color: var(--o2-fg-2); }
+
+/* ── 8. 작성 중 표시 (목업 .streaming: 점 3개 + fg-3 글자, 글자 열 왼쪽에 맞춤) ── */
+:root[data-layout="o2"] .progress-indicator--o2 {
+  --o2-col-reserve: 0px;
+  --o2-col-inset: max(var(--o2-gutter), calc((100% - var(--o2-col-reserve) - var(--chat-max-width)) / 2 + var(--o2-gutter)));
+  width: auto; max-width: none; margin: 0; padding: 0 var(--o2-col-inset) 10px calc(var(--o2-col-inset) + 4px);
+  gap: 12px; border: 0; background: transparent; color: var(--o2-fg-3); font: 400 var(--fs-sub)/1.4 var(--font-ui); letter-spacing: 0;
+  animation: o2-fade-up var(--dur-pop) var(--ease-out);
+}
+:root[data-layout="o2"][data-companion-reserve] .main-chat .progress-indicator--o2 { --o2-col-reserve: var(--o2-composer-reserve, 0px); }
+:root[data-layout="o2"] .progress-indicator--o2 .progress-label { color: var(--o2-fg-3); text-transform: none; opacity: 1; font-family: var(--font-ui); }
+:root[data-layout="o2"] .progress-dots { display: inline-flex; gap: 4px; }
+:root[data-layout="o2"] .progress-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: 0.35; animation: o2-dot 1.2s infinite; }
+:root[data-layout="o2"] .progress-dots i:nth-child(2) { animation-delay: 0.15s; }
+:root[data-layout="o2"] .progress-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes o2-dot { 50% { opacity: 1; } }
+@keyframes o2-fade-up { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* 새 메시지는 살짝 떠오름 (160ms) */
+:root[data-layout="o2"] .chat-col > :is(.msg, .msg-tool-o2) { animation: o2-fade-up var(--dur-pop) var(--ease-out); }
+
+/* ── 9. 빈 화면 (목업 .empty: 마크 44 · 30/700 · 부제 15 fg-2 · 제안 카드 2×2 r14) ── */
+:root[data-layout="o2"] .empty-state--o2 .empty-content { width: 100%; max-width: 760px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+:root[data-layout="o2"] .empty-state--o2 .empty-mark { width: 44px; height: 44px; margin-bottom: 22px; border-radius: 12px; box-shadow: 0 0 0 1px var(--o2-line-2); }
+:root[data-layout="o2"] .empty-state--o2 .empty-title { margin: 0; font: 700 30px/1.25 var(--font-ui); letter-spacing: -0.025em; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .empty-state--o2 .empty-sub { margin: 8px 0 30px; font-size: 15px; line-height: 1.5; color: var(--o2-fg-2); }
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestions { width: 100%; gap: 10px; }
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion {
+  min-height: 0; padding: 16px; column-gap: 14px; row-gap: 3px; align-items: start;
+  border: 1px solid var(--o2-line-1); border-radius: var(--r-lg); background: var(--o2-panel);
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion:hover { background: var(--o2-raised); border-color: var(--o2-line-2); }
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion:active { background: var(--o2-press); }
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion-icon {
+  width: 36px; height: 36px; border-radius: var(--r-md); background: color-mix(in srgb, var(--o2-fg-1) 4%, transparent);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion-icon .ui-icon { color: var(--o2-fg-2); transition: color var(--dur-fast) var(--ease-out); }
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion:is(:hover, :focus-visible) .empty-suggestion-icon { background: var(--accent-soft); }
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion:is(:hover, :focus-visible) .empty-suggestion-icon .ui-icon { color: var(--o2-accent-text); }
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion-label { font: 600 14.5px/1.35 var(--font-ui); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .empty-state--o2 .empty-suggestion-prompt { font-size: var(--fs-sub); line-height: 1.5; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .empty-state--o2 .empty-hint-o2 { margin-top: 22px; font-size: var(--fs-sub); color: var(--o2-fg-3); }
+
+/* ── 10. 첨부 (사용자 말풍선 아래) · 로딩 줄 ── */
+:root[data-layout="o2"] .chat-col .msg-attachment-item { border-radius: var(--r-md); border-color: var(--o2-line-2); background: var(--o2-panel); }
+:root[data-layout="o2"] .chat-col .msg-attachment-item.clickable:hover { background: var(--o2-raised); border-color: var(--o2-line-3); }
+:root[data-layout="o2"] .chat-col .msg-attachment-icon { display: inline-grid; place-items: center; color: var(--o2-fg-2); }
+:root[data-layout="o2"] .chat-col :is(.msg-attachment-size, .msg-attachment-hint) { color: var(--o2-fg-3); opacity: 1; }
+:root[data-layout="o2"] .chat-col :is(.md-inline-image-loading, .md-inline-image-error) { display: inline-flex; align-items: center; gap: 6px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .chat-col .md-inline-thumbnail { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--o2-line-1); }
+:root[data-layout="o2"] .conversation-loading { color: var(--o2-fg-3); font-size: var(--fs-sub); }
+:root[data-layout="o2"] .messages-older-btn {
+  height: 30px; padding: 0 12px; border: 1px solid var(--o2-line-2); border-radius: 8px; background: var(--o2-raised); color: var(--o2-fg-2); font: 500 var(--fs-caption)/1 var(--font-ui); cursor: pointer;
+}
+:root[data-layout="o2"] .messages-older-btn:hover:not(:disabled) { background: var(--o2-overlay); color: var(--o2-fg-1); border-color: var(--o2-line-3); }
+:root[data-layout="o2"] .messages-older-btn:disabled { color: var(--o2-fg-4); cursor: default; }
+
+/* ── 11. 실행 승인 창 (목업 .card.approve 결: panel + 옅은 주황 · r14 · 떠 있는 레이어라 그림자) ── */
+:root[data-layout="o2"] .elicitation-overlay { background: rgba(5, 6, 9, 0.62); animation: o2-fade-up var(--dur-pop) var(--ease-out); }
+:root[data-layout="o2"] .elicitation-dialog.elicitation-warn {
+  border: 0; border-radius: var(--r-lg); background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--o2-panel);
+  box-shadow: inset 0 0 0 1px var(--o2-warn-line), var(--shadow-pop); color: var(--o2-fg-2); font-family: var(--font-ui);
+}
+:root[data-layout="o2"] .elicitation-dialog.elicitation-warn h3 { color: var(--o2-fg-1); font: 650 15px/1.35 var(--font-ui); letter-spacing: 0; text-transform: none; }
+:root[data-layout="o2"] .elicitation-dialog.elicitation-warn pre {
+  border: 0; border-radius: 8px; background: var(--o2-bg); box-shadow: inset 0 0 0 1px var(--o2-line-1); color: var(--o2-code-fg); font: 400 13px/1.6 var(--font-mono);
+}
+:root[data-layout="o2"] .elicitation-dialog.elicitation-warn .elicitation-hint { color: var(--o2-fg-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-layout="o2"] :is(.chat-col > .msg, .chat-col > .msg-tool-o2, .progress-indicator--o2, .elicitation-overlay, .msg-cursor, .progress-dots i, .msg-tool-st--pending .ui-icon) { animation: none; }
+  :root[data-layout="o2"] .msg-tool-runbar::after { animation: none; }
+}
+
+/* ── 12. 도구 호출 카드 줄 (헤더 아래 조용한 한 줄: 토글 · 걸린 필터 · 안내) ── */
+:root[data-layout="o2"] .tool-cards-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 36px; padding: 0 20px 0 28px; box-sizing: border-box;
+  border-bottom: 1px solid var(--o2-line-1); font: 400 var(--fs-caption)/1.3 var(--font-ui); color: var(--o2-fg-3);
+}
+:root[data-layout="o2"] .tool-cards-bar__toggle { display: inline-flex; align-items: center; gap: 7px; color: var(--o2-fg-2); cursor: pointer; }
+:root[data-layout="o2"] .tool-cards-bar__toggle input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+:root[data-layout="o2"] .tool-cards-bar__toggle:hover { color: var(--o2-fg-1); }
+:root[data-layout="o2"] .tool-cards-bar__filter {
+  height: 24px; display: inline-flex; align-items: center; gap: 4px; padding: 0 4px 0 10px; border-radius: var(--r-pill);
+  background: var(--o2-sel); box-shadow: inset 0 0 0 1px var(--o2-accent-line); color: var(--o2-fg-1); font-weight: 550;
+}
+:root[data-layout="o2"] .tool-cards-bar__filter button {
+  width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--o2-fg-3); cursor: pointer;
+}
+:root[data-layout="o2"] .tool-cards-bar__filter button:hover { background: var(--o2-hover); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .tool-cards-bar__hint { margin-left: auto; }
+@media (max-width: 1000px) { :root[data-layout="o2"] .tool-cards-bar__hint { display: none; } }

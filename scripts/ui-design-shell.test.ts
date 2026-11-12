@@ -53,7 +53,8 @@ test("o2-design.css — 모든 선택자가 o2 한정, 맨 마지막에 불러�
     assert.ok(part.startsWith(':root[data-layout="o2"]'), `o2 밖 선택자: ${part}`);
   }
   const imports = [...app.matchAll(/^import "\.\/styles\/(o2-[a-z-]+)\.css";/gm)].map((m) => m[1]);
-  assert.deepEqual(imports.slice(-2), ["o2-spacing-settings", "o2-design"]);
+  // dzB — 메시지 콘텐츠 부품(o2-content)이 그 뒤 맨 마지막 (scripts/ui-design-content.test.ts)
+  assert.deepEqual(imports.slice(-3), ["o2-spacing-settings", "o2-design", "o2-content"]);
   assert.doesNotMatch(css, /companion-widget/, "아바타 위치 규칙은 건드리지 않는다");
 });
 

@@ -11,7 +11,7 @@ import InlineMediaPlayer from "./InlineMediaPlayer";
 import { isMediaStreamUrl } from "../utils/mediaStream";
 import logger from "../utils/logger";
 import { useUiLayout } from "../utils/useUiLayout";
-import { Icon } from "../ui/icons";
+import { Icon, type IconName } from "../ui/icons";
 // Phase 85 (v0.6.28) — Tool Safety Layer 후속. tool_use 카드 risk 배지.
 import { RISK_BADGES } from "../utils/toolSafety";
 // v0.7.50 — 화면용 로딩에서 잘린 도구 원문을 필요할 때만 DB 에서 읽는다.
@@ -56,6 +56,7 @@ function InlineImagePreview({
   const [error, setError] = useState<string | null>(null);
   // v0.7.51 — 스트리밍 URL 로 표시 실패 시 한 번만 data URL 로 폴백.
   const [legacyTried, setLegacyTried] = useState(false);
+  const { isO2 } = useUiLayout();
 
   useEffect(() => {
     let cancelled = false;
@@ -105,13 +106,13 @@ function InlineImagePreview({
         onClick={handleClick}
         title={`이미지 로드 실패 — 클릭 = 원본 열기: ${error}`}
       >
-        🖼️ {alt || src} <small style={{ opacity: 0.6 }}>({error})</small>
+        {isO2 ? <Icon name="image" size={14} /> : "🖼️"} {alt || src} <small style={{ opacity: 0.6 }}>({error})</small>
       </span>
     );
   }
 
   if (!dataUrl) {
-    return <span className="md-inline-image-loading">🖼️ {alt || "이미지 로딩 중…"}</span>;
+    return <span className="md-inline-image-loading">{isO2 ? <Icon name="image" size={14} /> : "🖼️"} {alt || "이미지 로딩 중…"}</span>;
   }
 
   const handleImgError = () => {
@@ -139,9 +140,32 @@ function InlineImagePreview({
   );
 }
 
+// dzB — 코드 블록 언어 이름 (```powershell → <code class="hljs language-powershell">). 없으면 null.
+function codeLanguage(children: ReactNode): string | null {
+  const first = Array.isArray(children) ? children[0] : children;
+  if (!isValidElement(first)) return null;
+  const cls = (first.props as { className?: string }).className ?? "";
+  const m = cls.match(/(?:^|\s)language-([\w#+.-]+)/);
+  return m ? m[1] : null;
+}
+
+// dzB — 파일 칩 둘째 줄의 종류 이름 (확장자 기준, 모르면 대문자 확장자)
+const FILE_KINDS: Record<string, string> = {
+  ps1: "PowerShell", md: "마크다운", txt: "텍스트", pdf: "PDF", json: "JSON", csv: "CSV", xlsx: "엑셀", xls: "엑셀",
+  docx: "워드", doc: "워드", hwp: "한글", pptx: "파워포인트", py: "Python", ts: "TypeScript", tsx: "TypeScript",
+  js: "JavaScript", html: "HTML", css: "CSS", png: "이미지", jpg: "이미지", jpeg: "이미지", gif: "이미지", webp: "이미지",
+  zip: "압축 파일", log: "로그",
+};
+function fileKindLabel(href: string): string {
+  const name = href.split(/[\\/]/).pop() ?? href;
+  const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+  return FILE_KINDS[ext] ?? (ext ? ext.toUpperCase() : "파일");
+}
+
 // 코드 블록 wrapper — 우상단 복사 버튼.
 function CodeBlock({ children }: { children: ReactNode }) {
   const [copied, setCopied] = useState(false);
+  const { isO2 } = useUiLayout();
 
   const handleCopy = async () => {
     try {
@@ -153,6 +177,36 @@ function CodeBlock({ children }: { children: ReactNode }) {
       console.error("[CodeBlock] copy failed:", err);
     }
   };
+
+  // dzB (o2) — 목업 .code: 머리 줄(언어 · 복사) + 줄 번호 + 같은 mono. classic 은 아래 예전 모양 그대로.
+  if (isO2) {
+    const text = extractText(children).replace(/\n$/, "");
+    const lineCount = Math.max(1, text.split("\n").length);
+    return (
+      <div className="md-code-block-wrapper md-code-block-wrapper--o2">
+        <div className="md-code-head">
+          <span className="md-code-lang">{codeLanguage(children) ?? "코드"}</span>
+          <span className="md-code-head__grow" />
+          <button
+            type="button"
+            className={`md-code-copy-btn ${copied ? "copied" : ""}`}
+            onClick={handleCopy}
+            title="코드 복사"
+            aria-label="코드 복사"
+          >
+            <Icon name={copied ? "check" : "copy"} size={14} />
+            {copied ? "복사됨" : "복사"}
+          </button>
+        </div>
+        <div className="md-code-body">
+          <span className="md-code-lines" aria-hidden="true">
+            {Array.from({ length: lineCount }, (_, i) => i + 1).join("\n")}
+          </span>
+          <pre className="md-code-block">{children}</pre>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="md-code-block-wrapper">
@@ -176,6 +230,22 @@ function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps
 
   if (message.role === "tool") {
     return <ToolMessageView message={message} onFilterToggle={onToolFilterToggle} />;
+  }
+
+  // dzB (o2) — 시스템 알림은 카드: 오류 = 빨강 아이콘 + 옅은 판(목업 .card.err), 주의 = 주황 아이콘, 안내 = 무채색.
+  // 앞의 기호(⚠️ · Error:)는 아이콘이 대신하므로 떼고 보여 준다. classic 은 아래 예전 한 줄 그대로.
+  if (isO2 && message.role === "system") {
+    const level = message.level ?? "info";
+    const text = message.content.replace(/^(?:[⚠❌✅ℹ🤝🤖️️]+\s*|Error:\s*)/u, "");
+    return (
+      <div className={`msg msg-system msg-system--${level}`} role={level === "error" ? "alert" : "status"}>
+        <Icon name={level === "error" ? "alert" : level === "warn" ? "alertCircle" : "info"} size={level === "error" ? 20 : 16} className="msg-system__icon" />
+        <div className="msg-system__text">
+          {level === "error" && <div className="msg-system__title">문제가 생겼어요</div>}
+          <div className="msg-system__body">{text}</div>
+        </div>
+      </div>
+    );
   }
 
   const isAssistant = message.role === "assistant";
@@ -273,9 +343,12 @@ function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps
                           if (onPreviewRequest) onPreviewRequest(href, label);
                           else open(href).catch((err) => logger.error("[Message file chip] open 실패:", err));
                         }}>
-                        <Icon name="file" />
-                        <span className="md-file-chip__name">{children}</span>
-                        <span className="md-file-chip__hint">· 클릭하면 미리보기</span>
+                        <span className="md-file-chip__tile" aria-hidden="true"><Icon name="file" size={18} /></span>
+                        <span className="md-file-chip__text">
+                          <span className="md-file-chip__name">{children}</span>
+                          <span className="md-file-chip__hint">{fileKindLabel(href)} · 클릭하면 미리보기</span>
+                        </span>
+                        <Icon name="eye" className="md-file-chip__go" />
                       </a>
                     );
                   }
@@ -305,7 +378,7 @@ function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps
                     const label = typeof alt === "string" && alt ? alt : undefined;
                     return (
                       <>
-                        <span className="md-inline-media-label">{kind === "video" ? "🎬" : "🎵"} {label ?? src}</span>
+                        <span className="md-inline-media-label">{isO2 ? <Icon name={kind === "video" ? "film" : "music"} size={14} /> : kind === "video" ? "🎬" : "🎵"} {label ?? src}</span>
                         <InlineMediaPlayer src={src} label={label} kind={kind} onPreviewRequest={onPreviewRequest} />
                       </>
                     );
@@ -333,6 +406,13 @@ function Message({ message, onPreviewRequest, onToolFilterToggle }: MessageProps
                 },
                 // pre 태그 — 복사 버튼이 달린 wrapper 로 교체
                 pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+                // dzB (o2) — 표는 둥근 테두리 틀(가로 스크롤) 안에, 숫자 칸은 고정폭 숫자. classic 은 기본 table/td 그대로.
+                table: ({ children }) =>
+                  isO2 ? <div className="md-table-wrap"><table>{children}</table></div> : <table>{children}</table>,
+                td: ({ children, style }) =>
+                  isO2 && /^[\s\d.,%+\-−:/~()]+$/.test(extractText(children)) && /\d/.test(extractText(children))
+                    ? <td style={style} className="is-num">{children}</td>
+                    : <td style={style}>{children}</td>,
               }}
             >
               {message.content}
@@ -425,6 +505,7 @@ function AttachmentPreviewList({
 }) {
   // Phase 42: 클릭 시 lightbox 로 원본 표시
   const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
+  const { isO2 } = useUiLayout();
   return (
     <div className="msg-attachments">
       {attachments.map((att, idx) => {
@@ -473,13 +554,13 @@ function AttachmentPreviewList({
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span className="msg-attachment-icon">{getAttachmentIcon(att.type)}</span>
+              <span className="msg-attachment-icon">{isO2 ? <Icon name={o2AttachmentIcon(att.type)} size={18} /> : getAttachmentIcon(att.type)}</span>
             )}
             <div className="msg-attachment-info mono">
               <span className="msg-attachment-name">{att.name}</span>
               <span className="msg-attachment-size">{formatBytes(att.size)}</span>
               {isPreviewable && (
-                <span className="msg-attachment-hint">🔍 클릭 = 원본</span>
+                <span className="msg-attachment-hint">{isO2 ? "클릭하면 원본" : "🔍 클릭 = 원본"}</span>
               )}
             </div>
           </div>
@@ -493,6 +574,16 @@ function AttachmentPreviewList({
       )}
     </div>
   );
+}
+
+// dzB (o2) — 첨부 아이콘도 라인 아이콘 (classic 은 아래 이모지 그대로)
+function o2AttachmentIcon(type: string): IconName {
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("video/")) return "film";
+  if (type.startsWith("audio/")) return "music";
+  if (type.includes("sheet") || type.includes("excel") || type.includes("csv")) return "sheet";
+  if (type.includes("text") || type.includes("json") || type.includes("javascript") || type.includes("typescript")) return "note";
+  return "file";
 }
 
 function getAttachmentIcon(type: string): string {
@@ -836,6 +927,7 @@ function ToolMessageView({
     !fullPayload && typeof message.outputPreview === "string" ? `${shownOutput ?? ""}…` : shownOutput;
   // Phase 115 (v0.6.70) — 표시 모드. inline 으로 크게 띄울지, footnote 로 접을지 결정.
   const imageMode = useToolImageMode();
+  const { isO2 } = useUiLayout();
   const showInline =
     hasImages &&
     (imageMode === "all" ||
@@ -860,7 +952,7 @@ function ToolMessageView({
         >
           <summary style={{ cursor: "pointer", listStyle: "none", userSelect: "none" }}>
             <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
-              🖼️ {message.toolName}
+              {isO2 ? <Icon name="image" size={13} /> : "🖼️"} {message.toolName}
             </span>
             <span style={{ marginLeft: 6 }}>
               ·{" "}
@@ -960,7 +1052,7 @@ function ToolMessageView({
             }}
           >
             <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
-              📷 {message.toolName}
+              {isO2 ? <Icon name="camera" size={13} /> : "📷"} {message.toolName}
             </span>
             <span style={{ marginLeft: 6 }}>
               ·{" "}
@@ -994,6 +1086,86 @@ function ToolMessageView({
             )}
           </div>
         </details>
+      </div>
+    );
+  }
+  // dzB (o2) — 목업 .tc: 상태 원(완료 ✓ · 실패 ✕ · 실행 중 회전) + 도구 이름 + 인자(mono) + 시각 + 펼침 화살표.
+  // 펼치면 입력/결과 2단 표, 실패면 접힌 상태에서도 이유 한 줄, 실행 중이면 아래 얇은 진행 선. 위험도·분류 배지 클릭 필터는 그대로.
+  if (isO2) {
+    const args = toolArgsPreview(shownInput);
+    const why = displayStatus === "error" ? firstMeaningfulLine(shownOutput) : null;
+    const time = new Date(message.timestamp).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+    return (
+      <div className={`msg-tool-o2 msg-tool-o2--${displayStatus}`} data-risk={message.risk?.level ?? "unknown"}>
+        <details className={`msg-tool-compact msg-tool-${message.status}`} data-risk={message.risk?.level ?? "unknown"}>
+          <summary className="msg-tool-summary">
+            <span className={`msg-tool-st msg-tool-st--${displayStatus}`} role="img" aria-label={statusLabelKo(displayStatus)}
+              title={outcome.observationWarning ? "동작은 완료됐으나 화면 읽기에 실패했습니다. 같은 동작을 반복하지 말고 화면 조회만 다시 확인하세요." : statusLabelKo(displayStatus)}>
+              <Icon name={displayStatus === "pending" ? "loader" : displayStatus === "error" ? "x" : "check"} size={displayStatus === "pending" ? 16 : 13} strokeWidth={displayStatus === "pending" ? 2 : 2.2} />
+            </span>
+            <span className="msg-tool-name">{shortToolName(message.toolName)}</span>
+            <span className="mono msg-tool-arg" title={args || undefined}>{args}</span>
+            {outcome.observationWarning && <span className="msg-tool-flag">화면 읽기 실패</span>}
+            {riskBadge && message.risk && (
+              <span className={`msg-tool-risk msg-tool-risk--${message.risk.level}`}
+                title={onFilterToggle ? `클릭하면 위험도 "${riskBadge.label}" 만 보기 — ${message.risk.summary}` : message.risk.summary}
+                onClick={(e) => {
+                  if (!onFilterToggle || !message.risk) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onFilterToggle("risk", message.risk.level);
+                }}>
+                위험도 {riskBadge.label}
+              </span>
+            )}
+            {message.risk?.categoryId && (
+              <span className="msg-tool-cat" title={onFilterToggle ? `클릭하면 분류 "${message.risk.categoryId}" 만 보기` : `분류: ${message.risk.categoryId}`}
+                onClick={(e) => {
+                  if (!onFilterToggle || !message.risk?.categoryId) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onFilterToggle("category", message.risk.categoryId);
+                }}>
+                {message.risk.categoryId}
+              </span>
+            )}
+            <span className="mono msg-time">{time}</span>
+            <Icon name="chevronRight" size={14} className="msg-tool-chev" />
+          </summary>
+          <div className="msg-tool-expanded">
+            {message.risk && (
+              <div className="msg-tool-section">
+                <span className="msg-tool-label">위험도</span>
+                <div className="msg-tool-risknote">{riskBadge?.label} · {message.risk.summary}</div>
+              </div>
+            )}
+            {shownInput != null && (
+              <div className="msg-tool-section">
+                <span className="msg-tool-label">입력</span>
+                <pre className="mono msg-tool-json">{inputText}</pre>
+              </div>
+            )}
+            {shownOutput && (
+              <div className="msg-tool-section">
+                <span className="msg-tool-label">결과</span>
+                <pre className="mono msg-tool-json">{outputText}</pre>
+              </div>
+            )}
+            {isTruncated && !fullPayload && (
+              <div className="msg-tool-section msg-tool-truncated">
+                <span className="msg-tool-label" />
+                <div>
+                  앞부분만 표시 중{" "}
+                  <button type="button" className="msg-tool-load-full" onClick={() => void loadFullPayload()} disabled={payloadState === "loading"}>
+                    {payloadState === "loading" ? "불러오는 중…" : payloadState === "error" ? "다시 시도" : "전체 불러오기"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </details>
+        {why && <div className="msg-tool-why"><Icon name="alertCircle" size={14} />{why}</div>}
+        {displayStatus === "pending" && <div className="msg-tool-runbar" aria-hidden="true" />}
       </div>
     );
   }
@@ -1145,6 +1317,34 @@ function roleLabel(role: string): string {
     default:
       return role;
   }
+}
+
+// dzB (o2) — 도구 카드 보조 함수
+function statusLabelKo(status: string): string {
+  return status === "pending" ? "실행 중" : status === "error" ? "실패" : "완료";
+}
+/** mcp__k-personal__fm_list_directory → fm_list_directory */
+function shortToolName(name: string): string {
+  return name.startsWith("mcp__") ? name.split("__").pop() || name : name;
+}
+/** 입력 인자 한 줄 요약: 앞쪽 글자·숫자 값 두 개까지 (긴 값은 자름). */
+function toolArgsPreview(input: unknown): string {
+  if (input == null) return "";
+  if (typeof input !== "object") return String(input).slice(0, 140);
+  const vals = Object.values(input as Record<string, unknown>)
+    .filter((v) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+    .slice(0, 2)
+    .map((v) => String(v).replace(/\s+/g, " "));
+  const out = vals.join("  ");
+  return out.length > 140 ? `${out.slice(0, 139)}…` : out;
+}
+/** 실패 이유 한 줄: 결과의 첫 의미 있는 줄 ('Error:' 머리는 뗌). */
+function firstMeaningfulLine(output: string | undefined): string | null {
+  if (!output) return null;
+  const line = output.split("\n").map((l) => l.trim()).find(Boolean);
+  if (!line) return null;
+  const t = line.replace(/^(?:Error|오류)\s*:\s*/i, "");
+  return t.length > 160 ? `${t.slice(0, 159)}…` : t;
 }
 
 function statusLabel(status: string): string {

@@ -26,6 +26,8 @@ import { filterMessagesForBody, filterMessagesForCopy } from "../utils/messageFi
 import { useUiLayout } from "../utils/useUiLayout";
 import { applyChatDisplay, CHAT_DISPLAY_EVENT } from "../utils/chatDisplay";
 import { suggestionPrompts } from "../utils/quickPrompts";
+import { devContentOverride } from "../dev/mockupFixture";
+import o2Mark from "../assets/o2-mark.png";
 
 interface MainChatProps {
   activityPanel?: ReactNode;
@@ -175,6 +177,8 @@ function MainChat({
   // Phase 90 (v0.6.32) — tool_use 카드 visibility + 카테고리/위험도 필터.
   // default OFF (기존 K 흐름 무변경). 토글 ON 시 tool 메시지 visible + filter chip 사용 가능.
   const [showToolCards, setShowToolCards] = useState<boolean>(() => {
+    // dzB — DEV 픽스처 ?content=rich 는 도구 카드를 보여 준 채로 연다 (저장 안 함, 배포 빌드에선 항상 null)
+    if (devContentOverride() === "rich") return true;
     try {
       return localStorage.getItem("kda_show_tool_cards") === "1";
     } catch {
@@ -379,7 +383,26 @@ function MainChat({
       </div>
 
       {/* Phase 90 — tool_use 카드 visibility 토글 + 필터 chip (상단 sticky bar) */}
-      {(showToolCards || activeFilter) && (
+      {(showToolCards || activeFilter) && isO2 && (
+        // dzB (o2) — 같은 토글·필터를 조용한 한 줄로 (이모지 대신 라인 아이콘, 강조색 판 없음). classic 은 아래 예전 막대 그대로.
+        <div className="tool-cards-bar" role="toolbar" aria-label="도구 호출 카드">
+          <label className="tool-cards-bar__toggle">
+            <input type="checkbox" checked={showToolCards} onChange={(e) => setShowToolCardsPersist(e.target.checked)} />
+            <Icon name="wrench" size={14} />
+            <span>도구 호출 카드 표시</span>
+          </label>
+          {activeFilter && (
+            <span className="tool-cards-bar__filter">
+              {activeFilter.kind === "risk" ? `위험도 ${RISK_LABEL_KO[activeFilter.value] ?? activeFilter.value}` : `분류 ${activeFilter.value}`}
+              <button type="button" onClick={() => setActiveFilter(null)} title="필터 해제" aria-label="필터 해제">
+                <Icon name="x" size={12} />
+              </button>
+            </span>
+          )}
+          <span className="tool-cards-bar__hint">카드의 위험도·분류 배지를 누르면 그것만 보여요</span>
+        </div>
+      )}
+      {(showToolCards || activeFilter) && !isO2 && (
         <div
           style={{
             display: "flex",
@@ -729,6 +752,7 @@ function fillComposer(prompt: string) {
 
 // v0.7.86 UI 10단계 (o2) — 크롬의 이모지 대신 라인 아이콘. 메뉴 문구 앞 기호(↻ 📦 📤)는 o2 에서만 떼고 보여 준다.
 const menuText = (label: string) => (/^[↻📦📤]/u.test(label) ? label.slice(label.indexOf(" ") + 1) : label);
+const RISK_LABEL_KO: Record<string, string> = { low: "낮음", medium: "보통", high: "높음", critical: "치명" };
 const SUGGESTION_ICONS: Record<string, IconName> = {
   screenshot: "camera", "todo-list": "listChecks", "disk-usage": "hardDrive", "recent-files": "folder",
 };
@@ -739,12 +763,14 @@ function EmptyState() {
     return (
       <div className="empty-state empty-state--o2">
         <div className="empty-content">
+          <img className="empty-mark" src={o2Mark} width={44} height={44} alt="" draggable={false} />
           <div className="empty-title">무엇을 도와드릴까요?</div>
+          <div className="empty-sub">파일, 앱, 웹을 대신 다뤄 드려요. 위험한 작업은 실행 전에 꼭 물어봅니다.</div>
           <div className="empty-suggestions" role="list" aria-label="제안">
             {suggestionPrompts().map((p) => (
               <button key={p.id} type="button" role="listitem" className="empty-suggestion"
                 onClick={() => fillComposer(p.prompt)} title="입력창에 채우기">
-                <span className="empty-suggestion-icon" aria-hidden>{SUGGESTION_ICONS[p.id] ? <Icon name={SUGGESTION_ICONS[p.id]} size={18} /> : p.icon}</span>
+                <span className="empty-suggestion-icon" aria-hidden>{SUGGESTION_ICONS[p.id] ? <Icon name={SUGGESTION_ICONS[p.id]} size={18} /> : <Icon name="msg" size={18} />}</span>
                 <span className="empty-suggestion-label">{p.label}</span>
                 <span className="empty-suggestion-prompt">{p.prompt}</span>
               </button>
@@ -797,7 +823,18 @@ function ProgressIndicator({
     return null;
   }, [messages, isStreaming]);
 
+  const { isO2 } = useUiLayout();
   if (!isStreaming) return null;
+
+  // dzB (o2) — 목업 .streaming: 점 3개 + '답변 작성 중' (UI 글꼴, 무채색 fg-3)
+  if (isO2) {
+    return (
+      <div className="progress-indicator progress-indicator--o2" role="status" aria-live="polite">
+        <span className="progress-dots" aria-hidden="true"><i /><i /><i /></span>
+        <span className="progress-label">{currentTool ? `${formatToolName(currentTool.toolName)} 실행 중` : "답변 작성 중"}</span>
+      </div>
+    );
+  }
 
   const label = currentTool
     ? `${formatToolName(currentTool.toolName)} 실행 중...`
