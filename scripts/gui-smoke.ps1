@@ -35,7 +35,7 @@
   message is easy to spot in the chat log.
 
 .PARAMETER WindowTitle
-  Substring to match against window titles. Default 'K Desktop Agent'. Case-insensitive.
+  Substring to match against window titles. Default 'O2 Agent' (v0.7.88+; older builds: 'K Desktop Agent'). Case-insensitive.
 
 .EXAMPLE
   .\scripts\gui-smoke.ps1                       # screenshot + window inspect only
@@ -46,7 +46,7 @@
 param(
     [switch]$Interact,
     [string]$Phrase   = '[gui-smoke] 자동화 테스트 — 응답하지 않아도 됩니다.',
-    [string]$WindowTitle = 'K Desktop Agent'
+    [string]$WindowTitle = 'O2 Agent'
 )
 
 $ErrorActionPreference = "Stop"

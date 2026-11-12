@@ -165,3 +165,12 @@ test("알림 띠 · 읽기 폭 · 슬라이드오버 (v2.1 · C) — 무채색 �
   assert.doesNotMatch(app, /폭 420~640 조절/);
   assert.match(app, /<kbd className="o2-kbd">Esc<\/kbd>닫기/);
 });
+
+test("브랜드 — 창 제목·페이지 제목·트레이 툴팁은 O2 Agent, productName/identifier 는 유지(설치 경로·업데이터 보호)", () => {
+  const conf = JSON.parse(read("../src-tauri/tauri.conf.json"));
+  assert.equal(conf.app.windows[0].title, "O2 Agent");
+  assert.equal(conf.productName, "K Desktop Agent", "productName 변경은 설치 경로·레지스트리·업데이터를 바꾸므로 별도 승인 필요");
+  assert.equal(conf.identifier, "com.k.desktop-agent");
+  assert.match(read("../index.html"), /<title>O2 Agent<\/title>/);
+  assert.match(read("../src-tauri/src/lib.rs"), /\.tooltip\("O2 Agent"\)/);
+});
