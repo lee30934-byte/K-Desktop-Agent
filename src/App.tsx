@@ -123,6 +123,7 @@ import "./styles/o2-fidelity.css";
 import "./styles/o2-slideover.css";
 import "./styles/o2-settings.css";
 import "./styles/o2-spacing.css"; // spA 여백·글자 다듬기 (o2 전용, 마지막에 불러와 이김)
+import "./styles/o2-spacing-settings.css"; // spB 설정 페이지·명령 팔레트·⋯ 메뉴 여백·글자 (o2 전용)
 import logger from "./utils/logger";
 import {
   TelegramTurnTracker,

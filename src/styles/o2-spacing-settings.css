@@ -1,0 +1,158 @@
+/* ════════════════════════════════════════════════════════════════
+   여백·글자 다듬기 spB — 설정 전체 페이지 · 명령 팔레트 · 헤더 ⋯ 메뉴 (o2 전용)
+   목업의 구조·색·부품(o2-settings.css)은 그대로 두고 크기·간격·글자·폭만 넉넉하게.
+   모든 선택자가 :root[data-layout="o2"] 로 시작한다 — classic 모달·팔레트·메뉴는 이 파일을 받지 않는다
+   (scripts/ui-spacing-settings.test.ts). o2-spacing.css 다음에 불러와 같은 특이도면 이 파일이 이긴다.
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 1. 설정 왼쪽 열 (폭 264 · 줄 40) ── */
+:root[data-layout="o2"] .settings-nav-col { padding: 16px 12px 12px; }
+:root[data-layout="o2"] .settings-nav-col .settings-back { height: 36px; gap: 10px; padding: 0 10px; margin-bottom: 10px; font-size: var(--fs-ui); }
+:root[data-layout="o2"] .settings-back-kbd { font-size: 11px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-search { height: 38px; gap: 10px; margin: 0 0 16px; padding: 0 12px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-search-input { font-size: var(--fs-ui); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tabs { display: flex; flex-direction: column; gap: 2px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab { height: 40px; gap: 12px; padding: 0 12px; border-radius: var(--radius-ctl); font-size: var(--fs-ui); }
+:root[data-layout="o2"] .settings-tab-count { font-size: 12px; }
+:root[data-layout="o2"] .settings-nav-foot { padding: 10px 12px; font-size: var(--fs-caption); line-height: 1.6; }
+
+/* ── 2. 내용 열: 고정 696 대신 넓게 (최대 1040 · 좌우 48) ── */
+:root[data-layout="o2"] .settings-overlay--page .settings-body { padding: 36px 48px 88px; gap: 44px; word-break: keep-all; overflow-wrap: break-word; }
+:root[data-layout="o2"] .settings-overlay--page .settings-body > * { max-width: min(1040px, 100%); }
+:root[data-layout="o2"] .settings-group-crumb { margin-bottom: 8px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .settings-overlay--page .settings-group-intro-title { line-height: 1.25; letter-spacing: -0.02em; }
+:root[data-layout="o2"] .settings-overlay--page .settings-group-intro-desc { margin-top: 10px; font-size: var(--fs-ui); line-height: 1.65; }
+:root[data-layout="o2"] .settings-overlay--page .settings-search-summary { font-size: var(--fs-ui); }
+/* 좁은 창: 왼쪽 열을 조금 줄이고 여백도 줄여 글자 열을 지킨다 */
+@media (max-width: 1100px) {
+  :root[data-layout="o2"] .settings-overlay--page .settings-panel { grid-template-columns: 232px minmax(0, 1fr); }
+  :root[data-layout="o2"] .settings-overlay--page .settings-body { padding: 28px 28px 72px; gap: 36px; }
+}
+
+/* ── 3. 섹션 머리 · 테두리 목록 행 (행 최소 56 · 안쪽 16/20 · 설명 13) ── */
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .eyebrow { margin: 0 0 14px; font-size: 19px; letter-spacing: -0.01em; }
+:root[data-layout="o2"] .settings-section .o2s-head .o2s-head__title { font-size: 19px; letter-spacing: -0.01em; }
+:root[data-layout="o2"] .o2s-head__row { gap: 10px; }
+:root[data-layout="o2"] .o2s-badge { font-size: 12px; padding: 3px 10px; }
+:root[data-layout="o2"] .o2s-head__desc { margin-top: 8px; font-size: var(--fs-ui); line-height: 1.65; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row { min-height: 56px; padding: 16px 20px; gap: 24px; box-sizing: border-box; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .eyebrow + .settings-row,
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .o2s-subhead + .settings-row { border-top-left-radius: 14px; border-top-right-radius: 14px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .o2s-rows + .settings-row { margin-top: 16px; border-radius: 14px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row:last-child { border-bottom-left-radius: 14px; border-bottom-right-radius: 14px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-vertical { gap: 14px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-info { gap: 2px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-title { margin-bottom: 4px; font-size: 15px; line-height: 1.45; }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-desc { font-size: 13px; line-height: 1.65; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > * .eyebrow:not(.o2s-head__title) { font-size: var(--fs-caption); }
+:root[data-layout="o2"] .settings-overlay--page :is(.status-ok, .status-warn) { font-size: var(--fs-caption); }
+:root[data-layout="o2"] .settings-overlay--page .settings-meta { padding: 12px 14px; font-size: var(--fs-caption); line-height: 1.6; }
+:root[data-layout="o2"] .o2s-subhead { margin: 22px 0 10px; font-size: var(--fs-ui); }
+/* 카드 밖으로 이어지는 부품(오류 줄 · 버튼 줄 · 안내 글 · 하위 목록)이 카드에 붙지 않게 (인라인 margin 0.3~0.5rem 대신) */
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row ~ :not(.settings-row, .eyebrow, [class*="o2s-"]) { margin-top: 14px !important; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row ~ div:not([class]):has(> .settings-row) { margin-top: 28px !important; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row:nth-last-child(1 of .settings-row) { border-bottom-left-radius: 14px; border-bottom-right-radius: 14px; }
+/* 카드 안·밖의 하위 행 목록 (에이전트 실험 기능 · 텔레그램 자동 분배): 낱장 카드 대신 붙은 테두리 목록 한 장 */
+:root[data-layout="o2"] .settings-overlay--page .settings-section > div:not([class]) > .settings-row,
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row div:not([class]) > .settings-row {
+  min-height: 56px; margin: -1px 0 0; padding: 14px 18px; gap: 24px; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 0; background: var(--surface-raised);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row div:not([class]) > .settings-row { background: var(--surface-app); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > div:not([class]) > .settings-row:nth-child(1 of .settings-row),
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row div:not([class]) > .settings-row:nth-child(1 of .settings-row) { margin-top: 0; border-top-left-radius: 12px; border-top-right-radius: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > div:not([class]) > .settings-row:nth-last-child(1 of .settings-row),
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row div:not([class]) > .settings-row:nth-last-child(1 of .settings-row) { border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > div:not([class]) > .settings-row-title { margin: 0 0 12px !important; font-size: 16px; }
+
+/* 권한과 안전 요약 카드 · 번호 섹션 행 */
+:root[data-layout="o2"] .o2s-summary { margin-top: -8px; padding: 20px; }
+:root[data-layout="o2"] .o2s-summary__pills { gap: 10px; }
+:root[data-layout="o2"] .o2s-pill { height: 32px; gap: 7px; padding: 0 12px; font-size: var(--fs-sub); }
+:root[data-layout="o2"] .o2s-flow { gap: 8px; margin-top: 16px; }
+:root[data-layout="o2"] .o2s-step { padding: 12px 14px; border-radius: 12px; }
+:root[data-layout="o2"] .o2s-step small { font-size: 11.5px; }
+:root[data-layout="o2"] .o2s-step b { margin-top: 4px; font-size: var(--fs-ui); }
+:root[data-layout="o2"] .o2s-step span { margin-top: 3px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .o2s-flow-note { margin-top: 12px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .o2s-rows { margin-top: 16px; border-radius: 14px; }
+:root[data-layout="o2"] .o2s-row { min-height: 60px; gap: 16px; padding: 12px 20px; box-sizing: border-box; }
+:root[data-layout="o2"] .o2s-row__ico { width: 34px; height: 34px; border-radius: 9px; }
+:root[data-layout="o2"] .settings-overlay--page .o2s-row__tx .o2s-row__title { font-size: 15px; line-height: 1.4; }
+:root[data-layout="o2"] .settings-overlay--page .o2s-row__tx .o2s-mono { font-size: 13.5px; }
+:root[data-layout="o2"] .o2s-row__tx small { margin-top: 3px; font-size: 13px; line-height: 1.55; }
+:root[data-layout="o2"] .o2s-seg { padding: 3px; border-radius: 10px; }
+:root[data-layout="o2"] .o2s-seg__opt { height: 30px; padding: 0 12px; font-size: 13px; }
+:root[data-layout="o2"] .o2s-legend { gap: 22px; margin-top: 10px; }
+:root[data-layout="o2"] .o2s-legend div { font-size: var(--fs-caption); }
+:root[data-layout="o2"] .o2s-kbd { font-size: 12px; padding: 2px 7px; }
+:root[data-layout="o2"] :is(.o2s-state, .o2s-details, .o2s-error) { font-size: var(--fs-caption); }
+:root[data-layout="o2"] .o2s-sm { height: 30px; padding: 0 12px; font-size: 13px; }
+:root[data-layout="o2"] .o2s-switch { width: 40px; height: 22px; }
+:root[data-layout="o2"] .o2s-switch::after { width: 18px; height: 18px; }
+:root[data-layout="o2"] .o2s-switch.is-on::after { transform: translateX(18px); }
+:root[data-layout="o2"] #settings-sec-precise-lock > .settings-row > div:not(.permission-category):not(.settings-row-info):not(.tool-lock-examples) { padding: 12px 20px; }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-category { padding: 0 20px; }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-category-title { min-height: 52px; font-size: 15px; }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-item { padding: 12px 0 12px 24px; }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-name { font-size: var(--fs-ui); }
+:root[data-layout="o2"] #settings-sec-precise-lock .permission-desc { font-size: 13px; }
+
+/* ── 4. 버튼 · 스위치 · 입력칸 (버튼 34 · 스위치 40×22 · 입력 40) ── */
+:root[data-layout="o2"] .settings-overlay--page :is(.settings-btn, .settings-btn-oauth) { height: 34px; gap: 7px; padding: 0 14px; border-radius: 9px; }
+:root[data-layout="o2"] .settings-overlay--page .toggle { width: 40px; height: 22px; flex: none; }
+:root[data-layout="o2"] .settings-overlay--page .toggle-slider:before { width: 18px; height: 18px; }
+:root[data-layout="o2"] .settings-overlay--page .toggle input:checked + .toggle-slider:before { transform: translateX(18px); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section :is(select, input[type="text"], input[type="password"], input[type="number"], input[type="url"]) {
+  min-height: 40px; padding: 0 12px; box-sizing: border-box; font-size: var(--fs-ui);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-section textarea { padding: 10px 12px; font-size: var(--fs-ui); line-height: 1.6; }
+
+/* ── 5. 그룹별 부품: 단축키 · AI 엔진 · 테마 ── */
+:root[data-layout="o2"] .settings-overlay--page .shortcuts-list { margin-top: 0; border-radius: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-item { min-height: 44px; padding: 8px 16px; box-sizing: border-box; }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-key { padding: 2px 8px; font-size: 12px; }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-desc { font-size: var(--fs-ui); }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tabs { gap: 8px; }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab { height: 38px; padding: 0 14px; border-radius: 10px; font-size: var(--fs-ui); }
+:root[data-layout="o2"] .settings-overlay--page .api-key-form { padding: 20px; border-radius: 14px; }
+:root[data-layout="o2"] .settings-overlay--page .api-key-docs { font-size: var(--fs-caption); }
+:root[data-layout="o2"] .settings-overlay--page .api-key-input { font-size: 13px; }
+:root[data-layout="o2"] .settings-overlay--page .model-badge { height: 28px; padding: 0 12px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .settings-overlay--page .theme-group-label { margin-top: 6px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .settings-overlay--page .theme-card { border-radius: 14px; }
+:root[data-layout="o2"] .settings-overlay--page .theme-name { font-size: var(--fs-ui); }
+
+/* ── 6. 명령 팔레트 (Ctrl+K): 폭 640 · 입력 18px · 줄 42 ── */
+:root[data-layout="o2"] .command-palette { width: min(640px, calc(100vw - 48px)); }
+:root[data-layout="o2"] .command-palette-header { gap: 12px; min-height: 60px; padding: 0 16px 0 20px; box-sizing: border-box; }
+:root[data-layout="o2"] .command-palette-input { font-family: var(--font-ui); font-size: 17px; letter-spacing: var(--ls-ui); }
+:root[data-layout="o2"] .command-palette-input:focus-visible { outline: none; box-shadow: none; }
+:root[data-layout="o2"] .command-palette-hint { padding: 3px 8px; font: 11px var(--font-mono); }
+:root[data-layout="o2"] .command-palette-list { max-height: min(460px, 56vh); padding: 6px 0 8px; }
+:root[data-layout="o2"] .command-palette-group { padding: 14px 20px 6px; font-size: var(--fs-caption); letter-spacing: 0; }
+:root[data-layout="o2"] .command-palette-group:not(:first-child) { margin-top: 6px; }
+:root[data-layout="o2"] .command-palette-item { min-height: 42px; gap: 14px; margin: 0 8px; padding: 0 12px; box-sizing: border-box; }
+:root[data-layout="o2"] .command-palette-item.selected { padding-left: 12px; }
+:root[data-layout="o2"] .command-item-label { font-size: var(--fs-ui); }
+:root[data-layout="o2"] .command-item-hint { font-size: var(--fs-caption); }
+:root[data-layout="o2"] .command-item-shortcut { padding: 3px 8px; font-size: 11.5px; }
+:root[data-layout="o2"] .command-palette-empty { padding: 36px 20px; font-size: var(--fs-ui); }
+:root[data-layout="o2"] .command-palette-footer { gap: 20px; padding: 12px 20px; font-size: var(--fs-caption); }
+
+/* ── 7. 헤더 ⋯ 메뉴: 폭 248 · 줄 38 · 14.5px ── */
+:root[data-layout="o2"] .chat-options-body {
+  width: 248px; gap: 2px; padding: 8px; top: calc(100% + 10px);
+  background: var(--surface-raised); border-color: var(--line); border-radius: 14px; box-shadow: var(--shadow-overlay);
+}
+:root[data-layout="o2"] .chat-options-body button {
+  min-height: 38px; padding: 0 12px; border-radius: 9px; box-sizing: border-box;
+  font-size: var(--fs-ui); color: var(--fg-muted);
+}
+:root[data-layout="o2"] .chat-options-body button:hover { background: var(--surface-hover); color: var(--fg); }
+:root[data-layout="o2"] .chat-options-body .chat-options-approval[aria-checked="true"] { color: var(--warn); }
+:root[data-layout="o2"] .chat-options-engine { gap: 6px; margin: 2px 0; padding: 8px 12px; font-size: var(--fs-caption); color: var(--fg-subtle); }
+:root[data-layout="o2"] .chat-options-engine select {
+  height: 34px; padding: 0 10px; background: var(--surface-app); border-color: var(--line-strong); border-radius: 8px;
+  font-size: var(--fs-sub); color: var(--fg);
+}
