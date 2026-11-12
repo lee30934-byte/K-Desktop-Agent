@@ -21,7 +21,8 @@ const menu = header.slice(header.indexOf('<div className="chat-options-body">'))
 test("o2 ⋯ 메뉴 — 첫 줄 '확인 없이 실행' 스위치, '이 대화의 엔진' 선택, '폴더 지침 편집' (H8)", () => {
   assert.match(menu, /^<div className="chat-options-body">\s*\{isO2 && \(\s*<button type="button" className="chat-options-approval" role="switch" aria-checked=\{approval\.enabled\}/,
     "확인 없이 실행이 ⋯ 첫 줄 (o2 만)");
-  assert.match(menu, /확인 없이 실행 · \{approval\.enabled \? "켜짐" : "꺼짐"\}/);
+  // dzC — 목업 v2.1: 이름 + 상태 배지(켜짐/꺼짐) + 키캡
+  assert.match(menu, /\/>확인 없이 실행\n\s+<span className="chat-options-r">\n\s+<span className=\{`chat-options-badge\$\{approval\.enabled \? " is-on" : ""\}`\}>\{approval\.enabled \? "켜짐" : "꺼짐"\}<\/span>/);
   assert.match(chat, /const approval = useApprovalMode\(\);/, "헤더 안전 칩·팔레트·Ctrl+Alt+A 와 같은 훅");
   assert.match(menu, /\{isO2 && onSetConversationProvider && conversationProvider !== undefined && \([\s\S]*?aria-label="이 대화의 엔진"[\s\S]*?PINNABLE_PROVIDERS\.map/,
     "활성 대화가 있을 때만 엔진 선택 (전역 따름 포함)");

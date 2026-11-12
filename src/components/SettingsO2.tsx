@@ -2,7 +2,7 @@
 // 모양만 담당한다. 상태·저장은 Settings.tsx 의 기존 state/핸들러를 그대로 받아 쓴다 (로직 변경 없음).
 // classic 배치에서는 렌더되지 않는다.
 import { Fragment, type ReactNode } from "react";
-import { Icon, type IconName } from "../ui";
+import { Icon, type IconName } from "../ui/icons";
 import type { SettingsTabId } from "../utils/settingsTabs";
 
 /** 그룹 nav 의 단색 라인 아이콘 (목업 스프라이트와 같은 모양) */
@@ -21,10 +21,12 @@ export const SETTINGS_GROUP_ICONS: Record<SettingsTabId, IconName> = {
 /** 번호 붙은 섹션 제목 + 작은 태그 + 경로 복사 버튼. h2 는 설정 검색이 읽도록 eyebrow 클래스를 함께 단다. */
 export function O2SecHead({ title, badge, path, desc }: { title: string; badge?: string; path: string; desc?: ReactNode }) {
   const copy = () => { try { void navigator.clipboard?.writeText(path); } catch { /* ignore */ } };
+  // dzC — '1. 제목' 은 목업 v2.1 처럼 고정폭 '01' 번호 + 제목으로
+  const num = title.match(/^(\d+)\.\s*(.*)$/);
   return (
     <div className="o2s-head">
       <div className="o2s-head__row">
-        <h2 className="eyebrow o2s-head__title">{title}</h2>
+        <h2 className="eyebrow o2s-head__title">{num ? <><span className="o2s-head__num">{num[1].padStart(2, "0")}</span>{num[2]}</> : title}</h2>
         {badge && <span className="o2s-badge">{badge}</span>}
         <button type="button" className="o2s-copy" onClick={copy} aria-label="섹션 경로 복사" title={`섹션 경로 복사 — ${path}`}>
           <Icon name="link" size={14} />
@@ -44,7 +46,7 @@ export function O2Seg<T extends string>({ value, options, onChange, label }:
       {options.map((o) => (
         <button key={o.value} type="button" role="radio" aria-checked={o.value === value} title={o.title}
           className={`o2s-seg__opt o2s-seg__opt--${o.tone}${o.value === value ? " is-on" : ""}`}
-          onClick={() => onChange(o.value)}>{o.label}</button>
+          onClick={() => onChange(o.value)}>{o.value === value && <i className="o2s-seg__dot" aria-hidden="true" />}{o.label}</button>
       ))}
     </div>
   );
@@ -76,35 +78,46 @@ export function O2Switch({ checked, onChange, label, tone = "accent" }:
 
 export interface O2SafetyCounts { auto: number; ask: number; manual: number }
 
-/** 권한과 안전 맨 위 요약 카드: 상태 칩 + 4단계 흐름 */
+/** 권한과 안전 맨 위 4단계 흐름 (목업 v2.1: 단계 01~04 모두 같은 무채색 카드 — 선택된 것처럼 보이지 않게).
+ *  각 단계 아래 줄에 실제 상태(허용/묻기/차단 수 · 확인 방식 · 잠긴 수 · SafeMode). 확인 없이 실행 중일 때만 주황. */
 export function O2SafetySummary({ autoApproval, counts, locked, safeModeLabel }:
   { autoApproval: boolean; counts: O2SafetyCounts; locked: number; safeModeLabel: string }) {
   const approvalLabel = autoApproval ? "확인 없이 실행 중" : "확인 후 실행";
-  const steps: Array<{ n: number; title: string; sub: ReactNode; hl?: boolean }> = [
-    { n: 1, title: "기능별 허용 범위", sub: "허용 · 묻기 · 차단" },
-    { n: 2, title: "실행 확인", sub: <span className={autoApproval ? "o2s-warn" : undefined}>{approvalLabel}</span>, hl: true },
-    { n: 3, title: "개별 도구 잠금", sub: locked > 0 ? `${locked}개 잠김` : "잠긴 도구 없음" },
-    { n: 4, title: "SafeMode", sub: "위험도 기반 차단" },
+  const steps: Array<{ n: number; title: string; sub: ReactNode }> = [
+    { n: 1, title: "기능별 허용 범위", sub: <><b className="o2s-g">허용 {counts.auto}</b>·<b className="o2s-y">묻기 {counts.ask}</b>·<b className="o2s-r">차단 {counts.manual}</b></> },
+    { n: 2, title: "실행 확인", sub: <span className={autoApproval ? "o2s-warn" : undefined}>{approvalLabel}</span> },
+    { n: 3, title: "개별 도구 잠금", sub: <><Icon name="lock" size={14} />{locked > 0 ? `${locked}개 잠김` : "잠긴 도구 없음"}</> },
+    { n: 4, title: "SafeMode", sub: `${safeModeLabel} · 위험도 기반` },
   ];
   return (
-    <div className="o2s-summary" data-testid="o2-safety-summary" style={{ order: 1 }}>
-      <div className="o2s-summary__pills">
-        <span className="o2s-pill"><Icon name={autoApproval ? "zap" : "shield"} size={14} /><b className={autoApproval ? "o2s-warn" : undefined}>{approvalLabel}</b></span>
-        <span className="o2s-pill">기능별 허용 범위 <b className="o2s-g">허용 {counts.auto}</b> · <b className="o2s-y">묻기 {counts.ask}</b> · <b className="o2s-r">차단 {counts.manual}</b></span>
-        <span className="o2s-pill"><Icon name="lock" size={14} />잠긴 도구 <b>{locked}</b></span>
-        <span className="o2s-pill">SafeMode <b>{safeModeLabel}</b></span>
-      </div>
+    <div className="o2s-summary" data-testid="o2-safety-summary" style={{ order: 1 }}
+      title="뒤 단계가 막으면 앞에서 허용해도 실행되지 않습니다. 확인 없이 실행은 확인창만 건너뜁니다.">
       <div className="o2s-flow">
         {steps.map((s, i) => (
           <Fragment key={s.n}>
             {i > 0 && <span className="o2s-flow__arrow" aria-hidden="true"><Icon name="chevronRight" size={14} /></span>}
-            <div className={`o2s-step${s.hl ? " o2s-step--hl" : ""}`}>
-              <small>{s.n}</small><b>{s.title}</b><span>{s.sub}</span>
+            <div className="o2s-step">
+              <small>{String(s.n).padStart(2, "0")}</small><b>{s.title}</b><span>{s.sub}</span>
             </div>
           </Fragment>
         ))}
       </div>
-      <p className="o2s-flow-note">뒤 단계가 막으면 앞에서 허용해도 실행되지 않습니다. 확인 없이 실행은 확인창만 건너뜁니다.</p>
+    </div>
+  );
+}
+
+/** 잠긴 도구를 칩으로 (목업 v2.1 '잠긴 도구' 행). ✕ 는 기존 잠금 해제 핸들러 그대로 */
+export function O2LockChips({ names, onUnlock }: { names: string[]; onUnlock: (name: string) => void }) {
+  return (
+    <div className="o2s-lockchips">
+      {names.map((n) => (
+        <span key={n} className="o2s-lockchip">
+          <Icon name="lock" size={14} /><span className="o2s-lockchip__name" title={n}>{n.replace(/^mcp__.+?__/, "")}</span>
+          <button type="button" className="o2s-lockchip__x" onClick={() => onUnlock(n)} aria-label={`${n} 잠금 해제`} title="잠금 해제">
+            <Icon name="x" size={12} />
+          </button>
+        </span>
+      ))}
     </div>
   );
 }

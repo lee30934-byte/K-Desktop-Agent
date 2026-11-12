@@ -8,11 +8,39 @@ import {
   SETTINGS_SECTION_ANCHORS,
   type PaletteItem,
 } from "../utils/commandPalette";
+import { SETTINGS_TABS } from "../utils/settingsTabs";
 import type { Conversation } from "../types";
+import { Icon, type IconName } from "../ui/icons";
+import { emojiIconName } from "../ui/emojiIcon";
+import { SETTINGS_GROUP_ICONS } from "./SettingsO2";
 
 // v0.7.86 UI 9단계 — 그룹: 동작 / 빠른 요청 / 대화 이동 / 설정 (두 배치 공통).
 // 옛 이름(세션 초기화, 자동 승인, 대화 압축 …)은 keywords 로 남겨 검색에 걸리게 한다.
-type Command = PaletteItem;
+// dzC (o2 만) — 목업 v2.1 팔레트: 라인 아이콘 · 범위 칩(전체/동작/대화/설정, Tab) · 검색어 강조 · 키캡 · 설정은 '그룹 › 섹션'.
+type Command = PaletteItem & { o2Icon?: IconName; crumb?: string; meta?: string };
+
+type PaletteScope = "all" | "action" | "conversation" | "settings";
+const SCOPES: Array<[PaletteScope, string]> = [["all", "전체"], ["action", "동작"], ["conversation", "대화"], ["settings", "설정"]];
+const inScope = (scope: PaletteScope, c: Command) =>
+  scope === "all" || (scope === "action" ? c.group === "action" || c.group === "quick" : c.group === scope);
+const O2_ACTION_ICONS: Record<string, IconName> = {
+  "new-chat": "plus", "new-folder": "folderPlus", "toggle-approval": "shield", "session-refresh": "rotate",
+  "compress-context": "layers", "panel-preview": "eye", "panel-tasks": "zap", "panel-session": "gauge",
+  "panel-assistant": "assistant", library: "library", "toggle-tool-cards": "terminal", "export-conversation": "upload",
+  "hard-stop": "square", "toggle-layout": "palette", settings: "settings",
+  screenshot: "camera", "todo-list": "listChecks", "disk-usage": "hardDrive", "recent-files": "folder",
+};
+const fmtDay = (ts: number) => { try { return new Date(ts).toLocaleDateString("ko-KR", { month: "long", day: "numeric" }); } catch { return ""; } };
+/** 검색어와 맞는 부분을 <mark> 로 (대소문자 무시, 첫 번째만) */
+function highlight(text: string, query: string) {
+  const q = query.trim();
+  const at = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (at < 0) return text;
+  return <>{text.slice(0, at)}<mark>{text.slice(at, at + q.length)}</mark>{text.slice(at + q.length)}</>;
+}
+const Keys = ({ combo }: { combo: string }) => (
+  <span className="o2-keys">{combo.split("+").map((k) => <kbd key={k} className="o2-kbd">{k}</kbd>)}</span>
+);
 
 export type PalettePanel = "preview" | "tasks" | "session" | "assistant";
 
@@ -71,10 +99,12 @@ export default function CommandPalette({
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [contentHits, setContentHits] = useState<Set<string>>(new Set());
+  const [scope, setScope] = useState<PaletteScope>("all");
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const approval = useApprovalMode();
   const { layout, setLayout } = useUiLayout();
+  const isO2 = layout === "o2";
 
   // 메시지 내용 검색 (대화 이동) — 입력이 멈춘 뒤 한 번
   useEffect(() => {
@@ -158,6 +188,7 @@ export default function CommandPalette({
               icon: "🗨️",
               group: "conversation",
               hint: contentHits.has(c.id) ? "메시지 내용 일치" : undefined,
+              meta: c.lastActive > 1 ? fmtDay(c.lastActive) : undefined,
               keywords: contentHits.has(c.id) ? [query] : undefined,
               run: run(() => onSelectConversation(c.id)),
             }))
@@ -168,6 +199,8 @@ export default function CommandPalette({
         label: a.title,
         icon: "⚙️",
         group: "settings",
+        o2Icon: SETTINGS_GROUP_ICONS[a.tab],
+        crumb: SETTINGS_TABS.find((t) => t.id === a.tab)?.label,
         keywords: a.keywords,
         run: run(() => (onOpenSettingsSection ? onOpenSettingsSection(a.id) : onOpenSettings())),
       })),
@@ -178,7 +211,10 @@ export default function CommandPalette({
     onHardStop, onOpenSettings, onSendMessage, onSelectConversation, onOpenSettingsSection, open]);
 
   // 필터링된 명령 (그룹 순서 유지, 검색어 없으면 대화 이동은 최근 6개)
-  const filteredCommands = useMemo(() => filterPaletteItems(commands, query), [commands, query]);
+  const filteredCommands = useMemo(() => {
+    const all = filterPaletteItems(commands, query);
+    return isO2 ? all.filter((c) => inScope(scope, c)) : all;
+  }, [commands, query, isO2, scope]);
 
   // 선택 인덱스 보정
   useEffect(() => {
@@ -186,7 +222,7 @@ export default function CommandPalette({
       setSelectedIndex(Math.max(0, filteredCommands.length - 1));
     }
   }, [filteredCommands.length, selectedIndex]);
-  useEffect(() => { setSelectedIndex(0); }, [query]);
+  useEffect(() => { setSelectedIndex(0); }, [query, scope]);
   useEffect(() => {
     listRef.current?.querySelector(".command-palette-item.selected")?.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
@@ -195,6 +231,7 @@ export default function CommandPalette({
   useEffect(() => {
     if (open) {
       setQuery("");
+      setScope("all");
       setSelectedIndex(0);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
@@ -227,9 +264,18 @@ export default function CommandPalette({
           e.preventDefault();
           onClose();
           break;
+        case "Tab":
+          // o2: Tab / Shift+Tab 으로 범위 칩 이동 (classic 은 기본 동작)
+          if (!isO2) break;
+          e.preventDefault();
+          setScope((cur) => {
+            const i = SCOPES.findIndex(([v]) => v === cur);
+            return SCOPES[(i + (e.shiftKey ? SCOPES.length - 1 : 1)) % SCOPES.length][0];
+          });
+          break;
       }
     },
-    [filteredCommands, selectedIndex, query, onSendMessage, onClose]
+    [filteredCommands, selectedIndex, query, onSendMessage, onClose, isO2]
   );
 
   if (!open) return null;
@@ -238,7 +284,7 @@ export default function CommandPalette({
     <div className="command-palette-overlay" onClick={onClose}>
       <div className="command-palette" role="dialog" aria-modal="true" aria-label="명령 팔레트" onClick={(e) => e.stopPropagation()}>
         <div className="command-palette-header">
-          <span className="command-palette-icon">⌘</span>
+          <span className="command-palette-icon">{isO2 ? <Icon name="search" size={18} /> : "⌘"}</span>
           <input
             ref={inputRef}
             type="text"
@@ -249,8 +295,17 @@ export default function CommandPalette({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
           />
-          <span className="command-palette-hint mono">ESC</span>
+          {isO2 ? <kbd className="o2-kbd command-palette-hint--o2">Esc</kbd> : <span className="command-palette-hint mono">ESC</span>}
         </div>
+        {isO2 && (
+          <div className="command-palette-scopes" role="tablist" aria-label="검색 범위">
+            {SCOPES.map(([v, label]) => (
+              <button key={v} type="button" role="tab" aria-selected={scope === v} tabIndex={-1}
+                className={`command-palette-scope${scope === v ? " is-on" : ""}`}
+                onMouseDown={(e) => e.preventDefault()} onClick={() => setScope(v)}>{label}</button>
+            ))}
+          </div>
+        )}
 
         <div className="command-palette-list" ref={listRef} role="listbox" aria-label="명령 목록">
           {filteredCommands.length === 0 ? (
@@ -273,11 +328,32 @@ export default function CommandPalette({
                   onClick={() => cmd.run()}
                   onMouseEnter={() => setSelectedIndex(idx)}
                 >
-                  <span className="command-item-icon">{cmd.icon}</span>
-                  <span className="command-item-label">{cmd.label}</span>
-                  {cmd.hint && <span className="command-item-hint">{cmd.hint}</span>}
-                  {cmd.shortcut && (
-                    <span className="command-item-shortcut mono">{cmd.shortcut}</span>
+                  {isO2 ? (
+                    <>
+                      <span className="command-item-icon">
+                        <Icon name={cmd.o2Icon ?? O2_ACTION_ICONS[cmd.id]
+                          ?? (cmd.group === "conversation" ? "msg" : (cmd.icon && emojiIconName(cmd.icon)) || "chevronRight")} />
+                      </span>
+                      <span className="command-item-label">
+                        {cmd.crumb && <span className="command-item-crumb">{cmd.crumb}<Icon name="chevronRight" size={14} /></span>}
+                        {highlight(cmd.label, query)}
+                      </span>
+                      {cmd.hint && <span className="command-item-hint">{cmd.hint}</span>}
+                      <span className="command-item-end">
+                        {cmd.meta && <span className="command-item-meta">{cmd.meta}</span>}
+                        {cmd.shortcut ? <Keys combo={cmd.shortcut} />
+                          : idx === selectedIndex && !cmd.meta ? <kbd className="o2-kbd">↵</kbd> : null}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="command-item-icon">{cmd.icon}</span>
+                      <span className="command-item-label">{cmd.label}</span>
+                      {cmd.hint && <span className="command-item-hint">{cmd.hint}</span>}
+                      {cmd.shortcut && (
+                        <span className="command-item-shortcut mono">{cmd.shortcut}</span>
+                      )}
+                    </>
                   )}
                 </div>
               </Fragment>
@@ -285,12 +361,22 @@ export default function CommandPalette({
           )}
         </div>
 
-        <div className="command-palette-footer">
-          <span className="mono">↑↓ 이동</span>
-          <span className="mono">Enter 실행</span>
-          <span className="mono">Esc 닫기</span>
-          <span className="mono">Ctrl+K 열기·닫기</span>
-        </div>
+        {isO2 ? (
+          <div className="command-palette-footer command-palette-footer--o2">
+            <span><Keys combo="↑+↓" /> 이동</span>
+            <span><kbd className="o2-kbd">↵</kbd> 실행</span>
+            <span><kbd className="o2-kbd">Tab</kbd> 범위</span>
+            <span className="command-palette-footer__grow" />
+            <span><Keys combo="Ctrl+K" /> 열기·닫기</span>
+          </div>
+        ) : (
+          <div className="command-palette-footer">
+            <span className="mono">↑↓ 이동</span>
+            <span className="mono">Enter 실행</span>
+            <span className="mono">Esc 닫기</span>
+            <span className="mono">Ctrl+K 열기·닫기</span>
+          </div>
+        )}
       </div>
     </div>
   );

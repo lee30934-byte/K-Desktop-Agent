@@ -1,0 +1,350 @@
+/* ════════════════════════════════════════════════════════════════
+   dzC — 디자인 고도화 3단계: 설정 전체 페이지 · 명령 팔레트 · ⋯ 메뉴 · 대화상자 (o2 전용)
+   기준: evidence/ui-redesign-20261111/mockup-v2/mockup-v2.1.html (?screen=settings · palette · main-hover · states), K 승인 2026-11-12.
+   토큰은 src/index.css dzA 블록(--o2-bg/panel/raised/overlay · --o2-line-1~3 · --o2-fg-1~4 · --r-* · --shadow-pop · --ring-color · --dur-*).
+   모든 선택자가 :root[data-layout="o2"] 로 시작한다 — classic 은 이 파일을 받지 않는다 (scripts/ui-design-polish.test.ts).
+   하드코딩 색 대신 토큰·color-mix 만 써서 개성 테마 3종도 자기 색을 따른다. 그림자(--shadow-pop)는 떠 있는 레이어(팔레트·대화상자)에만.
+   o2-content.css 다음, 맨 마지막에 불러와 같은 특이도면 이 파일이 이긴다.
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 0. 공용: 글자 앞 라인 아이콘(이모지 대체) · 위험도 점 · 키캡 묶음 ── */
+:root[data-layout="o2"] .o2-emo { flex: none; vertical-align: -2px; margin-right: 6px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] :is(button, .settings-btn, .ui-btn) > .o2-emo { margin-right: 0; color: inherit; opacity: .85; }
+:root[data-layout="o2"] .o2-dot { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; vertical-align: 1px; background: var(--o2-fg-3); }
+:root[data-layout="o2"] .o2-dot--ok { background: var(--ok); }
+:root[data-layout="o2"] .o2-dot--mid { background: var(--warn); }
+:root[data-layout="o2"] .o2-dot--hi { background: color-mix(in srgb, var(--warn) 55%, var(--error)); }
+:root[data-layout="o2"] .o2-dot--danger { background: var(--error); }
+:root[data-layout="o2"] .o2-keys { display: inline-flex; gap: 3px; align-items: center; }
+:root[data-layout="o2"] kbd.o2-kbd {
+  min-width: 20px; height: 20px; padding: 0 5px; display: inline-grid; place-items: center; box-sizing: border-box;
+  border-radius: 5px; background: color-mix(in srgb, var(--o2-fg-1) 4%, transparent);
+  box-shadow: inset 0 0 0 1px var(--o2-line-2), inset 0 -1px 0 color-mix(in srgb, var(--o2-fg-1) 6%, transparent);
+  font: 400 11px/1 var(--font-mono); color: var(--o2-fg-3); letter-spacing: 0;
+}
+/* overlay 면(팔레트·⋯ 메뉴) 위 키캡은 fg-3 이 4.2:1 이라 fg-2 로 */
+:root[data-layout="o2"] :is(.command-palette, .chat-options-body) kbd.o2-kbd { color: var(--o2-fg-2); }
+
+/* ── 1. 설정 왼쪽 열 (목업 .snav: panel 면 · 폭 280 · 줄 40 · 선택 = 시안 8.5% 판 + 강조 아이콘) ── */
+:root[data-layout="o2"] .settings-overlay--page .settings-panel { grid-template-columns: 280px minmax(0, 1fr); }
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .settings-overlay--page .settings-panel { color-scheme: dark; }
+@media (max-width: 1100px) { :root[data-layout="o2"] .settings-overlay--page .settings-panel { grid-template-columns: 232px minmax(0, 1fr); } }
+:root[data-layout="o2"] .settings-nav-col { background: var(--o2-panel); border-right-color: var(--o2-line-1); }
+:root[data-layout="o2"] .settings-nav-col .settings-back { height: 40px; color: var(--o2-fg-2); transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+:root[data-layout="o2"] .settings-nav-col .settings-back:hover { background: var(--o2-hover); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .settings-nav-col .settings-back:active { background: var(--o2-press); }
+:root[data-layout="o2"] .settings-back-kbd {
+  min-width: 20px; height: 20px; padding: 0 5px; display: inline-grid; place-items: center; box-sizing: border-box; border-radius: 5px;
+  background: color-mix(in srgb, var(--o2-fg-1) 4%, transparent); box-shadow: inset 0 0 0 1px var(--o2-line-2);
+  font: 400 11px/1 var(--font-mono); color: var(--o2-fg-3);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-search {
+  border: 0; border-radius: var(--r-md); background: var(--o2-bg); box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-3);
+  transition: box-shadow var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-search:hover { box-shadow: inset 0 0 0 1px var(--o2-line-3); }
+:root[data-layout="o2"] .settings-overlay--page .settings-search:focus-within {
+  box-shadow: inset 0 0 0 1px var(--o2-accent-line), 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-search-input::placeholder { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab { color: var(--o2-fg-2); transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab .settings-tab-icon { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab:hover { background: var(--o2-hover); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab:active { background: var(--o2-press); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab.active { background: var(--o2-sel); color: var(--o2-fg-1); font-weight: 550; }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab.active .settings-tab-icon { color: var(--o2-accent-text); }
+:root[data-layout="o2"] .settings-overlay--page .settings-tab:focus-visible { outline: 2px solid var(--ring-color); outline-offset: -2px; }
+:root[data-layout="o2"] .settings-tab-count { font-size: 11.5px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .settings-nav-foot { margin: auto -12px 0; padding: 16px 20px 6px; border-top: 1px solid var(--o2-line-1); color: var(--o2-fg-3); }
+
+/* ── 2. 내용 열: 경로 · 24/700 제목 · 번호 섹션 머리 ── */
+:root[data-layout="o2"] .settings-overlay--page .settings-body { background: var(--o2-bg); padding-top: 44px; }
+:root[data-layout="o2"] .settings-group-crumb { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .settings-overlay--page .settings-group-intro-title { font-size: 24px; font-weight: 700; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .settings-overlay--page .settings-group-intro-desc { margin-top: 6px; color: var(--o2-fg-2); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .eyebrow,
+:root[data-layout="o2"] .settings-section .o2s-head .o2s-head__title { font-size: 18px; font-weight: 650; letter-spacing: -.015em; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .o2s-head__title { display: inline-flex; align-items: baseline; gap: 10px; }
+:root[data-layout="o2"] .o2s-head__num { font: 500 13px/1 var(--font-mono); color: var(--o2-fg-3); letter-spacing: 0; }
+:root[data-layout="o2"] .o2s-badge {
+  height: 22px; display: inline-flex; align-items: center; box-sizing: border-box; padding: 0 8px; border: 0;
+  border-radius: var(--r-pill); box-shadow: inset 0 0 0 1px var(--o2-line-2); font-size: 11.5px; font-weight: 550; color: var(--o2-fg-2);
+}
+:root[data-layout="o2"] .o2s-head__desc { margin-top: 4px; font-size: 14px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .o2s-copy { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .o2s-copy:hover { background: var(--o2-hover); color: var(--o2-fg-1); }
+
+/* 권한과 안전 4단계 흐름 — v2.1: 모두 같은 무채색 카드(선택된 것처럼 보이는 단계 없음), 칩 줄 없음 */
+:root[data-layout="o2"] .o2s-summary { margin-top: -18px; padding: 0; background: transparent; border: 0; border-radius: 0; }
+:root[data-layout="o2"] .o2s-flow { margin-top: 0; gap: 0; display: grid; grid-template-columns: 1fr 20px 1fr 20px 1fr 20px 1fr; }
+:root[data-layout="o2"] .o2s-step { padding: 12px 14px; border: 0; border-radius: var(--r-md); background: var(--o2-panel); box-shadow: inset 0 0 0 1px var(--o2-line-1); }
+:root[data-layout="o2"] .o2s-step small { font-size: 11px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .o2s-step b { margin-top: 3px; font-size: 14px; font-weight: 600; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .o2s-step span { margin-top: 1px; display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .o2s-step span { flex-wrap: wrap; row-gap: 0; }
+:root[data-layout="o2"] .o2s-step span b { display: inline; margin: 0; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+:root[data-layout="o2"] .o2s-step b.o2s-g { color: color-mix(in srgb, var(--ok) 70%, var(--o2-fg-1)); }
+:root[data-layout="o2"] .o2s-step b.o2s-y { color: var(--info); }
+:root[data-layout="o2"] .o2s-step b.o2s-r { color: var(--o2-danger-text); }
+:root[data-layout="o2"] .o2s-step .o2s-warn { color: var(--o2-warn-text); }
+:root[data-layout="o2"] .o2s-flow__arrow { color: var(--o2-fg-3); opacity: .6; }
+
+/* ── 3. 그룹 카드 · 행 (목업 .group · .grow-row: panel 판 · 선 6% · r14 · 행 56 · 타일 32) ── */
+:root[data-layout="o2"] .o2s-rows { border: 0; border-radius: var(--r-lg); background: var(--o2-panel); box-shadow: inset 0 0 0 1px var(--o2-line-1); }
+:root[data-layout="o2"] .o2s-row { min-height: 56px; padding: 10px 12px 10px 16px; gap: 14px; border-top-color: var(--o2-line-1); }
+:root[data-layout="o2"] .o2s-row__ico { width: 32px; height: 32px; border-radius: 8px; background: color-mix(in srgb, var(--o2-fg-1) 4%, transparent); color: var(--o2-fg-2); }
+:root[data-layout="o2"] .settings-overlay--page .o2s-row__tx .o2s-row__title { font-size: 14.5px; font-weight: 600; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .o2s-row__tx small { font-size: 13px; color: var(--o2-fg-3); }
+/* 위험도 태그 (제목 옆 낮음 · 보통 · 높음 · 치명) */
+:root[data-layout="o2"] .o2s-lvl { margin-left: 8px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; vertical-align: 1px; color: var(--o2-fg-3); background: color-mix(in srgb, var(--o2-fg-1) 5%, transparent); }
+:root[data-layout="o2"] .o2s-lvl--medium { color: var(--o2-warn-text); background: var(--warn-soft); }
+:root[data-layout="o2"] :is(.o2s-lvl--high, .o2s-lvl--critical) { color: var(--o2-danger-text); background: var(--danger-soft); }
+
+/* 일반 행(.settings-row) 카드도 같은 판·선 */
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row { background: var(--o2-panel); border-color: var(--o2-line-1); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > div:not([class]) > .settings-row { background: var(--o2-panel); border-color: var(--o2-line-1); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section > .settings-row div:not([class]) > .settings-row { background: var(--o2-bg); border-color: var(--o2-line-1); }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-title { font-size: 14.5px; font-weight: 600; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .settings-overlay--page .settings-row-desc { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .settings-overlay--page .settings-meta { background: var(--o2-bg); border-color: var(--o2-line-1); color: var(--o2-fg-2); font-family: var(--font-ui); }
+:root[data-layout="o2"] .settings-overlay--page .settings-meta.mono { font-family: var(--font-ui); letter-spacing: 0; }
+
+/* ── 4. 세그먼트 · 토글 · 입력 · 선택 · 버튼 ── */
+/* 세그먼트: 색 채움 대신 떠 있는 무채색 판 + 색 점 (차단만 빨간 글자) */
+:root[data-layout="o2"] .o2s-seg { padding: 3px; gap: 2px; border: 0; border-radius: 9px; background: var(--o2-bg); box-shadow: inset 0 0 0 1px var(--o2-line-2); }
+:root[data-layout="o2"] .o2s-seg__opt {
+  height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-radius: var(--r-sm);
+  font-weight: 550; color: var(--o2-fg-3); transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .o2s-seg__opt:hover:not(.is-on) { background: var(--o2-hover); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .o2s-seg__opt:active:not(.is-on) { background: var(--o2-press); }
+:root[data-layout="o2"] .o2s-seg__opt:focus-visible { outline: 2px solid var(--ring-color); outline-offset: 1px; }
+:root[data-layout="o2"] .o2s-seg__opt.is-on { background: var(--o2-overlay); color: var(--o2-fg-1); font-weight: 600; box-shadow: inset 0 0 0 1px var(--o2-line-2), 0 1px 2px rgba(0, 0, 0, 0.3); }
+:root[data-layout="o2"] .o2s-seg__opt--x.is-on { color: var(--o2-danger-text); }
+:root[data-layout="o2"] .o2s-seg__dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--o2-fg-3); }
+:root[data-layout="o2"] .o2s-seg__opt--a .o2s-seg__dot { background: var(--ok); }
+:root[data-layout="o2"] .o2s-seg__opt--q .o2s-seg__dot { background: var(--info); }
+:root[data-layout="o2"] .o2s-seg__opt--x .o2s-seg__dot { background: var(--error); }
+:root[data-layout="o2"] .o2s-legend div { color: var(--o2-fg-3); display: flex; align-items: center; }
+:root[data-layout="o2"] .o2s-legend b { color: var(--o2-fg-2) !important; font-weight: 600; display: inline-flex; align-items: center; }
+:root[data-layout="o2"] .o2s-legend b::before { content: ""; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--ok); }
+:root[data-layout="o2"] .o2s-legend--q b::before { background: var(--info); }
+:root[data-layout="o2"] .o2s-legend--x b::before { background: var(--error); }
+:root[data-layout="o2"] .o2s-kbd { border: 0; border-radius: 5px; padding: 2px 6px; box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-3); background: color-mix(in srgb, var(--o2-fg-1) 4%, transparent); }
+:root[data-layout="o2"] .o2s-state { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .o2s-state.is-on { color: var(--o2-warn-text); }
+
+/* 토글: 꺼짐 = 무채색 홈 + 흐린 손잡이, 켜짐 = 강조색 + 흰 손잡이 (확인 없이 실행만 주황) */
+:root[data-layout="o2"] :is(.o2s-switch, .settings-overlay--page .toggle-slider) {
+  background: color-mix(in srgb, var(--o2-fg-1) 14%, var(--o2-panel)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--o2-fg-1) 5%, transparent);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .o2s-switch::after,
+:root[data-layout="o2"] .settings-overlay--page .toggle-slider:before { background: var(--o2-fg-2); transition: transform var(--dur-pop) var(--ease-out), background var(--dur-fast); }
+:root[data-layout="o2"] .o2s-switch:hover:not(.is-on),
+:root[data-layout="o2"] .settings-overlay--page .toggle:hover input:not(:checked):not(:disabled) + .toggle-slider { background: color-mix(in srgb, var(--o2-fg-1) 19%, var(--o2-panel)); }
+:root[data-layout="o2"] .o2s-switch--accent.is-on,
+:root[data-layout="o2"] .settings-overlay--page .toggle input:checked + .toggle-slider { background: var(--accent); }
+:root[data-layout="o2"] .o2s-switch--accent.is-on::after,
+:root[data-layout="o2"] .settings-overlay--page .toggle input:checked + .toggle-slider:before { background: #fff; }
+:root[data-layout="o2"] .o2s-switch--warn.is-on { background: var(--warn); }
+:root[data-layout="o2"] .o2s-switch--warn.is-on::after { background: #fff; }
+:root[data-layout="o2"] .o2s-switch:focus-visible { outline: 2px solid var(--ring-color); outline-offset: 2px; }
+:root[data-layout="o2"] .settings-overlay--page .toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--ring-color); outline-offset: 2px; }
+:root[data-layout="o2"] .settings-overlay--page .toggle input:disabled + .toggle-slider { background: color-mix(in srgb, var(--o2-fg-1) 6%, var(--o2-panel)); cursor: default; }
+:root[data-layout="o2"] .settings-overlay--page .toggle input:disabled + .toggle-slider:before { background: var(--o2-fg-4); }
+
+/* 입력칸 · 선택칸: bg 판 + 선 10%, 올리면 16%, 포커스 = 강조 경계 + 3px 헤일로, 비활성 = panel + fg-4 */
+:root[data-layout="o2"] .settings-overlay--page .settings-section :is(select, input[type="text"], input[type="password"], input[type="number"], input[type="url"], input[type="search"], textarea) {
+  background: var(--o2-bg); border: 0; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-1);
+  transition: box-shadow var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-section :is(select, input, textarea):hover:not(:disabled):not(:focus) { box-shadow: inset 0 0 0 1px var(--o2-line-3); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section :is(select, input, textarea):focus {
+  outline: none; box-shadow: inset 0 0 0 1px var(--o2-accent-line), 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-section :is(select, input, textarea):disabled { background: var(--o2-panel); color: var(--o2-fg-4); box-shadow: inset 0 0 0 1px var(--o2-line-1); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section :is(input, textarea)::placeholder { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .settings-overlay--page .settings-section select { min-height: 36px; padding-right: 32px; appearance: none; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--o2-fg-3) 50%), linear-gradient(135deg, var(--o2-fg-3) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%; background-size: 5px 5px; background-repeat: no-repeat;
+}
+:root[data-layout="o2"] .settings-overlay--page .settings-section select option { background: var(--o2-overlay); color: var(--o2-fg-1); }
+
+/* 버튼: 보조 = raised + 선 10%, 기본 = 강조색, 비활성 = 무채색(F), 위험 = 빨강 선 */
+:root[data-layout="o2"] .settings-overlay--page :is(.settings-btn, .settings-btn-oauth) {
+  border: 0; border-radius: 8px; background: var(--o2-raised); box-shadow: inset 0 0 0 1px var(--o2-line-2);
+  font-weight: 600; font-size: 13.5px; color: var(--o2-fg-1);
+  transition: background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .settings-overlay--page :is(.settings-btn, .settings-btn-oauth):hover:not(:disabled) { background: var(--o2-overlay); box-shadow: inset 0 0 0 1px var(--o2-line-3); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .settings-overlay--page :is(.settings-btn, .settings-btn-oauth):active:not(:disabled) { background: var(--o2-panel); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn:disabled { opacity: 1; cursor: default; background: var(--o2-panel); box-shadow: inset 0 0 0 1px var(--o2-line-1); color: var(--o2-fg-4); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn.settings-btn-primary { background: var(--accent); box-shadow: none; color: var(--accent-fg); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn.settings-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 82%, #fff); box-shadow: none; color: var(--accent-fg); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn.settings-btn-primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 78%, #000); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn.settings-btn-primary:disabled { background: var(--o2-raised); box-shadow: inset 0 0 0 1px var(--o2-line-1); color: var(--o2-fg-3); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn.settings-btn-danger { background: transparent; box-shadow: inset 0 0 0 1px var(--o2-danger-line); color: var(--o2-danger-text); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn.settings-btn-danger:hover:not(:disabled) { background: var(--danger-soft); box-shadow: inset 0 0 0 1px var(--o2-danger-line); color: var(--o2-danger-text); }
+:root[data-layout="o2"] .settings-overlay--page .settings-btn.settings-btn-danger:disabled { background: transparent; box-shadow: inset 0 0 0 1px var(--o2-line-1); color: var(--o2-fg-4); }
+:root[data-layout="o2"] .o2s-sm { border: 0; border-radius: var(--r-sm); background: var(--o2-raised); box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-1); font-weight: 550; }
+:root[data-layout="o2"] .o2s-sm:hover { background: var(--o2-overlay); box-shadow: inset 0 0 0 1px var(--o2-line-3); color: var(--o2-fg-1); }
+
+/* 상태 글: 오류 = 빨강 옅은 판 + 경계, 안내 = 무채색 */
+:root[data-layout="o2"] .settings-overlay--page .update-status.update-error {
+  padding: 10px 14px; border: 0; border-radius: var(--r-md); background: var(--danger-soft); box-shadow: inset 0 0 0 1px var(--o2-danger-line);
+  color: var(--o2-danger-text); font: 500 13px/1.55 var(--font-ui); letter-spacing: 0;
+}
+:root[data-layout="o2"] .settings-overlay--page .o2s-error { color: var(--o2-danger-text); }
+
+/* ── 5. 잠긴 도구 칩 (목업 v2.1 '잠긴 도구' 행) ── */
+:root[data-layout="o2"] .o2s-lockchips { flex: 0 1 60%; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+:root[data-layout="o2"] .o2s-lockchip {
+  height: 30px; display: inline-flex; align-items: center; gap: 7px; padding: 0 4px 0 10px; box-sizing: border-box;
+  border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-2); font: 400 13px/1 var(--font-mono); letter-spacing: 0;
+}
+:root[data-layout="o2"] .o2s-lockchip > .ui-icon { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .o2s-lockchip__x {
+  width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px;
+  background: transparent; color: var(--o2-fg-3); cursor: pointer; transition: background var(--dur-fast), color var(--dur-fast);
+}
+:root[data-layout="o2"] .o2s-lockchip__x:hover { background: var(--o2-hover); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .o2s-lockchip__x:active { background: var(--o2-press); }
+
+/* ── 6. 그룹별 부품: 단축키 · AI 엔진 · 테마 · MCP 카탈로그 · 백업 상태 상자 ── */
+:root[data-layout="o2"] .settings-overlay--page .shortcuts-list { border-color: var(--o2-line-1); background: var(--o2-panel); border-radius: var(--r-lg); }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-item { border-top-color: var(--o2-line-1); }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-item:hover { background: var(--o2-hover); }
+:root[data-layout="o2"] .settings-overlay--page .shortcut-key {
+  border: 0; box-shadow: inset 0 0 0 1px var(--o2-line-2), inset 0 -1px 0 color-mix(in srgb, var(--o2-fg-1) 6%, transparent);
+  background: color-mix(in srgb, var(--o2-fg-1) 4%, transparent); color: var(--o2-fg-3); font-size: 11.5px;
+}
+:root[data-layout="o2"] .settings-overlay--page .shortcut-desc { color: var(--o2-fg-2); }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab { border: 0; box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-2); font-weight: 550; }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab:hover { background: var(--o2-hover); box-shadow: inset 0 0 0 1px var(--o2-line-3); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab.active { background: var(--o2-sel); box-shadow: inset 0 0 0 1px var(--o2-accent-line); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab .api-provider-icon { display: inline-grid; place-items: center; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .settings-overlay--page .api-provider-tab.active .api-provider-icon { color: var(--o2-accent-text); }
+:root[data-layout="o2"] .settings-overlay--page .api-key-form { background: var(--o2-panel); border-color: var(--o2-line-1); }
+:root[data-layout="o2"] .settings-overlay--page .model-badge { background: color-mix(in srgb, var(--o2-fg-1) 4%, transparent); border: 0; box-shadow: inset 0 0 0 1px var(--o2-line-1); color: var(--o2-fg-2); }
+:root[data-layout="o2"] .settings-overlay--page .model-badge.active { background: var(--ok-soft); box-shadow: none; color: var(--ok); }
+:root[data-layout="o2"] .settings-overlay--page .theme-card { background: var(--o2-panel); border-color: var(--o2-line-1); transition: background var(--dur-fast), border-color var(--dur-fast); }
+:root[data-layout="o2"] .settings-overlay--page .theme-card:hover { background: var(--o2-raised); border-color: var(--o2-line-2); }
+:root[data-layout="o2"] .settings-overlay--page .theme-card.active { background: var(--o2-sel); border-color: var(--o2-accent-line); }
+:root[data-layout="o2"] .settings-overlay--page .theme-check { color: var(--o2-accent-text); }
+/* MCP 카탈로그 · 안전 요약 · 백업 상태처럼 인라인 스타일로 박힌 낱장 상자 → panel 판 · 선 6% · r10 (개성 테마 3종은 제외) */
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .settings-overlay--page .settings-body :is([style*="border: 1px solid"], [style*="border: \"1px solid"], [style*="border:1px solid"]):not(button):not(input):not(select):not(textarea) {
+  border-color: var(--o2-line-1) !important; border-radius: var(--r-md) !important;
+}
+:root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) .settings-overlay--page .settings-body :is([style*="rgba(249, 115, 22"], [style*="rgba(255, 165"], [style*="rgba(245, 158"]) {
+  background: var(--warn-soft) !important; border-color: var(--o2-warn-line) !important;
+}
+:root[data-layout="o2"] .settings-overlay--page .mcp-catalog-icon { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: color-mix(in srgb, var(--o2-fg-1) 4%, transparent); color: var(--o2-fg-2); }
+:root[data-layout="o2"] .settings-overlay--page .settings-body code { padding: 1px 6px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--o2-fg-1) 5%, transparent); box-shadow: inset 0 0 0 1px var(--o2-line-1); font: .86em var(--font-mono); color: var(--o2-fg-body, var(--o2-fg-1)); }
+:root[data-layout="o2"] .settings-overlay--page .settings-body pre { border-radius: var(--r-md); background: var(--o2-bg); box-shadow: inset 0 0 0 1px var(--o2-line-2); font-family: var(--font-mono); color: var(--o2-fg-2); }
+:root[data-layout="o2"] .settings-overlay--page .bubble-color-title { display: flex; align-items: center; color: var(--o2-fg-1); font-weight: 600; }
+
+/* ── 7. 명령 팔레트 (목업 .palette: overlay 면 · 660 · 입력 56 · 범위 칩 · 줄 40 · 선택 = 시안 13% + 옅은 강조 선) ── */
+:root[data-layout="o2"] .command-palette-overlay { background: rgba(5, 6, 9, 0.62); padding-top: 92px; animation: o2-fade var(--dur-pop) var(--ease-out); }
+:root[data-layout="o2"] .command-palette {
+  width: min(660px, calc(100vw - 48px)); border: 0; border-radius: var(--r-lg); background: var(--o2-overlay); box-shadow: var(--shadow-pop);
+  animation: o2-pop var(--dur-pop) var(--ease-out);
+}
+:root[data-layout="o2"] .command-palette-header { min-height: 56px; gap: 12px; padding: 0 14px 0 18px; background: transparent; border-bottom: 1px solid var(--o2-line-1); }
+:root[data-layout="o2"] .command-palette-icon { display: inline-grid; place-items: center; color: var(--o2-fg-3); font-size: 0; }
+:root[data-layout="o2"] .command-palette-input { font-size: 16px; color: var(--o2-fg-1); caret-color: var(--accent); }
+:root[data-layout="o2"] .command-palette-input::placeholder { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .command-palette-scopes { display: flex; gap: 6px; padding: 10px 14px 2px; }
+:root[data-layout="o2"] .command-palette-scope {
+  height: 26px; display: inline-flex; align-items: center; padding: 0 10px; border: 0; border-radius: var(--r-sm);
+  background: transparent; box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-2); font: 500 13px/1 var(--font-ui); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .command-palette-scope:hover { background: var(--o2-hover); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .command-palette-scope:active { background: var(--o2-press); }
+:root[data-layout="o2"] .command-palette-scope.is-on { background: var(--o2-sel); box-shadow: inset 0 0 0 1px var(--o2-accent-line); color: var(--o2-fg-1); font-weight: 600; }
+:root[data-layout="o2"] .command-palette-list { max-height: min(440px, 56vh); padding: 4px 0 8px; }
+:root[data-layout="o2"] .command-palette-group { padding: 12px 18px 6px; border-top: 0; margin-top: 0; font-size: 11.5px; font-weight: 600; letter-spacing: .02em; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .command-palette-group:not(:first-child) { border-top: 0; margin-top: 2px; }
+:root[data-layout="o2"] .command-palette-item {
+  min-height: 40px; gap: 12px; margin: 0 8px; padding: 0 10px; border: 0; border-radius: 8px; color: var(--o2-fg-1);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .command-palette-item:hover { background: var(--o2-hover); }
+:root[data-layout="o2"] .command-palette-item.selected { padding-left: 10px; border-left: 0; background: var(--o2-sel-strong); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent); }
+:root[data-layout="o2"] .command-palette-item .command-item-icon { width: 16px; flex: none; display: inline-grid; place-items: center; font-size: 0; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .command-palette-item.selected .command-item-icon { color: var(--o2-accent-text); }
+:root[data-layout="o2"] .command-palette-item .command-item-label { flex: 0 1 auto; min-width: 0; font-size: 14px; font-weight: 450; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .command-item-label mark { background: none; color: var(--o2-accent-text); font-weight: 650; }
+:root[data-layout="o2"] .command-item-crumb { display: inline-flex; align-items: center; gap: 4px; margin-right: 4px; color: var(--o2-fg-1); }
+:root[data-layout="o2"] .command-item-crumb .ui-icon { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .command-palette-item .command-item-hint { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .command-item-end { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 10px; }
+:root[data-layout="o2"] .command-item-meta { font-size: 12px; color: var(--o2-fg-3); white-space: nowrap; }
+/* 선택 줄(시안 13% 판) 위에서는 fg-3 이 3.5:1 이라 힌트·메타·키캡을 fg-2 로 (AA 4.5 이상) */
+:root[data-layout="o2"] .command-palette-item.selected :is(.command-item-hint, .command-item-meta, kbd.o2-kbd) { color: var(--o2-fg-2); }
+:root[data-layout="o2"] .command-palette-empty { color: var(--o2-fg-3); }
+:root[data-layout="o2"] .command-palette-footer.command-palette-footer--o2 {
+  min-height: 42px; box-sizing: border-box; gap: 18px; padding: 0 16px; align-items: center; justify-content: flex-start;
+  border-top: 1px solid var(--o2-line-1); background: rgba(0, 0, 0, 0.12); font: 400 12px/1 var(--font-ui); color: var(--o2-fg-3);
+}
+:root[data-layout="o2"] .command-palette-footer--o2 > span { display: inline-flex; align-items: center; gap: 6px; }
+:root[data-layout="o2"] .command-palette-footer__grow { flex: 1; }
+
+/* ── 8. ⋯ 메뉴 (목업 .menu: 288 · 줄 36 · 아이콘 · 오른쪽 상태/키캡 · 구분선 · '패널' 머리) ── */
+:root[data-layout="o2"] .chat-options-body { width: 288px; padding: 6px; gap: 0; }
+:root[data-layout="o2"] .chat-options-body button {
+  min-height: 36px; display: flex; align-items: center; gap: 11px; padding: 0 10px; border-radius: 8px;
+  font-size: 14px; color: var(--o2-fg-1); white-space: nowrap;
+}
+:root[data-layout="o2"] .chat-options-body button > .ui-icon,
+:root[data-layout="o2"] .chat-options-engine > .ui-icon { flex: none; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .chat-options-body button[aria-pressed="true"] { color: var(--o2-fg-1); background: var(--o2-sel); }
+:root[data-layout="o2"] .chat-options-body button[aria-pressed="true"] > .ui-icon { color: var(--o2-accent-text); }
+:root[data-layout="o2"] .chat-options-body .chat-options-approval[aria-checked="true"] { color: var(--o2-fg-1); }
+:root[data-layout="o2"] .chat-options-body .chat-options-approval[aria-checked="true"] > .ui-icon { color: var(--warn); }
+:root[data-layout="o2"] .chat-options-r { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+:root[data-layout="o2"] .chat-options-badge { padding: 1px 7px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--o2-fg-1) 5%, transparent); font-size: 11.5px; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .chat-options-badge.is-on { background: var(--warn-soft); color: var(--o2-warn-text); }
+:root[data-layout="o2"] .chat-options-sep { height: 1px; margin: 6px 4px; background: var(--o2-line-1); }
+:root[data-layout="o2"] .chat-options-label { padding: 8px 10px 4px; font-size: 11.5px; font-weight: 550; color: var(--o2-fg-3); }
+:root[data-layout="o2"] .chat-options-engine {
+  grid-template-columns: 16px 1fr; align-items: center; column-gap: 11px; row-gap: 6px; margin: 0; padding: 6px 10px 8px;
+  font-size: 14px; color: var(--o2-fg-1);
+}
+:root[data-layout="o2"] .chat-options-engine select {
+  grid-column: 1 / -1; height: 32px; border: 0; border-radius: var(--r-sm); background: var(--o2-bg); box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-1);
+}
+:root[data-layout="o2"] .chat-options-engine select:focus-visible { outline: 2px solid var(--ring-color); outline-offset: 1px; }
+
+/* ── 9. 대화상자 (폴더 지침 · 폴더 삭제 · 입력 확인 · 새 폴더 줄): overlay 면 · r14 · shadow-pop · 160ms ── */
+:root[data-layout="o2"] :is(.folder-delete-overlay, .elicitation-overlay, .modal-overlay) { background: rgba(5, 6, 9, 0.62); backdrop-filter: none; }
+:root[data-layout="o2"] :is(.folder-delete-box, .folder-instructions-dialog, .elicitation-dialog:not(.elicitation-warn)) {
+  border: 0; border-radius: var(--r-lg); background: var(--o2-overlay); box-shadow: var(--shadow-pop); color: var(--o2-fg-1);
+  animation: o2-pop var(--dur-pop) var(--ease-out);
+}
+:root[data-layout="o2"] .folder-delete-title { font: 650 16px/1.35 var(--font-ui); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .folder-delete-msg { font-size: 14px; line-height: 1.6; color: var(--o2-fg-2); }
+:root[data-layout="o2"] .folder-delete-msg strong { color: var(--o2-fg-1); }
+:root[data-layout="o2"] .folder-delete-actions { gap: 4px; }
+:root[data-layout="o2"] .folder-delete-btn {
+  min-height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: var(--o2-fg-1);
+  font: 500 14px/1 var(--font-ui); transition: background var(--dur-fast) var(--ease-out);
+}
+:root[data-layout="o2"] .folder-delete-btn:hover { background: var(--o2-hover); }
+:root[data-layout="o2"] .folder-delete-btn:active { background: var(--o2-press); }
+:root[data-layout="o2"] .folder-delete-btn.primary { background: var(--o2-raised); box-shadow: inset 0 0 0 1px var(--o2-line-2); color: var(--o2-fg-1); }
+:root[data-layout="o2"] .folder-delete-btn.primary:hover { background: color-mix(in srgb, var(--o2-fg-1) 6%, var(--o2-raised)); }
+:root[data-layout="o2"] .folder-delete-btn.danger { border: 0; color: var(--o2-danger-text); }
+:root[data-layout="o2"] .folder-delete-btn.danger:hover { background: var(--danger-soft); }
+:root[data-layout="o2"] .folder-delete-btn.secondary { color: var(--o2-fg-2); }
+:root[data-layout="o2"] :is(.elicitation-info, .elicitation-danger) { border: 0; }
+:root[data-layout="o2"] .elicitation-danger { box-shadow: inset 0 0 0 1px var(--o2-danger-line), var(--shadow-pop); }
+:root[data-layout="o2"] :is(.elicitation-info, .elicitation-danger, .elicitation-warn) .elicitation-title { color: var(--o2-fg-1); font: 650 16px/1.35 var(--font-ui); letter-spacing: 0; }
+:root[data-layout="o2"] .folder-create-box { border: 0; border-radius: 8px; background: var(--o2-raised); box-shadow: inset 0 0 0 1px var(--o2-accent-line); }
+:root[data-layout="o2"] .folder-row.folder-row-creating { border: 0; background: var(--o2-sel); }
+
+/* ── 10. 짧은 움직임 — 줄일 움직임 설정이면 끔 ── */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-layout="o2"] :is(.command-palette-overlay, .command-palette, .folder-delete-box, .folder-instructions-dialog, .elicitation-dialog) { animation: none; }
+}

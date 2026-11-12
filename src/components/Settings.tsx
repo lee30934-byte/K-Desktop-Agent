@@ -13,7 +13,8 @@ import CornerBrackets from "./CornerBrackets";
 import ApprovalToggle from "./ApprovalToggle";
 import { Segmented, Icon, type IconName } from "../ui";
 import { useApprovalMode } from "../utils/useApprovalMode";
-import { SETTINGS_GROUP_ICONS, O2SecHead, O2Seg, O2Row, O2Switch, O2SafetySummary } from "./SettingsO2";
+import { EmojiIcon, EmojiLabel } from "../ui/emojiIcon";
+import { SETTINGS_GROUP_ICONS, O2SecHead, O2Seg, O2Row, O2Switch, O2SafetySummary, O2LockChips } from "./SettingsO2";
 import { useUiLayout, type UiLayout } from "../utils/useUiLayout";
 import { devSettingsOverride } from "../dev/mockupFixture";
 import { SETTINGS_TABS, LS_ACTIVE_SETTINGS_TAB, readSettingsTab, settingsSectionMatches, type SettingsTabId } from "../utils/settingsTabs";
@@ -1010,7 +1011,7 @@ function TrimStatCard() {
           color: "var(--text-dim, #8e9ab5)",
         }}
       >
-        📊 트림 통계가 아직 없습니다. 첫 메시지 후 표시됩니다.
+        <EmojiLabel>📊 트림 통계가 아직 없습니다. 첫 메시지 후 표시됩니다.</EmojiLabel>
       </div>
     );
   }
@@ -1040,14 +1041,14 @@ function TrimStatCard() {
       }}
     >
       <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text, #e4e9f5)" }}>
-        📊 마지막 트림 통계{" "}
+        <EmojiLabel>📊 마지막 트림 통계</EmojiLabel>{" "}
         <span style={{ opacity: 0.6, fontWeight: 400, fontSize: 11 }}>
           ({fmtRelTime(stat.ts)})
         </span>
       </div>
       <div>
         모드:{" "}
-        <strong>{stat.mode === "fast" ? "⚡ 빠른" : "⚖️ 균형"}</strong>
+        <strong><EmojiLabel>{stat.mode === "fast" ? "⚡ 빠른" : "⚖️ 균형"}</EmojiLabel></strong>
         {"  ·  "}cap {stat.cap.toLocaleString()}자{"  ·  "}slice {stat.slice}턴
         {"  ·  "}threshold {Math.round(stat.threshold * 100)}%
       </div>
@@ -1128,7 +1129,7 @@ function PerformanceModeToggle() {
             textAlign: "left",
           }}
         >
-          <div>⚖️ 균형 모드 (기본)</div>
+          <div><EmojiLabel>⚖️ 균형 모드 (기본)</EmojiLabel></div>
           <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4, fontWeight: 400 }}>
             cap 8000자 · 옛 16 turn · 70% 자동 갱신 — 답변 질 거의 보존
           </div>
@@ -1151,7 +1152,7 @@ function PerformanceModeToggle() {
             textAlign: "left",
           }}
         >
-          <div>⚡ 빠른 모드</div>
+          <div><EmojiLabel>⚡ 빠른 모드</EmojiLabel></div>
           <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4, fontWeight: 400 }}>
             cap 4000자 · 옛 12 turn · 60% 자동 갱신 — 응답속도 우선
           </div>
@@ -1235,7 +1236,7 @@ function ToolImageModeToggle() {
                 textAlign: "left",
               }}
             >
-              <div>{o.title}</div>
+              <div><EmojiLabel>{o.title}</EmojiLabel></div>
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4, fontWeight: 400 }}>
                 {o.desc}
               </div>
@@ -3403,7 +3404,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               <div className="bubble-color-grid">
                 {/* 사용자 말풍선 */}
                 <div className="bubble-color-section">
-                  <div className="bubble-color-title">👤 내 메시지</div>
+                  <div className="bubble-color-title"><EmojiLabel>👤 내 메시지</EmojiLabel></div>
                   <div className="bubble-color-row">
                     <span className="bubble-color-label">배경색</span>
                     <input
@@ -3437,7 +3438,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
                 {/* AI 말풍선 */}
                 <div className="bubble-color-section">
-                  <div className="bubble-color-title">🤖 AI 메시지</div>
+                  <div className="bubble-color-title"><EmojiLabel>🤖 AI 메시지</EmojiLabel></div>
                   <div className="bubble-color-row">
                     <span className="bubble-color-label">배경색</span>
                     <input
@@ -3497,7 +3498,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                 <div className="o2s-rows">
                   <O2Row icon="zap" title="확인 없이 실행"
                     sub="Codex·MCP의 명령·파일·도구 확인창을 띄우지 않고 바로 진행합니다. 질문·로그인 입력, 개별 도구 잠금, SafeMode 차단은 그대로 적용됩니다.">
-                    <span className="o2s-kbd">Ctrl+Alt+A</span>
+                    <span className="o2-keys" title="Ctrl+Alt+A"><kbd className="o2-kbd">Ctrl</kbd><kbd className="o2-kbd">Alt</kbd><kbd className="o2-kbd">A</kbd></span>
                     <span className={`o2s-state${autoApprovalOn ? " is-on" : ""}`}>{autoApprovalOn ? "확인 없이 실행 중" : "확인 후 실행 (기본)"}</span>
                     <O2Switch checked={autoApprovalOn} onChange={toggleAutoApproval} label="확인 없이 실행" tone="warn" />
                   </O2Row>
@@ -3531,8 +3532,9 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   desc="AI가 파일·시스템·입력·네트워크 도구를 쓸 수 있는지 정합니다. 확인 없이 실행과는 별개입니다." />
                 <div className="o2s-rows">
                   {permissions.map((perm) => (
-                    <O2Row key={perm.id} icon={PERM_CATEGORY_ICONS[perm.category]} title={perm.name}
-                      sub={<>{perm.description}<span className="o2s-risk" title={riskOfCategory(perm.id).summary}> · 위험도 {RISK_BADGES[riskOfCategory(perm.id).level].label}</span></>}>
+                    <O2Row key={perm.id} icon={PERM_CATEGORY_ICONS[perm.category]}
+                      title={<>{perm.name}<span className={`o2s-lvl o2s-lvl--${riskOfCategory(perm.id).level}`} title={`위험도 ${RISK_BADGES[riskOfCategory(perm.id).level].label} — ${riskOfCategory(perm.id).summary}`}>{RISK_BADGES[riskOfCategory(perm.id).level].label}</span></>}
+                      sub={perm.description}>
                       <O2Seg label={`${perm.name} 허용 범위`} value={perm.level} onChange={(v) => updatePermission(perm.id, v)}
                         options={[
                           { value: "auto", label: "허용", tone: "a" },
@@ -3942,7 +3944,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     켜면 매 메시지를 선택한 엔진들에 동시에 보내고, 메인 엔진(Claude 우선)이
                     답변들을 비교·종합해 최종 답변을 만듭니다. 엔진별 의견 카드가 먼저 표시되고
                     종합이 마지막에 나옵니다. 서브턴은 도구 호출 없이 텍스트만 (충돌 방지).
-                    ⚠ 사용량·응답시간이 엔진 수만큼 증가합니다.
+                    <EmojiLabel>⚠ 사용량·응답시간이 엔진 수만큼 증가합니다.</EmojiLabel>
                   </div>
                 </div>
                 <label className="toggle">
@@ -3993,15 +3995,10 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   {lockedTools.size === 0 ? (
                     <O2Row icon="lock" title="잠긴 도구 없음" sub="아래 도구 목록에서 체크하면 여기에 표시됩니다." />
                   ) : (
-                    [...lockedTools].sort().map((name) => {
-                      const cat = TOOL_CATALOG.find((c) => c.tools.some((t) => t.name === name));
-                      const tool = cat?.tools.find((t) => t.name === name);
-                      return (
-                        <O2Row key={name} icon="lock" mono title={name} sub={[tool?.desc, cat?.title].filter(Boolean).join(" · ") || "개별 잠금"}>
-                          <button type="button" className="o2s-sm" onClick={() => toggleLockTool(name)}>잠금 해제</button>
-                        </O2Row>
-                      );
-                    })
+                    // dzC — 목업 v2.1: 잠긴 도구를 한 줄에 칩으로 (칩의 ✕ = 기존 잠금 해제)
+                    <O2Row icon="lock" title="잠긴 도구" sub={`${lockedTools.size}개 잠김 · 아래 목록에서 더 잠글 수 있어요`}>
+                      <O2LockChips names={[...lockedTools].sort()} onUnlock={toggleLockTool} />
+                    </O2Row>
                   )}
                 </div>
                 <div className="o2s-subhead">도구 목록에서 잠그기</div>
@@ -4029,7 +4026,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                 }}
               >
                 <div style={{ fontWeight: 600, marginBottom: "4px" }}>
-                  💡 사용 예시
+                  <EmojiLabel>💡 사용 예시</EmojiLabel>
                 </div>
                 <div style={{ opacity: 0.85 }}>
                   • <strong>마우스는 허용, 키보드 입력은 잠금</strong>: 시스템 제어를 자동으로 두고
@@ -4047,7 +4044,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     onClick={clearAllLocks}
                     title="모든 개별 잠금 해제 (카테고리 토글은 영향 없음)"
                   >
-                    🔓 모든 잠금 해제 ({lockedTools.size})
+                    <EmojiLabel>🔓 모든 잠금 해제 ({lockedTools.size})</EmojiLabel>
                   </button>
                 </div>
               )}
@@ -4073,7 +4070,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     >
                       <span>
                         <span style={{ display: "inline-block", width: "16px" }}>
-                          {isExpanded ? "▼" : "▶"}
+                          {isO2 ? <Icon name={isExpanded ? "chevronDown" : "chevronRight"} size={14} /> : isExpanded ? "▼" : "▶"}
                         </span>
                         {" "}<span className="eyebrow-emoji">{category.icon} </span>{category.title}
                         {someLocked && (
@@ -4150,7 +4147,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                                           opacity: 0.7,
                                         }}
                                       >
-                                        ⚠ 파괴적
+                                        <EmojiLabel>⚠ 파괴적</EmojiLabel>
                                       </span>
                                     )}
                                   </div>
@@ -4170,7 +4167,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                                     whiteSpace: "nowrap",
                                   }}
                                 >
-                                  🔒 잠김
+                                  <EmojiLabel>🔒 잠김</EmojiLabel>
                                 </span>
                               )}
                             </label>
@@ -4206,7 +4203,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                       onClick={() => setActiveProvider(provider.id)}
                       title={chatProvider === provider.id ? "현재 채팅에 사용 중" : "탭으로 전환"}
                     >
-                      <span className="api-provider-icon">{provider.icon}</span>
+                      <span className="api-provider-icon"><EmojiIcon e={provider.icon} fallback="cpu" noDot /></span>
                       <span className="api-provider-name">{provider.name.split(" ")[0]}</span>
                       {usable && <span className="api-key-check">✓</span>}
                       {chatProvider === provider.id && (
@@ -4318,11 +4315,11 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                               : "Codex CLI 가 PATH 에 없음"
                           }
                         >
-                          {codexLoginStatus === "running"
+                          <EmojiLabel>{codexLoginStatus === "running"
                             ? "브라우저 확인 중…"
                             : codexAuth?.authenticated
                             ? "🔄 codex login 다시"
-                            : "🔑 codex login 실행"}
+                            : "🔑 codex login 실행"}</EmojiLabel>
                         </button>
                         <button
                           className="settings-btn"
@@ -4334,9 +4331,9 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                           }
                           title="codex mcp add k-personal — Codex 도 K-Personal MCP 도구 사용"
                         >
-                          {codexMcpRegistering
+                          <EmojiLabel>{codexMcpRegistering
                             ? "등록 중…"
-                            : "🔌 K-Personal MCP 등록"}
+                            : "🔌 K-Personal MCP 등록"}</EmojiLabel>
                         </button>
                         <button
                           className="settings-btn"
@@ -4355,7 +4352,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                             color: "var(--warn, #ff9800)",
                           }}
                         >
-                          ⚠ {codexLoginError}
+                          <EmojiLabel>⚠ {codexLoginError}</EmojiLabel>
                         </div>
                       )}
                       {codexMcpResult && (
@@ -4437,11 +4434,11 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                           disabled={geminiLoginStatus === "running"}
                           title="시스템 브라우저로 Google OAuth — 완료 시 ~/.gemini/oauth_creds.json 캐시"
                         >
-                          {geminiLoginStatus === "running"
+                          <EmojiLabel>{geminiLoginStatus === "running"
                             ? "브라우저에서 로그인 진행 중…"
                             : geminiAuth?.authenticated
                             ? "🔄 Google 계정 다시 로그인"
-                            : "🔑 Google 계정으로 로그인"}
+                            : "🔑 Google 계정으로 로그인"}</EmojiLabel>
                         </button>
                         <button
                           className="settings-btn"
@@ -4460,7 +4457,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                             color: "var(--warn, #ff9800)",
                           }}
                         >
-                          ⚠ {geminiLoginError}
+                          <EmojiLabel>⚠ {geminiLoginError}</EmojiLabel>
                         </div>
                       )}
                     </div>
@@ -4494,9 +4491,9 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                           onClick={handleClaudeLogin}
                           disabled={loginStatus === "running"}
                         >
-                          {loginStatus === "running"
+                          <EmojiLabel>{loginStatus === "running"
                             ? "콘솔 창 확인…"
-                            : "🔑 claude auth login 실행"}
+                            : "🔑 claude auth login 실행"}</EmojiLabel>
                         </button>
                         {loginStatus === "running" && (
                           <span
@@ -4517,7 +4514,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                               alignSelf: "center",
                             }}
                           >
-                            ⚠ {loginError}
+                            <EmojiLabel>⚠ {loginError}</EmojiLabel>
                           </span>
                         )}
                       </div>
@@ -4697,7 +4694,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             <div className="settings-row">
               <div className="settings-row-info">
                 <div className="settings-row-title">
-                  {API_PROVIDERS.find((p) => p.id === chatProvider)?.icon}{" "}
+                  <EmojiIcon e={API_PROVIDERS.find((p) => p.id === chatProvider)?.icon} fallback="cpu" noDot />{" "}
                   {API_PROVIDERS.find((p) => p.id === chatProvider)?.name ?? chatProvider}
                 </div>
                 <div className="settings-row-desc">
@@ -4746,7 +4743,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   disabled={webviewOpening === page.id}
                   title="새 창으로 열기"
                 >
-                  {webviewOpening === page.id ? "여는 중…" : "🪟 열기"}
+                  <EmojiLabel>{webviewOpening === page.id ? "여는 중…" : "🪟 열기"}</EmojiLabel>
                 </button>
               </div>
             ))}
@@ -4811,7 +4808,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   </div>
                   {depsResult.fatal && (
                     <div className="update-error-section" style={{ marginTop: "0.5rem" }}>
-                      <div className="update-status update-error">⚠ {depsResult.fatal}</div>
+                      <div className="update-status update-error"><EmojiLabel>⚠ {depsResult.fatal}</EmojiLabel></div>
                       {depsResult.missing && depsResult.missing.length > 0 && (
                         <div className="settings-row-desc" style={{ marginTop: "0.3rem" }}>
                           누락된 도구: {depsResult.missing.join(", ")} — winget 또는 직접 다운로드로 설치 필요
@@ -4824,7 +4821,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
               {depsError && (
                 <div className="update-error-section">
-                  <div className="update-status update-error">⚠ {depsError}</div>
+                  <div className="update-status update-error"><EmojiLabel>⚠ {depsError}</EmojiLabel></div>
                 </div>
               )}
 
@@ -4963,7 +4960,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
               {kpmcpError && (
                 <div className="update-error-section">
-                  <div className="update-status update-error">⚠ {kpmcpError}</div>
+                  <div className="update-status update-error"><EmojiLabel>⚠ {kpmcpError}</EmojiLabel></div>
                 </div>
               )}
 
@@ -5008,7 +5005,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
             )}
             {dataDirError && (
               <div className="update-error-section" style={{ marginTop: "0.3rem" }}>
-                <div className="update-status update-error">⚠ {dataDirError}</div>
+                <div className="update-status update-error"><EmojiLabel>⚠ {dataDirError}</EmojiLabel></div>
               </div>
             )}
             <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
@@ -5259,7 +5256,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   <b> 미리보기가 빈칸으로 안 보이는</b> 경우 켜세요. WebView2 의 GPU 합성을
                   끄고 software 렌더로 전환해 미리보기를 정상화합니다.
                   <br />
-                  <b>⚠ 변경 후 앱을 완전히 종료(트레이 포함) 후 재시작해야 적용됩니다.</b>
+                  <b><EmojiLabel>⚠ 변경 후 앱을 완전히 종료(트레이 포함) 후 재시작해야 적용됩니다.</EmojiLabel></b>
                   {" "}이 설정은 이 PC 에만 저장돼요 (메인 PC 는 GPU 가속 유지 가능).
                 </div>
               </div>
@@ -5344,7 +5341,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   {watchedFolders.map((folder) => (
                     <div key={folder.path} className="watched-folder-item">
                       <span className="watched-folder-path mono" title={folder.path}>
-                        📁 {folder.path.split("\\").pop() || folder.path}
+                        <EmojiLabel>📁 {folder.path.split("\\").pop() || folder.path}</EmojiLabel>
                       </span>
                       <span className="watched-folder-full-path mono">
                         {folder.path}
@@ -5466,13 +5463,13 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     borderRadius: 6,
                   }}
                 >
-                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🛡️ SafeMode</div>
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}><EmojiLabel>🛡️ SafeMode</EmojiLabel></div>
                   <div style={{ fontWeight: 600 }}>
-                    {safeMode === "off"
+                    <EmojiLabel>{safeMode === "off"
                       ? "🟢 끔"
                       : safeMode === "balanced"
                         ? "🟡 균형"
-                        : "🔴 엄격"}
+                        : "🔴 엄격"}</EmojiLabel>
                   </div>
                 </div>
                 <div
@@ -5483,7 +5480,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     borderRadius: 6,
                   }}
                 >
-                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🔄 Memory Sync</div>
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}><EmojiLabel>🔄 Memory Sync</EmojiLabel></div>
                   <div style={{ fontWeight: 600 }}>
                     {gitSyncEnabled
                       ? gitSyncStatus?.last_sync_at && gitSyncStatus.last_sync_at > 0
@@ -5500,7 +5497,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     borderRadius: 6,
                   }}
                 >
-                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🛡️ Final-Review Gate</div>
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}><EmojiLabel>🛡️ Final-Review Gate</EmojiLabel></div>
                   <div style={{ fontWeight: 600 }}>{finalReviewGate ? "✓ ON" : "— OFF"}</div>
                 </div>
                 <div
@@ -5511,7 +5508,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     borderRadius: 6,
                   }}
                 >
-                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🪪 Lee Profile</div>
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}><EmojiLabel>🪪 Lee Profile</EmojiLabel></div>
                   <div style={{ fontWeight: 600 }}>
                     {leeProfile
                       ? leeProfile.bytes > 0
@@ -5529,7 +5526,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     borderRadius: 6,
                   }}
                 >
-                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🧪 실험 기능</div>
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}><EmojiLabel>🧪 실험 기능</EmojiLabel></div>
                   <div style={{ fontWeight: 600 }}>
                     {(() => {
                       const n = Object.values(agentFlags).filter(Boolean).length;
@@ -5545,7 +5542,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     borderRadius: 6,
                   }}
                 >
-                  <div style={{ opacity: 0.7, marginBottom: 2 }}>🪪 soul.md</div>
+                  <div style={{ opacity: 0.7, marginBottom: 2 }}><EmojiLabel>🪪 soul.md</EmojiLabel></div>
                   <div style={{ fontWeight: 600 }}>
                     {soulStatus
                       ? soulStatus.exists
@@ -5568,7 +5565,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   }}
                 >
                   <div style={{ fontWeight: 600, fontSize: "0.88em", marginBottom: 6 }}>
-                    📊 SafeMode 주간 통계 (지난 7일)
+                    <EmojiLabel>📊 SafeMode 주간 통계 (지난 7일)</EmojiLabel>
                   </div>
                   <div
                     style={{
@@ -5579,13 +5576,13 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     }}
                   >
                     <div>
-                      ⚠ <strong>{safetyStats.last7_alerts}</strong>회 alert
+                      <EmojiLabel>⚠ <strong>{safetyStats.last7_alerts}</strong>회 alert</EmojiLabel>
                       <span style={{ opacity: 0.6 }}>
                         {" "}(누적 {safetyStats.total_alerts})
                       </span>
                     </div>
                     <div>
-                      🚫 <strong>{safetyStats.last7_blocks}</strong>회 blocked
+                      <EmojiLabel>🚫 <strong>{safetyStats.last7_blocks}</strong>회 blocked</EmojiLabel>
                       <span style={{ opacity: 0.6 }}>
                         {" "}(누적 {safetyStats.total_blocks})
                       </span>
@@ -5689,7 +5686,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                           </button>
                         </div>
                         <div style={{ marginTop: 4, opacity: 0.85 }}>
-                          ⚠ {bucket.alerts}회 alert · 🚫 {bucket.blocks}회 blocked
+                          <EmojiLabel>⚠ {bucket.alerts}회 alert · 🚫 {bucket.blocks}회 blocked</EmojiLabel>
                         </div>
                         {entries.length > 0 ? (
                           <div style={{ marginTop: 6, fontFamily: "monospace", fontSize: "0.85em" }}>
@@ -5718,7 +5715,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         }
                       }}
                     >
-                      🔄 새로고침
+                      <EmojiLabel>🔄 새로고침</EmojiLabel>
                     </button>
                     {/* Phase 92 (v0.6.34) — 통계 CSV export.
                         K 가 외부 spreadsheet / 다른 분석 도구로 들고 갈 수 있게.
@@ -5747,7 +5744,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                       }}
                       title="7일 통계를 CSV 파일로 저장 — Excel / Google Sheets 에서 열기"
                     >
-                      📥 CSV 내보내기
+                      <EmojiLabel>📥 CSV 내보내기</EmojiLabel>
                     </button>
                     <button
                       className="settings-btn"
@@ -5762,7 +5759,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                       }}
                       title="누적 + 7일 history 모두 리셋"
                     >
-                      🗑️ 지우기
+                      <EmojiLabel>🗑️ 지우기</EmojiLabel>
                     </button>
                   </div>
                 </div>
@@ -5816,7 +5813,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <div style={{ fontWeight: 600 }}>📘 처음 설정 가이드 (3 단계)</div>
+                    <div style={{ fontWeight: 600 }}><EmojiLabel>📘 처음 설정 가이드 (3 단계)</EmojiLabel></div>
                     <button
                       style={{
                         background: "transparent",
@@ -5855,7 +5852,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         }}
                         title="시스템 브라우저로 열기"
                       >
-                        🌐 github.com/new 열기
+                        <EmojiLabel>🌐 github.com/new 열기</EmojiLabel>
                       </button>
                     </li>
                     <li>
@@ -5873,7 +5870,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         }}
                         title="시스템 브라우저로 열기"
                       >
-                        🔑 PAT 발급 페이지 열기
+                        <EmojiLabel>🔑 PAT 발급 페이지 열기</EmojiLabel>
                       </button>
                     </li>
                     <li>
@@ -5883,7 +5880,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     </li>
                   </ol>
                   <div style={{ marginTop: 10, opacity: 0.75, fontSize: "0.82em" }}>
-                    💡 팀 공유 메모리는 같은 단계로 별도 repo (예: <code>kda-team-memory</code>) 만들어
+                    <EmojiLabel>💡 팀 공유 메모리는 같은 단계로 별도 repo (예: </EmojiLabel><code>kda-team-memory</code>) 만들어
                     아래 "팀 공유 repo" 영역에 입력하면 됩니다 — <code>lee-profile.md</code> 는 절대 안 박힘.
                   </div>
                 </div>
@@ -5902,7 +5899,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     }
                   }}
                 >
-                  📘 가이드 다시 보기
+                  <EmojiLabel>📘 가이드 다시 보기</EmojiLabel>
                 </button>
               )}
 
@@ -5918,7 +5915,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                 }}
               >
                 <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                  📌 중요 — Personal repo 는 혼자만 access
+                  <EmojiLabel>📌 중요 — Personal repo 는 혼자만 access</EmojiLabel>
                 </div>
                 <div style={{ opacity: 0.85 }}>
                   다른 사람과 같은 personal repo 를 쓰면 <code>lee-profile.md</code> (개인 응답 규칙) 까지
@@ -5940,7 +5937,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     fontSize: "0.88em",
                   }}
                 >
-                  ⚠ <strong>git 미설치.</strong>{" "}
+                  <EmojiLabel>⚠ <strong>git 미설치.</strong></EmojiLabel>{" "}
                   <a href="https://git-scm.com" target="_blank" rel="noreferrer">
                     git-scm.com
                   </a>{" "}
@@ -5959,7 +5956,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: "0.9em", marginBottom: 8 }}>
-                  💻 Personal repo (lee-profile + memory/)
+                  <EmojiLabel>💻 Personal repo (lee-profile + memory/)</EmojiLabel>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.88em" }}>
@@ -5998,7 +5995,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: "0.9em", marginBottom: 4 }}>
-                  👥 팀 공유 repo (선택) — memory/ 만, lee-profile 절대 X
+                  <EmojiLabel>👥 팀 공유 repo (선택) — memory/ 만, lee-profile 절대 X</EmojiLabel>
                 </div>
                 <div style={{ fontSize: "0.82em", opacity: 0.75, marginBottom: 8, lineHeight: 1.5 }}>
                   팀원과 같이 학습한 함정/규칙을 공유할 때만 등록. 별도 폴더{" "}
@@ -6099,7 +6096,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     }
                   }}
                 >
-                  💾 저장 + credential 등록
+                  <EmojiLabel>💾 저장 + credential 등록</EmojiLabel>
                 </button>
 
                 <button
@@ -6121,7 +6118,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     }
                   }}
                 >
-                  🔄 지금 동기화
+                  <EmojiLabel>🔄 지금 동기화</EmojiLabel>
                 </button>
               </div>
 
@@ -6203,7 +6200,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         }
                       }}
                     >
-                      💻 이 PC 변경 유지
+                      <EmojiLabel>💻 이 PC 변경 유지</EmojiLabel>
                     </button>
                     <button
                       className="settings-btn"
@@ -6221,7 +6218,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         }
                       }}
                     >
-                      ☁️ remote 변경 유지
+                      <EmojiLabel>☁️ remote 변경 유지</EmojiLabel>
                     </button>
                   </div>
                 </div>
@@ -6282,7 +6279,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   }}
                   style={{ fontSize: "0.85em" }}
                 >
-                  📜 Personal history
+                  <EmojiLabel>📜 Personal history</EmojiLabel>
                 </button>
                 <button
                   className="settings-btn"
@@ -6298,7 +6295,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   }}
                   style={{ fontSize: "0.85em" }}
                 >
-                  📜 Team history
+                  <EmojiLabel>📜 Team history</EmojiLabel>
                 </button>
                 {gitSyncLog && (
                   <button
@@ -6325,7 +6322,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     📜 {gitSyncLog.target === "personal" ? "💻 Personal" : "👥 Team"} commit history ({gitSyncLog.commits.length}개)
                   </div>
                   {!gitSyncLog.ok && (
-                    <div style={{ color: "#f87171", marginBottom: 6 }}>⚠ {gitSyncLog.message}</div>
+                    <div style={{ color: "#f87171", marginBottom: 6 }}><EmojiLabel>⚠ {gitSyncLog.message}</EmojiLabel></div>
                   )}
                   {gitSyncLog.commits.length === 0 ? (
                     <div style={{ opacity: 0.6 }}>commit 없음</div>
@@ -6530,7 +6527,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     </div>
                     <div style={{ opacity: 0.6, fontSize: "0.78em" }}>
                       → {formatDays(rule.days)} {formatHourRange(rule.startHour, rule.endHour)} ·{" "}
-                      {rule.mode === "off" ? "🟢 끔" : rule.mode === "balanced" ? "🟡 균형" : "🔴 엄격"}
+                      <EmojiLabel>{rule.mode === "off" ? "🟢 끔" : rule.mode === "balanced" ? "🟡 균형" : "🔴 엄격"}</EmojiLabel>
                     </div>
                   </div>
                 ))}
@@ -6561,7 +6558,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     style={{ fontSize: "0.85em", opacity: 0.85 }}
                     title="평일 9-18 strict / 주말 off / 야간 balanced"
                   >
-                    📋 기본 preset 적용
+                    <EmojiLabel>📋 기본 preset 적용</EmojiLabel>
                   </button>
                 </div>
               </div>
@@ -6724,7 +6721,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                               whiteSpace: "nowrap",
                             }}
                           >
-                            {badge.icon} {badge.label}
+                            <EmojiIcon e={badge.icon} size={12} /> {badge.label}
                           </div>
                           <div style={{ fontFamily: "monospace", opacity: 0.95 }}>
                             {id}
@@ -6783,7 +6780,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         <div style={{ fontFamily: "monospace", fontSize: "0.82em", lineHeight: 1.6 }}>
                           {changes.map((c) => (
                             <div key={c.id}>
-                              {RISK_BADGES[c.risk].icon} <strong>{c.id}</strong> ·{" "}
+                              <EmojiIcon e={RISK_BADGES[c.risk].icon} size={12} /> <strong>{c.id}</strong> ·{" "}
                               <span style={{ opacity: 0.7 }}>{c.from}</span> →{" "}
                               <span style={{ color: "#f97316", fontWeight: 600 }}>{c.to}</span>
                             </div>
@@ -6830,7 +6827,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                 </div>
                 {leeProfile && (
                   <div className="mono" style={{ fontSize: "0.8em", opacity: 0.75, marginTop: 6 }}>
-                    📄 {leeProfile.path} ({leeProfile.bytes} bytes)
+                    <EmojiLabel>📄 {leeProfile.path} ({leeProfile.bytes} bytes)</EmojiLabel>
                     {leeProfile.justCreated && (
                       <span style={{ color: "#fa0", marginLeft: 8 }}>
                         ⓘ 방금 example template 생성됨 — 편집해서 K 의 규칙을 채우세요
@@ -6858,7 +6855,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     }
                   }}
                 >
-                  ✏️ 지금 편집 (OS 기본 에디터)
+                  <EmojiLabel>✏️ 지금 편집 (OS 기본 에디터)</EmojiLabel>
                 </button>
                 <button
                   className="settings-btn"
@@ -6874,7 +6871,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     }
                   }}
                 >
-                  🔄 상태 새로고침
+                  <EmojiLabel>🔄 상태 새로고침</EmojiLabel>
                 </button>
               </div>
             </div>
@@ -7101,7 +7098,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   }}
                   title="현재 K's user 권한의 stale codex 프로세스 검색"
                 >
-                  {staleProcessesBusy ? "검색 중…" : "🔍 지금 검사"}
+                  <EmojiLabel>{staleProcessesBusy ? "검색 중…" : "🔍 지금 검사"}</EmojiLabel>
                 </button>
                 {staleProcesses && staleProcesses.length > 0 && (
                   <button
@@ -7145,7 +7142,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     }}
                     title="모두 taskkill /F /T 실행"
                   >
-                    🧹 모두 정리 ({staleProcesses.length}개)
+                    <EmojiLabel>🧹 모두 정리 ({staleProcesses.length}개)</EmojiLabel>
                   </button>
                 )}
               </div>
@@ -7153,7 +7150,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               {staleProcessesError && (
                 <div className="update-error-section" style={{ marginTop: "0.5rem" }}>
                   <div className="update-status update-error" style={{ whiteSpace: "pre-wrap" }}>
-                    ⚠ {staleProcessesError}
+                    <EmojiLabel>⚠ {staleProcessesError}</EmojiLabel>
                   </div>
                 </div>
               )}
@@ -7194,7 +7191,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                               fontWeight: 600,
                             }}
                           >
-                            ⚠ 의심
+                            <EmojiLabel>⚠ 의심</EmojiLabel>
                           </span>
                         )}
                         <span style={{ opacity: 0.7 }}>{p.start_time}</span>
@@ -7307,13 +7304,13 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   disabled={mcpToolsBusy}
                   title="sidecar 에 도구 목록 재조회 요청"
                 >
-                  {mcpToolsBusy ? "조회 중…" : "🔄 새로고침"}
+                  <EmojiLabel>{mcpToolsBusy ? "조회 중…" : "🔄 새로고침"}</EmojiLabel>
                 </button>
               </div>
 
               {mcpToolsError && (
                 <div className="update-error-section" style={{ marginTop: "0.5rem" }}>
-                  <div className="update-status update-error">⚠ {mcpToolsError}</div>
+                  <div className="update-status update-error"><EmojiLabel>⚠ {mcpToolsError}</EmojiLabel></div>
                   <div className="settings-row-desc" style={{ marginTop: "0.3rem", fontSize: "0.85em" }}>
                     K-Personal MCP 가 설치 안 됐거나 Python 이 없는 상태일 수 있습니다.
                     위의 "MCP 도구 자동 설치" 또는 "외부 의존성 자동 설치" 먼저 확인하세요.
@@ -7324,7 +7321,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               {/* Phase 70 — mcpTools=null 케이스 visible 안내 (이전엔 분기 셋 다 false 라 진짜 빈 화면이었음) */}
               {!mcpTools && !mcpToolsError && (
                 <div className="settings-row-desc" style={{ marginTop: "0.5rem", opacity: 0.85, color: "#fa0" }}>
-                  ⏳ mcpTools state = null (listener 트리거 됐는데 state 갱신 안 됨).
+                  <EmojiLabel>⏳ mcpTools state = null (listener 트리거 됐는데 state 갱신 안 됨).</EmojiLabel>
                   sidecar.log 의 <code>[settings] setMcpTools</code> 라인 확인 + KDA 재시작.
                 </div>
               )}
@@ -7394,7 +7391,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                               </span>
                             )}
                             <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>
-                              {expanded ? "▼" : "▶"}
+                              {isO2 ? <Icon name={expanded ? "chevronDown" : "chevronRight"} size={14} /> : expanded ? "▼" : "▶"}
                             </span>
                           </div>
                           {tool.description && (
@@ -7465,7 +7462,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                                     }}
                                     title="이 도구의 Python 코드 편집"
                                   >
-                                    ✎ 편집
+                                    <EmojiLabel>✎ 편집</EmojiLabel>
                                   </button>
                                 </div>
                               )}
@@ -7511,7 +7508,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                      <span style={{ fontSize: "1.1em" }}>{entry.icon}</span>
+                      <span className="mcp-catalog-icon" style={{ fontSize: "1.1em" }}><EmojiIcon e={entry.icon} fallback="plug" /></span>
                       <span style={{ fontWeight: 600 }}>{entry.name}</span>
                       <button
                         className="settings-btn"
@@ -7524,7 +7521,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                           }).catch((e) => console.warn("doc 열기 실패:", e))
                         }
                       >
-                        📖 문서
+                        <EmojiLabel>📖 문서</EmojiLabel>
                       </button>
                     </div>
                     <div style={{ marginTop: "0.3rem", fontSize: "0.88em", opacity: 0.85 }}>
@@ -7538,7 +7535,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                           color: "var(--warn, #d4ad4a)",
                         }}
                       >
-                        ⚠ {entry.note}
+                        <EmojiLabel>⚠ {entry.note}</EmojiLabel>
                       </div>
                     )}
                     <div
@@ -7574,7 +7571,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         }}
                         title="설치 명령 클립보드에 복사"
                       >
-                        📋
+                        <EmojiLabel>📋</EmojiLabel>
                       </button>
                     </div>
                   </div>
@@ -7594,7 +7591,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   도구 이름은 <code>kda_</code> prefix 강제. 저장 시 sidecar 자동 재시작 → 도구가 모델에게 노출.
                   <br />
                   <strong style={{ color: "var(--warn, #d4ad4a)" }}>
-                    ⚠ 보안: 이 코드는 K 의 PC 에서 직접 실행됩니다. 저장 전 K 가 모든 줄을 검토하세요.
+                    <EmojiLabel>⚠ 보안: 이 코드는 K 의 PC 에서 직접 실행됩니다. 저장 전 K 가 모든 줄을 검토하세요.</EmojiLabel>
                     이전 버전은 .bak 으로 자동 백업되어 K-Personal-MCP/modules/kda_plugins/ 에서 복구 가능.
                   </strong>
                 </div>
@@ -7613,13 +7610,13 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   onClick={refreshPluginList}
                   title="modules/kda_plugins/ 디렉토리 재스캔"
                 >
-                  🔄 plugin 목록 새로고침
+                  <EmojiLabel>🔄 plugin 목록 새로고침</EmojiLabel>
                 </button>
               </div>
 
               {pluginListError && (
                 <div className="update-status update-error" style={{ marginTop: "0.4rem" }}>
-                  ⚠ {pluginListError}
+                  <EmojiLabel>⚠ {pluginListError}</EmojiLabel>
                 </div>
               )}
 
@@ -7653,7 +7650,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         style={{ marginLeft: "auto", fontSize: "0.85em", padding: "0.2em 0.6em" }}
                         onClick={() => openEditPluginEditor(p.file)}
                       >
-                        ✎ 편집
+                        <EmojiLabel>✎ 편집</EmojiLabel>
                       </button>
                       <button
                         className="settings-btn"
@@ -7664,7 +7661,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         }}
                         onClick={() => handleDeletePlugin(p.file)}
                       >
-                        🗑 삭제
+                        <EmojiLabel>🗑 삭제</EmojiLabel>
                       </button>
                     </div>
                   ))}
@@ -7772,7 +7769,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                       style={{ fontSize: "0.85em" }}
                       title="K 의 메인 채팅에 prompt 박음 — 응답이 오면 코드 블록을 위 textarea 에 복사"
                     >
-                      💬 메인 채팅에 prompt 보내기
+                      <EmojiLabel>💬 메인 채팅에 prompt 보내기</EmojiLabel>
                     </button>
                     <div style={{ fontSize: "0.78em", opacity: 0.6, marginTop: "0.3rem" }}>
                       모델 응답 확인 → 코드 검토 → 위 textarea 에 복사 → 저장. (자동 적용 안 함 — K 가 직접 검토 필수)
@@ -7785,14 +7782,14 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                       onClick={handleSavePlugin}
                       disabled={editorBusy || !editorName.trim() || !editorCode.trim()}
                     >
-                      {editorBusy ? "저장 중…" : "💾 저장 + sidecar 재시작"}
+                      <EmojiLabel>{editorBusy ? "저장 중…" : "💾 저장 + sidecar 재시작"}</EmojiLabel>
                     </button>
                     <button
                       className="settings-btn"
                       onClick={() => setEditorCode(KDA_PLUGIN_TEMPLATE)}
                       title="기본 템플릿으로 리셋"
                     >
-                      ↩ 템플릿
+                      <EmojiLabel>↩ 템플릿</EmojiLabel>
                     </button>
                   </div>
 
@@ -7845,7 +7842,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
 
               {backupError && (
                 <div className="settings-meta mono" style={{ marginTop: 8, color: "var(--warn, #f59e0b)" }}>
-                  ⚠️ {backupError}
+                  <EmojiLabel>⚠️ {backupError}</EmojiLabel>
                 </div>
               )}
 
@@ -7855,7 +7852,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                   onClick={handleBackupNow}
                   disabled={backupBusy !== "idle"}
                 >
-                  {backupBusy === "backing-up" ? "💾 백업 중..." : "💾 지금 백업하기"}
+                  <EmojiLabel>{backupBusy === "backing-up" ? "💾 백업 중..." : "💾 지금 백업하기"}</EmojiLabel>
                 </button>
 
                 {!showRollbackConfirm ? (
@@ -7865,7 +7862,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                     disabled={!latestBackup || backupBusy !== "idle"}
                     title={!latestBackup ? "백업이 없으면 복구 불가" : "마지막 백업 시점으로 되돌립니다"}
                   >
-                    ↩️ 이전 백업으로 복구
+                    <EmojiLabel>↩️ 이전 백업으로 복구</EmojiLabel>
                   </button>
                 ) : (
                   <>
@@ -7964,9 +7961,9 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
               <div className="settings-btn-group">
                 <button type="button" className="settings-btn" disabled={!activeConversationId}
                   title={activeConversationId ? "지금 연 대화를 파일로 내보내기" : "내보낼 대화를 먼저 여세요"}
-                  onClick={() => { void exportConversationToFile(activeConversationId); }}>📤 대화 내보내기</button>
-                <button type="button" className="settings-btn" onClick={() => { void exportAllConversationsToFile(); }}>💾 전체 백업</button>
-                <button type="button" className="settings-btn" onClick={() => { void importConversationsFromFile(onConversationsImported); }}>📥 가져오기</button>
+                  onClick={() => { void exportConversationToFile(activeConversationId); }}><EmojiLabel>📤 대화 내보내기</EmojiLabel></button>
+                <button type="button" className="settings-btn" onClick={() => { void exportAllConversationsToFile(); }}><EmojiLabel>💾 전체 백업</EmojiLabel></button>
+                <button type="button" className="settings-btn" onClick={() => { void importConversationsFromFile(onConversationsImported); }}><EmojiLabel>📥 가져오기</EmojiLabel></button>
               </div>
             </div>
           </section>

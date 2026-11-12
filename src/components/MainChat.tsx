@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   memo,
+  Fragment,
   type Dispatch,
   type ReactNode,
   type RefObject,
@@ -335,22 +336,30 @@ function MainChat({
               {isO2 && (
                 <button type="button" className="chat-options-approval" role="switch" aria-checked={approval.enabled}
                   onClick={approval.toggle} title="Ctrl+Alt+A">
-                  확인 없이 실행 · {approval.enabled ? "켜짐" : "꺼짐"}
+                  {/* dzC — 목업 v2.1 ⋯ 메뉴: 아이콘 · 상태 배지 · 키캡 */}
+                  <Icon name={approval.enabled ? "zap" : "shield"} />확인 없이 실행
+                  <span className="chat-options-r">
+                    <span className={`chat-options-badge${approval.enabled ? " is-on" : ""}`}>{approval.enabled ? "켜짐" : "꺼짐"}</span>
+                    <span className="o2-keys"><kbd className="o2-kbd">Ctrl</kbd><kbd className="o2-kbd">Alt</kbd><kbd className="o2-kbd">A</kbd></span>
+                  </span>
                 </button>
               )}
+              {isO2 && <div className="chat-options-sep" role="separator" />}
           <button
             className={`copy-chat-btn ${copyStatus === "copied" ? "copied" : ""}`}
             onClick={handleCopyChat}
             title="대화 내용 복사"
           >
+            {isO2 && <Icon name={copyStatus === "copied" ? "check" : "copy"} />}
             {copyStatus === "copied" ? "✓ 복사됨" : isO2 ? "복사" : "📋 복사"}
           </button>
               <button type="button" onClick={() => setShowToolCardsPersist(!showToolCards)} aria-pressed={showToolCards}>
+                {isO2 && <Icon name="terminal" />}
                 {showToolCards ? "도구 호출 숨기기" : "도구 호출 보기"}
               </button>
               {isO2 && onSetConversationProvider && conversationProvider !== undefined && (
                 <label className="chat-options-engine">
-                  이 대화의 엔진
+                  <Icon name="cpu" />이 대화의 엔진
                   <select value={conversationProvider ?? ""} aria-label="이 대화의 엔진"
                     onChange={(e) => onSetConversationProvider(e.target.value || null)}>
                     {PINNABLE_PROVIDERS.map((p) => <option key={p ?? "global"} value={p ?? ""}>{providerLabel(p)}</option>)}
@@ -359,12 +368,13 @@ function MainChat({
               )}
               {isO2 && onEditFolderInstructions && (
                 <button type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); onEditFolderInstructions(); }}>
-                  폴더 지침 편집
+                  <Icon name="pencil" />폴더 지침 편집
                 </button>
               )}
+              {isO2 && (onOpenPreview || onOpenSession) && <><div className="chat-options-sep" role="separator" /><div className="chat-options-label">패널</div></>}
               {onOpenPreview && (
                 <button type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); onOpenPreview(); }}
-                  aria-label="미리보기 패널 열기">미리보기 패널 열기</button>
+                  aria-label="미리보기 패널 열기">{isO2 && <Icon name="eye" />}미리보기 패널 열기</button>
               )}
               {[
                 onOpenSession && ["세션·사용량 보기", onOpenSession],
@@ -372,9 +382,13 @@ function MainChat({
                 onCompressContext && ["📦 요약해서 새 대화로 이어가기", onCompressContext],
                 onExportConversation && ["📤 이 대화 내보내기", onExportConversation],
               ].filter((x): x is [string, () => void] => !!x).map(([label, run]) => (
-                <button key={label} type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); run(); }}>
-                  {isO2 ? menuText(label) : label}
-                </button>
+                <Fragment key={label}>
+                  {isO2 && label.startsWith("↻") && <div className="chat-options-sep" role="separator" />}
+                  <button type="button" onClick={(e) => { (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); run(); }}>
+                    {isO2 && <Icon name={MENU_ICONS[menuText(label)] ?? "chevronRight"} />}
+                    {isO2 ? menuText(label) : label}
+                  </button>
+                </Fragment>
               ))}
             </div>
           </details>
@@ -751,6 +765,9 @@ function fillComposer(prompt: string) {
 }
 
 // v0.7.86 UI 10단계 (o2) — 크롬의 이모지 대신 라인 아이콘. 메뉴 문구 앞 기호(↻ 📦 📤)는 o2 에서만 떼고 보여 준다.
+const MENU_ICONS: Record<string, IconName> = {
+  "세션·사용량 보기": "gauge", "새 세션으로 이어가기": "rotate", "요약해서 새 대화로 이어가기": "layers", "이 대화 내보내기": "upload",
+};
 const menuText = (label: string) => (/^[↻📦📤]/u.test(label) ? label.slice(label.indexOf(" ") + 1) : label);
 const RISK_LABEL_KO: Record<string, string> = { low: "낮음", medium: "보통", high: "높음", critical: "치명" };
 const SUGGESTION_ICONS: Record<string, IconName> = {

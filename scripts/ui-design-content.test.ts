@@ -47,7 +47,8 @@ test("o2-content.css — 모든 선택자가 o2 한정, o2-design 다음 맨 마
     assert.ok(part.startsWith(':root[data-layout="o2"]'), `o2 밖 선택자: ${part}`);
   }
   const imports = [...app.matchAll(/^import "\.\/styles\/(o2-[a-z-]+)\.css";/gm)].map((m) => m[1]);
-  assert.equal(imports.at(-1), "o2-content");
+  // dzC — 설정·팔레트·메뉴·대화상자(o2-polish)가 그 뒤 맨 마지막 (scripts/ui-design-polish.test.ts)
+  assert.deepEqual(imports.slice(-2), ["o2-content", "o2-polish"]);
   assert.doesNotMatch(css, /companion-widget/, "아바타 위치 규칙은 건드리지 않는다");
 });
 

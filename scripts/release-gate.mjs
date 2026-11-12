@@ -296,6 +296,7 @@ const NODE_TEST_SUITES = [
   { file: "scripts/ui-spacing-settings.test.ts", runner: "tsx" }, // spB 여백·글자 다듬기 (설정 페이지 넓은 열·행 56·줄 40 · 팔레트 640 · ⋯ 메뉴 248, classic 유지)
   { file: "scripts/ui-design-shell.test.ts", runner: "tsx" }, // dzA 디자인 고도화 (목업 v2.1 토큰 · 상태 5단계 · 포커스 링 · 사이드바 고정됨/폴더/최근 · 헤더 중복 정리 · 컨텍스트 80/90 · 무채색 알림 띠, classic 유지)
   { file: "scripts/ui-design-content.test.ts", runner: "tsx" }, // dzB 메시지 콘텐츠 (말풍선 · 표 · 코드 블록 · 파일 칩 · 도구 카드 · 시스템 카드 · 작성 중 · 빈 화면, DEV 픽스처 ?content=rich|empty, classic 유지)
+  { file: "scripts/ui-design-polish.test.ts", runner: "tsx" }, // dzC 설정 전체 페이지·명령 팔레트·⋯ 메뉴·대화상자 (세그먼트 무채색+점 · 4단계 무채색 · 잠긴 도구 칩 · 이모지→라인 아이콘 · 범위 칩·키캡 · 대비, classic 유지)
   { file: "scripts/companion-antenna.test.ts", runner: "tsx" }, // v0.7.84 antenna ball not cut flat on any pose/tone/tier // v0.7.84 Codex built-in computer_use disabled on every app-server spawn // v0.7.84 incomplete install detection, signed repair, updater fallback
   { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
 ];
