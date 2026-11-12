@@ -126,6 +126,11 @@ test("MainChat — o2 빈 화면(마크·부제·라인 아이콘 카드) · 작
   assert.match(chat, /: <Icon name="msg" size=\{18\} \/>\}<\/span>/, "제안 카드 아이콘 대체도 라인 아이콘");
   assert.match(chat, /💡 파일을 드래그하거나 📎 버튼으로 첨부 가능/, "classic 빈 화면 문구 유지");
   assert.match(chat, /<span className="progress-dots" aria-hidden="true"><i \/><i \/><i \/><\/span>/);
+  // 2026-11-12: Windows 애니메이션 효과 OFF(prefers-reduced-motion)에서도 작업 중 점이 0.35 로 멈춰 "꺼진" 표시가 되지 않게 한다.
+  const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+  assert.doesNotMatch(reduced.slice(0, reduced.indexOf("\n}\n")), /\.progress-dots i[^{]*\{ animation: none/, "reduced-motion 에서 작성 중 점 애니메이션을 끄지 않음");
+  assert.match(reduced, /:root\[data-layout="o2"\] \.progress-dots i \{ animation-duration: 2s; \}/);
+  assert.match(css, /@keyframes o2-dot \{ 50% \{ opacity: 1; \} \}/, "점 애니메이션은 위치 이동 없는 밝기 변화만");
   assert.match(chat, /currentTool \? `\$\{formatToolName\(currentTool\.toolName\)\} 실행 중` : "답변 작성 중"/);
   assert.match(chat, /: "응답 생성 중\.\.\.";/, "classic 진행 문구 유지");
   assert.match(chat, /\{\(showToolCards \|\| activeFilter\) && isO2 && \(/);

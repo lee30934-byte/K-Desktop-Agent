@@ -307,8 +307,10 @@
 :root[data-layout="o2"] .elicitation-dialog.elicitation-warn .elicitation-hint { color: var(--o2-fg-3); }
 
 @media (prefers-reduced-motion: reduce) {
-  :root[data-layout="o2"] :is(.chat-col > .msg, .chat-col > .msg-tool-o2, .progress-indicator--o2, .elicitation-overlay, .msg-cursor, .progress-dots i, .msg-tool-st--pending .ui-icon) { animation: none; }
+  :root[data-layout="o2"] :is(.chat-col > .msg, .chat-col > .msg-tool-o2, .progress-indicator--o2, .elicitation-overlay, .msg-cursor, .msg-tool-st--pending .ui-icon) { animation: none; }
   :root[data-layout="o2"] .msg-tool-runbar::after { animation: none; }
+  /* 작성 중 점 3개는 위치 이동 없는 밝기 변화만 쓰므로 유지(느리게). 끄면 0.35 로 멈춰 "꺼진" 표시처럼 보임 — 2026-11-12 K 지적 */
+  :root[data-layout="o2"] .progress-dots i { animation-duration: 2s; }
 }
 
 /* ── 12. 도구 호출 카드 줄 (헤더 아래 조용한 한 줄: 토글 · 걸린 필터 · 안내) ── */
