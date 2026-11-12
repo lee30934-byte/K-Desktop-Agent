@@ -56,6 +56,13 @@ const PATHS = {
   link: <><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" /></>,
   arrowLeft: <path d="M19 12H5M12 19l-7-7 7-7" />,
   app: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
+  // dzA — 사이드바 줄 동작·대화 아이콘(목업 v2.1 스프라이트)
+  pencil: <><path d="M4.5 19.5h4l10-10a2.1 2.1 0 0 0-4-4l-10 10z" /><path d="m13.5 6.5 4 4" /></>,
+  image: <><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><circle cx="9" cy="10" r="1.5" /><path d="m20.5 15.5-5-5L6 19" /></>,
+  sheet: <><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="M4 9.5h16M4 14.5h16M10 9.5V20" /></>,
+  note: <path d="M6 4.5h12a1.5 1.5 0 0 1 1.5 1.5v12a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 18V6A1.5 1.5 0 0 1 6 4.5zM8.5 9h7M8.5 12.5h7M8.5 16h4" />,
+  send: <path d="M20.5 3.5 10 14M20.5 3.5 14 20.5l-4-6.5-6.5-4z" />,
+  panelRight: <><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><path d="M14.5 4.5v15" /></>,
 } as const;
 
 export type IconName = keyof typeof PATHS;

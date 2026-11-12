@@ -62,7 +62,9 @@ test("헤더: o2 는 새 헤더, classic 은 이전 헤더(제목 블록 + 확�
   // o2: 새 제목·엔진 칩·주의 칩·안전 칩·점 배지
   assert.match(m, /isO2 \? \(\s*<div className="main-title-block">/);
   assert.match(m, /\{isO2 && \(warnings \?\? \[\]\)\.map/);
-  assert.match(m, /\{isO2 && <SafetyChip onOpenSettings=\{onOpenSafetySettings\} \/>\}/);
+  // dzA (A) — 헤더 안전 칩은 '확인 없이 실행 중'일 때만, 평소 실행 확인 방식은 입력창 줄(modeSlot)
+  assert.match(m, /\{isO2 && <SafetyChip onOpenSettings=\{onOpenSafetySettings\} hideWhenSafe \/>\}/);
+  assert.match(m, /modeSlot=\{isO2 \? <SafetyChip onOpenSettings=\{onOpenSafetySettings\} variant="composer" \/> : undefined\}/);
   // classic: 이전 구조 그대로
   assert.match(m, /<div className="eyebrow">K DESKTOP AGENT<\/div>\s*<div className="main-title display">대화<\/div>/);
   assert.match(m, /\{!isO2 && <ApprovalToggle \/>\}/);

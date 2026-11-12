@@ -319,7 +319,7 @@ function MainChat({
             <Chip tone="accent" icon={isO2 ? <Icon name="file" size={14} /> : "📄"} className="preview-ready-chip" onClick={onOpenPreview} title="미리보기 패널 열기">미리보기 준비됨</Chip>
           )}
           {activityPanel}
-          {isO2 && <SafetyChip onOpenSettings={onOpenSafetySettings} />}
+          {isO2 && <SafetyChip onOpenSettings={onOpenSafetySettings} hideWhenSafe />}
           {isO2 && <span className="main-header-sep" aria-hidden="true" />}
           {onOpenAssistant && (
             <button type="button" className="ui-iconbtn header-assistant-btn" aria-label="비서 패널" title="비서 패널 열기"
@@ -492,6 +492,7 @@ function MainChat({
           onFlushQueueNow={onFlushQueueNow}
           contextSlot={composerContext}
           contextNudge={composerNudge}
+          modeSlot={isO2 ? <SafetyChip onOpenSettings={onOpenSafetySettings} variant="composer" /> : undefined}
         />
       </div>
     </section>

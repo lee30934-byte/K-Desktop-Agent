@@ -43,7 +43,10 @@ test("탭 줄 — 글자 탭 + 강조색 밑줄, 오른쪽 핀·닫기 14px, 아
   assert.match(css, /\.right-slideover \.ui-tab \{\n  height: 34px; padding: 0 10px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;/);
   assert.match(css, /\.ui-tab\[aria-selected="true"\] \{\n  background: transparent; color: var\(--fg\); border-bottom-color: var\(--accent\); font-weight: 500;/);
   assert.match(css, /\.ui-slideover__head \{\n  height: auto; align-items: flex-end; gap: 2px; padding: 8px 8px 0 10px;/);
-  assert.match(app, /footer=\{<>\n\s+<span>Esc로 닫기 · 폭 420~640 조절<\/span>/);
+  // dzA — 개발자 문구 없이 [Esc] 닫기 · 가장자리를 끌어 폭 조절
+  assert.match(app, /<span className="so-foot-hint"><kbd className="o2-kbd">Esc<\/kbd>닫기<\/span>/);
+  assert.match(app, /\{rightPanel !== "tasks" && <span className="so-foot-hint">가장자리를 끌어 폭 조절<\/span>\}/);
+  assert.doesNotMatch(app, /폭 420~640 조절/);
   assert.match(prim, /\{footer && <footer className="ui-slideover__foot">\{footer\}<\/footer>\}/);
   // 목업 .slide: 헤더 아래에서 시작 + 본문 덮개(누르면 닫힘). 고정 📌 이면 덮개 없음
   assert.match(css, /:root\[data-layout="o2"\] \.right-slideover \{\n  top: var\(--header-h, 48px\);/);
@@ -51,7 +54,9 @@ test("탭 줄 — 글자 탭 + 강조색 밑줄, 오른쪽 핀·닫기 14px, 아
 });
 
 test("세션·사용량 — 큰 % 카드(70 주황 · 85 빨강), 토큰 n / 분모, 3칸, 분모 출처·모델 매칭", () => {
-  assert.match(panel, /const pctTone = u\.contextOverflowed \|\| u\.contextUsage >= 85 \? "danger" : u\.contextUsage >= 70 \? "warn" : "accent";/);
+  // dzA (D) — 80% 미만 무채색 · 80~89 주황 · 90+ 빨강, '여유 적음' 배지는 80% 부터
+  assert.match(panel, /const pctTone = u\.contextOverflowed \|\| u\.contextUsage >= 90 \? "danger" : u\.contextUsage >= 80 \? "warn" : "neutral";/);
+  assert.match(panel, /\{known && pctTone !== "neutral" && <span className=\{`so-tag so-tag--\$\{pctTone\} so-big__lvl`\}>여유 적음<\/span>\}/);
   assert.match(panel, /<span className="so-sect__c mono">\{currentModel \|\| "—"\} · \{windowLabel\(maxContextTokens\)\}<\/span>/);
   assert.match(panel, /`\$\{num\(u\.displayContext\)\} \/ \$\{num\(maxContextTokens\)\} 토큰`/);
   for (const s of ["남은 양", "최근 턴", "측정 방식", "분모 출처", "모델 매칭", "추정 (참고)", "최근 턴 raw"]) assert.ok(panel.includes(s), s);
@@ -64,7 +69,8 @@ test("세션·사용량 — 큰 % 카드(70 주황 · 85 빨강), 토큰 n / 분
 test("세션 이어가기 — 무채색 카드 2개(아이콘 칸), 권장일 때만 강조 테두리, 같은 핸들러", () => {
   assert.match(panel, /className=\{`so-sbtn context-refresh-btn\$\{recommendRefresh \? " is-primary" : ""\}`\}\n\s+onClick=\{\(\) => onManualRefresh\(\)\}/);
   assert.match(panel, /className="so-sbtn context-compress-btn"\n\s+onClick=\{\(\) => onCompressContext\(\)\}/);
-  assert.match(panel, /<Icon name="msg" \/>/);
+  assert.match(panel, /<Icon name="rotate" \/>/);
+  assert.match(panel, /\{recommendRefresh && <span className="so-rec">추천<\/span>\}/);
   assert.match(panel, /<Icon name="split" \/>/);
   assert.match(panel, /같은 대화에서 계속 → <b>새 세션으로 이어가기<\/b><br \/>새 대화로 분리 → <b>요약해서 새 대화로 이어가기<\/b>/);
   // 주황 카드 없음
@@ -126,7 +132,7 @@ test("classic 은 그대로 — 슬라이드오버·덮개 없음, 예전 SidePa
     parts.push(cur);
     for (const part of parts) assert.match(part.trim(), /^:root\[data-layout="o2"\]/, `o2 범위 밖 규칙: ${part.trim()}`);
   }
-  assert.match(app, /: <TaskActivityPanel \{\.\.\.taskPanelProps\} mode="popover" \/>/);
+  assert.match(app, /\{!isO2 && <TaskActivityPanel \{\.\.\.taskPanelProps\} mode="popover" \/>\}/);
   assert.match(app, /\{!isO2 && <MetricsPanel \{\.\.\.usageProps\} \/>\}/);
   assert.match(app, /      \) : \(\n        <SidePanel\n          open=\{sidePanelOpen\}\n          onOpenChange=\{setSidePanelOpen\}\n          item=\{sidePanelItem\}\n          onClose=\{handleSidePanelClose\}\n        \/>/);
   // 작업 팝오버 본문(예전 문구·버튼)은 그대로

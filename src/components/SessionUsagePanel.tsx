@@ -112,8 +112,9 @@ function SessionUsagePanel({
   const u = computeContextUsage({ metrics, maxContextTokens, estimatedContextTokens });
   const sourceWarn = !!maxContextSource && maxContextSource.startsWith("⚠");
   const known = maxContextTokens > 0;
-  const pctTone = u.contextOverflowed || u.contextUsage >= 85 ? "danger" : u.contextUsage >= 70 ? "warn" : "accent";
-  const recommendRefresh = u.contextUsage >= 70 || u.contextOverflowed;
+  // dzA (D) — 80% 미만 무채색 · 80~89% 주황 · 90% 이상 빨강 (입력창 링·넛지와 같은 경계). '여유 적음' 배지·추천도 80% 부터
+  const pctTone = u.contextOverflowed || u.contextUsage >= 90 ? "danger" : u.contextUsage >= 80 ? "warn" : "neutral";
+  const recommendRefresh = u.contextUsage >= 80 || u.contextOverflowed;
 
   // 최근 턴 증가량 — 실측 컨텍스트가 바뀔 때의 차이 (추정→실측 전환은 세지 않음). 탭은 항상 마운트돼 턴마다 갱신된다.
   const prevCtx = useRef(u.measuredContext);
@@ -146,6 +147,7 @@ function SessionUsagePanel({
           <div className="so-big">
             <span className={`so-big__v mono so-tone--${pctTone}`}>{known ? `${Math.round(u.contextUsage)}%${u.contextOverflowed ? "+" : ""}` : "—"}</span>
             <span className="so-big__sub mono">{known ? `${num(u.displayContext)} / ${num(maxContextTokens)} 토큰` : "분모를 모름"}</span>
+            {known && pctTone !== "neutral" && <span className={`so-tag so-tag--${pctTone} so-big__lvl`}>여유 적음</span>}
           </div>
           <div className={`so-meter so-meter--${pctTone}`}><i style={{ width: `${known ? u.contextUsage : 0}%` }} /></div>
           <div className="so-grid3">
@@ -192,8 +194,9 @@ function SessionUsagePanel({
             onClick={() => onManualRefresh()}
             title="지금까지 대화를 요약해 넘기고, 같은 대화 안에서 AI 엔진 세션만 새로 시작합니다. 메시지는 지워지지 않고 컨텍스트 사용량과 세션 통계만 0부터 다시 쌓입니다."
           >
-            <span className="so-sbtn__ic"><Icon name="msg" /></span>
-            <span><b>↻ 새 세션으로 이어가기</b><small>맥락 유지 · 같은 대화</small></span>
+            <span className="so-sbtn__ic"><Icon name="rotate" /></span>
+            <span className="so-sbtn__t"><b>새 세션으로 이어가기</b><small>같은 대화 · 맥락 요약 유지</small></span>
+            {recommendRefresh && <span className="so-rec">추천</span>}
           </button>
         )}
         {onCompressContext && (
@@ -205,7 +208,8 @@ function SessionUsagePanel({
             title="지금까지 대화를 요약해 새 대화를 만들고 그곳에서 이어갑니다. 현재 대화는 그대로 보존됩니다."
           >
             <span className="so-sbtn__ic"><Icon name="split" /></span>
-            <span><b>{isCompressing ? "요약 중…" : "요약해서 새 대화로 이어가기"}</b><small>새 대화 · 현재 대화는 보존</small></span>
+            <span className="so-sbtn__t"><b>{isCompressing ? "요약 중…" : "요약해서 새 대화로 이어가기"}</b><small>새 대화 생성 · 현재 대화는 보존</small></span>
+            <Icon name="chevronRight" size={14} className="so-sbtn__go" />
           </button>
         )}
         <p className="so-explain">

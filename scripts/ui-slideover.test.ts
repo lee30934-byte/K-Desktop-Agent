@@ -29,8 +29,10 @@ test("App: 슬라이드오버 한 개 안에 미리보기·작업·비서 탭 (�
   assert.equal((app.match(/<SidePanel\s/g) ?? []).length, 2);
 });
 
-test("App: o2 헤더 작업 칩·비서 아이콘·복구 배너 [상세] 가 해당 탭을 연다", () => {
-  assert.match(app, /\? <TaskActivityPanel \{\.\.\.taskPanelProps\} mode="chip" panelOpen=\{rightPanel === "tasks"\} onOpenPanel=\{\(\) => toggleRightPanel\("tasks"\)\} \/>/);
+test("App: o2 사이드바 작업 배지·비서 아이콘·복구 배너 [상세] 가 해당 탭을 연다", () => {
+  // dzA (B) — 헤더 작업 칩은 사이드바 '작업' 배지로 합침 (같은 toggleRightPanel("tasks"))
+  assert.match(app, /onOpenTasks=\{isO2 \? \(\) => toggleRightPanel\("tasks"\) : undefined\}/);
+  assert.doesNotMatch(app, /mode="chip"/);
   assert.match(app, /onOpenAssistant=\{isO2 \? \(\) => toggleRightPanel\("assistant"\) : undefined\}/);
   assert.match(app, /onOpenPreview=\{isO2 \? \(\) => setSidePanelOpen\(true\) : undefined\}/);
   assert.match(app, /className="recovery-detail" onClick=\{\(\) => \{ if \(isO2\) setRightPanel\("tasks"\); else showRecoverableTasksAlert\(\); \}\}>상세</);
@@ -42,7 +44,7 @@ test("App: classic 배치는 예전 구조 그대로 (SidePanel 직접·작업 �
   assert.match(app, /const \{ isO2 \} = useUiLayout\(\);/);
   // 슬라이드오버는 o2 에서만. classic 은 embedded 아닌 SidePanel(가장자리 ⟨, --side-panel-width 자체 관리)
   assert.match(app, /\{isO2 \? \(\n[\s\S]*?<SlideOver\n[\s\S]*?<\/SlideOver>\n      \) : \(\n        <SidePanel\n          open=\{sidePanelOpen\}/);
-  assert.match(app, /: <TaskActivityPanel \{\.\.\.taskPanelProps\} mode="popover" \/>/);
+  assert.match(app, /\{!isO2 && <TaskActivityPanel \{\.\.\.taskPanelProps\} mode="popover" \/>\}/);
   assert.match(app, /if \(!isO2\) \{ root\.style\.setProperty\("--slideover-offset", "0px"\); root\.removeAttribute\("data-slideover"\); return; \}/); // fidR: classic 은 data-slideover 도 지움
   assert.match(app, /alert\(`복구 가능한 작업 목록/);
   assert.match(app, /previewReady=\{isO2 && /);

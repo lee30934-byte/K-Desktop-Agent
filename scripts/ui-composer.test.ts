@@ -25,7 +25,9 @@ test("Composer 는 useUiLayout 으로 o2/classic 을 가른다", () => {
 
 test("o2: '>' 접두어 없음, 기본 안내 문구, ↑ 보내기", () => {
   assert.match(composer, /\{!isO2 && <div className="composer-prefix mono">\{">"\}<\/div>\}/);
-  assert.match(composer, /const O2_PLACEHOLDER = "무엇이든 요청하세요 · Enter 전송 · Shift\+Enter 줄바꿈";/);
+  // dzA — 자리표시는 짧게, 단축키는 입력창 아래 한 줄
+  assert.match(composer, /const O2_PLACEHOLDER = "무엇이든 요청하세요";/);
+  assert.match(composer, /\{isO2 && <div className="composer-hint" aria-hidden="true">Enter 전송 · Shift\+Enter 줄바꿈 · Ctrl\+K 명령<\/div>\}/);
   assert.match(composer, /placeholder \?\? \(isO2 \? O2_PLACEHOLDER : "메시지를 입력하세요\. Enter로 전송, Shift\+Enter로 줄바꿈\."\)/);
   // 상태별 안내(연결 대기 / 응답 중)는 두 배치 공통 유지 (C10)
   assert.match(composer, /\? "연결 대기 중\.\.\."/);

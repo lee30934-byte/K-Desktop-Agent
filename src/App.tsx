@@ -124,6 +124,7 @@ import "./styles/o2-slideover.css";
 import "./styles/o2-settings.css";
 import "./styles/o2-spacing.css"; // spA 여백·글자 다듬기 (o2 전용, 마지막에 불러와 이김)
 import "./styles/o2-spacing-settings.css"; // spB 설정 페이지·명령 팔레트·⋯ 메뉴 여백·글자 (o2 전용)
+import "./styles/o2-design.css"; // dzA 디자인 토큰·상태·메인 셸 고도화 (o2 전용, 마지막에 불러와 이김)
 import logger from "./utils/logger";
 import {
   TelegramTurnTracker,
@@ -6063,6 +6064,8 @@ export default function App() {
         rail={sidebarRail}
         onToggleRail={toggleSidebarRail}
         taskCount={[...conversationTurnGateRef.current.runs.values()].filter((r) => r.state === "running" || r.state === "stopping").length}
+        taskQueued={[...conversationTurnGateRef.current.queues.values()].reduce((n, q) => n + q.length, 0)}
+        tasksPaused={conversationTurnGateRef.current.allPaused}
         onOpenTasks={isO2 ? () => toggleRightPanel("tasks") : undefined}
         onReconnectTools={isO2 ? handleReconnectTools : undefined}
       />
@@ -6166,9 +6169,8 @@ export default function App() {
           // classic 은 panelHost 없이 예전 포털 팝오버(내부 open state)를 그대로 쓴다.
           {...(isO2 ? { panelHost: assistantPanelHost, panelOpen: rightPanel === "assistant",
             onPanelOpenChange: (open: boolean) => setRightPanel(p => (open ? "assistant" : p === "assistant" ? null : p)) } : {})} />
-        {isO2
-          ? <TaskActivityPanel {...taskPanelProps} mode="chip" panelOpen={rightPanel === "tasks"} onOpenPanel={() => toggleRightPanel("tasks")} />
-          : <TaskActivityPanel {...taskPanelProps} mode="popover" />}</>}
+        {/* dzA (B) — o2 는 헤더 작업 칩 대신 사이드바 '작업' 배지(실행 · +예약)가 같은 작업 패널을 연다 */}
+        {!isO2 && <TaskActivityPanel {...taskPanelProps} mode="popover" />}</>}
         assistantOpen={rightPanel === "assistant"}
         onOpenAssistant={isO2 ? () => toggleRightPanel("assistant") : undefined}
         previewReady={isO2 && !!sidePanelItem && rightPanel !== "preview"}
@@ -6235,7 +6237,9 @@ export default function App() {
           minWidth={O2_SLIDEOVER_MIN}
           defaultWidth={O2_SLIDEOVER_MIN}
           footer={<>
-            <span>Esc로 닫기 · 폭 420~640 조절</span>
+            {/* dzA — 개발자 문구 없이: [Esc] 닫기 · 가장자리를 끌어 폭 조절 */}
+            <span className="so-foot-hint"><kbd className="o2-kbd">Esc</kbd>닫기</span>
+            {rightPanel !== "tasks" && <span className="so-foot-hint">가장자리를 끌어 폭 조절</span>}
             {/* 목업: '작업' 탭일 때만 아래 줄에 전체 작업 정지 */}
             {rightPanel === "tasks" && (
               <button type="button" className="so-sm so-sm--dan" onClick={handleHardStop}

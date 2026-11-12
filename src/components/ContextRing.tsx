@@ -20,10 +20,10 @@ export interface ContextRingProps {
   onOpenSessionPanel?: () => void;
 }
 
-/** 60/80% 색 경계를 링 색으로 (footer 바와 같은 경계). */
+/** dzA (D) — 80% 미만은 무채색(ok = o2 CSS 에서 중립), 80~89% 주황, 90% 이상 빨강. 세션 탭·넛지와 같은 경계. */
 function ringTone(pct: number, overflowed: boolean): "ok" | "warn" | "danger" {
-  if (overflowed || pct >= 80) return "danger";
-  if (pct >= 60) return "warn";
+  if (overflowed || pct >= 90) return "danger";
+  if (pct >= 80) return "warn";
   return "ok";
 }
 
@@ -107,8 +107,8 @@ function ContextRing({
 export default memo(ContextRing);
 
 /**
- * 입력창 위 70% 넛지 — '컨텍스트 72% · ↻ 새 세션으로 이어가기'.
- * ✕ 로 숨기면 같은 대화에서 70% 아래로 내려갔다 다시 넘을 때까지 안 보인다.
+ * 입력창 위 80% 넛지 — '컨텍스트 72% · ↻ 새 세션으로 이어가기'.
+ * ✕ 로 숨기면 같은 대화에서 80% 아래로 내려갔다 다시 넘을 때까지 안 보인다.
  */
 export const ContextNudge = memo(function ContextNudge({
   metrics,
@@ -117,12 +117,13 @@ export const ContextNudge = memo(function ContextNudge({
   onManualRefresh,
 }: Pick<ContextRingProps, "metrics" | "maxContextTokens" | "estimatedContextTokens" | "onManualRefresh">) {
   const u = computeContextUsage({ metrics, maxContextTokens, estimatedContextTokens });
-  const high = u.contextUsage >= 70;
+  const high = u.contextUsage >= 80; // dzA (A·D) — 80% 이상일 때만 (평소엔 입력창 링이 % 를 보여 줌)
+  const tone = u.contextOverflowed || u.contextUsage >= 90 ? "danger" : "warn";
   const [dismissed, setDismissed] = useState(false);
   useEffect(() => { if (!high) setDismissed(false); }, [high]);
   if (!high || dismissed || !onManualRefresh) return null;
   return (
-    <div className="context-nudge" role="status">
+    <div className={`context-nudge context-nudge--${tone}`} role="status">
       {/* fidA — 목업: '컨텍스트 72% 사용 중 · 응답이 느려질 수 있어요  [↻ 새 세션으로 이어가기]' */}
       <span className="context-nudge__text">컨텍스트 <span className="context-nudge__pct mono">{Math.round(u.contextUsage)}%</span> 사용 중 · 응답이 느려질 수 있어요</span>
       <button

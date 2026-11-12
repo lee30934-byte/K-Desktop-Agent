@@ -6,12 +6,19 @@ import { useApprovalMode } from "../utils/useApprovalMode";
 import { Chip, Popover, Switch, Button } from "../ui";
 import { Icon } from "../ui/icons";
 
-export default function SafetyChip({ onOpenSettings }: { onOpenSettings?: () => void }) {
+// dzA (A) — 중복 정리: 평소 실행 확인 방식은 입력창 줄(variant="composer")에만 보이고,
+// 헤더 칩(hideWhenSafe)은 '확인 없이 실행 중'(실제 주의 상태)일 때만 나타난다.
+export default function SafetyChip({ onOpenSettings, variant = "header", hideWhenSafe = false }: {
+  onOpenSettings?: () => void;
+  variant?: "header" | "composer";
+  hideWhenSafe?: boolean;
+}) {
   const { enabled, toggle, error } = useApprovalMode();
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
+  if (hideWhenSafe && !enabled && !open) return null;
   return (
-    <span className="safety-chip-wrap" style={{ position: "relative" }}>
+    <span className={`safety-chip-wrap safety-chip-wrap--${variant}`} style={{ position: "relative" }}>
       <Chip tone={enabled ? "warn" : "neutral"} icon={<Icon name={enabled ? "zap" : "shield"} size={14} />} onClick={() => setOpen(o => !o)}
         pressed={open} title="실행 확인 방식 (Ctrl+Alt+A)">
         {enabled ? "확인 없이 실행 중" : "확인 후 실행"}

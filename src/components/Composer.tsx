@@ -27,10 +27,13 @@ interface ComposerProps {
   // v0.7.86 UI 5단계 (o2 전용) — 카드 안 컨텍스트 링 / 카드 위 70% 넛지. classic 은 넘기지 않는다.
   contextSlot?: ReactNode;
   contextNudge?: ReactNode;
+  /** dzA (o2) — 첨부 옆 실행 확인 방식 칩 (헤더 칩과 중복 정리) */
+  modeSlot?: ReactNode;
 }
 
 // v0.7.86 UI 7단계 (o2) — 기본 안내 문구 (스펙 4.4 C2). classic 은 예전 문구 그대로.
-const O2_PLACEHOLDER = "무엇이든 요청하세요 · Enter 전송 · Shift+Enter 줄바꿈";
+// dzA — 단축키 안내는 입력창 아래 한 줄(.composer-hint)로 옮겨 자리표시는 짧게
+const O2_PLACEHOLDER = "무엇이든 요청하세요";
 
 // 파일 타입별 아이콘
 function getFileIcon(type: string): string {
@@ -75,6 +78,7 @@ function Composer({
   onFlushQueueNow,
   contextSlot,
   contextNudge,
+  modeSlot,
 }: ComposerProps) {
   // v0.7.86 UI 7단계 — o2: 카드형 입력창, '>' 없음, ↑ 보내기, [■ 정지 ▾] + [↑ 지금 반영/예약]. classic 은 예전 그대로.
   const { isO2 } = useUiLayout();
@@ -601,6 +605,8 @@ function Composer({
           accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.txt,.md,.json,.xml,.csv,.zip,.rar,.7z,.tar,.gz,.js,.ts,.py,.java,.c,.cpp,.html,.css"
         />
 
+        {modeSlot && <div className="composer-mode">{modeSlot}</div>}
+
         {!isO2 && <div className="composer-prefix mono">{">"}</div>}
 
         <textarea
@@ -730,6 +736,7 @@ function Composer({
           </button>}
         </>)}
       </form>
+      {isO2 && <div className="composer-hint" aria-hidden="true">Enter 전송 · Shift+Enter 줄바꿈 · Ctrl+K 명령</div>}
     </div>
   );
 }

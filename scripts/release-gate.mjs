@@ -294,6 +294,7 @@ const NODE_TEST_SUITES = [
   { file: "scripts/ui-fidelity-review.test.ts", runner: "tsx" }, // v0.7.86 UI 목업 충실도 fidR 최종 점검 (슬라이드오버 열림 시 o2 아바타 숨김·닫으면 복귀, classic 유지, 개발용 픽스처 배포 빌드에서 꺼짐)
   { file: "scripts/ui-spacing-main.test.ts", runner: "tsx" }, // spA 여백·글자 다듬기 (Pretendard 로컬 번들 · o2 글자/높이/폭 토큰 · 대화 열 74% · 알림 띠/입력창 같은 폭 · 사이드바 280/패널 420, classic 유지)
   { file: "scripts/ui-spacing-settings.test.ts", runner: "tsx" }, // spB 여백·글자 다듬기 (설정 페이지 넓은 열·행 56·줄 40 · 팔레트 640 · ⋯ 메뉴 248, classic 유지)
+  { file: "scripts/ui-design-shell.test.ts", runner: "tsx" }, // dzA 디자인 고도화 (목업 v2.1 토큰 · 상태 5단계 · 포커스 링 · 사이드바 고정됨/폴더/최근 · 헤더 중복 정리 · 컨텍스트 80/90 · 무채색 알림 띠, classic 유지)
   { file: "scripts/companion-antenna.test.ts", runner: "tsx" }, // v0.7.84 antenna ball not cut flat on any pose/tone/tier // v0.7.84 Codex built-in computer_use disabled on every app-server spawn // v0.7.84 incomplete install detection, signed repair, updater fallback
   { file: "scripts/browser-host-adapter.test.cjs", runner: "node" },
 ];

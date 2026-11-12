@@ -89,8 +89,10 @@ test("사이드바 o2 — 경로 글자(루트 › 업무) · ★ 고정 · 폴�
   assert.match(ex, /<BreadcrumbDropButton plain dropId="__root__"/, "루트에 끌어다 놓기 유지");
   assert.match(ex, /<Icon name="chevronRight" size=\{14\} \/>/);
   assert.match(ex, /const pinned = conversations\.filter\(\(c\) => c\.isFavorite && hit\(c\)\);/);
-  assert.match(ex, /<div className="sb-grp-label">폴더<\/div>/);
-  assert.match(ex, /<div className="sb-grp-label">대화<\/div>/);
+  // dzA (E) — 묶음: 고정됨 → 폴더(renderSectionHead 머리 · 하위 폴더면 경로 줄) → 최근
+  assert.match(ex, /\{pinned\.length > 0 && <div className="sb-grp-label">고정됨<\/div>\}/);
+  assert.match(ex, /\{renderSectionHead\(\)\}\n\s+\{currentFolderId !== null && \(\n\s+<nav className="sb-crumb explorer-breadcrumb"/);
+  assert.match(ex, /\{rest\.length > 0 && <div className="sb-grp-label">최근<\/div>\}/);
   assert.match(ex, /className="sb-empty"/);
   assert.doesNotMatch(ex, /📁\+|상단의/u, "o2 는 상자형 [📁+] 안내 없음");
   assert.match(ex, /className="bulk-organize-bar sb-bulk"/, "여러 대화 선택 바 유지");

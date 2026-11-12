@@ -487,6 +487,30 @@ input:focus-visible {
 :root[data-layout="o2"][data-density="compact"] { --row-h: 32px; --fs-body: 15px; }
 @media (prefers-reduced-motion: reduce) { :root { --dur-hover: 0ms; --dur-panel: 0ms; } }
 
+/* ═══ dzA — o2 디자인 토큰 (승인 목업 mockup-v2.1). 부품 규칙은 src/styles/o2-design.css ═══
+   표면 4단계(bg/panel/raised/overlay) · 선 3단계 · 글자 4단계(fg-4 는 비활성·장식 전용) · 반경 6/10/14/pill ·
+   그림자는 떠 있는 레이어(메뉴·팔레트·팝오버·슬라이드오버)에만 · 포커스 링 2px 틈 + 2px 강조색 65% · 움직임 120~180ms.
+   여기 값은 개성 테마 3종용 기본값(그 테마 색에서 끌어옴). 기본 색 테마 값은 바로 아래 블록. classic 은 이 이름들을 쓰지 않는다. */
+:root[data-layout="o2"] {
+  --o2-bg: var(--surface-app); --o2-panel: var(--surface-raised); --o2-raised: var(--surface-overlay); --o2-overlay: var(--bg-4);
+  --o2-line-1: var(--line); --o2-line-2: var(--line-strong); --o2-line-3: var(--border-strong);
+  --o2-fg-1: var(--fg); --o2-fg-body: var(--fg); --o2-fg-2: var(--fg-muted); --o2-fg-3: var(--fg-subtle); --o2-fg-4: var(--text-muted);
+  --o2-hover: var(--surface-hover); --o2-press: color-mix(in srgb, var(--fg) 8%, transparent);
+  --o2-sel: color-mix(in srgb, var(--accent) 9%, transparent); --o2-sel-strong: color-mix(in srgb, var(--accent) 14%, transparent);
+  --o2-accent-text: var(--accent); --o2-accent-line: color-mix(in srgb, var(--accent) 32%, transparent);
+  --o2-warn-text: var(--warn); --o2-warn-line: color-mix(in srgb, var(--warn) 26%, transparent);
+  --o2-danger-text: var(--danger); --o2-danger-line: color-mix(in srgb, var(--danger) 28%, transparent);
+  --o2-bubble: var(--surface-overlay); --o2-tip: var(--bg-4);
+  --ok-soft: color-mix(in srgb, var(--ok) 10%, transparent); --info-soft: color-mix(in srgb, var(--info) 10%, transparent);
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-pill: 999px;
+  --shadow-pop: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(255, 255, 255, 0.08), 0 18px 48px -10px rgba(0, 0, 0, 0.65), 0 4px 14px rgba(0, 0, 0, 0.35);
+  --shadow-panel: -1px 0 0 var(--o2-line-2), -24px 0 48px -16px rgba(0, 0, 0, 0.55);
+  --ring-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  --ring: 0 0 0 2px var(--o2-bg), 0 0 0 4px var(--ring-color);
+  --dur-fast: 120ms; --dur-pop: 160ms; --dur-slide: 180ms; --ease-out: cubic-bezier(.2, .7, .2, 1);
+}
+@media (prefers-reduced-motion: reduce) { :root[data-layout="o2"] { --dur-fast: 0ms; --dur-pop: 0ms; --dur-slide: 0ms; } }
+
 /* ═══ v0.7.86 UI 10단계 — 비주얼 마감 (design-spec.md 7장 · 8장 10단계) ═══
    새 배치(o2) + 기본 색 테마에만 적용한다. 개성 테마 3종(terminal-phosphor · glass-acrylic · brutalist-bauhaus)과
    classic 배치는 이 블록을 건너뛰어 예전 모양 그대로다.
@@ -497,23 +521,38 @@ input:focus-visible {
    - 글자: UI 는 Pretendard 계열 하나. Space Grotesk 는 로고에만.
    - 대비: --text-tertiary(#858d9b)는 가장 밝은 판(--bg-4)에서도 4.5:1 이상 (scripts/ui-visual-finish.test.ts 가 확인). */
 :root[data-layout="o2"]:not([data-theme="terminal-phosphor"], [data-theme="glass-acrylic"], [data-theme="brutalist-bauhaus"]) {
-  --bg-1: #0b0d12;
-  --bg-2: #12151c;
-  --bg-3: #181c25;
-  --bg-4: #1e232e;
-  --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-default: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.2);
-  --text-primary: #e6e8ec;
-  --text-secondary: #a3aab6;
-  --text-tertiary: #858d9b;
-  --text-muted: #5f6674;
-  --surface-app: #0b0d12;
-  --surface-raised: #12151c;
-  --surface-overlay: #181c25;
-  --surface-card: #12151c;
-  --line: rgba(255, 255, 255, 0.07);
-  --line-strong: rgba(255, 255, 255, 0.12);
+  /* dzA — 승인 목업 v2.1 값 (bg / panel / raised / overlay · 선 6/10/16% · 글자 4단계) */
+  --bg-1: #0b0c10;
+  --bg-2: #101217;
+  --bg-3: #161920;
+  --bg-4: #1c2029;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text-primary: #eceef2;
+  --text-secondary: #a6adb9;
+  --text-tertiary: #838b99;
+  --text-muted: #4b515d;
+  --surface-app: #0b0c10;
+  --surface-raised: #101217;
+  --surface-overlay: #161920;
+  --surface-card: #101217;
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.10);
+  --o2-bg: #0b0c10; --o2-panel: #101217; --o2-raised: #161920; --o2-overlay: #1c2029;
+  --o2-line-1: rgba(255, 255, 255, 0.06); --o2-line-2: rgba(255, 255, 255, 0.10); --o2-line-3: rgba(255, 255, 255, 0.16);
+  --o2-fg-1: #eceef2; --o2-fg-body: #d9dce2; --o2-fg-2: #a6adb9; --o2-fg-3: #838b99; --o2-fg-4: #4b515d;
+  --o2-hover: rgba(255, 255, 255, 0.045); --o2-press: rgba(255, 255, 255, 0.075);
+  --o2-sel: rgba(79, 232, 225, 0.085); --o2-sel-strong: rgba(79, 232, 225, 0.13);
+  --o2-accent-text: #7cece7; --o2-accent-line: rgba(79, 232, 225, 0.32);
+  --o2-warn-text: #f5c478; --o2-warn-line: rgba(242, 169, 59, 0.26);
+  --o2-danger-text: #f59a97; --o2-danger-line: rgba(240, 96, 93, 0.28);
+  --o2-bubble: #1a1e27; --o2-tip: #262b36;
+  --warn: #f2a93b; --warn-soft: rgba(242, 169, 59, 0.09);
+  --error: #f0605d; --danger-soft: rgba(240, 96, 93, 0.09);
+  --success: #4ade80; --ok-soft: rgba(74, 222, 128, 0.10);
+  --info: #86adff; --info-soft: rgba(134, 173, 255, 0.10);
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
   --accent-glow: transparent !important;
   --accent-strong-glow: transparent !important;
   --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);

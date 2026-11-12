@@ -13,7 +13,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import CornerBrackets from "./CornerBrackets";
-import { Icon } from "../ui/icons";
+import { Icon, type IconName } from "../ui/icons";
 import type { Conversation, Folder } from "../types";
 // v0.7.86 UI 6단계 — 내보내기/백업/가져오기는 공용 유틸 (헤더 ⋯ '이 대화 내보내기'와 공유)
 import {
@@ -90,8 +90,50 @@ interface SidebarProps {
   rail?: boolean;
   onToggleRail?: () => void;
   taskCount?: number;
+  /** dzA (B) — 예약(대기) 중인 메시지 수 · 자동 실행 보류 여부. 헤더 작업 칩을 사이드바 '작업' 배지로 합쳤다 */
+  taskQueued?: number;
+  tasksPaused?: boolean;
   onOpenTasks?: () => void;
   onReconnectTools?: () => void;
+}
+
+// dzA (o2) — 사용자가 고른 대화·폴더 이모지 중 흔한 것은 같은 뜻의 라인 아이콘으로 (목업 v2.1). 그 밖의 이모지는 고른 그대로 둔다.
+const O2_GLYPH_ICONS: Record<string, IconName> = {
+  "💬": "msg", "🗨️": "msg", "📊": "sheet", "📈": "sheet", "📝": "note", "🗒️": "note", "📄": "file", "📃": "file", "📑": "file",
+  "✈️": "send", "📨": "send", "🖼️": "image", "🖼": "image", "📷": "camera", "📁": "folder", "📂": "folder", "🗂️": "folder",
+  "🧾": "file", "⚙️": "settings", "🔧": "wrench", "🤖": "bot", "🌐": "globe", "🔒": "lock",
+};
+function o2Glyph(icon: string | null | undefined, fallback: IconName) {
+  if (!icon) return <Icon name={fallback} />;
+  const name = O2_GLYPH_ICONS[icon] ?? O2_GLYPH_ICONS[icon.replace(/️/g, "")] ?? O2_GLYPH_ICONS[`${icon}️`];
+  return name ? <Icon name={name} /> : icon;
+}
+// dzA (o2) — 최근 대화 옆 상대 시간 (2시간 · 어제 · 11월 8일)
+function o2RelTime(ts: number, now = Date.now()) {
+  const min = Math.floor((now - ts) / 60_000);
+  if (min < 1) return "방금";
+  if (min < 60) return `${min}분`;
+  if (min < 24 * 60) return `${Math.floor(min / 60)}시간`;
+  const d = new Date(ts);
+  const y = new Date(now); y.setHours(0, 0, 0, 0); y.setDate(y.getDate() - 1);
+  if (d >= y) return "어제";
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+}
+// dzA (o2) — 우클릭·⋯ 메뉴: 앞 글자 기호 대신 라인 아이콘. '즐겨찾기'는 사이드바 묶음 이름(고정됨)에 맞춰 '고정'
+const O2_MENU_ICONS: Record<string, IconName> = {
+  "📁": "folderPlus", "✎": "pencil", "🎨": "palette", "💠": "app", "📜": "note", "🗑": "trash",
+  "★": "pin", "☆": "pin", "🤖": "bot", "📂": "arrowUpLevel",
+};
+function o2MenuLabel(label: string) {
+  const sp = label.indexOf(" ");
+  const lead = sp > 0 ? label.slice(0, sp) : "";
+  let name = O2_MENU_ICONS[lead];
+  if (!name) return label;
+  let text = label.slice(sp + 1);
+  if (lead === "★") text = "고정 해제";
+  else if (lead === "☆") text = "고정";
+  else if (lead === "📁" && text.startsWith("폴더로")) name = "folder";
+  return <><Icon name={name} />{text}</>;
 }
 
 function Sidebar({
@@ -123,6 +165,8 @@ function Sidebar({
   rail = false,
   onToggleRail,
   taskCount = 0,
+  taskQueued = 0,
+  tasksPaused = false,
   onOpenTasks,
   onReconnectTools,
 }: SidebarProps) {
@@ -929,7 +973,7 @@ function Sidebar({
               setContextMenu(null);
             }}
           >
-            {it.label}
+            {isO2 ? o2MenuLabel(it.label) : it.label}
           </button>
         ))}
       </div>
@@ -957,6 +1001,27 @@ function Sidebar({
     >
       <Icon name="more" size={14} />
     </button>
+  );
+  // dzA (o2) — 대화 줄에 올리면(또는 키보드 포커스) [고정 · 제목 변경 · ⋯]. 모두 기존 동작(즐겨찾기 토글 · 제목 변경 · 우클릭 메뉴)
+  const stopRow = {
+    onPointerDown: (e: { stopPropagation: () => void }) => e.stopPropagation(),
+    onDoubleClick: (e: { stopPropagation: () => void }) => e.stopPropagation(),
+  };
+  const renderConvActions = (c: Conversation) => (
+    <span className="explorer-acts">
+      {onToggleFavorite && (
+        <button type="button" className="explorer-act" {...stopRow} aria-pressed={!!c.isFavorite}
+          aria-label={c.isFavorite ? "고정 해제" : "고정"} title={c.isFavorite ? "고정 해제" : "고정"}
+          onClick={(e) => { e.stopPropagation(); void onToggleFavorite(c.id); }}>
+          <Icon name="pin" size={14} />
+        </button>
+      )}
+      <button type="button" className="explorer-act" {...stopRow} aria-label="제목 변경" title="제목 변경"
+        onClick={(e) => { e.stopPropagation(); startEditConv(c.id, c.title); }}>
+        <Icon name="pencil" size={14} />
+      </button>
+      {renderRowMore("conversation", c.id)}
+    </span>
   );
 
   const renderExplorerItem = (item: Folder | Conversation, kind: "folder" | "conversation") => {
@@ -1003,7 +1068,7 @@ function Sidebar({
           }}
           title={`더블클릭=진입 · 우클릭=메뉴 · 드래그 = 이동 · 하위 ${childCount}폴더 / ${convCount}대화`}
         >
-          <span className="explorer-icon" style={isO2 ? undefined : { fontSize: 16 }}>{f.icon ?? "📁"}</span>
+          <span className="explorer-icon" style={isO2 ? undefined : { fontSize: 16 }}>{isO2 ? o2Glyph(f.icon, "folder") : f.icon ?? "📁"}</span>
           {isEditing ? (
             <input
               ref={editInputRef}
@@ -1029,7 +1094,8 @@ function Sidebar({
               {convCount > 0 ? `💬${convCount}` : ""}
             </span>
           )}
-          {isO2 && !isEditing && renderRowMore("folder", f.id)}
+          {isO2 && !isEditing && convCount + childCount > 0 && <span className="explorer-meta">{convCount + childCount}</span>}
+          {isO2 && !isEditing && <span className="explorer-acts">{renderRowMore("folder", f.id)}</span>}
         </DndFolder>
       );
     } else {
@@ -1098,8 +1164,8 @@ function Sidebar({
               style={{ width: 14, height: 14, flexShrink: 0 }}
             />
           )}
-          <span className={`explorer-icon${c.isFavorite ? " is-star" : ""}`} style={isO2 ? undefined : { fontSize: 14 }}>
-            {c.isFavorite ? "★" : c.icon ?? "💬"}
+          <span className={`explorer-icon${c.isFavorite && !isO2 ? " is-star" : ""}`} style={isO2 ? undefined : { fontSize: 14 }}>
+            {isO2 ? o2Glyph(c.icon, "msg") : c.isFavorite ? "★" : c.icon ?? "💬"}
           </span>
           {isEditing ? (
             <input
@@ -1146,7 +1212,8 @@ function Sidebar({
               }}
             />
           ))}
-          {isO2 && !isEditing && !bulkSelectMode && renderRowMore("conversation", c.id)}
+          {isO2 && !isEditing && !streamingConvIds?.has(c.id) && <span className="explorer-meta">{o2RelTime(c.lastActive)}</span>}
+          {isO2 && !isEditing && !bulkSelectMode && renderConvActions(c)}
         </DraggableConv>
       );
     }
@@ -1361,29 +1428,30 @@ function Sidebar({
     const empty = pinned.length === 0 && subFolders.length === 0 && rest.length === 0;
     return (
       <div className="explorer-section sb-explorer">
-        <nav className="sb-crumb explorer-breadcrumb" aria-label="현재 폴더">
-          <Icon name="folder" size={14} />
-          <BreadcrumbDropButton plain dropId="__root__" onClick={() => setCurrentFolderId(null)} isCurrent={currentFolderId === null}
-            title="루트 · 끌어다 놓으면 루트로 옮김" label="루트" />
-          {breadcrumbPath.map((f, i) => (
-            <Fragment key={f.id}>
-              <Icon name="chevronRight" size={14} />
-              <BreadcrumbDropButton plain dropId={`folder:${f.id}`} onClick={() => setCurrentFolderId(f.id)} isCurrent={i === breadcrumbPath.length - 1}
-                title={`${f.name} · 끌어다 놓으면 이 폴더로 옮김`} label={f.name} />
-            </Fragment>
-          ))}
-        </nav>
+        {/* dzA — 목록 묶음: 고정됨 → 폴더(머리에 새 폴더·여러 대화 선택, 하위 폴더면 경로 줄) → 최근 */}
         <div className="explorer-body sb-tree" onContextMenu={(e) => { if (e.target === e.currentTarget) setContextMenu(null); }}>
-          {empty ? (
+          {pinned.length > 0 && <div className="sb-grp-label">고정됨</div>}
+          {pinned.map((c) => renderExplorerItem(c, "conversation"))}
+          {renderSectionHead()}
+          {currentFolderId !== null && (
+            <nav className="sb-crumb explorer-breadcrumb" aria-label="현재 폴더">
+              <Icon name="arrowUpLevel" size={14} />
+              <BreadcrumbDropButton plain dropId="__root__" onClick={() => setCurrentFolderId(null)} isCurrent={false}
+                title="루트로 · 끌어다 놓으면 루트로 옮김" label="루트" />
+              {breadcrumbPath.map((f, i) => (
+                <Fragment key={f.id}>
+                  <Icon name="chevronRight" size={14} />
+                  <BreadcrumbDropButton plain dropId={`folder:${f.id}`} onClick={() => setCurrentFolderId(f.id)} isCurrent={i === breadcrumbPath.length - 1}
+                    title={`${f.name} · 끌어다 놓으면 이 폴더로 옮김`} label={f.name} />
+                </Fragment>
+              ))}
+            </nav>
+          )}
+          {subFolders.map((f) => renderExplorerItem(f, "folder"))}
+          {rest.length > 0 && <div className="sb-grp-label">최근</div>}
+          {rest.map((c) => renderExplorerItem(c, "conversation"))}
+          {empty && (
             <div className="sb-empty">{visibleConvIds ? "검색 결과가 없어요" : currentFolderId ? "이 폴더는 비어 있어요" : "아직 대화가 없어요"}</div>
-          ) : (
-            <>
-              {pinned.map((c) => renderExplorerItem(c, "conversation"))}
-              {subFolders.length > 0 && <div className="sb-grp-label">폴더</div>}
-              {subFolders.map((f) => renderExplorerItem(f, "folder"))}
-              {rest.length > 0 && (pinned.length > 0 || subFolders.length > 0) && <div className="sb-grp-label">대화</div>}
-              {rest.map((c) => renderExplorerItem(c, "conversation"))}
-            </>
           )}
         </div>
         {bulkSelectMode && (
@@ -1544,7 +1612,7 @@ function Sidebar({
           <span className="plus"><Icon name="plus" /></span>
           {/* fidA — 목업처럼 '새 대화' 만. 지금 폴더는 바로 아래 경로(루트 › 업무)와 툴팁에 보인다 */}
           <span className="new-chat-label">새 대화</span>
-          <span className="sb-kbd" aria-hidden="true">Ctrl+N</span>
+          <span className="sb-kbd sb-kbd--keys" aria-hidden="true"><kbd>Ctrl</kbd><kbd>N</kbd></span>
         </button>
       </div>
       <nav className="sb-nav" aria-label="사이드바 메뉴">
@@ -1582,7 +1650,15 @@ function Sidebar({
         {onOpenTasks && (
           <button type="button" className="sb-nav-item" onClick={onOpenTasks} title="작업 패널 열기">
             <span className="sb-nav-icon" aria-hidden="true"><Icon name="zap" /></span><span>작업</span>
-            {taskCount > 0 && <span className="sb-badge" aria-label={`실행 중 ${taskCount}개`}>{taskCount}</span>}
+            {/* dzA (B) — 헤더 'n 실행 · n 예약' 칩을 이 배지로 합침 (같은 작업 패널 열기) */}
+            {(taskCount > 0 || taskQueued > 0) && (
+              <span className={`sb-badge${taskCount === 0 ? " sb-badge--idle" : ""}`}
+                aria-label={`실행 중 ${taskCount}개${taskQueued > 0 ? ` · 예약 ${taskQueued}개` : ""}`}
+                title={`실행 ${taskCount}${taskQueued > 0 ? ` · 예약 ${taskQueued}` : ""}${tasksPaused ? " · 자동 실행 보류" : ""}`}>
+                {taskCount}{taskQueued > 0 && <span className="sb-badge__sub">+{taskQueued}</span>}
+              </span>
+            )}
+            {tasksPaused && <span className="sb-paused" title="자동 실행 보류 중" aria-label="자동 실행 보류 중"><Icon name="pause" size={14} /></span>}
           </button>
         )}
       </nav>
@@ -1590,8 +1666,8 @@ function Sidebar({
   );
 
   const renderSectionHead = () => (
-    <div className="sb-sec-head">
-      <span className="eyebrow section-label">대화</span>
+    <div className="sb-sec-head sb-grp-head">
+      <span className="eyebrow section-label">폴더</span>
       <span className="sb-sec-tools">
         {onCreateFolder && (
           <button type="button" onClick={() => handleNewSubfolder(null)} aria-label="새 폴더"
@@ -1679,6 +1755,12 @@ function Sidebar({
           <span className="brand-name brand-name-o2" aria-label="O2 AGENT">O<sub>2</sub><span className="brand-word">AGENT</span></span>
           {appVersion && <span className="brand-sub brand-version">v{appVersion}</span>}
         </div>
+        {/* dzA (o2) — 목업 v2.1: 브랜드 줄 오른쪽 끝 접기 버튼 (심볼 클릭 · Ctrl+B 와 같은 동작) */}
+        {isO2 && onToggleRail && (
+          <button type="button" className="sb-collapse" onClick={onToggleRail} aria-label="사이드바 접기 (Ctrl+B)" title="사이드바 접기 (Ctrl+B)">
+            <Icon name="panelRight" size={14} />
+          </button>
+        )}
       </div>
 
       {isO2 ? renderO2Top() : (<>
@@ -1756,7 +1838,8 @@ function Sidebar({
 
       {/* 대화 목록 (Phase 108: 트리 / 탐색기 viewMode 분기) */}
       <div className="sidebar-section sidebar-tree-section">
-        {isO2 ? renderSectionHead() : (
+        {/* dzA (o2) — '대화' 머리 + 경로 줄을 따로 두지 않는다. 새 폴더·여러 대화 선택 도구는 목록 안 '폴더' 묶음 머리로 옮김 */}
+        {isO2 ? null : (
         <div className="eyebrow section-label">
           {viewMode === "explorer" ? "탐색기" : "대화 목록"}
         </div>

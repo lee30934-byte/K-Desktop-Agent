@@ -25,7 +25,8 @@ test("배치 분기: o2 만 새 구조, 레일은 o2 에서만", () => {
   assert.match(sidebar, /const \{ isO2 \} = useUiLayout\(\);\n\s+const railMode = isO2 && rail;/);
   assert.match(sidebar, /\{railMode \? renderRail\(\) : \(<>/);
   assert.match(sidebar, /\{isO2 \? renderO2Top\(\) : \(<>/);
-  assert.match(sidebar, /\{isO2 \? renderSectionHead\(\) : \(/);
+  // dzA (E) — o2 는 '대화' 머리를 따로 두지 않고 목록 안 '폴더' 묶음 머리(renderSectionHead)로
+  assert.match(sidebar, /\{isO2 \? null : \(\n\s+<div className="eyebrow section-label">/);
   assert.match(sidebar, /\{isO2 \? renderO2Foot\(\) : \(<>/);
   // 8단계 — o2 설정 페이지가 열려 있으면 레일로 접힘
   assert.match(app, /const sidebarRail = isO2 && \(settingsPage \|\| \(narrowWindow \? !narrowSidebarOpen : sidebarRailPref\)\);/);
@@ -38,7 +39,7 @@ test("classic: 예전 사이드바 구조가 classic 분기 안에 그대로", (
   assert.match(top, /onClick=\{onOpenLibrary\}/);
   assert.match(top, /placeholder="🔍 제목 \/ 메시지 검색…"/);
   assert.match(top, /새 대화\{viewMode === "explorer" && currentFolderId \? " \(📁\)" : ""\}/);
-  const head = sidebar.slice(sidebar.indexOf("{isO2 ? renderSectionHead() : ("), sidebar.indexOf("{viewMode === \"explorer\" ? (\n          renderExplorer()"));
+  const head = sidebar.slice(sidebar.indexOf("{isO2 ? null : ("),sidebar.indexOf("{viewMode === \"explorer\" ? (\n          renderExplorer()"));
   assert.match(head, /"탐색기" : "대화 목록"/);
   const foot = sidebar.slice(sidebar.indexOf("{isO2 ? renderO2Foot() : (<>"), sidebar.indexOf("<CornerBrackets corners="));
   assert.match(foot, /<details className="sidebar-section sidebar-backup">/);
@@ -59,19 +60,22 @@ test("o2: 새 대화 · 내비 3줄 (검색은 같은 자리에서 입력창으�
   assert.match(top, /onClick=\{handleNewConversationHere\}/);
   assert.match(fnBody(sidebar, "handleNewConversationHere"), /onNewConversation\(viewMode === "explorer" \? currentFolderId : null\)/);
   // fidA — 목업처럼 글자는 '새 대화' + Ctrl+N, 지금 폴더는 아래 경로·툴팁·aria-label 로
-  assert.match(top, /<span className="new-chat-label">새 대화<\/span>\n\s+<span className="sb-kbd" aria-hidden="true">Ctrl\+N<\/span>/);
+  // dzA — Ctrl · N 키캡
+  assert.match(top, /<span className="new-chat-label">새 대화<\/span>\n\s+<span className="sb-kbd sb-kbd--keys" aria-hidden="true"><kbd>Ctrl<\/kbd><kbd>N<\/kbd><\/span>/);
   assert.match(top, /aria-label=\{currentFolderName \? `새 대화 \(📁 \$\{currentFolderName\}\)` : "새 대화"\}/);
   assert.match(top, /searchOpen \|\| searchQuery \?/);
   assert.match(top, /onClick=\{\(\) => setSearchOpen\(true\)\}/);
   assert.match(top, /<span>검색<\/span>/);
   assert.match(top, /<span>라이브러리<\/span><span className="sb-kbd">Ctrl\+L<\/span>/);
-  assert.match(top, /<span>작업<\/span>\n\s+\{taskCount > 0 && <span className="sb-badge"/);
+  // dzA (B) — 헤더 작업 칩을 합친 배지: 실행 수 + 예약(+n), 실행 0 이면 무채색
+  assert.match(top, /\{\(taskCount > 0 \|\| taskQueued > 0\) && \(\n\s+<span className=\{`sb-badge\$\{taskCount === 0 \? " sb-badge--idle" : ""\}`\}/);
+  assert.match(top, /\{taskCount\}\{taskQueued > 0 && <span className="sb-badge__sub">\+\{taskQueued\}<\/span>\}/);
   assert.match(app, /taskCount=\{\[\.\.\.conversationTurnGateRef\.current\.runs\.values\(\)\]\.filter\(\(r\) => r\.state === "running" \|\| r\.state === "stopping"\)\.length\}/);
 });
 
-test("o2: '대화' 섹션 제목 도구 — 새 폴더 · 여러 대화 선택 (백업·가져오기는 8단계에 설정 › 데이터·백업으로)", () => {
+test("o2: '폴더' 묶음 머리 도구 — 새 폴더 · 여러 대화 선택 (백업·가져오기는 8단계에 설정 › 데이터·백업으로)", () => {
   const head = fnBody(sidebar, "renderSectionHead");
-  assert.match(head, /<span className="eyebrow section-label">대화<\/span>/);
+  assert.match(head, /<div className="sb-sec-head sb-grp-head">\n\s+<span className="eyebrow section-label">폴더<\/span>/);
   assert.match(head, /onClick=\{\(\) => handleNewSubfolder\(null\)\} aria-label="새 폴더"/);
   assert.match(head, /onClick=\{toggleBulkMode\} aria-pressed=\{bulkSelectMode\} aria-label="여러 대화 선택"/);
   assert.doesNotMatch(head, /백업·가져오기|handleExportAll|handleImport/);
@@ -85,8 +89,10 @@ test("o2: 행 hover ⋯ 는 우클릭과 같은 메뉴, 드래그로 새지 않�
   const more = fnBody(sidebar, "renderRowMore");
   assert.match(more, /onPointerDown=\{\(e\) => e\.stopPropagation\(\)\}/);
   assert.match(more, /setContextMenu\(\{ type, id, x: r\.left, y: r\.bottom \+ 2 \}\)/);
-  assert.match(sidebar, /\{isO2 && !isEditing && renderRowMore\("folder", f\.id\)\}/);
-  assert.match(sidebar, /\{isO2 && !isEditing && !bulkSelectMode && renderRowMore\("conversation", c\.id\)\}/);
+  assert.match(sidebar, /\{isO2 && !isEditing && <span className="explorer-acts">\{renderRowMore\("folder", f\.id\)\}<\/span>\}/);
+  // dzA — 대화 줄은 [고정 · 제목 변경 · ⋯] (renderConvActions 안에 같은 ⋯)
+  assert.match(sidebar, /\{isO2 && !isEditing && !bulkSelectMode && renderConvActions\(c\)\}/);
+  assert.match(fnBody(sidebar, "renderConvActions"), /\{renderRowMore\("conversation", c\.id\)\}/);
   assert.match(css, /\.explorer-item:hover \.explorer-row-more, \.explorer-row-more:focus-visible \{ display: grid; \}/);
 });
 
