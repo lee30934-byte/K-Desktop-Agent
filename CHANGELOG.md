@@ -1,3 +1,10 @@
+## [0.7.87] - 2026-11-12
+
+### Changed
+- O₂ layout breathes more: Pretendard Variable is now bundled (npm `pretendard`, SIL OFL 1.1, dynamic subset, no network). Before, the font was only named in CSS, so Korean text fell back to Malgun Gothic and looked dense. Classic keeps its previous fonts.
+- O₂ type scale is one step larger (body 16px, line height 1.75; UI 14.5px; page titles 26px) with more generous spacing: wider fluid message column (74% of the chat area, 720–1040px; narrow 760px, wide up to 1200px), 40px side gutters, 28px between turns, larger composer, 280px sidebar with 38px rows, 420px right slide-over, 60px header.
+- O₂ Settings page uses the width: content up to 1040px with 48px gutters, 56px rows, larger titles and controls, Korean words no longer break mid-word; command palette and ⋯ menu spacing enlarged. Classic layout is unchanged.
+
 ## [0.7.86] - 2026-11-11
 
 ### Added

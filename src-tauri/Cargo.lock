@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "k-desktop-agent"
-version = "0.7.86"
+version = "0.7.87"
 dependencies = [
  "base64 0.22.1",
  "image",
