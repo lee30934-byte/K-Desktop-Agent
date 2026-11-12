@@ -39,11 +39,11 @@ test("개발용 ?panel= · 픽스처 패널 데이터 — 배포 빌드(DEV=fals
   assert.doesNotMatch(fixtureSrc, /localStorage\.setItem|invoke\(/);
 });
 
-test("탭 줄 — 글자 탭 + 강조색 밑줄, 오른쪽 핀·닫기 14px, 아래 줄 'Esc로 닫기 · 폭 360~640 조절'", () => {
+test("탭 줄 — 글자 탭 + 강조색 밑줄, 오른쪽 핀·닫기 14px, 아래 줄 'Esc로 닫기 · 폭 420~640 조절'", () => {
   assert.match(css, /\.right-slideover \.ui-tab \{\n  height: 34px; padding: 0 10px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;/);
   assert.match(css, /\.ui-tab\[aria-selected="true"\] \{\n  background: transparent; color: var\(--fg\); border-bottom-color: var\(--accent\); font-weight: 500;/);
   assert.match(css, /\.ui-slideover__head \{\n  height: auto; align-items: flex-end; gap: 2px; padding: 8px 8px 0 10px;/);
-  assert.match(app, /footer=\{<>\n\s+<span>Esc로 닫기 · 폭 360~640 조절<\/span>/);
+  assert.match(app, /footer=\{<>\n\s+<span>Esc로 닫기 · 폭 420~640 조절<\/span>/);
   assert.match(prim, /\{footer && <footer className="ui-slideover__foot">\{footer\}<\/footer>\}/);
   // 목업 .slide: 헤더 아래에서 시작 + 본문 덮개(누르면 닫힘). 고정 📌 이면 덮개 없음
   assert.match(css, /:root\[data-layout="o2"\] \.right-slideover \{\n  top: var\(--header-h, 48px\);/);

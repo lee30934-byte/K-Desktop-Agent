@@ -446,7 +446,9 @@ input:focus-visible {
   --danger: var(--error);
   --danger-soft: rgba(239, 68, 68, 0.14);
   --ok: var(--success);
-  --font-ui: "Pretendard Variable", "Pretendard", var(--font-body), "Malgun Gothic", system-ui, sans-serif;
+  /* spA — Pretendard 는 이제 번들돼 실제로 로드된다. classic 은 예전처럼 보이도록 여기서는 이름을 빼고
+     (예전에도 설치돼 있지 않아 이 자리로 떨어졌다), o2 만 아래 o2 블록에서 Pretendard 를 맨 앞에 둔다. */
+  --font-ui: var(--font-body), "Malgun Gothic", system-ui, sans-serif;
   --fs-caption: 12px; --fs-sub: 13px; --fs-ui: 14px; --fs-body: 15px;
   --fs-title: 17px; --fs-page: 22px; --fs-hero: 28px;
   --lh-body: 1.65;
@@ -460,7 +462,29 @@ input:focus-visible {
   --dur-hover: 120ms; --dur-panel: 200ms; --ease: cubic-bezier(.2, .7, .2, 1);
   --shadow-overlay: 0 12px 40px rgba(0, 0, 0, .45), 0 0 0 1px var(--line);
 }
+/* ═══ spA — o2 여백·글자 다듬기: 번들한 Pretendard Variable + 한 단계 큰 글자 · 넉넉한 높이/폭 ═══
+   classic 은 위 :root 값 그대로 (scripts/ui-spacing-main.test.ts 가 확인). 개성 테마 3종은 자기 글꼴을 먼저 쓰고
+   한글만 Pretendard 로 받는다. */
+:root[data-layout="o2"] {
+  --font-ui: var(--font-body), "Pretendard Variable", "Pretendard", "Malgun Gothic", system-ui, sans-serif;
+  --fs-caption: 12.5px; --fs-sub: 13.5px; --fs-ui: 14.5px; --fs-body: 16px;
+  --fs-title: 18px; --fs-page: 26px; --fs-hero: 30px; --fs-mono: 13.5px;
+  --lh-body: 1.75;
+  --ls-ui: -0.01em;
+  --header-h: 60px; --row-h: 38px;
+  --sidebar-w: 280px; --slideover-w: 420px; --settings-nav-w: 264px;
+  /* 대화 열: 고정 760 대신 본문 폭의 74% (720~1040). 본문 폭 = 창 − 사이드바 − 열린 우측 패널.
+     %가 아니라 vw 로 계산해 메시지 열과 입력창(서로 다른 부모)이 같은 값을 얻는다. */
+  --o2-main-w: calc(100vw - var(--sidebar-width, 280px) - var(--slideover-offset, 0px));
+  --chat-max-width: clamp(720px, calc(var(--o2-main-w) * 0.74), 1040px);
+  --o2-gutter: 40px;
+}
+:root[data-layout="o2"][data-chat-width="narrow"] { --chat-max-width: 760px; }
+:root[data-layout="o2"][data-chat-width="wide"] { --chat-max-width: min(1200px, calc(var(--o2-main-w) - 2 * var(--o2-gutter))); }
+@media (max-width: 1000px) { :root[data-layout="o2"] { --o2-gutter: 24px; } }
+:root[data-layout="o2"] body { letter-spacing: var(--ls-ui); }
 :root[data-density="compact"] { --row-h: 28px; --fs-body: 14px; }
+:root[data-layout="o2"][data-density="compact"] { --row-h: 32px; --fs-body: 15px; }
 @media (prefers-reduced-motion: reduce) { :root { --dur-hover: 0ms; --dur-panel: 0ms; } }
 
 /* ═══ v0.7.86 UI 10단계 — 비주얼 마감 (design-spec.md 7장 · 8장 10단계) ═══

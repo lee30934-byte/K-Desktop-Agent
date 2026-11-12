@@ -122,6 +122,7 @@ import "./App.css";
 import "./styles/o2-fidelity.css";
 import "./styles/o2-slideover.css";
 import "./styles/o2-settings.css";
+import "./styles/o2-spacing.css"; // spA 여백·글자 다듬기 (o2 전용, 마지막에 불러와 이김)
 import logger from "./utils/logger";
 import {
   TelegramTurnTracker,
@@ -329,6 +330,17 @@ const LS_AUTO_RESUME_MANUAL_STOPPED = "kda_auto_resume_manual_stopped";
 const TASK_WATCH_STALE_MS = 15 * 60 * 1000;
 const TASK_WATCH_MAX_CONCURRENT = 3;
 
+// spA — o2 는 넉넉한 사이드바 기본 폭(280)을 따로 저장한다. classic 은 예전 키·기본값(260) 그대로.
+function readSidebarWidth(key: string, fallback: number): number {
+  try {
+    const saved = parseInt(localStorage.getItem(key) || "", 10);
+    if (!Number.isNaN(saved) && saved >= 200 && saved <= 600) return saved;
+  } catch {}
+  return fallback;
+}
+// spA — o2 우측 슬라이드오버 최소·기본 폭 (예전 360~380 → 420). 저장 키는 classic SidePanel 과 같아 값은 건드리지 않는다.
+const O2_SLIDEOVER_MIN = 420;
+
 function readLocalBool(key: string, defaultValue: boolean): boolean {
   try {
     const value = localStorage.getItem(key);
@@ -439,17 +451,17 @@ export default function App() {
   // Phase 32 — folder tree
   const [folders, setFolders] = useState<Folder[]>([]);
   // Phase 38 (v0.5.26) — 사이드바 폭 (resizable, localStorage 저장)
-  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
-    try {
-      const saved = parseInt(localStorage.getItem("kda_sidebar_width") || "", 10);
-      if (!Number.isNaN(saved) && saved >= 200 && saved <= 600) return saved;
-    } catch {}
-    return 260;
+  const [sidebarWidths, setSidebarWidths] = useState(() => {
+    const classic = readSidebarWidth("kda_sidebar_width", 260);
+    // o2 첫 실행: 예전에 더 넓게 쓰던 폭은 그대로, 좁았으면 280 으로
+    return { classic, o2: readSidebarWidth("kda_sidebar_width_o2", Math.max(280, classic)) };
   });
   // Phase 44 (v0.5.32) — 우측 SidePanel: 대화 안 link/file 클릭 → 미리보기
   // v0.7.86 UI 4단계 — 우측 슬라이드오버: 한 번에 한 탭. SidePanel 은 'preview' 탭(sidePanelOpen 과 동기화).
   // classic 배치는 슬라이드오버 없이 예전 SidePanel(가장자리 ⟨)·작업 팝오버·비서 팝오버를 그대로 쓴다.
   const { isO2 } = useUiLayout();
+  const sidebarWidth = isO2 ? sidebarWidths.o2 : sidebarWidths.classic;
+  const setSidebarWidth = useStableCallback((w: number) => setSidebarWidths((p) => (isO2 ? { ...p, o2: w } : { ...p, classic: w })));
   const [rightPanel, setRightPanel] = useState<RightPanel>(() => {
     const dev = devPanelOverride(); // fidB — DEV 전용 ?panel= (캡처용, 배포 빌드에선 항상 null)
     if (dev) return dev;
@@ -474,6 +486,7 @@ export default function App() {
     } catch {}
     return 380;
   });
+  const slideOverW = isO2 ? Math.max(O2_SLIDEOVER_MIN, slideOverWidth) : slideOverWidth;
   const [slideOverPinned, setSlideOverPinned] = useState<boolean>(() => {
     try { return localStorage.getItem("kda_slideover_pinned") === "1"; } catch { return false; }
   });
@@ -510,9 +523,9 @@ export default function App() {
     // fidR — 패널이 열려 있는 동안 기본 위치 아바타를 숨겨 본문 열·입력창을 가리지 않게 한다 (o2-fidelity.css §8).
     if (open) root.setAttribute("data-slideover", pinned ? "pinned" : "overlay");
     else root.removeAttribute("data-slideover");
-    root.style.setProperty("--side-panel-width", pinned ? `${slideOverWidth}px` : "0px");
-    root.style.setProperty("--slideover-offset", open ? `${slideOverWidth}px` : "0px");
-  }, [isO2, rightPanel, slideOverPinned, slideOverWidth, wideWindow]);
+    root.style.setProperty("--side-panel-width", pinned ? `${slideOverW}px` : "0px");
+    root.style.setProperty("--slideover-offset", open ? `${slideOverW}px` : "0px");
+  }, [isO2, rightPanel, slideOverPinned, slideOverW, wideWindow]);
   const handlePreviewRequest = useStableCallback((pathOrUrl: string, label?: string) => {
     setSidePanelItem({ pathOrUrl, label });
     // 사용자가 링크·파일을 직접 눌렀으므로 미리보기 탭으로 전환한다 (R13: 자동 전환 정책은 K 확인 대기).
@@ -571,9 +584,10 @@ export default function App() {
     document.documentElement.style.setProperty("--sidebar-width", `${sidebarRail || sidebarOverlay ? 56 : sidebarWidth}px`);
     document.documentElement.style.setProperty("--sidebar-open-width", `${sidebarWidth}px`);
     try {
-      localStorage.setItem("kda_sidebar_width", String(sidebarWidth));
+      localStorage.setItem("kda_sidebar_width", String(sidebarWidths.classic));
+      localStorage.setItem("kda_sidebar_width_o2", String(sidebarWidths.o2));
     } catch {}
-  }, [sidebarWidth, sidebarRail, sidebarOverlay]);
+  }, [sidebarWidth, sidebarWidths, sidebarRail, sidebarOverlay]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   // 좁은 창 오버레이는 대화를 고르면 다시 레일로 (본문을 가리지 않게)
   useEffect(() => { setNarrowSidebarOpen(false); }, [activeConversationId]);
@@ -6215,10 +6229,12 @@ export default function App() {
           keepMounted
           label="우측 패널"
           className={`right-slideover${slideOverPinned && wideWindow ? " is-pinned" : ""}`}
-          width={slideOverWidth}
+          width={slideOverW}
           onResize={setSlideOverWidth}
+          minWidth={O2_SLIDEOVER_MIN}
+          defaultWidth={O2_SLIDEOVER_MIN}
           footer={<>
-            <span>Esc로 닫기 · 폭 360~640 조절</span>
+            <span>Esc로 닫기 · 폭 420~640 조절</span>
             {/* 목업: '작업' 탭일 때만 아래 줄에 전체 작업 정지 */}
             {rightPanel === "tasks" && (
               <button type="button" className="so-sm so-sm--dan" onClick={handleHardStop}

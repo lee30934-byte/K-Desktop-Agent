@@ -1,0 +1,174 @@
+/* ════════════════════════════════════════════════════════════════
+   v0.7.86 이후 여백·글자 다듬기 spA — 메인 화면 · 우측 슬라이드오버 (o2 전용)
+   목업(evidence/ui-redesign-20261111/mockup.html)의 구조·색·부품은 그대로 두고 크기·간격·글자만 넉넉하게.
+   토큰(글자 크기 · 헤더/줄 높이 · 대화 열 폭 · 사이드바/패널 폭)은 src/index.css 의 :root[data-layout="o2"] 블록.
+   모든 선택자가 :root[data-layout="o2"] 로 시작한다 — classic 은 이 파일을 받지 않는다 (scripts/ui-spacing-main.test.ts).
+   App.css · o2-fidelity · o2-slideover · o2-settings 다음에 불러와 같은 특이도면 이 파일이 이긴다.
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 0. 글자: 코드·숫자는 자간을 되돌린다 (본문은 index.css 에서 -0.01em) ── */
+:root[data-layout="o2"] :is(code, pre, kbd, .mono) { letter-spacing: 0; }
+
+/* ── 1. 사이드바 (폭 280 · 줄 38 · 브랜드 줄 48) ── */
+:root[data-layout="o2"] .sidebar--o2 .sidebar-brand { height: 52px; padding: 0 16px 0 14px; align-items: center; gap: 10px; }
+:root[data-layout="o2"] .sidebar--o2 .brand-name.brand-name-o2 { font-size: 19px; }
+:root[data-layout="o2"] .sidebar--o2 .sb-top { padding: 6px 14px 10px; }
+:root[data-layout="o2"] .sidebar--o2 .sb-top .new-chat-btn { height: 40px; padding: 0 14px; gap: 10px; }
+:root[data-layout="o2"] .sidebar--o2 .sb-nav { padding: 2px 10px 4px; gap: 2px; }
+:root[data-layout="o2"] .sidebar--o2 .sb-nav-item { gap: 12px; padding: 0 10px; }
+:root[data-layout="o2"] .sidebar--o2 .sb-sec-head { padding: 20px 14px 8px 20px; }
+:root[data-layout="o2"] .sb-crumb { padding: 0 20px 8px; }
+:root[data-layout="o2"] .sb-tree { padding: 0 10px 10px; }
+:root[data-layout="o2"] .sb-tree .explorer-item { gap: 10px; padding: 0 10px; }
+:root[data-layout="o2"] .sb-tree .explorer-icon { width: 18px; font-size: 14px; }
+:root[data-layout="o2"] .sb-tree .conv-title-edit { font-size: var(--fs-sub); }
+:root[data-layout="o2"] .sb-grp-label { padding: 14px 10px 6px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .sb-empty { padding: 14px 10px; }
+:root[data-layout="o2"] .sb-bulk { padding: 10px 14px; gap: 6px; }
+:root[data-layout="o2"] .sb-bulk button { height: 30px; padding: 0 12px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .sidebar--o2 .sb-foot { min-height: 54px; padding: 10px 14px 10px 20px; }
+:root[data-layout="o2"] .sidebar--o2 .sb-settings { height: 34px; padding: 0 12px; gap: 8px; }
+:root[data-layout="o2"] .sidebar--o2 .sb-reconnect { height: 28px; padding: 0 10px; font-size: var(--fs-caption); }
+
+/* ── 2. 헤더 (높이 60 · 좌우 28) ── */
+:root[data-layout="o2"] .main-header { gap: 14px; padding: 0 22px 0 28px; }
+:root[data-layout="o2"] .main-title-block { gap: 12px; }
+:root[data-layout="o2"] .main-subline { gap: 12px; }
+:root[data-layout="o2"] .engine-chip,
+:root[data-layout="o2"] .main-header-right .ui-chip,
+:root[data-layout="o2"] .main-header-right .task-activity-toggle--chip { height: 30px; padding: 0 11px; gap: 7px; }
+:root[data-layout="o2"] .main-header-right { gap: 8px; }
+:root[data-layout="o2"] .main-header-sep { height: 20px; margin: 0 4px; }
+:root[data-layout="o2"] .main-header-right .header-assistant-btn,
+:root[data-layout="o2"] .main-header-right .chat-options > summary { width: 34px; height: 34px; }
+/* 좁은 창: 제목이 먼저 잘리지 않게 헤더 칩만 조금 조인다 */
+@media (max-width: 1100px) {
+  :root[data-layout="o2"] .main-header { gap: 10px; padding: 0 14px 0 20px; }
+  :root[data-layout="o2"] .main-title-block,
+  :root[data-layout="o2"] .main-subline { gap: 8px; }
+  :root[data-layout="o2"] .engine-chip,
+  :root[data-layout="o2"] .main-header-right .ui-chip,
+  :root[data-layout="o2"] .main-header-right .task-activity-toggle--chip { padding: 0 8px; gap: 5px; }
+  :root[data-layout="o2"] .main-header-right { gap: 5px; }
+  :root[data-layout="o2"] .main-header-sep { margin: 0 1px; }
+}
+
+/* ── 3. 대화 열 정렬 기준 ──
+   메시지 열은 .messages(오른쪽에 아바타 자리 예약) 안에서 가운데, 폭 = --chat-max-width, 안쪽 여백 = --o2-gutter.
+   알림 띠와 입력창은 부모가 달라 같은 식으로 안쪽 시작점(--o2-col-inset)을 계산해 글자 열과 같은 폭으로 맞춘다.
+   (--o2-col-inset 은 쓰는 요소마다 선언해야 그 요소의 --o2-col-reserve 로 계산된다 — var() 는 선언한 요소에서 치환) */
+:root[data-layout="o2"] :is(.chat-notices--top, .composer-wrapper) {
+  --o2-col-reserve: 0px;
+  --o2-col-inset: max(var(--o2-gutter), calc((100% - var(--o2-col-reserve) - var(--chat-max-width)) / 2 + var(--o2-gutter)));
+}
+:root[data-layout="o2"][data-companion-reserve] .main-chat .chat-notices--top { --o2-col-reserve: var(--companion-reserve, 0px); }
+:root[data-layout="o2"] .chat-col { padding: 0 var(--o2-gutter); }
+:root[data-layout="o2"] .messages-spacer { height: 32px; }
+
+/* ── 4. 알림 띠: 글자 열과 같은 폭 ── */
+:root[data-layout="o2"] .chat-notices--top {
+  margin: 14px calc(var(--o2-col-inset) + var(--o2-col-reserve)) 0 var(--o2-col-inset);
+}
+:root[data-layout="o2"] .chat-notices--top .ui-notice-stack { gap: 8px; }
+:root[data-layout="o2"] .chat-notices--top .ui-notice { gap: 12px; padding: 10px 10px 10px 14px; line-height: 1.5; }
+:root[data-layout="o2"] .chat-notices--top .ui-notice .ui-btn--sm { height: 30px; padding: 0 12px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .task-watch-more { height: 30px; padding: 0 8px; font-size: var(--fs-caption); }
+
+/* ── 5. 메시지 (턴 간격 28 · 문단 0.85em · 표 10/14 · 코드 14/16) ── */
+:root[data-layout="o2"] .chat-col > .msg-user { margin: 4px 0 28px; padding: 12px 18px; line-height: 1.65; }
+:root[data-layout="o2"] .chat-col > .msg-assistant { margin: 0 0 28px; }
+:root[data-layout="o2"][data-assistant-style="bubble"] .chat-col > .msg-assistant { padding: 16px 20px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content p { margin: 0 0 0.85em; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content p:last-child { margin-bottom: 0; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content :is(ol, ul) { margin: 0.4em 0 0.95em 24px; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content li { margin: 0.3em 0; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content :is(h1, h2, h3) { margin: 1.3em 0 0.55em; line-height: 1.35; letter-spacing: -0.015em; }
+:root[data-layout="o2"] .chat-col > .msg .markdown-content :not(pre) > code { font-size: 0.86em; padding: 2px 6px; }
+:root[data-layout="o2"] .chat-col .markdown-content table { margin: 10px 0 16px; font-size: var(--fs-ui); }
+:root[data-layout="o2"] .chat-col .markdown-content th { padding: 10px 14px; }
+:root[data-layout="o2"] .chat-col .markdown-content td { padding: 10px 14px; line-height: 1.55; }
+:root[data-layout="o2"] .chat-col .md-code-block-wrapper { margin: 0.9em 0 1.1em; }
+:root[data-layout="o2"] .chat-col .md-code-block {
+  padding: 14px 16px; font-size: var(--fs-mono); line-height: 1.6; border-radius: var(--radius-ctl);
+}
+:root[data-layout="o2"] .chat-col .md-link.md-file-chip { gap: 10px; margin-top: 4px; padding: 10px 14px; font-size: var(--fs-ui); }
+:root[data-layout="o2"] .msg-actbar { gap: 4px; margin-top: 2px; }
+:root[data-layout="o2"] .msg-act { width: 30px; height: 30px; }
+
+/* ── 6. 입력창 (최소 64 · 안쪽 14/18 · 글자 16 · 전송 36) — 글자 열과 같은 폭 ── */
+:root[data-layout="o2"] .composer-wrapper {
+  margin-bottom: 22px;
+  padding: 0 var(--o2-col-inset);
+}
+:root[data-layout="o2"][data-companion-reserve] .main-chat .composer-wrapper {
+  --o2-col-reserve: var(--o2-composer-reserve);
+}
+:root[data-layout="o2"] .composer { padding: 14px 12px 12px 18px; gap: 8px; }
+:root[data-layout="o2"] .composer textarea { min-height: 52px; padding: 2px 2px 0; font-size: var(--fs-body); line-height: 1.6; }
+:root[data-layout="o2"] .composer-attach-btn { width: 36px; height: 36px; }
+:root[data-layout="o2"] .composer .context-ring-btn { height: 34px; padding: 0 10px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .composer-actions .composer-btn { height: 36px; padding: 0 14px; }
+:root[data-layout="o2"] .composer-actions .composer-btn-send--icon { width: 36px; height: 36px; }
+:root[data-layout="o2"] .context-nudge { margin: 0 0 10px; }
+:root[data-layout="o2"] .context-nudge__action { height: 30px; padding: 0 12px; font-size: var(--fs-caption); }
+
+/* ── 7. 빈 화면 ── */
+:root[data-layout="o2"] .empty-state--o2 .empty-content { max-width: min(var(--chat-max-width), 860px); }
+:root[data-layout="o2"] .empty-state--o2 .empty-title { margin: 0 0 28px; }
+:root[data-layout="o2"] .empty-suggestions { gap: 12px; }
+:root[data-layout="o2"] .empty-suggestion { padding: 14px 16px; column-gap: 14px; }
+:root[data-layout="o2"] .empty-suggestion-icon { width: 36px; height: 36px; }
+
+/* ── 8. 우측 슬라이드오버 (폭 420 · 탭 44 · 섹션 안쪽 20) ── */
+:root[data-layout="o2"] .right-slideover .ui-slideover__head { padding: 6px 10px 0 14px; }
+:root[data-layout="o2"] .right-slideover .ui-tab { height: 44px; padding: 0 12px; font-size: var(--fs-ui); }
+:root[data-layout="o2"] .right-slideover .ui-slideover__actions .ui-iconbtn { width: 32px; height: 32px; margin-bottom: 6px; }
+:root[data-layout="o2"] .right-slideover .right-pane--session,
+:root[data-layout="o2"] .right-slideover .right-pane--tasks,
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-content,
+:root[data-layout="o2"] .right-slideover .companion-popover.is-hosted { padding: 20px; }
+:root[data-layout="o2"] .right-slideover .ui-slideover__foot { min-height: 44px; padding: 12px 20px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .right-slideover .so-sect { margin-bottom: 26px; }
+:root[data-layout="o2"] .right-slideover .so-sect__h { margin: 0 0 10px; font-size: var(--fs-sub); }
+:root[data-layout="o2"] .right-slideover .so-box { padding: 16px; }
+:root[data-layout="o2"] .right-slideover .so-link,
+:root[data-layout="o2"] .right-slideover .so-explain,
+:root[data-layout="o2"] .right-slideover .so-empty,
+:root[data-layout="o2"] .right-slideover .so-okline--sub,
+:root[data-layout="o2"] .right-slideover .so-grid3,
+:root[data-layout="o2"] .right-slideover .so-diag,
+:root[data-layout="o2"] .right-slideover .so-lim small,
+:root[data-layout="o2"] .right-slideover .so-task__sub,
+:root[data-layout="o2"] .right-slideover .so-select,
+:root[data-layout="o2"] .right-slideover .so-sbtn small { font-size: var(--fs-caption); }
+:root[data-layout="o2"] .right-slideover .so-okline,
+:root[data-layout="o2"] .right-slideover .so-lim__top,
+:root[data-layout="o2"] .right-slideover .so-big__sub { font-size: var(--fs-sub); }
+:root[data-layout="o2"] .right-slideover .so-sm { height: 30px; padding: 0 12px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .right-slideover .so-tag { font-size: 12px; padding: 2px 8px; }
+:root[data-layout="o2"] .right-slideover .so-meter { margin: 12px 0; }
+:root[data-layout="o2"] .right-slideover .so-grid3 { gap: 10px; }
+:root[data-layout="o2"] .right-slideover .so-diag { gap: 5px; margin-top: 12px; padding-top: 12px; }
+:root[data-layout="o2"] .right-slideover .so-sbtn { gap: 14px; margin-bottom: 10px; padding: 14px 16px; }
+:root[data-layout="o2"] .right-slideover .so-sbtn__ic { width: 36px; height: 36px; }
+:root[data-layout="o2"] .right-slideover .so-stats > div { padding: 12px 4px; }
+:root[data-layout="o2"] .right-slideover .so-stats span { font-size: 12px; }
+:root[data-layout="o2"] .right-slideover .so-stats b { margin-top: 3px; font-size: var(--fs-sub); }
+:root[data-layout="o2"] .right-slideover .so-lims { gap: 16px; }
+:root[data-layout="o2"] .right-slideover .so-lim .so-meter { margin: 8px 0 6px; }
+:root[data-layout="o2"] .right-slideover .so-task { margin-bottom: 10px; padding: 14px 16px; }
+:root[data-layout="o2"] .right-slideover .so-task__acts { gap: 8px; margin-top: 12px; }
+:root[data-layout="o2"] .right-slideover .so-tools { gap: 8px; margin: 6px 0 12px; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-item-header { padding: 14px 16px 10px; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-filename { font-size: var(--fs-sub); }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-preview { padding: 0 16px 16px; }
+:root[data-layout="o2"] .right-slideover .side-panel--embedded .side-panel-text { font-size: var(--fs-sub); line-height: 1.75; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-menu-header strong,
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent h3 { font-size: var(--fs-sub); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-tabs button { height: 30px; padding: 0 12px; font-size: var(--fs-caption); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-primary-actions button { padding: 14px 16px; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-primary-actions button:last-child { font-size: var(--fs-caption); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent { margin-top: 24px; }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent > button[aria-label] { padding: 14px 16px; font-size: var(--fs-sub); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent > button:not([aria-label]) { font-size: var(--fs-sub); }
+:root[data-layout="o2"] .right-slideover .is-hosted .companion-recent p { font-size: var(--fs-caption); }
