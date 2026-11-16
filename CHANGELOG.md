@@ -1,4 +1,4 @@
-## [Unreleased] - cc_mouse_drag
+## [0.7.88] - 2026-11-16
 
 ### Added
 - New screen tool `cc_mouse_drag`: press, move and release the mouse button, for example to drag a file from Explorer onto an app window. Before, the screen tools could only click and move, and the shell-input guard (correctly) blocks scripts that press the button, so real drag-and-drop could not be done at all.
