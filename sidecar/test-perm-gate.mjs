@@ -34,6 +34,7 @@ const PERM_TOOL_MAP = {
   system_control: [
     "mcp__k-personal__cc_mouse_move",
     "mcp__k-personal__cc_mouse_click",
+    "mcp__k-personal__cc_mouse_drag",
     "mcp__k-personal__cc_mouse_position",
     "mcp__k-personal__cc_keyboard_type",
     "mcp__k-personal__cc_keyboard_hotkey",

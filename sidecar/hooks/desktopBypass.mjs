@@ -150,5 +150,5 @@ export function detectDesktopBypass(command) {
 
 export const DESKTOP_BYPASS_REMEDY =
   "화면·키보드·마우스 조작은 k-personal 도구를 쓰세요: 컨트롤 조작은 ui_click_by_name / ui_set_text / ui_invoke, " +
-  "웹은 web_*, 직접 입력이 꼭 필요하면 cc_keyboard_type / cc_mouse_click (target_window 지정). " +
+  "웹은 web_*, 직접 입력이 꼭 필요하면 cc_keyboard_type / cc_mouse_click / cc_mouse_drag (target_window 지정). " +
   "이 도구들은 입력 잠금·대상 창 확인·실패 신호를 적용합니다.";

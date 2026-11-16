@@ -533,6 +533,7 @@ const TOOL_CATALOG: ToolCategory[] = [
     tools: [
       { name: "mcp__k-personal__cc_mouse_move", label: "cc_mouse_move", desc: "마우스 이동" },
       { name: "mcp__k-personal__cc_mouse_click", label: "cc_mouse_click", desc: "마우스 클릭" },
+      { name: "mcp__k-personal__cc_mouse_drag", label: "cc_mouse_drag", desc: "마우스 끌어 놓기 (파일 이동 가능)", destructive: true },
       { name: "mcp__k-personal__cc_mouse_position", label: "cc_mouse_position", desc: "마우스 위치 조회" },
       { name: "mcp__k-personal__cc_keyboard_type", label: "cc_keyboard_type", desc: "키보드 입력", destructive: true },
       { name: "mcp__k-personal__cc_keyboard_hotkey", label: "cc_keyboard_hotkey", desc: "단축키 (Ctrl+C 등)", destructive: true },

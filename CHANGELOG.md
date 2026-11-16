@@ -1,3 +1,12 @@
+## [Unreleased] - cc_mouse_drag
+
+### Added
+- New screen tool `cc_mouse_drag`: press, move and release the mouse button, for example to drag a file from Explorer onto an app window. Before, the screen tools could only click and move, and the shell-input guard (correctly) blocks scripts that press the button, so real drag-and-drop could not be done at all.
+- It uses the same input lock and target-window check as `cc_mouse_click`. Off-screen coordinates, a wrong button or a missing coordinate are refused before any input. The button is always released, even if the move fails. The result is reported as unverified, with the foreground window before and after.
+- It sits under "System control" in Settings and is marked destructive, because dragging in Explorer can move files. The guard's advice now names it.
+- Bundled k-personal pin moves to K-Personal-MCP `bf0877bc` (KPM_VERSION 3), so existing installs upgrade their k-personal copy on start.
+- Tests: k-personal `test_mouse_drag.py` 11/11 (mocked, no real input) and `test_input_guard.py` 15/15 (refused drags leave the mouse still); KDA `cc-mouse-drag-registration.test.ts` 5/5 (0/5 on v0.7.87), desktop-stall 9/9, kpersonal-lock 23/23, perm-gate 11/11, tsc exit 0 for app and sidecar.
+
 ## [0.7.87] - 2026-11-12
 
 ### Changed
