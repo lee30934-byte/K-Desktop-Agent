@@ -1,6 +1,6 @@
 {
   "repo": "https://github.com/lee30934-byte/K-Personal-MCP.git",
-  "commit": "dd22f1d05e00562e9b05598433c793cafe826f57",
-  "kpmVersion": 2,
+  "commit": "bf0877bc3f55ff3232d149bab659d282fc86b9bf",
+  "kpmVersion": 3,
   "note": "release.yml bundles exactly this commit; KDA upgrades installs whose KPM_VERSION is lower."
 }

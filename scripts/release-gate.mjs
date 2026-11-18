@@ -261,7 +261,8 @@ const NODE_TEST_SUITES = [
   { file: "scripts/voice-effects.test.ts", runner: "tsx" }, // bounded DSP, pitch and safe preference migration
   { file: "scripts/dot-bridge.test.ts", runner: "tsx" },
   { file: "scripts/control-tool-results.test.ts", runner: "tsx" }, // actual control failures, screenshot payloads and App persistence
-  { file: "scripts/desktop-stall.test.ts", runner: "tsx" }, // screen-task stall states, both engine paths, bridge timeouts
+  { file: "scripts/desktop-stall.test.ts", runner: "tsx" },
+  { file: "scripts/cc-mouse-drag-registration.test.ts", runner: "tsx" }, // v0.7.88 cc_mouse_drag gated like other input tools // screen-task stall states, both engine paths, bridge timeouts
   { file: "scripts/browser-host.test.ts", runner: "tsx" },
   { file: "scripts/browser-provider.test.ts", runner: "tsx" },
   { file: "scripts/telegram-bridge.test.ts", runner: "tsx" }, // v0.7.53
