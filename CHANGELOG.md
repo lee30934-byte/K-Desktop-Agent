@@ -1,3 +1,17 @@
+## [0.7.88] - 2026-11-19
+
+### Added
+- Codex models **GPT-6.2 Sol** (`gpt-6.2-sol`, 500K context) and **GPT-6.2 Astra** (`gpt-6.2-astra`, 272K) in the model list. Both slugs were read from the Codex CLI 0.170.0 model catalog and confirmed with real calls (`MODEL_OK`); a made-up slug was rejected, so the check is meaningful. Codex CLI 0.164.0 did not list them, so older CLIs may reject these models. Auto model selection is unchanged.
+- Codex reasoning effort now offers every level the chosen model supports: low, medium, high, **xhigh, max, ultra** (GPT-6/5.6 Luna stops at max). Levels come from the Codex 0.170 model catalog; ultra, max and xhigh were confirmed with real calls. Before, the app, the Rust bridge and the sidecar each passed only minimal/low/medium/high, so higher levels could not be used.
+- The effort sent with each turn is matched to the model actually used (auto choice, conversation pin or global model). A level the model does not support is lowered to its highest supported level, and older models outside the catalog get low/medium/high only. The dropdown lists only the selected model's levels and shows its default.
+
+### Changed
+- The window title, page title and tray tooltip now read "O2 Agent". Product name, identifier, install folder and updater are unchanged.
+
+### Fixed
+- `minimal` reasoning effort is gone from the dropdown: current Codex models reject it (`Unsupported value: 'minimal'`), which failed the turn. A saved `minimal` is treated as low.
+- The "working" dots no longer look switched off when Windows animation effects are off (reduced motion, for example in a Remote Desktop session). They keep a slower brightness-only pulse instead of freezing at their dimmest level.
+
 ## [0.7.87] - 2026-11-12
 
 ### Changed

@@ -4872,8 +4872,10 @@ async function handleViaCodexCLI(msg: UserMessage): Promise<void> {
   }
 
   // app-server turn/start receives a validated effort override.
-  const VALID_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
-  const reasoning = msg.reasoningEffort?.trim().toLowerCase();
+  // 2026-11-19 — Codex 0.170 카탈로그 단계. minimal 은 현행 모델이 거부하므로 low 로 바꿔 보낸다.
+  const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  const reasoningRaw = msg.reasoningEffort?.trim().toLowerCase();
+  const reasoning = reasoningRaw === "minimal" ? "low" : reasoningRaw;
 
   logToFile(
     "info",

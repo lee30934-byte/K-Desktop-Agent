@@ -174,3 +174,11 @@ test("브랜드 — 창 제목·페이지 제목·트레이 툴팁은 O2 Agent, 
   assert.match(read("../index.html"), /<title>O2 Agent<\/title>/);
   assert.match(read("../src-tauri/src/lib.rs"), /\.tooltip\("O2 Agent"\)/);
 });
+
+test("Codex 모델 목록 — GPT-6.2 Sol·Astra 선택 가능, 컨텍스트 기본값(500K / 272K)", () => {
+  const settings = read("../src/components/Settings.tsx");
+  assert.match(settings, /\{ id: "gpt-6\.2-astra", label: "GPT-6\.2 Astra/);
+  assert.match(settings, /\{ id: "gpt-6\.2-sol", label: "GPT-6\.2 Sol/);
+  assert.match(app, /id === "gpt-6\.2-sol"\) \{\n\s+return \{ tokens: 500_000/);
+  assert.match(app, /id === "gpt-6\.2-astra"\) \{\n\s+return \{ tokens: 272_000/);
+});

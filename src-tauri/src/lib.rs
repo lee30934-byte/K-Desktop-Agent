@@ -375,7 +375,8 @@ async fn send_message(
     // Phase 125 (v0.6.80) — Codex 추론 강도. 화이트리스트 값만 전달 (sidecar 도 재검증).
     if let Some(re) = reasoning_effort {
         let r = re.trim();
-        if r == "minimal" || r == "low" || r == "medium" || r == "high" {
+        // 2026-11-19 — Codex 0.170 카탈로그 단계(low~ultra). minimal 은 옛 설정 호환으로 통과(화면이 low 로 바꿈).
+        if matches!(r, "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra") {
             payload["reasoningEffort"] = serde_json::Value::String(r.to_string());
         }
     }

@@ -109,6 +109,7 @@ import {
 import { loadedMessagesSufficeForHistory, prependOlder, type ViewCursor } from "./messageView.mjs";
 // Phase 144 (v0.7.20) — provider 결정 순수 로직 (전역/대화별 폴백 단일 지점)
 import { resolveProviderSettings, providerLabel } from "./providerResolve";
+import { clampEffortForModel, normalizeStoredEffort } from "./reasoningEffort";
 import { chooseCodexAutoModel, shouldAutoSelectCodexModel } from "./codexAutoModel";
 // Phase 145 (v0.7.22) — 폴더 지침/프로필/첨부 결정 순수 로직 (모든 send 경로 공용)
 import {
@@ -362,10 +363,8 @@ function readLocalBool(key: string, defaultValue: boolean): boolean {
 // codex provider 에서만 sidecar 가 실제로 적용 (다른 provider 는 무시).
 function loadReasoningEffort(): string | undefined {
   try {
-    const v = localStorage.getItem("kda_reasoning_effort");
-    if (v === "minimal" || v === "low" || v === "medium" || v === "high") {
-      return v;
-    }
+    // 2026-11-19 — xhigh/max/ultra 허용, 옛 minimal → low (현행 모델 미지원). 모델별 보정은 clampEffortForModel.
+    return normalizeStoredEffort(localStorage.getItem("kda_reasoning_effort"));
   } catch {
     // ignore — 실패 시 기본값(undefined)
   }
@@ -1322,6 +1321,13 @@ export default function App() {
     // Runtime-reported limits above remain authoritative (including overrides).
     if (activeProvider === "codex" && (id === "gpt-6.1-sol" || id === "gpt-6.1-terra")) {
       return { tokens: 500_000, source: "GPT-6.1 Codex 기본 500K (카탈로그)" };
+    }
+    // Codex 0.170 model catalog (2026-11-19): gpt-6.2-sol 500K, gpt-6.2-astra 272K.
+    if (activeProvider === "codex" && id === "gpt-6.2-sol") {
+      return { tokens: 500_000, source: "GPT-6.2 Sol Codex 기본 500K (카탈로그)" };
+    }
+    if (activeProvider === "codex" && id === "gpt-6.2-astra") {
+      return { tokens: 272_000, source: "GPT-6.2 Astra Codex 기본 272K (카탈로그)" };
     }
 
     // 1M 모델 — 명시 시그널
@@ -3470,7 +3476,8 @@ export default function App() {
     if (sm === "balanced" || sm === "strict") safeMode = sm;
     return {
       provider, model, apiKey, permissions, lockedTools, safeMode, autoChoice,
-      reasoningEffort: autoChoice?.reasoningEffort ?? (isTelegramConv ? "low" : loadReasoningEffort()),
+      // 실제로 쓰는 모델(자동 선택·대화 고정·전역)에 맞춰 지원 단계로 보정한다.
+      reasoningEffort: clampEffortForModel(autoChoice?.reasoningEffort ?? (isTelegramConv ? "low" : loadReasoningEffort()), model),
       // Phase 144 — "conversation" 이면 대화 고정값이 이겼다는 뜻. 로그/디버깅용.
       providerSource: resolved.source,
     };

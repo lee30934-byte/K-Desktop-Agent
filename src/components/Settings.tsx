@@ -1,3 +1,4 @@
+import { clampEffortForModel, defaultLevelForModel, levelsForModel, normalizeStoredEffort, REASONING_LABELS } from "../reasoningEffort";
 import { useCallback, useEffect, useRef, useState } from "react";
 import TelegramHubSettings from "./TelegramHubSettings";
 import MobileSettings from "./MobileSettings";
@@ -335,7 +336,12 @@ const API_PROVIDERS: APIProvider[] = [
     note: "OpenAI Codex CLI 를 ChatGPT Plus/Pro 구독 OAuth 로 인증해 사용. K-Personal MCP 도구도 그대로 통합 (codex mcp add 한 번 등록 필요). 아래 [codex login] 버튼으로 시스템 브라우저 OAuth 진행 — 외부 PowerShell 안 거침.",
     models: [
       { id: "default", label: "ChatGPT 구독 기본 모델 (자동 최신)" },
-      { id: "gpt-6-astra", label: "GPT-6 Astra (최강 · 복합 작업)" },
+      // GPT-6.2 (2026-11-19 추가). Codex CLI 0.170.0 카탈로그에서 확인하고 실제 호출로 확정:
+      //   -m gpt-6.2-sol / gpt-6.2-astra → rc=0 MODEL_OK, 음성 대조 gpt-6.2-nonexistent → rc=1 (판별력 있음).
+      //   CLI 0.164.0 카탈로그에는 없었다 → 구버전 CLI 에서는 거부될 수 있음.
+      { id: "gpt-6.2-astra", label: "GPT-6.2 Astra (최강 · 복합 작업 · CLI 0.170+)" },
+      { id: "gpt-6.2-sol", label: "GPT-6.2 Sol (코딩·일상 작업 · 500K · CLI 0.170+)" },
+      { id: "gpt-6-astra", label: "GPT-6 Astra (이전 세대 · 복합 작업)" },
       { id: "gpt-6.1-sol", label: "GPT-6.1 Sol (코딩·에이전트 · 500K)" },
       { id: "gpt-6.1-terra", label: "GPT-6.1 Terra (시각 이해·컴퓨터 사용 · CLI 0.159+)" },
       // GPT-6 Sol / Luna (2026-09-23 추가). 슬러그는 추측이 아니라 실제 호출로 확정했다:
@@ -436,13 +442,15 @@ const LS_CODEX_MODEL_MODE = "kda_codex_model_mode";
 // Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort). App.tsx 의 loadReasoningEffort 와 동일 키.
 const LS_REASONING_EFFORT = "kda_reasoning_effort";
 // Codex `model_reasoning_effort` 선택지. "default" = 안 박음 (config.toml/모델 기본값).
-const REASONING_EFFORT_OPTIONS: { id: string; label: string; desc: string }[] = [
-  { id: "default", label: "기본 (모델 자동)", desc: "Codex config.toml / 모델 기본 추론 강도 사용" },
-  { id: "minimal", label: "최소 (minimal)", desc: "가장 빠름 · 추론 최소 — 단순 작업" },
-  { id: "low", label: "낮음 (low)", desc: "빠름 · 가벼운 추론" },
-  { id: "medium", label: "중간 (medium)", desc: "균형 — 일반 작업 권장" },
-  { id: "high", label: "높음 (high)", desc: "가장 깊은 추론 · 느림 — 복잡한 문제" },
-];
+// 2026-11-19 — 선택지는 고른 모델이 지원하는 단계만 보여 준다(src/reasoningEffort.ts, Codex 0.170 카탈로그).
+// 옛 minimal 은 현행 모델이 거부하므로 목록에서 뺐고, 저장값이 minimal 이면 low 로 바꾼다.
+function reasoningEffortOptions(model: string | null | undefined): { id: string; label: string; desc: string }[] {
+  const def = defaultLevelForModel(model);
+  return [
+    { id: "default", label: def ? `기본 (모델 기본값: ${def})` : "기본 (모델 자동)", desc: "모델 기본 추론 강도를 사용합니다" },
+    ...levelsForModel(model).map((l) => ({ id: l, label: REASONING_LABELS[l].label, desc: REASONING_LABELS[l].desc })),
+  ];
+}
 // Phase 127 (v0.6.82) — 텔레그램 봇 브리지. App.tsx 의 브리지 훅과 동일 키.
 const LS_TELEGRAM_ENABLED = "kda_telegram_enabled";       // "true"|"false"
 const LS_TELEGRAM_TOKEN = "kda_telegram_token";           // @BotFather 봇 토큰
@@ -1971,7 +1979,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
         setChatModel(savedModel === "auto" ? "default" : savedModel);
         setActiveProvider(savedProvider);
         // Phase 125 (v0.6.80) — 저장된 추론 강도 로드 (없으면 default).
-        const savedReasoning = localStorage.getItem(LS_REASONING_EFFORT) || "default";
+        const savedReasoning = normalizeStoredEffort(localStorage.getItem(LS_REASONING_EFFORT)) ?? "default";
         setReasoningEffort(savedReasoning);
         // Phase 127 (v0.6.82) — 텔레그램 봇 설정 로드.
         setTelegramEnabled(localStorage.getItem(LS_TELEGRAM_ENABLED) === "true");
@@ -2013,6 +2021,11 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
   }
 
   // Phase 125 (v0.6.80) — Codex 추론 강도 저장. state + localStorage + 이벤트 발행.
+  // 화면에 보이는 수동 모델 기준 — 실제 전송값은 App.tsx 가 실제 모델로 다시 보정한다.
+  const reasoningModel = chatProvider === "codex" ? chatModel : undefined;
+  const reasoningOptions = reasoningEffortOptions(reasoningModel);
+  const reasoningEffortShown = reasoningEffort === "default" ? "default" : (clampEffortForModel(reasoningEffort, reasoningModel) ?? "default");
+
   function saveReasoningEffort(value: string) {
     setReasoningEffort(value);
     localStorage.setItem(LS_REASONING_EFFORT, value);
@@ -4629,12 +4642,12 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                       </div>
                       <select
                         className="api-key-input mono"
-                        value={reasoningEffort}
+                        value={reasoningEffortShown}
                         onChange={(e) => saveReasoningEffort(e.target.value)}
                         disabled={codexModelMode === "auto"}
                         style={{ width: "100%", padding: "8px 10px" }}
                       >
-                        {REASONING_EFFORT_OPTIONS.map((o) => (
+                        {reasoningOptions.map((o) => (
                           <option key={o.id} value={o.id}>
                             {o.label}
                           </option>
@@ -4648,9 +4661,10 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                           lineHeight: 1.4,
                         }}
                       >
-                        {REASONING_EFFORT_OPTIONS.find(
-                          (o) => o.id === reasoningEffort,
-                        )?.desc ?? ""}
+                        {reasoningOptions.find((o) => o.id === reasoningEffortShown)?.desc ?? ""}
+                        {reasoningEffortShown !== reasoningEffort && reasoningEffort !== "default"
+                          ? ` · 저장값 ${reasoningEffort} 은 이 모델에서 ${reasoningEffortShown} 로 적용됩니다.`
+                          : ""}
                       </div>
                     </div>
                   )}
