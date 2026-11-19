@@ -45,7 +45,7 @@ async function loadProviderResolve() {
   }
 }
 
-const { resolveProviderSettings, providerLabel } = await loadProviderResolve();
+const { resolveProviderSettings, providerLabel, readDefaultModelMap, defaultModelFor } = await loadProviderResolve();
 
 let pass = 0;
 let fail = 0;
@@ -175,6 +175,40 @@ console.log("W1/W3 — 대화별 provider 행위 테스트\n");
   check("⑩ apiKey 를 싣지 않는다", r.apiKey === undefined, `got ${r.apiKey}`);
   check("⑩ 전역 model(gpt-4o-mini) 미상속", r.model === undefined, `got ${r.model}`);
   check("⑩ source=conversation", r.source === "conversation", `got ${r.source}`);
+}
+
+// ── ⑪ v0.7.90 엔진별 기본 모델 — 전역과 다른 엔진으로 고정된 대화 ─────────────
+{
+  const MAP = JSON.stringify({ codex: "gpt-6.2-sol", claude: "claude-opus-5-5" });
+  const global = store({
+    kda_active_provider: "claude",
+    kda_active_model: "claude-opus-5-5",
+    kda_default_model_by_provider: MAP,
+    kda_api_keys: KEYS,
+  });
+  const r = resolveProviderSettings({ provider: "codex", model: null }, global);
+  check("⑪ 전역 claude / 대화 codex → codex 기본 모델(gpt-6.2-sol)", r.model === "gpt-6.2-sol", `got ${r.model}`);
+  check("⑪ claude 모델이 codex 대화로 새지 않음", r.model !== "claude-opus-5-5", `got ${r.model}`);
+  const r2 = resolveProviderSettings({ provider: "codex", model: "gpt-6-luna" }, global);
+  check("⑪ pin.model 은 여전히 기본 모델보다 우선", r2.model === "gpt-6-luna", `got ${r2.model}`);
+  const r3 = resolveProviderSettings({ provider: "gemini-cli", model: null }, global);
+  check("⑪ 기본 모델 없는 엔진은 종전대로 undefined", r3.model === undefined, `got ${r3.model}`);
+  const r4 = resolveProviderSettings(null, global);
+  check("⑪ 미지정 대화는 전역 model 그대로", r4.provider === "claude" && r4.model === "claude-opus-5-5");
+  const g2 = store({ kda_active_provider: "codex", kda_active_model: "gpt-6-astra", kda_default_model_by_provider: MAP });
+  const r5 = resolveProviderSettings({ provider: "claude", model: null }, g2);
+  check("⑪ 반대 방향: 전역 codex / 대화 claude → claude 기본 모델", r5.model === "claude-opus-5-5", `got ${r5.model}`);
+}
+
+// ── ⑫ 기본 모델 맵 파손·이상값에도 turn 을 죽이지 않음 ─────────────────────
+{
+  const bad = store({ kda_active_provider: "claude", kda_default_model_by_provider: "{not json" });
+  const r = resolveProviderSettings({ provider: "codex", model: null }, bad);
+  check("⑫ JSON 파손 → model undefined (엔진 기본값)", r.provider === "codex" && r.model === undefined, `got ${r.model}`);
+  check("⑫ 배열 JSON → 빈 맵", Object.keys(readDefaultModelMap(store({ kda_default_model_by_provider: "[1,2]" }))).length === 0);
+  const odd = store({ kda_default_model_by_provider: JSON.stringify({ codex: "  ", claude: 5, gemini: " g-1 " }) });
+  check("⑫ 공백·비문자열 값은 무시", defaultModelFor(odd, "codex") === null && defaultModelFor(odd, "claude") === null);
+  check("⑫ 값은 trim 되어 반환", defaultModelFor(odd, "gemini") === "g-1", String(defaultModelFor(odd, "gemini")));
 }
 
 // 주의: 문구에 "결과: N/M 통과" 를 쓰면 release-gate 가 부모의 최종 집계 대신 이 줄을

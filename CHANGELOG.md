@@ -1,3 +1,9 @@
+## [0.7.90] - 2026-11-19
+
+### Added
+- Per-engine default model: choosing a model for Claude, Codex or any engine is remembered as that engine's default. Switching engines restores it instead of resetting to the first list entry, and changing the model in an inactive engine tab stores the default without switching engines.
+- Conversations pinned to an engine other than the global one now use that engine's saved default model when they have no model of their own (previously the engine's CLI default). Corrupt or empty storage falls back to the previous behavior.
+
 ## [0.7.89] - 2026-11-19
 
 ### Added

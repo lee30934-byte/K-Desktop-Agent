@@ -15,6 +15,37 @@ export const LS_ACTIVE_PROVIDER = "kda_active_provider";
 export const LS_ACTIVE_MODEL = "kda_active_model";
 export const LS_API_KEYS = "kda_api_keys";
 
+/**
+ * v0.7.90 — 엔진별 기본 모델 (K 요청 2026-11-19 "기본모델을 선택가능하게 … 클로드도").
+ * JSON 객체 { [provider]: modelId }. Settings 에서 엔진의 모델을 고를 때마다 기록되고,
+ * 엔진을 다시 고르거나(첫 모델로 초기화되던 문제) 전역과 다른 엔진으로 고정된 대화가
+ * 모델 미지정일 때 그 엔진의 기본 모델로 쓰인다.
+ */
+export const LS_DEFAULT_MODEL_BY_PROVIDER = "kda_default_model_by_provider";
+
+/** 엔진별 기본 모델 맵 읽기. 손상·미설정이면 빈 객체. */
+export function readDefaultModelMap(store: ProviderKeyStore): Record<string, string> {
+  try {
+    const raw = store.getItem(LS_DEFAULT_MODEL_BY_PROVIDER);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const c = typeof v === "string" ? v.trim() : "";
+      if (c) out[k] = c;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** 특정 엔진의 기본 모델. 없으면 null. */
+export function defaultModelFor(store: ProviderKeyStore, provider: string): string | null {
+  return readDefaultModelMap(store)[provider] ?? null;
+}
+
 /** localStorage 호환 최소 인터페이스 (테스트에서 가짜 store 주입용) */
 export interface ProviderKeyStore {
   getItem(key: string): string | null;
@@ -81,7 +112,8 @@ export function resolveProviderSettings(
   } else if (!pinnedProvider || pinnedProvider === globalProvider) {
     model = globalModel ?? undefined;
   } else {
-    model = undefined;
+    // 전역과 다른 엔진으로 고정된 대화: 그 엔진에 저장된 기본 모델을 쓴다(없으면 엔진 자체 기본값).
+    model = defaultModelFor(store, provider) ?? undefined;
   }
 
   let apiKey: string | undefined;

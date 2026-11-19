@@ -10,6 +10,7 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { LS_DEFAULT_MODEL_BY_PROVIDER, readDefaultModelMap } from "../providerResolve";
 import CornerBrackets from "./CornerBrackets";
 import ApprovalToggle from "./ApprovalToggle";
 import { Segmented, Icon, type IconName } from "../ui";
@@ -1328,6 +1329,9 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
   // 실제 채팅에 사용되는 active provider/model (sidecar 로 전달됨)
   const [chatProvider, setChatProvider] = useState<string>("claude");
   const [chatModel, setChatModel] = useState<string>("default");
+  const [defaultModelMap, setDefaultModelMap] = useState<Record<string, string>>(
+    () => readDefaultModelMap(localStorage),
+  );
   const [codexModelMode, setCodexModelMode] = useState<"auto" | "manual">("manual");
   // Phase 125 (v0.6.80) — Codex 추론 강도. "default" = 미적용.
   const [reasoningEffort, setReasoningEffort] = useState<string>("default");
@@ -2004,6 +2008,7 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
     setChatModel(modelId);
     localStorage.setItem(LS_ACTIVE_PROVIDER, providerId);
     localStorage.setItem(LS_ACTIVE_MODEL, modelId);
+    rememberDefaultModel(providerId, modelId);
     try {
       window.dispatchEvent(new Event("kda-active-changed"));
     } catch {
@@ -2108,11 +2113,27 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
     }
   }
 
-  // provider 바꾸면 해당 provider 의 첫 모델로 자동 선택
-  function selectActiveProvider(providerId: string) {
+  // v0.7.90 — 엔진별 기본 모델 기억. 엔진의 모델을 고를 때마다 그 엔진 몫으로 저장한다.
+  // 'auto'(Codex 자동 모드 표식)는 실제 모델이 아니므로 기본 모델로 저장하지 않는다.
+  function rememberDefaultModel(providerId: string, modelId: string) {
+    if (!modelId || modelId === "auto") return;
+    const map = readDefaultModelMap(localStorage);
+    map[providerId] = modelId;
+    localStorage.setItem(LS_DEFAULT_MODEL_BY_PROVIDER, JSON.stringify(map));
+    setDefaultModelMap(map);
+  }
+
+  // 엔진의 기본 모델: 저장값이 목록에 있으면 그것, 아니면 목록 첫 모델.
+  function defaultModelOf(providerId: string): string {
     const provider = API_PROVIDERS.find((p) => p.id === providerId);
-    const firstModel = provider?.models[0]?.id ?? "default";
-    saveActiveProvider(providerId, firstModel);
+    const saved = defaultModelMap[providerId];
+    if (saved && provider?.models.some((m) => m.id === saved)) return saved;
+    return provider?.models[0]?.id ?? "default";
+  }
+
+  // provider 바꾸면 그 엔진의 기본 모델로 선택 (종전: 항상 첫 모델로 초기화)
+  function selectActiveProvider(providerId: string) {
+    saveActiveProvider(providerId, defaultModelOf(providerId));
   }
 
   // API 키 로드 (localStorage에서)
@@ -4616,11 +4637,18 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                       value={
                         chatProvider === currentProvider.id
                           ? chatModel
-                          : currentProvider.models[0]?.id ?? "default"
+                          : defaultModelOf(currentProvider.id)
                       }
-                      onChange={(e) =>
-                        saveActiveProvider(currentProvider.id, e.target.value)
-                      }
+                      aria-label={`${currentProvider.name} 기본 모델`}
+                      onChange={(e) => {
+                        // 사용 중인 엔진이면 즉시 적용 + 기본 모델 기억.
+                        // 다른 엔진 탭에서는 엔진을 바꾸지 않고 그 엔진의 기본 모델만 저장한다.
+                        if (chatProvider === currentProvider.id) {
+                          saveActiveProvider(currentProvider.id, e.target.value);
+                        } else {
+                          rememberDefaultModel(currentProvider.id, e.target.value);
+                        }
+                      }}
                       disabled={currentProvider.id === "codex" && codexModelMode === "auto"}
                       style={{ width: "100%", padding: "8px 10px" }}
                     >
@@ -4630,6 +4658,10 @@ export default function Settings({ open, onClose, mcpConnected, activeConversati
                         </option>
                       ))}
                     </select>
+                    <div className="settings-row-desc" style={{ marginTop: "6px" }}>
+                      이 엔진의 기본 모델로 기억됩니다. 엔진을 다시 고르거나, 다른 엔진이 켜진 상태에서
+                      이 엔진으로 지정된 대화를 보낼 때 이 모델을 씁니다.
+                    </div>
                   </div>
 
                   {/* Phase 125 (v0.6.80) — Codex 추론 강도 (reasoning effort). codex provider 만 노출 */}
