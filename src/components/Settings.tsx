@@ -1258,6 +1258,13 @@ function ToolImageModeToggle() {
   );
 }
 
+// v0.7.90 — 대화별 모델 선택(사이드바)용. 모델 목록의 단일 출처는 위 API_PROVIDERS.
+export function providerModelOptions(providerId: string | null | undefined): Array<{ id: string; label: string }> {
+  if (!providerId) return [];
+  const p = API_PROVIDERS.find((x) => x.id === providerId);
+  return p ? p.models.map((m) => ({ id: m.id, label: m.label })) : [];
+}
+
 export default function Settings({ open, onClose, mcpConnected, activeConversationId = null, onConversationsImported, focusSection = null }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
   const [reloading, setReloading] = useState(false);

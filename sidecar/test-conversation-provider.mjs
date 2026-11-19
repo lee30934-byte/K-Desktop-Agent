@@ -228,5 +228,22 @@ check("고정된 대화만 배지 표시", /\{c\.provider && \(/.test(sidebarTsx
 check("App → Sidebar 배선", /onSetConversationProvider=\{handleSetConversationProvider\}/.test(appTsx));
 check("해제(전역 따름) 가능", /PINNABLE_PROVIDERS/.test(sidebarTsx) && /^\s*null,$/m.test(resolveTs.slice(resolveTs.indexOf("PINNABLE_PROVIDERS"))));
 
+
+// ── [G] v0.7.90 대화별 모델 지정 ───────────────────────────────────────
+console.log("\n[G] UI — 대화별 모델 지정 (v0.7.90)");
+{
+  const handler = (/const handleSetConversationModel = useStableCallback\([\s\S]*?\n  \);/.exec(appTsx) || [""])[0];
+  check("App 핸들러 존재", handler.length > 0);
+  check("모델 변경 시 고정된 provider 유지(엔진을 null 로 덮지 않음)",
+    /updateConversationProvider\(id, provider, model\)/.test(handler) && /if \(!provider\)/.test(handler),
+    "provider 없이 model 만 저장하면 전역 엔진이 바뀔 때 엉뚱한 엔진에 모델명이 실린다");
+  check("App → Sidebar 모델 배선", /onSetConversationModel=\{handleSetConversationModel\}/.test(appTsx));
+  check("picker: 엔진 고정 대화에서만 모델 목록", /current && onSetConversationModel && providerModelOptions\(current\)/.test(sidebarTsx));
+  check("picker: 엔진 기본 모델 따름(null) 선택지", /id: null as string \| null, label: "엔진 기본 모델 따름"/.test(sidebarTsx));
+  check("모델 목록 단일 출처 = Settings API_PROVIDERS", /export function providerModelOptions/.test(read("src/components/Settings.tsx")));
+  check("배지에 대화 모델 표시", /\{c\.model \? ` · \$\{c\.model\}` : ""\}/.test(sidebarTsx));
+  check("전송 경로는 매 턴 DB 의 대화 모델을 읽는다", /pin = await getConversationProvider\(convId\)/.test(appTsx));
+}
+
 console.log(`\n결과: ${pass}/${pass + fail} 통과`);
 process.exit(fail === 0 ? 0 : 1);

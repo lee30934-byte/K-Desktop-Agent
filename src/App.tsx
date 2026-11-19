@@ -5038,6 +5038,32 @@ export default function App() {
     },
   );
 
+  // v0.7.90 — 대화별 모델 지정. 엔진(provider)은 그대로 두고 model 만 바꾼다.
+  // model = null 이면 그 엔진의 기본 모델(Settings 엔진별 기본 모델 → 없으면 CLI 기본값)을 따른다.
+  const handleSetConversationModel = useStableCallback(
+    async (id: string, model: string | null) => {
+      const conv = conversations.find((c) => c.id === id);
+      const provider = conv?.provider ?? null;
+      if (!provider) {
+        pushSystem("엔진이 고정된 대화에서만 모델을 지정할 수 있습니다.", "info");
+        return;
+      }
+      try {
+        await updateConversationProvider(id, provider, model);
+        setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, model } : c)));
+        pushSystem(
+          model
+            ? `이 대화의 모델을 ${model} 로 지정했습니다 (${providerLabel(provider)}).`
+            : `이 대화의 모델 지정을 해제했습니다 — ${providerLabel(provider)} 기본 모델을 따릅니다.`,
+          "info",
+        );
+      } catch (e) {
+        console.error("[App] 대화별 model 변경 실패:", e);
+        pushSystem(`대화 모델 변경 실패: ${String(e)}`, "error");
+      }
+    },
+  );
+
   const handleSearchConversations = useStableCallback(
     async (query: string): Promise<Set<string>> => {
       try {
@@ -6070,6 +6096,7 @@ export default function App() {
         streamingConvIds={streamingConvIds}
         onOpenLibrary={handleOpenLibrary}
         onSetConversationProvider={handleSetConversationProvider}
+        onSetConversationModel={handleSetConversationModel}
         rail={sidebarRail}
         onToggleRail={toggleSidebarRail}
         taskCount={[...conversationTurnGateRef.current.runs.values()].filter((r) => r.state === "running" || r.state === "stopping").length}

@@ -24,6 +24,7 @@ import {
 import { useUiLayout } from "../utils/useUiLayout";
 // Phase 144 (v0.7.20) — W1 대화별 엔진 라벨/선택지 (App 과 동일 source)
 import { providerLabel, PINNABLE_PROVIDERS } from "../providerResolve";
+import { providerModelOptions } from "./Settings";
 
 // Phase 32 — 색상/아이콘 picker 의 사전 정의 팔레트
 const COLOR_PALETTE: Array<{ key: string; value: string | null; label: string }> = [
@@ -86,6 +87,8 @@ interface SidebarProps {
   onOpenLibrary?: () => void;
   // Phase 144 (v0.7.20) — W1 대화별 엔진(provider) 고정. null = 전역 설정 따름.
   onSetConversationProvider?: (id: string, provider: string | null) => Promise<void> | void;
+  /** v0.7.90 — 대화별 모델. null = 그 엔진의 기본 모델 따름. 엔진이 고정된 대화에서만 노출. */
+  onSetConversationModel?: (id: string, model: string | null) => Promise<void> | void;
   // v0.7.86 UI 6단계 (o2 전용) — 레일(56px) 접기, ⚡ 작업 내비, 하단 [다시 연결]
   rail?: boolean;
   onToggleRail?: () => void;
@@ -162,6 +165,7 @@ function Sidebar({
   streamingConvIds,
   onOpenLibrary,
   onSetConversationProvider,
+  onSetConversationModel,
   rail = false,
   onToggleRail,
   taskCount = 0,
@@ -715,7 +719,7 @@ function Sidebar({
                 {/* Phase 144 (v0.7.20) — 엔진이 고정된 대화만 배지. 미지정(전역 따름)은 표시 없음 */}
                 {c.provider && (
                   <span
-                    title={`이 대화는 ${providerLabel(c.provider)} 로 고정됨 (전역 설정 무관)`}
+                    title={`이 대화는 ${providerLabel(c.provider)}${c.model ? ` · ${c.model}` : ""} 로 고정됨 (전역 설정 무관)`}
                     style={{
                       marginLeft: 6,
                       padding: "0 5px",
@@ -725,6 +729,7 @@ function Sidebar({
                     }}
                   >
                     {providerLabel(c.provider)}
+                    {c.model ? ` · ${c.model}` : ""}
                   </span>
                 )}
               </div>
@@ -1503,6 +1508,43 @@ function Sidebar({
               {p === null ? " (기본)" : ""}
             </button>
           ))}
+          {/* v0.7.90 — 대화별 모델. 엔진이 고정된 대화에서만 고를 수 있다
+              (전역 따름 대화에 모델만 박으면 전역 엔진이 바뀔 때 엉뚱한 엔진에 모델명이 실린다). */}
+          {current && onSetConversationModel && providerModelOptions(current).length > 0 && (
+            <>
+              <div className="picker-label" style={{ marginTop: 8 }}>이 대화의 모델</div>
+              <div style={{ maxHeight: 220, overflowY: "auto" }}>
+                {[{ id: null as string | null, label: "엔진 기본 모델 따름" }, ...providerModelOptions(current)].map((m) => {
+                  const active = (conv?.model ?? null) === m.id;
+                  return (
+                    <button
+                      key={m.id ?? "__engine_default__"}
+                      className={`ctx-item ${active ? "active" : ""}`}
+                      style={{ width: "100%", textAlign: "left" }}
+                      title={m.id ?? "Settings 에서 정한 이 엔진의 기본 모델을 씁니다"}
+                      onClick={() => {
+                        void onSetConversationModel(id, m.id);
+                        setPickerState(null);
+                      }}
+                    >
+                      {active ? "● " : "　"}
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {current === "codex" && (
+                <div className="picker-label" style={{ opacity: 0.7, fontSize: 11, marginTop: 6 }}>
+                  Codex 가 자동 모드면 대화별 모델은 적용되지 않습니다 (Settings → 수동)
+                </div>
+              )}
+            </>
+          )}
+          {!current && onSetConversationModel && (
+            <div className="picker-label" style={{ opacity: 0.7, fontSize: 11, marginTop: 6 }}>
+              엔진을 고정하면 이 대화의 모델도 고를 수 있습니다
+            </div>
+          )}
           {streaming && (
             <div className="picker-label" style={{ opacity: 0.7, fontSize: 11, marginTop: 6 }}>
               ⏳ 응답 중 — 변경은 다음 턴부터 적용됩니다

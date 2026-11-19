@@ -3,6 +3,7 @@
 ### Added
 - Per-engine default model: choosing a model for Claude, Codex or any engine is remembered as that engine's default. Switching engines restores it instead of resetting to the first list entry, and changing the model in an inactive engine tab stores the default without switching engines.
 - Conversations pinned to an engine other than the global one now use that engine's saved default model when they have no model of their own (previously the engine's CLI default). Corrupt or empty storage falls back to the previous behavior.
+- Per-conversation model: right-click a conversation → engine picker now also lists that engine's models ("엔진 기본 모델 따름" + the model list). Only offered for conversations pinned to an engine; the pinned engine is kept when the model changes. The sidebar badge shows the conversation model. Codex auto mode still ignores per-conversation models.
 
 ## [0.7.89] - 2026-11-19
 
