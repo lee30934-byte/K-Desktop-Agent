@@ -2358,6 +2358,7 @@ interface ProjectProfile {
   forbiddenTools?: string[];
   memoryTags?: string[];
   defaultPath?: string;
+  allowParallelWorkspace?: boolean;
   // v0.7.48 — 이 프로젝트에서만 주입할 외부 MCP 서버 (현재 "rea" 만 인식).
   mcpServers?: string[];
   // v0.7.48 — REA 런타임/계측/기기 제어 도구 허용 (기본 false = 정적 분석만).
@@ -7082,7 +7083,7 @@ function dispatchRootTurn<T extends { id: string; conversation_id?: string; agen
       const keys: string[] = [];
       if (msg.agent_id) keys.push("session:" + msg.agent_id);
       if (msg.projectProfile?.defaultPath) keys.push(workspaceLeaseKey(path.resolve(msg.projectProfile.defaultPath)));
-      const lease = executionLeases.acquire(msg.id, keys);
+      const lease = executionLeases.acquire(msg.id, keys, msg.projectProfile?.allowParallelWorkspace === true);
       if (executionLeases.isWaiting(msg.id)) rawEmit({ type: "turn_waiting", id: msg.id, conversationId, detail: "같은 작업 폴더 또는 엔진 세션을 사용 중인 대화가 끝나기를 기다립니다." });
       await lease;
       turnLifecycle.assertRunning(msg.id);

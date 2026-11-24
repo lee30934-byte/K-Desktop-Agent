@@ -99,6 +99,9 @@ check("FolderRecord 에 projectProfile", /projectProfile: ProjectProfile \| null
 check("parseProjectProfile 방어적 파서", /function parseProjectProfile\(/.test(db));
 check("rowToFolder 가 projectProfile 매핑", /projectProfile: parseProjectProfile\(row\.project_profile_json\)/.test(db));
 check("updateFolderProjectProfile 갱신 함수", /export async function updateFolderProjectProfile\(/.test(db));
+check("병렬 실행 옵션의 DB 읽기와 쓰기",
+  /if \(p\.allowParallelWorkspace === true\) out\.allowParallelWorkspace = true;/.test(db) &&
+  /if \(profile\.allowParallelWorkspace === true\) cleaned\.allowParallelWorkspace = true;/.test(db));
 
 // ── 8. App.tsx + Rust 플러밍 ─────────────────────────────────────────────
 console.log("\n[8] App.tsx → Rust 플러밍");
@@ -119,6 +122,9 @@ check("Rust AGENT_FLAG_KEYS 에 projectMode", /const AGENT_FLAG_KEYS: \[&str; \d
 console.log("\n[9] UI (Dialog + Settings 토글)");
 check("Dialog onSave 가 projectProfile 3번째 인자", /projectProfile: ProjectProfile \| null,\s*\) => Promise/.test(dialog));
 check("Dialog 에 프로젝트 모드 프로필 섹션", /프로젝트 모드 프로필 \(#3\)/.test(dialog));
+check("Dialog 에서 폴더별 병렬 실행 선택 및 저장",
+  /checked=\{allowParallelWorkspace\}/.test(dialog) &&
+  /if \(allowParallelWorkspace\) profile\.allowParallelWorkspace = true;/.test(dialog));
 check("Dialog 가 금지 도구/메모리 태그 입력", /금지 도구/.test(dialog) && /메모리 범위 태그/.test(dialog));
 check("Settings agentFlags state 에 projectMode", /skillRegistry: false,\s*projectMode: false,/.test(settings));
 check("Settings get_agent_flags 로드에 projectMode", /skillRegistry: !!f\?\.skillRegistry,\s*projectMode: !!f\?\.projectMode,/.test(settings));

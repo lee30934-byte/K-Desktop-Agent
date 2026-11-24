@@ -70,6 +70,7 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
   const pp = folder.projectProfile;
   const [projName, setProjName] = useState<string>(pp?.name ?? "");
   const [projDefaultPath, setProjDefaultPath] = useState<string>(pp?.defaultPath ?? "");
+  const [allowParallelWorkspace, setAllowParallelWorkspace] = useState(pp?.allowParallelWorkspace === true);
   const [projForbidden, setProjForbidden] = useState<string>(
     Array.isArray(pp?.forbiddenTools) ? pp!.forbiddenTools!.join("\n") : "",
   );
@@ -135,6 +136,7 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
       const profile: ProjectProfile = {};
       if (projName.trim()) profile.name = projName.trim();
       if (projDefaultPath.trim()) profile.defaultPath = projDefaultPath.trim();
+      if (allowParallelWorkspace) profile.allowParallelWorkspace = true;
       const ft = splitLines(projForbidden);
       if (ft.length > 0) profile.forbiddenTools = ft;
       const mt = splitLines(projMemoryTags);
@@ -150,7 +152,7 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
       setErrorMsg(`저장 실패: ${err instanceof Error ? err.message : String(err)}`);
       setSaving(false);
     }
-  }, [prompt, attachments, projName, projDefaultPath, projForbidden, projMemoryTags, projUseRea, projReaRuntime, otherMcpServers, onSave, onClose]);
+  }, [prompt, attachments, projName, projDefaultPath, allowParallelWorkspace, projForbidden, projMemoryTags, projUseRea, projReaRuntime, otherMcpServers, onSave, onClose]);
 
   return (
     <div
@@ -222,6 +224,21 @@ function FolderInstructionsDialog({ folder, onClose, onSave }: Props) {
 
         {/* Body — scrollable */}
         <div style={{ padding: "16px 18px", overflowY: "auto", flex: 1 }}>
+          <div style={{ marginBottom: 18 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={allowParallelWorkspace}
+                onChange={(e) => setAllowParallelWorkspace(e.target.checked)}
+                disabled={saving}
+                aria-describedby="folder-parallel-workspace-help"
+              />
+              같은 작업 폴더에서 대화 병렬 실행
+            </label>
+            <div id="folder-parallel-workspace-help" style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+              저장 후 새로 보낸 작업부터 적용됩니다. 여러 대화가 같은 파일을 수정하면 변경이 충돌할 수 있습니다.
+            </div>
+          </div>
           {/* 시스템 프롬프트 */}
           <div style={{ marginBottom: 18 }}>
             <label

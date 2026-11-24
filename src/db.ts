@@ -524,6 +524,7 @@ export interface ProjectProfile {
   forbiddenTools?: string[];
   memoryTags?: string[];
   defaultPath?: string;
+  allowParallelWorkspace?: boolean;
   // v0.7.48 — 이 프로젝트에서만 주입할 외부 MCP 서버 (현재 "rea" 만 인식).
   mcpServers?: string[];
   // v0.7.48 — REA 런타임/계측/기기 제어 도구 허용 (기본 false).
@@ -589,6 +590,7 @@ function parseProjectProfile(raw: string | null | undefined): ProjectProfile | n
     const out: ProjectProfile = {};
     if (typeof p.name === "string" && p.name.trim()) out.name = p.name.trim();
     if (typeof p.defaultPath === "string" && p.defaultPath.trim()) out.defaultPath = p.defaultPath.trim();
+    if (p.allowParallelWorkspace === true) out.allowParallelWorkspace = true;
     const ft = strArr(p.forbiddenTools);
     if (ft && ft.length > 0) out.forbiddenTools = ft;
     const mt = strArr(p.memoryTags);
@@ -714,6 +716,7 @@ export async function updateFolderProjectProfile(
     const cleaned: ProjectProfile = {};
     if (profile.name && profile.name.trim()) cleaned.name = profile.name.trim();
     if (profile.defaultPath && profile.defaultPath.trim()) cleaned.defaultPath = profile.defaultPath.trim();
+    if (profile.allowParallelWorkspace === true) cleaned.allowParallelWorkspace = true;
     const ft = Array.isArray(profile.forbiddenTools)
       ? profile.forbiddenTools.filter((t) => typeof t === "string" && t.trim()).map((t) => t.trim())
       : [];

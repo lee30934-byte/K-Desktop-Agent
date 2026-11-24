@@ -94,6 +94,33 @@ await test("상위·하위 폴더 충돌과 문자열 접두사 오탐 방지", 
   assert.ok(leases.isWaiting("b")); await leases.acquire("c", [workspaceLeaseKey("C:/repo-other")]);
   leases.release("a"); await pending;
 });
+await test("병렬 실행을 켠 같은 폴더도 같은 세션은 한 번에 하나씩 실행", async () => {
+  const leases = new ExecutionLeases();
+  const keys = [workspaceLeaseKey("C:/repo"), "session:shared"];
+  await leases.acquire("a", keys, true);
+  const pending = leases.acquire("b", keys, true);
+  assert.ok(leases.isWaiting("b"));
+  leases.release("a");
+  await pending;
+});
+await test("경로가 겹치는 상위 폴더와 병렬 실행을 끈 요청은 병렬 작업이 모두 끝날 때까지 대기", async () => {
+  const leases = new ExecutionLeases();
+  const shared = workspaceLeaseKey("C:/repo/sub");
+  await leases.acquire("a", [shared], true);
+  await leases.acquire("b", [shared], true);
+  const exclusive = leases.acquire("c", [shared]);
+  const parent = leases.acquire("d", [workspaceLeaseKey("C:/repo")], true);
+  assert.ok(leases.isWaiting("c"));
+  assert.ok(leases.isWaiting("d"));
+  leases.release("a");
+  assert.ok(leases.isWaiting("c"));
+  assert.ok(leases.isWaiting("d"));
+  leases.release("b");
+  await exclusive;
+  assert.ok(leases.isWaiting("d"));
+  leases.release("c");
+  await parent;
+});
 await test("공유 자원 대기 중 정지하면 자원 해제 뒤에도 시작하지 않음", async () => {
   const leases = new ExecutionLeases(); await leases.acquire("a", ["session:shared"]);
   const pending = leases.acquire("b", ["session:shared"]);

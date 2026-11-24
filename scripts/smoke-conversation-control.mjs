@@ -78,7 +78,7 @@ function waitFor(predicate, label) {
   });
 }
 const send = msg => proc.stdin.write(JSON.stringify(msg) + "\n");
-const start = (id, conversation_id, content, defaultPath, provider = "codex") => send({ type: "user_message", id, conversation_id, content, provider, ...(provider === "gemini-cli" ? { api_key: "isolated-fixture-not-a-real-key" } : {}), ...(defaultPath ? { projectProfile: { defaultPath } } : {}) });
+const start = (id, conversation_id, content, defaultPath, provider = "codex", allowParallelWorkspace = false) => send({ type: "user_message", id, conversation_id, content, provider, ...(provider === "gemini-cli" ? { api_key: "isolated-fixture-not-a-real-key" } : {}), ...(defaultPath ? { projectProfile: { defaultPath, allowParallelWorkspace } } : {}) });
 const event = (type, id) => waitFor(e => e.type === type && e.id === id, type + ":" + id);
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const checks = [];
@@ -103,6 +103,21 @@ try {
   send({ type: "interrupt", id: "lease-b" }); await event("turn_stopped", "lease-b");
   assert.equal(events.some(e => e.id === "lease-b" && e.type === "assistant_delta"), false); checks.push("cancel while waiting does not spawn a process");
   send({ type: "interrupt", id: "lease-a" }); await event("turn_stopped", "lease-a");
+  for (const provider of ["claude", "codex"]) {
+    const ids = [1, 2, 3].map(i => `${provider}-parallel-${i}`);
+    for (const id of ids) start(id, id, "KDA_TEST_HOLD", workspace, provider, true);
+    const replies = await Promise.all(ids.map(id => event("assistant_delta", id)));
+    assert.deepEqual(replies.map(reply => reply.conversationId), ids);
+    const pids = replies.map(reply => Number(reply.text.match(/fixture-pid=(\d+)/)[1]));
+    assert.equal(new Set(pids).size, ids.length);
+    assert.ok(pids.every(alive));
+    assert.equal(events.some(e => ids.includes(e.id) && e.type === "turn_waiting"), false);
+    for (const id of ids) {
+      send({ type: "interrupt", id });
+      await event("turn_stopped", id);
+    }
+    checks.push(provider + " runs three same-folder conversations simultaneously");
+  }
   start("replacement", "a", "normal"); await event("done", "replacement"); checks.push("new turn can start after confirmed stop");
   for (const provider of ["claude", "gemini-cli"]) {
     const id = provider + "-stop";

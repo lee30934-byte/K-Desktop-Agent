@@ -1,18 +1,30 @@
-interface Request { id: string; keys: string[]; resolve: () => void; reject: (error: Error) => void }
+interface Lease {
+  keys: string[];
+  allowParallelWorkspace: boolean;
+}
+
+interface Request extends Lease {
+  id: string;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
 
 export function workspaceLeaseKey(input: string): string {
   return "workspace:" + input.replace(/^\\\\\?\\/, "").replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
 }
-function conflicts(a: string, b: string): boolean {
-  if (a === b) return true;
+function conflicts(a: string, b: string, bothAllowParallel: boolean): boolean {
+  if (a === b) return !(bothAllowParallel && a.startsWith("workspace:"));
   return a.startsWith("workspace:") && b.startsWith("workspace:") && (a.startsWith(b + "/") || b.startsWith(a + "/"));
 }
 /** Shared workspace / engine sessions are leased until execution has really ended. */
 export class ExecutionLeases {
-  private active = new Map<string, string[]>();
+  private active = new Map<string, Lease>();
   private waiting: Request[] = [];
-  acquire(id: string, keys: string[]): Promise<void> {
-    return new Promise((resolve, reject) => { this.waiting.push({ id, keys, resolve, reject }); this.pump(); });
+  acquire(id: string, keys: string[], allowParallelWorkspace = false): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.waiting.push({ id, keys, allowParallelWorkspace, resolve, reject });
+      this.pump();
+    });
   }
   cancel(id: string): void {
     const waiting = this.waiting.filter((r) => r.id === id);
@@ -25,9 +37,16 @@ export class ExecutionLeases {
   private pump(): void {
     const pending: Request[] = [];
     for (const request of this.waiting) {
-      const occupied = [...this.active.values(), ...pending.map((p) => p.keys)].flat();
-      if (request.keys.some((key) => occupied.some((held) => conflicts(key, held)))) { pending.push(request); continue; }
-      this.active.set(request.id, request.keys);
+      const occupied = [...this.active.values(), ...pending];
+      const blocked = occupied.some((lease) => {
+        const bothAllowParallel = request.allowParallelWorkspace && lease.allowParallelWorkspace;
+        return request.keys.some((key) => lease.keys.some((held) => conflicts(key, held, bothAllowParallel)));
+      });
+      if (blocked) {
+        pending.push(request);
+        continue;
+      }
+      this.active.set(request.id, { keys: request.keys, allowParallelWorkspace: request.allowParallelWorkspace });
       request.resolve();
     }
     this.waiting = pending;
