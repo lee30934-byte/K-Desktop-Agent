@@ -1,3 +1,8 @@
+## [0.7.91] - 2026-11-24
+
+### Added
+- Folder instructions now offer an opt-in setting to run conversations in parallel in the same workspace. Three or more Claude or Codex conversations can run concurrently when each has its own session. Requests in the same conversation or sharing an engine session still run in order.
+
 ## [0.7.90] - 2026-11-19
 
 ### Added
